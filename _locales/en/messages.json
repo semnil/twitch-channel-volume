@@ -1,0 +1,110 @@
+{
+  "extName": {
+    "message": "Twitch Channel Volume"
+  },
+  "extDescription": {
+    "message": "Per-channel auto volume on Twitch using BS.1770 loudness measurement. Separate gain during ad breaks."
+  },
+  "channelNotDetected": {
+    "message": "Channel not detected"
+  },
+  "applyToChannel": {
+    "message": "Apply to channel"
+  },
+  "applyToChannelWithValue": {
+    "message": "Apply $VALUE$ to channel",
+    "placeholders": {
+      "value": { "content": "$1" }
+    }
+  },
+  "hintNoLufs": {
+    "message": "Measuring loudness..."
+  },
+  "openOnTwitch": {
+    "message": "Open on a Twitch tab"
+  },
+  "openOnStream": {
+    "message": "Use while a stream or video is playing"
+  },
+  "reloadPageNeeded": {
+    "message": "Cannot connect to the extension. Please reload the page (F5)."
+  },
+  "settings": {
+    "message": "Settings"
+  },
+  "targetLufs": {
+    "message": "Target LUFS"
+  },
+  "targetLufsDesc": {
+    "message": "Reference loudness used to compute gain from measurement"
+  },
+  "displayUnit": {
+    "message": "Display unit"
+  },
+  "displayUnitDesc": {
+    "message": "Gain display format"
+  },
+  "savedChannels": {
+    "message": "Saved Channels"
+  },
+  "noSavedChannels": {
+    "message": "No saved channels"
+  },
+  "delete": {
+    "message": "Delete"
+  },
+  "clearAll": {
+    "message": "Clear all"
+  },
+  "clearAllConfirm": {
+    "message": "Delete all saved channels?"
+  },
+  "manualVolume": {
+    "message": "Manual Volume"
+  },
+  "labelMomentary": {
+    "message": "Momentary"
+  },
+  "labelShortTerm": {
+    "message": "Short-term"
+  },
+  "labelIntegrated": {
+    "message": "Integrated"
+  },
+  "labelSuggested": {
+    "message": "Suggested"
+  },
+  "labelCurrent": {
+    "message": "Current"
+  },
+  "colChannel": {
+    "message": "Channel"
+  },
+  "colVolume": {
+    "message": "Volume"
+  },
+  "showGainOverlay": {
+    "message": "Show gain overlay"
+  },
+  "showGainOverlayDesc": {
+    "message": "Display current gain next to the player volume bar"
+  },
+  "typeLive": {
+    "message": "Live"
+  },
+  "typeVod": {
+    "message": "VOD"
+  },
+  "typeClip": {
+    "message": "Clip"
+  },
+  "adGain": {
+    "message": "Ad gain"
+  },
+  "adGainDesc": {
+    "message": "Extra gain applied during ad breaks (dB)"
+  },
+  "adDetected": {
+    "message": "Ad detected"
+  }
+}

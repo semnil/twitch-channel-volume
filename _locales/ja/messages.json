@@ -1,0 +1,110 @@
+{
+  "extName": {
+    "message": "Twitch Channel Volume"
+  },
+  "extDescription": {
+    "message": "Twitch チャンネルごとの音量を BS.1770 ラウドネス計測に基づき自動調整。CM 区間は別ゲインで補正"
+  },
+  "channelNotDetected": {
+    "message": "チャンネル未検出"
+  },
+  "applyToChannel": {
+    "message": "チャンネルに適用"
+  },
+  "applyToChannelWithValue": {
+    "message": "$VALUE$ をチャンネルに適用",
+    "placeholders": {
+      "value": { "content": "$1" }
+    }
+  },
+  "hintNoLufs": {
+    "message": "ラウドネス計測中..."
+  },
+  "openOnTwitch": {
+    "message": "Twitch タブで開いてください"
+  },
+  "openOnStream": {
+    "message": "配信または動画を再生中に使用してください"
+  },
+  "reloadPageNeeded": {
+    "message": "拡張機能と接続できません。ページを再読み込みしてください (F5)"
+  },
+  "settings": {
+    "message": "Settings"
+  },
+  "targetLufs": {
+    "message": "Target LUFS"
+  },
+  "targetLufsDesc": {
+    "message": "計測ラウドネスから算出するゲインの基準値"
+  },
+  "displayUnit": {
+    "message": "表示単位"
+  },
+  "displayUnitDesc": {
+    "message": "ゲイン値の表示形式"
+  },
+  "savedChannels": {
+    "message": "Saved Channels"
+  },
+  "noSavedChannels": {
+    "message": "保存済みチャンネルなし"
+  },
+  "delete": {
+    "message": "削除"
+  },
+  "clearAll": {
+    "message": "全削除"
+  },
+  "clearAllConfirm": {
+    "message": "保存済みチャンネルをすべて削除しますか？"
+  },
+  "manualVolume": {
+    "message": "Manual Volume"
+  },
+  "labelMomentary": {
+    "message": "Momentary"
+  },
+  "labelShortTerm": {
+    "message": "Short-term"
+  },
+  "labelIntegrated": {
+    "message": "Integrated"
+  },
+  "labelSuggested": {
+    "message": "Suggested"
+  },
+  "labelCurrent": {
+    "message": "Current"
+  },
+  "colChannel": {
+    "message": "Channel"
+  },
+  "colVolume": {
+    "message": "Volume"
+  },
+  "showGainOverlay": {
+    "message": "ゲイン表示"
+  },
+  "showGainOverlayDesc": {
+    "message": "プレイヤーの音量バー横に適用中のゲインを表示"
+  },
+  "typeLive": {
+    "message": "Live"
+  },
+  "typeVod": {
+    "message": "VOD"
+  },
+  "typeClip": {
+    "message": "Clip"
+  },
+  "adGain": {
+    "message": "CM Gain"
+  },
+  "adGainDesc": {
+    "message": "CM 区間で適用する追加ゲイン (dB)"
+  },
+  "adDetected": {
+    "message": "CM 検出中"
+  }
+}

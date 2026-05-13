@@ -1,0 +1,57 @@
+{
+  "manifest_version": 3,
+  "name": "__MSG_extName__",
+  "version": "0.1.0",
+  "description": "__MSG_extDescription__",
+  "default_locale": "ja",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "*://*.twitch.tv/*",
+    "*://*.ttvnw.net/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.twitch.tv/*",
+        "*://clips.twitch.tv/*"
+      ],
+      "js": ["utils.js", "content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "*://*.twitch.tv/*",
+        "*://clips.twitch.tv/*"
+      ],
+      "js": ["page-bridge.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["audio-worklet.js"],
+      "matches": [
+        "*://*.twitch.tv/*",
+        "*://clips.twitch.tv/*"
+      ]
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "options_page": "options.html",
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

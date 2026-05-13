@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>Twitch Channel Volume</title>
+  <style>
+    :root {
+      --bg: #18181b;
+      --fg: #efeff1;
+      --muted: #adadb8;
+      --accent: #9147ff;
+      --border: #2a2a2d;
+      --badge-live: #eb0400;
+      --badge-vod: #424248;
+      --badge-clip: #4a3cb3;
+    }
+    body { margin: 0; width: 320px; font-family: -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--fg); font-size: 13px; }
+    .pad { padding: 12px 14px; }
+    h2 { font-size: 14px; margin: 0 0 8px; font-weight: 600; }
+    .row { display: flex; justify-content: space-between; align-items: baseline; margin: 4px 0; gap: 8px; }
+    .row .label { color: var(--muted); }
+    .row .value { font-variant-numeric: tabular-nums; font-weight: 500; }
+    .channel { font-weight: 600; word-break: break-all; }
+    .kind { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 11px; margin-left: 4px; vertical-align: middle; }
+    .kind.live { background: var(--badge-live); }
+    .kind.vod { background: var(--badge-vod); }
+    .kind.clip { background: var(--badge-clip); }
+    .kind.none { background: var(--badge-vod); }
+    button { background: var(--accent); color: #fff; border: 0; border-radius: 4px; padding: 8px 12px; font-size: 13px; cursor: pointer; width: 100%; font-weight: 600; }
+    button:disabled { background: var(--border); color: var(--muted); cursor: not-allowed; }
+    button.secondary { background: transparent; border: 1px solid var(--border); color: var(--fg); }
+    hr { border: 0; border-top: 1px solid var(--border); margin: 10px 0; }
+    .slider-row { margin-top: 6px; }
+    input[type="range"] { width: 100%; }
+    .presets { display: flex; gap: 4px; margin-top: 4px; }
+    .presets button { padding: 4px 6px; font-size: 11px; flex: 1; }
+    .ad-flag { color: #eb0400; font-weight: 600; }
+    .hidden { display: none; }
+    .footer { display: flex; gap: 6px; margin-top: 10px; }
+    .footer button { flex: 1; padding: 6px; font-size: 11px; }
+    .err { color: #eb0400; }
+    a { color: var(--accent); text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="pad">
+    <div id="errBox" class="err hidden"></div>
+    <div id="mainArea">
+      <div class="row">
+        <span class="channel"><span id="channelName">—</span><span id="channelKind" class="kind none">—</span></span>
+      </div>
+      <hr />
+      <div class="row"><span class="label" data-i18n="labelMomentary">Momentary</span><span class="value"><span id="momentary">—</span> LUFS</span></div>
+      <div class="row"><span class="label" data-i18n="labelShortTerm">Short-term</span><span class="value"><span id="shortTerm">—</span> LUFS</span></div>
+      <div class="row"><span class="label" data-i18n="labelIntegrated">Integrated</span><span class="value"><span id="integrated">—</span> LUFS</span></div>
+      <div class="row"><span class="label" data-i18n="labelSuggested">Suggested</span><span class="value"><span id="suggested">—</span></span></div>
+      <div class="row"><span class="label" data-i18n="labelCurrent">Current</span><span class="value"><span id="current">100%</span></span></div>
+      <div id="adFlag" class="row hidden"><span class="ad-flag" data-i18n="adDetected">CM 検出中</span></div>
+      <hr />
+      <button id="applyBtn" data-i18n="applyToChannel">チャンネルに適用</button>
+      <div class="slider-row">
+        <input id="manualSlider" type="range" min="0" max="600" value="100" />
+        <div class="presets">
+          <button data-gain="50">50%</button>
+          <button data-gain="100">100%</button>
+          <button data-gain="150">150%</button>
+          <button data-gain="200">200%</button>
+        </div>
+      </div>
+      <div class="footer">
+        <button id="optionsBtn" class="secondary" data-i18n="settings">Settings</button>
+      </div>
+    </div>
+  </div>
+  <script src="utils.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
