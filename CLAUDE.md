@@ -51,12 +51,12 @@ utils.js (shared, popup/options + page-bridge + content.js + test.js)
 └── HTML escape: esc()
 
 popup.html / popup.js
-├── Channel name + kind badge (Live/VOD/Clip)
-├── Momentary / Short-term / Integrated LUFS 表示
-├── Suggested gain (target との差分から算出, displayUnit に追従)
-├── Current gain + manual slider (slider 自体は 0–600%, 表示値は displayUnit 追従)
-├── SETTINGS_KEY を初期ロード + storage.onChanged で options の単位切替に即時反応
-└── CM 検出中フラグ
+├── Channel name + kind badge (Live/VOD/Clip) + CM 検出 badge
+├── 4 カード 2x2 グリッド: Integrated LUFS / Suggested gain / Current gain / CM Gain (dB)
+│   ├── Suggested gain は target との差分から算出 (内部は integrated 優先 / short-term フォールバック)
+│   └── Suggested / Current の表示は displayUnit (% / dB) に追従
+├── Manual slider (slider 自体は 0–600%, 表示値は displayUnit 追従) + 6 プリセット (0/50/100/200/400/MAX)
+└── SETTINGS_KEY を初期ロード + storage.onChanged で options の単位切替に即時反応
 
 options.html / options.js
 ├── Target LUFS スライダー (-30 ~ -6 LUFS, default -18)
