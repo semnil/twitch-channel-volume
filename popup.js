@@ -14,8 +14,20 @@
   }
 
   function fmtLufs(v) {
-    if (!Number.isFinite(v)) return '—';
+    if (!Number.isFinite(v)) return null;
     return v.toFixed(1);
+  }
+
+  function setLufsCell(id, v) {
+    const el = $(id);
+    const s = fmtLufs(v);
+    if (s === null) {
+      el.textContent = '---';
+      el.classList.add('unknown');
+    } else {
+      el.textContent = s + ' LUFS';
+      el.classList.remove('unknown');
+    }
   }
 
   async function getActiveTab() {
@@ -48,32 +60,61 @@
   function renderState(state) {
     if (!state) return;
     const ch = state.channel || {};
-    $('channelName').textContent = ch.name || msg('channelNotDetected');
+    const nameEl = $('channelName');
+    if (ch.name) {
+      nameEl.textContent = ch.name;
+      nameEl.classList.remove('empty');
+    } else {
+      nameEl.textContent = msg('channelNotDetected');
+      nameEl.classList.add('empty');
+    }
     const kindEl = $('channelKind');
-    kindEl.className = 'kind ' + (ch.kind || 'none');
-    let kindLabel = '—';
-    if (ch.kind === 'live') kindLabel = msg('typeLive');
-    else if (ch.kind === 'vod') kindLabel = msg('typeVod');
-    else if (ch.kind === 'clip') kindLabel = msg('typeClip');
-    kindEl.textContent = kindLabel;
+    if (ch.kind && ch.kind !== 'none') {
+      kindEl.className = 'type-badge ' + ch.kind;
+      let kindLabel = '';
+      if (ch.kind === 'live') kindLabel = msg('typeLive');
+      else if (ch.kind === 'vod') kindLabel = msg('typeVod');
+      else if (ch.kind === 'clip') kindLabel = msg('typeClip');
+      kindEl.textContent = kindLabel;
+    } else {
+      kindEl.className = 'type-badge hidden';
+      kindEl.textContent = '';
+    }
 
     const lufs = state.lufs || {};
-    $('momentary').textContent = fmtLufs(lufs.momentary);
-    $('shortTerm').textContent = fmtLufs(lufs.shortTerm);
-    $('integrated').textContent = fmtLufs(lufs.integrated);
+    setLufsCell('momentary', lufs.momentary);
+    setLufsCell('shortTerm', lufs.shortTerm);
+    setLufsCell('integrated', lufs.integrated);
 
+    const suggestedEl = $('suggested');
     const measured = Number.isFinite(lufs.integrated) ? lufs.integrated : lufs.shortTerm;
     if (Number.isFinite(measured) && Number.isFinite(state.targetLufs)) {
       const g = calcGain(measured, state.targetLufs);
-      $('suggested').textContent = gainToPercent(g) + '%';
+      suggestedEl.textContent = gainToPercent(g) + '%';
+      suggestedEl.classList.remove('unknown');
       $('applyBtn').disabled = false;
+      $('applyHint').textContent = '';
     } else {
-      $('suggested').textContent = '—';
+      suggestedEl.textContent = '---';
+      suggestedEl.classList.add('unknown');
       $('applyBtn').disabled = true;
+      $('applyHint').textContent = msg('hintNoLufs');
     }
 
-    $('current').textContent = gainToPercent(state.gain || 1) + '%';
-    $('manualSlider').value = String(gainToPercent(state.gain || 1));
+    const gainPct = gainToPercent(state.gain || 1);
+    $('current').textContent = gainPct + '%';
+    $('manualSlider').value = String(gainPct);
+    $('manualValue').textContent = gainPct + '%';
+
+    const adGainEl = $('adGainLabel');
+    if (Number.isFinite(state.adGainDb)) {
+      adGainEl.textContent = (state.adGainDb > 0 ? '+' : '') + state.adGainDb + ' dB';
+      adGainEl.classList.remove('unknown');
+    } else {
+      adGainEl.textContent = '---';
+      adGainEl.classList.add('unknown');
+    }
+
     $('adFlag').classList.toggle('hidden', !state.adActive);
   }
 
@@ -101,12 +142,15 @@
   $('manualSlider').addEventListener('input', (e) => {
     const v = Number(e.target.value);
     $('current').textContent = v + '%';
+    $('manualValue').textContent = v + '%';
   });
   $('manualSlider').addEventListener('change', (e) => setGain(Number(e.target.value)));
   document.querySelectorAll('.presets button').forEach((btn) => {
     btn.addEventListener('click', () => {
       const v = Number(btn.getAttribute('data-gain'));
       $('manualSlider').value = String(v);
+      $('manualValue').textContent = v + '%';
+      $('current').textContent = v + '%';
       setGain(v);
     });
   });

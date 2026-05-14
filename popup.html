@@ -1,78 +1,303 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-  <meta charset="UTF-8" />
-  <title>Twitch Channel Volume</title>
-  <style>
-    :root {
-      --bg: #18181b;
-      --fg: #efeff1;
-      --muted: #adadb8;
-      --accent: #9147ff;
-      --border: #2a2a2d;
-      --badge-live: #eb0400;
-      --badge-vod: #424248;
-      --badge-clip: #4a3cb3;
-    }
-    body { margin: 0; width: 320px; font-family: -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--fg); font-size: 13px; }
-    .pad { padding: 12px 14px; }
-    h2 { font-size: 14px; margin: 0 0 8px; font-weight: 600; }
-    .row { display: flex; justify-content: space-between; align-items: baseline; margin: 4px 0; gap: 8px; }
-    .row .label { color: var(--muted); }
-    .row .value { font-variant-numeric: tabular-nums; font-weight: 500; }
-    .channel { font-weight: 600; word-break: break-all; }
-    .kind { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 11px; margin-left: 4px; vertical-align: middle; }
-    .kind.live { background: var(--badge-live); }
-    .kind.vod { background: var(--badge-vod); }
-    .kind.clip { background: var(--badge-clip); }
-    .kind.none { background: var(--badge-vod); }
-    button { background: var(--accent); color: #fff; border: 0; border-radius: 4px; padding: 8px 12px; font-size: 13px; cursor: pointer; width: 100%; font-weight: 600; }
-    button:disabled { background: var(--border); color: var(--muted); cursor: not-allowed; }
-    button.secondary { background: transparent; border: 1px solid var(--border); color: var(--fg); }
-    hr { border: 0; border-top: 1px solid var(--border); margin: 10px 0; }
-    .slider-row { margin-top: 6px; }
-    input[type="range"] { width: 100%; }
-    .presets { display: flex; gap: 4px; margin-top: 4px; }
-    .presets button { padding: 4px 6px; font-size: 11px; flex: 1; }
-    .ad-flag { color: #eb0400; font-weight: 600; }
-    .hidden { display: none; }
-    .footer { display: flex; gap: 6px; margin-top: 10px; }
-    .footer button { flex: 1; padding: 6px; font-size: 11px; }
-    .err { color: #eb0400; }
-    a { color: var(--accent); text-decoration: none; }
-  </style>
+<meta charset="utf-8">
+<title>Twitch Channel Volume</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  width: 320px;
+  font-family: 'Segoe UI', 'Yu Gothic UI', sans-serif;
+  font-size: 13px;
+  color: #e1e1e1;
+  background: #1a1a2e;
+}
+
+.header {
+  padding: 12px 16px 8px;
+  border-bottom: 1px solid #2a2a4a;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.header h1 {
+  font-size: 14px;
+  font-weight: 600;
+  color: #4ecdc4;
+  letter-spacing: 0.5px;
+}
+.settings-link {
+  font-size: 16px;
+  color: #666;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+  transition: color 0.15s;
+}
+.settings-link:hover { color: #4ecdc4; }
+
+.type-badge {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.type-badge.live { background: #e91916; color: #fff; }
+.type-badge.vod { background: #2a2a4a; color: #aaa; }
+.type-badge.clip { background: #9147ff; color: #fff; }
+
+.ad-badge {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: #f9ca24;
+  color: #1a1a2e;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.info-section {
+  padding: 12px 16px;
+  background: #16213e;
+  border-bottom: 1px solid #2a2a4a;
+}
+.channel-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.channel-name.empty {
+  color: #666;
+  font-weight: 400;
+}
+
+.loudness-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 5px;
+}
+.loudness-grid + .loudness-grid { margin-top: 5px; }
+.loudness-card {
+  background: #1a1a2e;
+  border-radius: 6px;
+  padding: 7px 8px;
+}
+.loudness-card .label {
+  font-size: 9px;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.loudness-card .value {
+  font-size: 17px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #4ecdc4;
+  margin-top: 2px;
+}
+.loudness-card .value.suggested { color: #f9ca24; }
+.loudness-card .value.current { color: #ff6b9d; }
+.loudness-card .value.unknown { color: #555; font-size: 13px; }
+.loudness-card .unit {
+  font-size: 10px;
+  font-weight: 400;
+  color: #888;
+  margin-left: 1px;
+}
+
+.apply-section {
+  padding: 10px 16px;
+  border-bottom: 1px solid #2a2a4a;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.apply-btn {
+  flex: 1;
+  padding: 8px 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: #1a1a2e;
+  background: #4ecdc4;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.apply-btn:hover { opacity: 0.85; }
+.apply-btn:disabled {
+  background: #2a2a4a;
+  color: #555;
+  cursor: default;
+  opacity: 1;
+}
+.apply-hint {
+  font-size: 10px;
+  color: #666;
+  line-height: 1.3;
+  max-width: 140px;
+}
+
+.manual-section {
+  padding: 10px 16px;
+}
+.manual-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.manual-header .label {
+  font-size: 11px;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.slider-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.slider-row input[type="range"] {
+  flex: 1;
+  height: 6px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: #2a2a4a;
+  border-radius: 3px;
+  outline: none;
+}
+.slider-row input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #ff6b9d;
+  cursor: pointer;
+  border: 2px solid #1a1a2e;
+}
+.slider-value {
+  min-width: 42px;
+  text-align: right;
+  font-size: 14px;
+  font-weight: 700;
+  color: #ff6b9d;
+  font-variant-numeric: tabular-nums;
+}
+
+.presets {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+}
+.presets button {
+  flex: 1;
+  padding: 4px 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: #aaa;
+  background: #2a2a4a;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.presets button:hover {
+  background: #ff6b9d;
+  color: #fff;
+}
+
+.status-msg {
+  padding: 20px 16px;
+  text-align: center;
+  color: #555;
+}
+.hidden { display: none; }
+</style>
 </head>
 <body>
-  <div class="pad">
-    <div id="errBox" class="err hidden"></div>
-    <div id="mainArea">
-      <div class="row">
-        <span class="channel"><span id="channelName">—</span><span id="channelKind" class="kind none">—</span></span>
+<div class="header">
+  <h1>Twitch Channel Volume</h1>
+  <button id="optionsBtn" class="settings-link" title="Settings">&#9881;</button>
+</div>
+
+<div id="errBox" class="status-msg hidden"></div>
+
+<div id="mainArea">
+  <div class="info-section">
+    <div style="display:flex; align-items:center; gap:6px; margin-bottom:10px;">
+      <div id="channelName" class="channel-name empty" data-i18n="channelNotDetected">チャンネル未検出</div>
+      <span id="channelKind" class="type-badge hidden"></span>
+      <span id="adFlag" class="ad-badge hidden" data-i18n="adDetected">CM 検出中</span>
+    </div>
+    <div class="loudness-grid">
+      <div class="loudness-card">
+        <div class="label" data-i18n="labelMomentary">Momentary</div>
+        <div id="momentary" class="value unknown">---</div>
       </div>
-      <hr />
-      <div class="row"><span class="label" data-i18n="labelMomentary">Momentary</span><span class="value"><span id="momentary">—</span> LUFS</span></div>
-      <div class="row"><span class="label" data-i18n="labelShortTerm">Short-term</span><span class="value"><span id="shortTerm">—</span> LUFS</span></div>
-      <div class="row"><span class="label" data-i18n="labelIntegrated">Integrated</span><span class="value"><span id="integrated">—</span> LUFS</span></div>
-      <div class="row"><span class="label" data-i18n="labelSuggested">Suggested</span><span class="value"><span id="suggested">—</span></span></div>
-      <div class="row"><span class="label" data-i18n="labelCurrent">Current</span><span class="value"><span id="current">100%</span></span></div>
-      <div id="adFlag" class="row hidden"><span class="ad-flag" data-i18n="adDetected">CM 検出中</span></div>
-      <hr />
-      <button id="applyBtn" data-i18n="applyToChannel">チャンネルに適用</button>
-      <div class="slider-row">
-        <input id="manualSlider" type="range" min="0" max="600" value="100" />
-        <div class="presets">
-          <button data-gain="50">50%</button>
-          <button data-gain="100">100%</button>
-          <button data-gain="150">150%</button>
-          <button data-gain="200">200%</button>
-        </div>
+      <div class="loudness-card">
+        <div class="label" data-i18n="labelShortTerm">Short-term</div>
+        <div id="shortTerm" class="value unknown">---</div>
       </div>
-      <div class="footer">
-        <button id="optionsBtn" class="secondary" data-i18n="settings">Settings</button>
+      <div class="loudness-card">
+        <div class="label" data-i18n="labelIntegrated">Integrated</div>
+        <div id="integrated" class="value unknown">---</div>
+      </div>
+    </div>
+    <div class="loudness-grid">
+      <div class="loudness-card">
+        <div class="label" data-i18n="labelSuggested">Suggested</div>
+        <div id="suggested" class="value suggested unknown">---</div>
+      </div>
+      <div class="loudness-card">
+        <div class="label" data-i18n="labelCurrent">Current</div>
+        <div id="current" class="value current">100%</div>
+      </div>
+      <div class="loudness-card">
+        <div class="label" data-i18n="adGain">CM Gain</div>
+        <div id="adGainLabel" class="value unknown">---</div>
       </div>
     </div>
   </div>
-  <script src="utils.js"></script>
-  <script src="popup.js"></script>
+
+  <div class="apply-section">
+    <button id="applyBtn" class="apply-btn" disabled data-i18n="applyToChannel">チャンネルに適用</button>
+    <span id="applyHint" class="apply-hint" data-i18n="hintNoLufs">ラウドネス計測中...</span>
+  </div>
+
+  <div class="manual-section">
+    <div class="manual-header">
+      <span class="label" data-i18n="manualVolume">Manual Volume</span>
+    </div>
+    <div class="slider-row">
+      <input type="range" id="manualSlider" min="0" max="600" value="100" step="5">
+      <span id="manualValue" class="slider-value">100%</span>
+    </div>
+    <div class="presets">
+      <button data-gain="0">0%</button>
+      <button data-gain="50">50%</button>
+      <button data-gain="100">100%</button>
+      <button data-gain="200">200%</button>
+      <button data-gain="400">400%</button>
+      <button data-gain="600">MAX</button>
+    </div>
+  </div>
+</div>
+
+<script src="utils.js"></script>
+<script src="popup.js"></script>
 </body>
 </html>

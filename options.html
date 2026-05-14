@@ -1,84 +1,277 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-  <meta charset="UTF-8" />
-  <title>Twitch Channel Volume — Settings</title>
-  <style>
-    :root {
-      --bg: #18181b;
-      --fg: #efeff1;
-      --muted: #adadb8;
-      --accent: #9147ff;
-      --border: #2a2a2d;
-    }
-    body { margin: 0; font-family: -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--fg); }
-    .wrap { max-width: 720px; margin: 0 auto; padding: 24px; }
-    h1 { font-size: 18px; margin: 0 0 16px; }
-    h2 { font-size: 14px; margin: 24px 0 8px; }
-    section { background: #1f1f23; border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px; margin-bottom: 12px; }
-    .row { display: flex; align-items: center; gap: 12px; margin: 8px 0; }
-    .row label { width: 160px; color: var(--muted); }
-    .row .desc { font-size: 12px; color: var(--muted); margin-left: 8px; }
-    input[type="range"] { flex: 1; }
-    input[type="number"] { width: 80px; background: #0e0e10; color: var(--fg); border: 1px solid var(--border); padding: 4px; }
-    select { background: #0e0e10; color: var(--fg); border: 1px solid var(--border); padding: 4px; }
-    button { background: var(--accent); color: #fff; border: 0; border-radius: 4px; padding: 6px 12px; cursor: pointer; }
-    button.secondary { background: transparent; border: 1px solid var(--border); color: var(--fg); }
-    table { width: 100%; border-collapse: collapse; font-size: 12px; }
-    th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
-    th { color: var(--muted); font-weight: 500; }
-    .right { text-align: right; }
-    .empty { color: var(--muted); padding: 12px; text-align: center; }
-    a { color: var(--accent); text-decoration: none; }
-  </style>
+<meta charset="utf-8">
+<title>Twitch Channel Volume — Settings</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Segoe UI', 'Yu Gothic UI', sans-serif;
+  font-size: 14px;
+  color: #e1e1e1;
+  background: #0f0f23;
+  min-height: 100vh;
+}
+
+.container {
+  max-width: 600px;
+  margin: 0 auto;
+  padding: 32px 24px;
+}
+
+h1 {
+  font-size: 20px;
+  font-weight: 600;
+  color: #4ecdc4;
+  margin-bottom: 28px;
+  letter-spacing: 0.5px;
+}
+
+.section {
+  background: #1a1a2e;
+  border-radius: 10px;
+  padding: 20px 24px;
+  margin-bottom: 20px;
+}
+.section h2 {
+  font-size: 12px;
+  font-weight: 600;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 16px;
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 0;
+  border-bottom: 1px solid #2a2a4a;
+  gap: 12px;
+}
+.setting-row:last-child { border-bottom: none; }
+
+.setting-row .setting-label {
+  font-size: 13px;
+  color: #ccc;
+}
+.setting-row .setting-desc {
+  font-size: 11px;
+  color: #666;
+  margin-top: 2px;
+}
+
+.setting-row input[type="range"] {
+  width: 180px;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: #2a2a4a;
+  border-radius: 2px;
+  outline: none;
+}
+.setting-row input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #4ecdc4;
+  cursor: pointer;
+  border: 2px solid #1a1a2e;
+}
+
+.setting-value {
+  min-width: 65px;
+  text-align: right;
+  font-size: 14px;
+  font-weight: 700;
+  color: #4ecdc4;
+  font-variant-numeric: tabular-nums;
+  margin-left: 10px;
+}
+
+.toggle-group {
+  display: flex;
+  gap: 0;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid #2a2a4a;
+}
+.toggle-group button {
+  padding: 6px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #888;
+  background: #16213e;
+  border: none;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.toggle-group button.active {
+  background: #4ecdc4;
+  color: #1a1a2e;
+}
+.toggle-group button:hover:not(.active) {
+  color: #ccc;
+}
+
+.channel-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.channel-table th {
+  font-size: 10px;
+  font-weight: 600;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  text-align: left;
+  padding: 8px 0;
+  border-bottom: 1px solid #2a2a4a;
+}
+.channel-table th.right {
+  text-align: right;
+}
+.channel-table th.action {
+  text-align: right;
+  width: 40px;
+}
+.channel-table td {
+  padding: 10px 0;
+  border-bottom: 1px solid #1a1a2e;
+  font-size: 13px;
+}
+.channel-table tr:last-child td { border-bottom: none; }
+
+.ch-name {
+  color: #e1e1e1;
+  max-width: 240px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ch-link {
+  color: #4ecdc4;
+  text-decoration: none;
+  transition: opacity 0.15s;
+}
+.ch-link:hover {
+  opacity: 0.8;
+  text-decoration: underline;
+}
+.ch-vol {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #ff6b9d;
+  text-align: right;
+  padding-right: 6px;
+}
+.ch-vol.empty {
+  color: #444;
+  font-weight: 400;
+}
+.ch-del {
+  background: none;
+  border: none;
+  color: #555;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+.ch-del:hover {
+  color: #ff6b9d;
+  background: #2a2a4a;
+}
+
+.clear-all-btn {
+  font-size: 11px;
+  color: #888;
+  background: none;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.clear-all-btn:hover {
+  color: #ff6b9d;
+  border-color: #ff6b9d;
+}
+
+.empty-msg {
+  color: #555;
+  font-size: 13px;
+  padding: 12px 0;
+  text-align: center;
+}
+</style>
 </head>
 <body>
-  <div class="wrap">
-    <h1 data-i18n="extName">Twitch Channel Volume</h1>
-    <section>
-      <h2 data-i18n="settings">Settings</h2>
-      <div class="row">
-        <label data-i18n="targetLufs">Target LUFS</label>
-        <input id="targetLufs" type="range" min="-30" max="-6" step="1" value="-18" />
-        <span id="targetLufsValue">-18</span>
-        <span class="desc" data-i18n="targetLufsDesc">基準値</span>
+<div class="container">
+  <h1>Twitch Channel Volume</h1>
+
+  <div class="section">
+    <h2 data-i18n="settings">Settings</h2>
+
+    <div class="setting-row">
+      <div>
+        <div class="setting-label" data-i18n="targetLufs">Target LUFS</div>
+        <div class="setting-desc" data-i18n="targetLufsDesc">計測ラウドネスから算出するゲインの基準値</div>
       </div>
-      <div class="row">
-        <label data-i18n="adGain">CM Gain</label>
-        <input id="adGainDb" type="range" min="-24" max="6" step="1" value="-6" />
-        <span id="adGainValue">-6 dB</span>
-        <span class="desc" data-i18n="adGainDesc">CM 区間で適用する追加ゲイン</span>
+      <div style="display:flex; align-items:center;">
+        <input type="range" id="targetLufs" min="-30" max="-6" value="-18" step="1">
+        <span id="targetLufsValue" class="setting-value">-18 LUFS</span>
       </div>
-      <div class="row">
-        <label data-i18n="displayUnit">表示単位</label>
-        <select id="displayUnit">
-          <option value="%">%</option>
-          <option value="dB">dB</option>
-        </select>
-        <span class="desc" data-i18n="displayUnitDesc">ゲイン値の表示形式</span>
+    </div>
+
+    <div class="setting-row">
+      <div>
+        <div class="setting-label" data-i18n="adGain">CM Gain</div>
+        <div class="setting-desc" data-i18n="adGainDesc">CM 区間で適用する追加ゲイン (dB)</div>
       </div>
-    </section>
-    <section>
-      <h2 data-i18n="savedChannels">Saved Channels</h2>
-      <table>
-        <thead>
-          <tr>
-            <th data-i18n="colChannel">Channel</th>
-            <th class="right" data-i18n="typeLive">Live</th>
-            <th class="right" data-i18n="typeVod">VOD</th>
-            <th class="right" data-i18n="typeClip">Clip</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody id="channelsBody"></tbody>
-      </table>
-      <div id="emptyMsg" class="empty" data-i18n="noSavedChannels">保存済みチャンネルなし</div>
-      <div class="row right">
-        <button id="clearAllBtn" class="secondary" data-i18n="clearAll">全削除</button>
+      <div style="display:flex; align-items:center;">
+        <input type="range" id="adGainDb" min="-24" max="6" value="-6" step="1">
+        <span id="adGainValue" class="setting-value">-6 dB</span>
       </div>
-    </section>
+    </div>
+
+    <div class="setting-row">
+      <div>
+        <div class="setting-label" data-i18n="displayUnit">表示単位</div>
+        <div class="setting-desc" data-i18n="displayUnitDesc">ゲイン値の表示形式</div>
+      </div>
+      <div class="toggle-group" id="unitToggle">
+        <button data-unit="%" class="active">%</button>
+        <button data-unit="dB">dB</button>
+      </div>
+    </div>
   </div>
-  <script src="utils.js"></script>
-  <script src="options.js"></script>
+
+  <div class="section">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+      <h2 data-i18n="savedChannels" style="margin-bottom:0">Saved Channels</h2>
+      <button id="clearAllBtn" class="clear-all-btn" data-i18n="clearAll">全削除</button>
+    </div>
+    <table class="channel-table">
+      <thead>
+        <tr>
+          <th data-i18n="colChannel">Channel</th>
+          <th class="right" data-i18n="typeLive">Live</th>
+          <th class="right" data-i18n="typeVod">VOD</th>
+          <th class="right" data-i18n="typeClip">Clip</th>
+          <th class="action"></th>
+        </tr>
+      </thead>
+      <tbody id="channelsBody"></tbody>
+    </table>
+    <div id="emptyMsg" class="empty-msg" data-i18n="noSavedChannels">保存済みチャンネルなし</div>
+  </div>
+</div>
+
+<script src="utils.js"></script>
+<script src="options.js"></script>
 </body>
 </html>
