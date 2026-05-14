@@ -5,6 +5,13 @@
 
   function $(id) { return document.getElementById(id); }
 
+  let displayUnit = '%';
+
+  function formatGainText(gain) {
+    const f = formatGain(gain, displayUnit);
+    return f.text + f.unit;
+  }
+
   function applyI18n() {
     document.querySelectorAll('[data-i18n]').forEach((el) => {
       const key = el.getAttribute('data-i18n');
@@ -90,7 +97,7 @@
     const measured = Number.isFinite(lufs.integrated) ? lufs.integrated : lufs.shortTerm;
     if (Number.isFinite(measured) && Number.isFinite(state.targetLufs)) {
       const g = calcGain(measured, state.targetLufs);
-      suggestedEl.textContent = gainToPercent(g) + '%';
+      suggestedEl.textContent = formatGainText(g);
       suggestedEl.classList.remove('unknown');
       $('applyBtn').disabled = false;
       $('applyHint').textContent = '';
@@ -101,10 +108,11 @@
       $('applyHint').textContent = msg('hintNoLufs');
     }
 
-    const gainPct = gainToPercent(state.gain || 1);
-    $('current').textContent = gainPct + '%';
+    const gain = state.gain || 1;
+    const gainPct = gainToPercent(gain);
+    $('current').textContent = formatGainText(gain);
     $('manualSlider').value = String(gainPct);
-    $('manualValue').textContent = gainPct + '%';
+    $('manualValue').textContent = formatGainText(gain);
 
     const adGainEl = $('adGainLabel');
     if (Number.isFinite(state.adGainDb)) {
@@ -140,23 +148,41 @@
 
   $('applyBtn').addEventListener('click', applyMeasured);
   $('manualSlider').addEventListener('input', (e) => {
-    const v = Number(e.target.value);
-    $('current').textContent = v + '%';
-    $('manualValue').textContent = v + '%';
+    const g = percentToGain(Number(e.target.value));
+    $('current').textContent = formatGainText(g);
+    $('manualValue').textContent = formatGainText(g);
   });
   $('manualSlider').addEventListener('change', (e) => setGain(Number(e.target.value)));
   document.querySelectorAll('.presets button').forEach((btn) => {
     btn.addEventListener('click', () => {
       const v = Number(btn.getAttribute('data-gain'));
+      const g = percentToGain(v);
       $('manualSlider').value = String(v);
-      $('manualValue').textContent = v + '%';
-      $('current').textContent = v + '%';
+      $('manualValue').textContent = formatGainText(g);
+      $('current').textContent = formatGainText(g);
       setGain(v);
     });
   });
   $('optionsBtn').addEventListener('click', () => chrome.runtime.openOptionsPage());
 
+  async function loadDisplayUnit() {
+    const data = await chrome.storage.local.get(SETTINGS_KEY);
+    const s = data[SETTINGS_KEY] || {};
+    displayUnit = s.displayUnit || '%';
+  }
+
+  chrome.storage.onChanged?.addListener((changes) => {
+    if (changes[SETTINGS_KEY]) {
+      const next = changes[SETTINGS_KEY].newValue || {};
+      displayUnit = next.displayUnit || '%';
+      refresh();
+    }
+  });
+
   applyI18n();
-  refresh();
+  (async () => {
+    await loadDisplayUnit();
+    refresh();
+  })();
   setInterval(refresh, 1000);
 })();
