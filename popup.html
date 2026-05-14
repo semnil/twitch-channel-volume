@@ -85,10 +85,9 @@ body {
 
 .loudness-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: 1fr 1fr;
   gap: 5px;
 }
-.loudness-grid + .loudness-grid { margin-top: 5px; }
 .loudness-card {
   background: #1a1a2e;
   border-radius: 6px;
@@ -245,19 +244,9 @@ body {
     </div>
     <div class="loudness-grid">
       <div class="loudness-card">
-        <div class="label" data-i18n="labelMomentary">Momentary</div>
-        <div id="momentary" class="value unknown">---</div>
-      </div>
-      <div class="loudness-card">
-        <div class="label" data-i18n="labelShortTerm">Short-term</div>
-        <div id="shortTerm" class="value unknown">---</div>
-      </div>
-      <div class="loudness-card">
         <div class="label" data-i18n="labelIntegrated">Integrated</div>
         <div id="integrated" class="value unknown">---</div>
       </div>
-    </div>
-    <div class="loudness-grid">
       <div class="loudness-card">
         <div class="label" data-i18n="labelSuggested">Suggested</div>
         <div id="suggested" class="value suggested unknown">---</div>

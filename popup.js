@@ -89,8 +89,6 @@
     }
 
     const lufs = state.lufs || {};
-    setLufsCell('momentary', lufs.momentary);
-    setLufsCell('shortTerm', lufs.shortTerm);
     setLufsCell('integrated', lufs.integrated);
 
     const suggestedEl = $('suggested');
