@@ -26,6 +26,7 @@
     $('adGainValue').textContent = (adDb > 0 ? '+' : '') + adDb + ' dB';
     displayUnit = settings.displayUnit || '%';
     setActiveUnit(displayUnit);
+    $('overlayToggle').checked = settings.showGainOverlay ?? true;
     renderChannels(data[CHANNEL_VOLUMES_KEY] || {});
   }
 
@@ -84,7 +85,8 @@
     const settings = {
       targetLufs: Number($('targetLufs').value),
       adGainDb: Number($('adGainDb').value),
-      displayUnit
+      displayUnit,
+      showGainOverlay: $('overlayToggle').checked
     };
     await chrome.storage.local.set({ [SETTINGS_KEY]: settings });
   }
@@ -122,6 +124,8 @@
       renderChannels(data[CHANNEL_VOLUMES_KEY] || {});
     });
   });
+
+  $('overlayToggle').addEventListener('change', saveSettings);
 
   $('clearAllBtn').addEventListener('click', clearAll);
 

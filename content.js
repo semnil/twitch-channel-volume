@@ -16,6 +16,7 @@
   let currentGain = 1.0;
   let currentAdGainDb = DEFAULT_AD_GAIN_DB;
   let targetLufs = DEFAULT_TARGET_LUFS;
+  let showGainOverlay = true;
   let lastLufs = { momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity };
   let adActive = false;
   let pendingAdRanges = [];
@@ -28,6 +29,7 @@
     const s = data[SETTINGS_KEY] || {};
     targetLufs = s.targetLufs ?? DEFAULT_TARGET_LUFS;
     currentAdGainDb = s.adGainDb ?? DEFAULT_AD_GAIN_DB;
+    showGainOverlay = s.showGainOverlay ?? true;
     sendCmd({ cmd: 'setAdGain', value: dbToGain(currentAdGainDb) });
   }
 
@@ -111,6 +113,41 @@
     if (!Number.isFinite(gain)) gain = 1.0;
     currentGain = Math.max(MIN_GAIN, Math.min(MAX_GAIN, gain));
     sendCmd({ cmd: 'setGain', value: currentGain });
+    updateGainOverlay();
+  }
+
+  // ── Gain overlay on Twitch player ───────────────────────────────────
+
+  let _overlayEl = null;
+
+  function updateGainOverlay() {
+    if (!showGainOverlay || currentGain === 1.0) {
+      if (_overlayEl) {
+        if (_overlayEl.parentNode) _overlayEl.parentNode.removeChild(_overlayEl);
+        _overlayEl = null;
+      }
+      return;
+    }
+    // Place the badge as the next sibling of `.volume-slider__slider-container`
+    // inside the volume row. The row is a flex container holding the mute
+    // button wrapper and the slider container side-by-side, so the badge
+    // lands directly to the right of the slider bar. Visibility follows
+    // `[data-a-target="player-controls"][data-a-visible]` automatically
+    // because the badge lives inside the controls subtree.
+    const sliderContainer = document.querySelector('.volume-slider__slider-container');
+    if (!sliderContainer || !sliderContainer.parentElement) return;
+    if (_overlayEl && !document.contains(_overlayEl)) _overlayEl = null;
+    if (!_overlayEl) {
+      _overlayEl = document.createElement('span');
+      _overlayEl.style.cssText =
+        'font-size:13px;font-weight:700;color:#4ecdc4;margin-left:8px;' +
+        'font-variant-numeric:tabular-nums;pointer-events:none;white-space:nowrap;' +
+        'line-height:1;display:inline-flex;align-items:center;align-self:center;';
+    }
+    _overlayEl.textContent = Math.round(currentGain * 100) + '%';
+    if (_overlayEl.previousElementSibling !== sliderContainer) {
+      sliderContainer.insertAdjacentElement('afterend', _overlayEl);
+    }
   }
 
   // ── URL / channel resolution ───────────────────────────────────────
@@ -266,6 +303,8 @@
         currentAdGainDb = adDb;
         sendCmd({ cmd: 'setAdGain', value: dbToGain(currentAdGainDb) });
       }
+      showGainOverlay = next.showGainOverlay ?? true;
+      updateGainOverlay();
     }
     if (changes[CHANNEL_VOLUMES_KEY] && currentChannel.id) {
       const all = changes[CHANNEL_VOLUMES_KEY].newValue || {};
@@ -323,6 +362,8 @@
   });
 
   document.addEventListener('click', () => sendCmd({ cmd: 'resume' }), { once: true, capture: true });
+
+  setInterval(updateGainOverlay, 2000);
 
   // page-bridge.js loads at document_start and may post `loaded` before our
   // listener is registered. Drive init/attach explicitly here so the order is

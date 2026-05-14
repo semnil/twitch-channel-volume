@@ -30,6 +30,7 @@ content.js (ISOLATED world content script, document_idle)
 │   ├── vod: GraphQL owner.id (`<numeric>`) / fallback `vod-owner:<videoId>`
 │   └── clip: GraphQL broadcaster.id / fallback `clip-owner:<slug>`
 ├── 保存済み gain の自動適用 (Live/VOD/Clip 種別ごとに別管理)
+├── Gain overlay: `.volume-slider__slider-container` の **次の兄弟** として span を挿入。 mute wrapper と slider container はプレイヤーコントロール内の flex 行に並ぶ sibling 構造のため、 slider container の右隣に span が並ぶ。 表示/非表示は親 `[data-a-target="player-controls"][data-a-visible]` の切り替えに自動追従する (= プレイヤーコントロール内に埋め込んでいるため)。 gain ≠ 1.0 時のみ、表示は `%` 固定 / displayUnit に依存しない
 ├── DOM ad detection fallback (`[data-a-target="video-ad-countdown"]`)
 ├── SPA navigation: history.pushState/replaceState hook + popstate + MutationObserver
 ├── chrome.storage.onChanged でクロスタブ同期
@@ -64,6 +65,7 @@ options.html / options.js
 ├── Target LUFS スライダー (-30 ~ -6 LUFS, default -18)
 ├── CM Gain スライダー (-24 ~ +6 dB, default -6 dB)
 ├── 表示単位 (% / dB)
+├── ゲインオーバーレイ表示 ON/OFF トグル (default ON)
 ├── Saved Channels テーブル (Live / VOD / Clip 3列、削除可)
 └── storage.onChanged で同期
 ```

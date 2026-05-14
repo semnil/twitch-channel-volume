@@ -10,7 +10,7 @@ chrome.runtime.onInstalled.addListener(async () => {
         targetLufs: -18,
         adGainDb: -6,
         displayUnit: '%',
-        showGainOverlay: false
+        showGainOverlay: true
       }
     });
   }

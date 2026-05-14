@@ -207,6 +207,44 @@ h1 {
   padding: 12px 0;
   text-align: center;
 }
+
+.toggle-switch {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+}
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.toggle-switch .switch-slider {
+  position: absolute;
+  inset: 0;
+  background: #2a2a4a;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.toggle-switch .switch-slider::before {
+  content: '';
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  left: 3px;
+  top: 3px;
+  background: #888;
+  border-radius: 50%;
+  transition: transform 0.2s, background 0.2s;
+}
+.toggle-switch input:checked + .switch-slider {
+  background: #1b3a4b;
+}
+.toggle-switch input:checked + .switch-slider::before {
+  transform: translateX(16px);
+  background: #4ecdc4;
+}
 </style>
 </head>
 <body>
@@ -247,6 +285,17 @@ h1 {
         <button data-unit="%" class="active">%</button>
         <button data-unit="dB">dB</button>
       </div>
+    </div>
+
+    <div class="setting-row">
+      <div>
+        <div class="setting-label" data-i18n="showGainOverlay">ゲインオーバーレイ</div>
+        <div class="setting-desc" data-i18n="showGainOverlayDesc">プレイヤーのボリューム横に現在のゲインを表示</div>
+      </div>
+      <label class="toggle-switch">
+        <input type="checkbox" id="overlayToggle">
+        <span class="switch-slider"></span>
+      </label>
     </div>
   </div>
 
