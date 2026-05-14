@@ -71,6 +71,9 @@
   let baselineGain = 1.0;
   let adGainOffset = 1.0;
   let adActive = false;
+  let attachTimer = null;
+  const attachFailedFor = new WeakSet();
+  let attachAttempts = 0;
 
   const blocks = [];
   const BLOCK_SEC = 0.1;
@@ -157,6 +160,12 @@
         try {
           await ctx.audioWorklet.addModule(workletUrl);
           workletReady = true;
+          console.info('[TCV] worklet module loaded');
+          // If we already attached before the worklet finished loading, wire
+          // up the measurement chain retroactively.
+          if (attachedVideo && sourceNode && !workletNode) {
+            buildMeasurementChain(ctx);
+          }
         } catch (err) {
           console.warn('[TCV] worklet load failed', err);
         }
@@ -166,17 +175,90 @@
     return ctxPromise;
   }
 
+  function buildMeasurementChain(c) {
+    if (!workletReady || workletNode || !sourceNode) return;
+    try {
+      const { pre, rlb } = kForSampleRate(c.sampleRate);
+      const preNode = c.createIIRFilter(pre.b, pre.a);
+      const rlbNode = c.createIIRFilter(rlb.b, rlb.a);
+      workletNode = new AudioWorkletNode(c, 'k-mean-square', {
+        processorOptions: { blockSec: BLOCK_SEC }
+      });
+      workletNode.port.onmessage = onBlockMs;
+      sourceNode.connect(preNode);
+      preNode.connect(rlbNode);
+      rlbNode.connect(workletNode);
+      // Terminate the measurement path without contributing to output.
+      const silentGain = c.createGain();
+      silentGain.gain.value = 0;
+      workletNode.connect(silentGain);
+      silentGain.connect(c.destination);
+      console.info('[TCV] measurement chain ready');
+    } catch (err) {
+      console.warn('[TCV] measurement chain failed', err);
+    }
+  }
+
   function findVideo() {
     const all = document.querySelectorAll('video');
     let best = null;
     for (const v of all) {
+      if (attachFailedFor.has(v)) continue;
       if (!v.src && v.readyState === 0) continue;
       if (!best || (v.clientWidth * v.clientHeight) > (best.clientWidth * best.clientHeight)) {
         best = v;
       }
     }
-    return best || all[0] || null;
+    if (best) return best;
+    for (const v of all) {
+      if (!attachFailedFor.has(v)) return v;
+    }
+    return null;
   }
+
+  function clearStaleAttachment() {
+    if (attachedVideo && !attachedVideo.isConnected) {
+      console.info('[TCV] previous video detached from DOM; resetting attachment');
+      try { sourceNode?.disconnect(); } catch (_) {}
+      try { workletNode?.disconnect(); } catch (_) {}
+      attachedVideo = null;
+      sourceNode = null;
+      workletNode = null;
+    }
+  }
+
+  function scheduleAttach() {
+    if (attachTimer) return;
+    const tick = async () => {
+      clearStaleAttachment();
+      if (attachedVideo) {
+        stopAttachLoop();
+        return;
+      }
+      const v = findVideo();
+      if (!v) {
+        attachAttempts++;
+        if (attachAttempts === 1 || attachAttempts % 10 === 0) {
+          console.info('[TCV] waiting for <video> element (attempt', attachAttempts, ')');
+        }
+        return;
+      }
+      attachAttempts = 0;
+      await attach(v);
+      if (attachedVideo) stopAttachLoop();
+    };
+    attachTimer = setInterval(tick, 1000);
+    tick();
+  }
+
+  function stopAttachLoop() {
+    if (attachTimer) {
+      clearInterval(attachTimer);
+      attachTimer = null;
+    }
+  }
+
+  setInterval(clearStaleAttachment, 2000);
 
   async function attach(video) {
     if (!video || attachedVideo === video) return;
@@ -185,39 +267,32 @@
     try {
       sourceNode = c.createMediaElementSource(video);
     } catch (err) {
+      attachFailedFor.add(video);
       console.warn('[TCV] createMediaElementSource failed (possibly already attached by another extension)', err);
+      postReady({ event: 'attach-failed', reason: String(err?.message || err) });
       return;
     }
     sourceNode.connect(gain);
     attachedVideo = video;
+    console.info('[TCV] attached to video', { sampleRate: c.sampleRate, state: c.state });
 
     if (workletReady) {
-      try {
-        const { pre, rlb } = kForSampleRate(c.sampleRate);
-        const preNode = c.createIIRFilter(pre.b, pre.a);
-        const rlbNode = c.createIIRFilter(rlb.b, rlb.a);
-        workletNode = new AudioWorkletNode(c, 'k-mean-square', {
-          processorOptions: { blockSec: BLOCK_SEC }
-        });
-        workletNode.port.onmessage = onBlockMs;
-        sourceNode.connect(preNode);
-        preNode.connect(rlbNode);
-        rlbNode.connect(workletNode);
-        // Terminate the measurement path without contributing to output.
-        const silentGain = c.createGain();
-        silentGain.gain.value = 0;
-        workletNode.connect(silentGain);
-        silentGain.connect(c.destination);
-      } catch (err) {
-        console.warn('[TCV] measurement chain failed', err);
-      }
+      buildMeasurementChain(c);
+    } else {
+      console.warn('[TCV] worklet not ready yet; will wire measurement chain after load');
     }
     postReady({ event: 'attached' });
   }
 
+  let receivedFirstBlock = false;
+
   function onBlockMs(ev) {
     const ms = ev.data?.ms;
     if (!Number.isFinite(ms)) return;
+    if (!receivedFirstBlock) {
+      receivedFirstBlock = true;
+      console.info('[TCV] first measurement block received');
+    }
     blocks.push(ms);
     if (blocks.length > Math.max(MOMENTARY_BLOCKS, SHORT_BLOCKS) * 4) {
       blocks.splice(0, blocks.length - SHORT_BLOCKS * 4);
@@ -339,9 +414,7 @@
         postReady({ event: 'init-done' });
         break;
       case 'attach': {
-        const v = findVideo();
-        if (v) await attach(v);
-        else postReady({ event: 'no-video' });
+        scheduleAttach();
         break;
       }
       case 'setGain':

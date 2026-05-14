@@ -14,6 +14,8 @@ page-bridge.js (MAIN world content script, document_start)
 │   ├── Momentary: 直近 4 ブロック (400ms) の MS 平均 → LUFS
 │   ├── Short-term: 直近 30 ブロック (3s) の MS 平均 → LUFS
 │   └── Integrated: 絶対ゲート (-70 LUFS) + 相対ゲート (-10 LU) の BS.1770 規格
+├── attach loop (scheduleAttach): video 出現を 1s 間隔でリトライ + DOM detach 検出で再 attach
+├── buildMeasurementChain: worklet ロードが attach より遅れた場合は後付けで接続
 ├── Fetch hook:
 │   ├── usher.ttvnw.net / *.m3u8 → EXT-X-DATERANGE をパースし CM 区間検出
 │   └── gql.twitch.tv → user.id / video.owner.id / clip.broadcaster.id を抽出
@@ -114,8 +116,10 @@ options.html / options.js
 - **CM 区間検出 (HLS 経路)**: usher.ttvnw.net / *.m3u8 を fetch hook で傍受し `EXT-X-DATERANGE CLASS="twitch-stitched-ad"` をパース。Streamlink の Twitch plugin と同等の判定ロジック
 - **CM 区間検出 (DOM 経路)**: `[data-a-target="video-ad-countdown"]` の存在で判定するフォールバック。HLS 取得が間に合わない preroll で有効
 - **CM 中の挙動**: GainNode に baseline × adGainOffset (dB → gain) を適用。Integrated 計測は CM 中スキップして本編の値を保持
-- **createMediaElementSource**: `<video>` に対し 1 回のみ呼び出し可能。他拡張 (FrankerFaceZ Compressor 等) が先に取ると失敗する。失敗時は警告ログのみ
-- **SPA navigation**: history.pushState/replaceState フック + popstate + MutationObserver の 3 段構え。URL 変更で resetMeasurement + 種別判定再実行
+- **createMediaElementSource**: `<video>` に対し 1 回のみ呼び出し可能。他拡張 (FrankerFaceZ Compressor 等) が先に取ると失敗する。失敗した video は `WeakSet` で除外し、他の video にフォールバック。`attach-failed` イベントを post して content 側で診断可能
+- **attach のリトライ**: video 要素は document_start 時点では存在しないため、`scheduleAttach()` で 1s 間隔のループ。`clearStaleAttachment()` が DOM から消えた video を検出して再 attach を許可 (Twitch SPA で video が入れ替わるケース対応)。SPA navigation 時にも content.js が `attach` を再送
+- **measurement chain の後付け**: `audioWorklet.addModule()` が attach より遅れた場合に備え、`buildMeasurementChain()` を分離。worklet ロード完了時に既に attached なら計測経路を後から接続
+- **SPA navigation**: history.pushState/replaceState フック + popstate + MutationObserver の 3 段構え。URL 変更で resetMeasurement + 種別判定再実行 + attach 再送
 - **Live/VOD/Clip 別ゲイン**: 配信は時間帯で音作りが変わるため種別ごとに別管理。同チャンネルの過去 VOD のゲインを現 Live にコピーしない
 - **Twitch reserved paths**: `/directory`, `/settings`, `/videos`, `/p`, `/jobs` 等は live channel として誤検出しないよう TWITCH_RESERVED_PATHS で除外
 - **CSP 対応**: AudioWorklet モジュールは web_accessible_resources で公開し、content.js が chrome.runtime.getURL で解決して page-bridge に渡す
@@ -146,8 +150,9 @@ python3 pack.py
 - Storage format: `channelVolumes.{id}` = `{ name, gainLive, gainVod, gainClip, url, lastLufs: { live, vod, clip }, lastMeasuredAt }`
 - 旧形式 `{ gain }` 単一ゲインは extractGainForKind で自動マイグレーション
 - HLS 経路の CM 検出は Streamlink twitch.py の判定 (`CLASS="twitch-stitched-ad"` または `ID` が `stitched-ad-` で始まる) と同等
-- popup は 1 秒毎に getState をポーリングし LUFS 表示を更新
+- popup は 1 秒毎に getState をポーリングし LUFS 表示を更新。計測自体は popup の開閉に依存せず、Twitch ページが開いている限り常時走る
 - 拡張機能の再ロードで chrome.runtime が無効化された場合、popup は `reloadPageNeeded` を表示して F5 を促す
+- 計測パイプラインの診断: DevTools Console で `[TCV]` ログを確認。`waiting for <video>` → `attached to video` → `measurement chain ready` → `first measurement block received` の順に出る。`createMediaElementSource failed` で止まる場合は他拡張競合 (技術的限界)
 
 ## Existing extensions (reference)
 

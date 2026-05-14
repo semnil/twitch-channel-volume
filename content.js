@@ -235,6 +235,7 @@
     lastHref = location.href;
     pendingOwner = null;
     sendCmd({ cmd: 'resetMeasurement' });
+    sendCmd({ cmd: 'attach' });
     await resolveChannel();
     await reapplyForCurrentChannel();
   }
