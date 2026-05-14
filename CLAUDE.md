@@ -53,8 +53,9 @@ utils.js (shared, popup/options + page-bridge + content.js + test.js)
 popup.html / popup.js
 ├── Channel name + kind badge (Live/VOD/Clip)
 ├── Momentary / Short-term / Integrated LUFS 表示
-├── Suggested gain (target との差分から算出)
-├── Current gain + manual slider (0–600%)
+├── Suggested gain (target との差分から算出, displayUnit に追従)
+├── Current gain + manual slider (slider 自体は 0–600%, 表示値は displayUnit 追従)
+├── SETTINGS_KEY を初期ロード + storage.onChanged で options の単位切替に即時反応
 └── CM 検出中フラグ
 
 options.html / options.js
