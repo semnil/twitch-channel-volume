@@ -34,7 +34,7 @@ content.js (ISOLATED world content script, document_idle)
 ├── DOM ad detection fallback (`[data-a-target="video-ad-countdown"]`)
 ├── SPA navigation: history.pushState/replaceState hook + popstate + MutationObserver
 ├── chrome.storage.onChanged でクロスタブ同期
-├── popup/options からの chrome.tabs.sendMessage を `getState` / `setGain` / `applyMeasured` で処理
+├── popup/options からの chrome.tabs.sendMessage を `getState` / `setGain` / `resume` / `deleteChannel` で処理
 └── Storage
     ├── autoLoudnessSettings: { targetLufs, adGainDb, displayUnit, showGainOverlay }
     └── channelVolumes: { [channelId]: { name, gainLive, gainVod, gainClip, url, lastLufs, lastMeasuredAt } }

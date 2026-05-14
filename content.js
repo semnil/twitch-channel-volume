@@ -335,20 +335,6 @@
         saveChannelGain(currentChannel.id, currentChannel.name, currentGain, currentChannel.kind, currentChannel.url);
         sendResponse({ ok: true });
         return;
-      case 'applyMeasured': {
-        const measured = Number.isFinite(lastLufs.integrated)
-          ? lastLufs.integrated
-          : lastLufs.shortTerm;
-        if (!Number.isFinite(measured)) {
-          sendResponse({ ok: false, reason: 'no-measurement' });
-          return;
-        }
-        const g = calcGain(measured, targetLufs);
-        applyGain(g);
-        saveChannelGain(currentChannel.id, currentChannel.name, g, currentChannel.kind, currentChannel.url);
-        sendResponse({ ok: true, gain: g, lufs: measured });
-        return;
-      }
       case 'resume':
         sendCmd({ cmd: 'resume' });
         sendResponse({ ok: true });

@@ -6,6 +6,7 @@
   function $(id) { return document.getElementById(id); }
 
   let displayUnit = '%';
+  let lastSuggestedGain = null;
 
   function formatGainText(gain) {
     const f = formatGain(gain, displayUnit);
@@ -95,11 +96,13 @@
     const measured = Number.isFinite(lufs.integrated) ? lufs.integrated : lufs.shortTerm;
     if (Number.isFinite(measured) && Number.isFinite(state.targetLufs)) {
       const g = calcGain(measured, state.targetLufs);
+      lastSuggestedGain = g;
       suggestedEl.textContent = formatGainText(g);
       suggestedEl.classList.remove('unknown');
       $('applyBtn').disabled = false;
       $('applyHint').textContent = '';
     } else {
+      lastSuggestedGain = null;
       suggestedEl.textContent = '---';
       suggestedEl.classList.add('unknown');
       $('applyBtn').disabled = true;
@@ -125,10 +128,11 @@
   }
 
   async function applyMeasured() {
+    if (!Number.isFinite(lastSuggestedGain)) return;
     const tab = await getActiveTab();
     if (!tab) return;
     await chrome.tabs.sendMessage(tab.id, { cmd: 'resume' });
-    const res = await chrome.tabs.sendMessage(tab.id, { cmd: 'applyMeasured' });
+    const res = await chrome.tabs.sendMessage(tab.id, { cmd: 'setGain', gain: lastSuggestedGain });
     if (res?.ok) refresh();
   }
 
