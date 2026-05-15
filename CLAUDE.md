@@ -55,9 +55,10 @@ utils.js (shared, popup/options + page-bridge + content.js + test.js)
 
 popup.html / popup.js
 ├── Channel name + kind badge (Live/VOD/Clip) + CM 検出 badge
-├── 4 カード 2x2 グリッド: Integrated LUFS / Suggested gain / Current gain / CM Gain (dB)
-│   ├── Suggested gain は target との差分から算出 (内部は integrated 優先 / short-term フォールバック)
-│   └── Suggested / Current の表示は displayUnit (% / dB) に追従
+├── 3 カード 1 行グリッド: Integrated LUFS / Suggested gain / Current gain (姉妹拡張と共通レイアウト)
+│   ├── Suggested gain は target との差分から算出 (integrated 優先 / short-term フォールバック)
+│   ├── Suggested / Current の表示は displayUnit (% / dB) に追従
+│   └── 単位 (LUFS / dB / %) は setCardValue で <span class="unit"> に分離して灰色小文字表示
 ├── Manual slider (slider 自体は 0–600%, 表示値は displayUnit 追従) + 6 プリセット (0/50/100/200/400/MAX)
 └── SETTINGS_KEY を初期ロード + storage.onChanged で options の単位切替に即時反応
 

@@ -13,6 +13,18 @@
     return f.text + f.unit;
   }
 
+  function setCardValue(el, text, unitText, extraClass) {
+    el.innerHTML = '';
+    el.className = 'value' + (extraClass ? ' ' + extraClass : '');
+    el.appendChild(document.createTextNode(text));
+    if (unitText) {
+      const unit = document.createElement('span');
+      unit.className = 'unit';
+      unit.textContent = unitText;
+      el.appendChild(unit);
+    }
+  }
+
   function applyI18n() {
     document.querySelectorAll('[data-i18n]').forEach((el) => {
       const key = el.getAttribute('data-i18n');
@@ -30,11 +42,9 @@
     const el = $(id);
     const s = fmtLufs(v);
     if (s === null) {
-      el.textContent = '---';
-      el.classList.add('unknown');
+      setCardValue(el, '---', null, 'unknown');
     } else {
-      el.textContent = s + ' LUFS';
-      el.classList.remove('unknown');
+      setCardValue(el, s, ' LUFS');
     }
   }
 
@@ -97,32 +107,23 @@
     if (Number.isFinite(measured) && Number.isFinite(state.targetLufs)) {
       const g = calcGain(measured, state.targetLufs);
       lastSuggestedGain = g;
-      suggestedEl.textContent = formatGainText(g);
-      suggestedEl.classList.remove('unknown');
+      const fs = formatGain(g, displayUnit);
+      setCardValue(suggestedEl, fs.text, fs.unit, 'suggested');
       $('applyBtn').disabled = false;
       $('applyHint').textContent = '';
     } else {
       lastSuggestedGain = null;
-      suggestedEl.textContent = '---';
-      suggestedEl.classList.add('unknown');
+      setCardValue(suggestedEl, '---', null, 'suggested unknown');
       $('applyBtn').disabled = true;
       $('applyHint').textContent = msg('hintNoLufs');
     }
 
     const gain = state.gain || 1;
     const gainPct = gainToPercent(gain);
-    $('current').textContent = formatGainText(gain);
+    const fc = formatGain(gain, displayUnit);
+    setCardValue($('current'), fc.text, fc.unit, 'current');
     $('manualSlider').value = String(gainPct);
-    $('manualValue').textContent = formatGainText(gain);
-
-    const adGainEl = $('adGainLabel');
-    if (Number.isFinite(state.adGainDb)) {
-      adGainEl.textContent = (state.adGainDb > 0 ? '+' : '') + state.adGainDb + ' dB';
-      adGainEl.classList.remove('unknown');
-    } else {
-      adGainEl.textContent = '---';
-      adGainEl.classList.add('unknown');
-    }
+    $('manualValue').textContent = fc.text + fc.unit;
 
     $('adFlag').classList.toggle('hidden', !state.adActive);
   }
@@ -151,17 +152,19 @@
   $('applyBtn').addEventListener('click', applyMeasured);
   $('manualSlider').addEventListener('input', (e) => {
     const g = percentToGain(Number(e.target.value));
-    $('current').textContent = formatGainText(g);
-    $('manualValue').textContent = formatGainText(g);
+    const f = formatGain(g, displayUnit);
+    setCardValue($('current'), f.text, f.unit, 'current');
+    $('manualValue').textContent = f.text + f.unit;
   });
   $('manualSlider').addEventListener('change', (e) => setGain(Number(e.target.value)));
   document.querySelectorAll('.presets button').forEach((btn) => {
     btn.addEventListener('click', () => {
       const v = Number(btn.getAttribute('data-gain'));
       const g = percentToGain(v);
+      const f = formatGain(g, displayUnit);
       $('manualSlider').value = String(v);
-      $('manualValue').textContent = formatGainText(g);
-      $('current').textContent = formatGainText(g);
+      $('manualValue').textContent = f.text + f.unit;
+      setCardValue($('current'), f.text, f.unit, 'current');
       setGain(v);
     });
   });
