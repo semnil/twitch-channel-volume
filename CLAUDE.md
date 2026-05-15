@@ -153,7 +153,7 @@ python3 pack.py
 - Storage format: `channelVolumes.{id}` = `{ name, gainLive, gainVod, gainClip, url, lastLufs: { live, vod, clip }, lastMeasuredAt }`
 - 旧形式 `{ gain }` 単一ゲインは extractGainForKind で自動マイグレーション
 - HLS 経路の CM 検出は Streamlink twitch.py の判定 (`CLASS="twitch-stitched-ad"` または `ID` が `stitched-ad-` で始まる) と同等
-- popup は 1 秒毎に getState をポーリングし LUFS 表示を更新。計測自体は popup の開閉に依存せず、Twitch ページが開いている限り常時走る
+- popup は 1 秒毎に getState をポーリングし LUFS / Suggested / Current カードを更新。Manual slider は**ポーリングでは更新しない**。`syncSlider(gain)` を呼ぶのは popup 初回表示・「チャンネルに適用」ボタン・ユーザー操作 (input/change/プリセット) の 3 ケースのみ (`sliderSynced` フラグで初回判定)。計測自体は popup の開閉に依存せず、Twitch ページが開いている限り常時走る
 - 拡張機能の再ロードで chrome.runtime が無効化された場合、popup は `reloadPageNeeded` を表示して F5 を促す
 - 計測パイプラインの診断: DevTools Console で `[TCV]` ログを確認。`waiting for <video>` → `attached to video` → `measurement chain ready` → `first measurement block received` の順に出る。`createMediaElementSource failed` で止まる場合は他拡張競合 (技術的限界)
 

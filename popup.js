@@ -7,6 +7,7 @@
 
   let displayUnit = '%';
   let lastSuggestedGain = null;
+  let sliderSynced = false;
 
   function formatGainText(gain) {
     const f = formatGain(gain, displayUnit);
@@ -46,6 +47,14 @@
     } else {
       setCardValue(el, s, ' LUFS');
     }
+  }
+
+  function syncSlider(gain) {
+    const gainPct = gainToPercent(gain);
+    const fc = formatGain(gain, displayUnit);
+    $('manualSlider').value = String(gainPct);
+    $('manualValue').textContent = fc.text + fc.unit;
+    setCardValue($('current'), fc.text, fc.unit, 'current');
   }
 
   async function getActiveTab() {
@@ -118,12 +127,10 @@
       $('applyHint').textContent = msg('hintNoLufs');
     }
 
-    const gain = state.gain || 1;
-    const gainPct = gainToPercent(gain);
-    const fc = formatGain(gain, displayUnit);
-    setCardValue($('current'), fc.text, fc.unit, 'current');
-    $('manualSlider').value = String(gainPct);
-    $('manualValue').textContent = fc.text + fc.unit;
+    if (!sliderSynced) {
+      syncSlider(state.gain || 1);
+      sliderSynced = true;
+    }
 
     $('adFlag').classList.toggle('hidden', !state.adActive);
   }
@@ -134,7 +141,10 @@
     if (!tab) return;
     await chrome.tabs.sendMessage(tab.id, { cmd: 'resume' });
     const res = await chrome.tabs.sendMessage(tab.id, { cmd: 'setGain', gain: lastSuggestedGain });
-    if (res?.ok) refresh();
+    if (res?.ok) {
+      syncSlider(lastSuggestedGain);
+      refresh();
+    }
   }
 
   async function setGain(percent) {
