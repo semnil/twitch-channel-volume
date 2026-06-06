@@ -72,6 +72,12 @@ A static compressor (like FrankerFaceZ's option) clips loud peaks but does nothi
 - California SB 576 (enforcement 2026-07-01) may force changes for ads
 - Other major platforms normalize: YouTube (-14 LUFS), Spotify (-14 LUFS), Apple Music (-16 LUFS)
 
+## Privacy
+
+- No external network requests; all data stays on your device in `chrome.storage.local`
+- Audio/video data itself is never recorded or transmitted — only computed LUFS values and your gain settings are kept
+- See [PRIVACY_POLICY.md](PRIVACY_POLICY.md) ([日本語](PRIVACY_POLICY_JA.md)) for details
+
 ## License
 
 MIT
