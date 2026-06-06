@@ -1,0 +1,114 @@
+name: Release
+run-name: ${{ github.ref_name }} release build 🚀
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check-event:
+    name: Check Release Tag ☑️
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
+      validTag: ${{ steps.check.outputs.validTag }}
+    steps:
+      - name: Check Tag ☑️
+        id: check
+        run: |
+          : Check Release Tag
+          if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
+          shopt -s extglob
+
+          if [[ "${GITHUB_EVENT_NAME}" != 'push' ]]; then
+            echo 'validTag=false' >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          tag="${GITHUB_REF_NAME#v}"
+          case "${tag}" in
+            +([0-9]).+([0-9]).+([0-9]) )
+              echo 'validTag=true' >> $GITHUB_OUTPUT
+              echo 'prerelease=false' >> $GITHUB_OUTPUT
+              echo "version=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+              ;;
+            +([0-9]).+([0-9]).+([0-9])-@(beta|rc|alpha)*([0-9.]) )
+              echo 'validTag=true' >> $GITHUB_OUTPUT
+              echo 'prerelease=true' >> $GITHUB_OUTPUT
+              echo "version=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo 'validTag=false' >> $GITHUB_OUTPUT
+              ;;
+          esac
+
+  build:
+    name: Build Extension Zip 🧱
+    needs: check-event
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set Up Python 🐍
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify manifest version matches tag 🔍
+        run: |
+          set -e
+          tag="${GITHUB_REF_NAME#v}"
+          manifest=$(python -c "import json;print(json.load(open('manifest.json'))['version'])")
+          if [[ "$tag" != "$manifest" ]]; then
+            echo "::error::manifest.json version ($manifest) does not match tag ($tag)"
+            exit 1
+          fi
+
+      - name: Pack Extension 📦
+        run: python pack.py
+
+      - name: Upload Artifacts 📡
+        uses: actions/upload-artifact@v4
+        with:
+          name: twitch-channel-volume-zip
+          path: twitch-channel-volume-*.zip
+          if-no-files-found: error
+
+  create-release:
+    name: Create Release 🛫
+    needs: [check-event, build]
+    if: needs.check-event.outputs.validTag == 'true'
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Download Build Artifacts 📥
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create Release 🛫
+        uses: softprops/action-gh-release@9d7c94cfd0a1f3ed45544c887983e9fa900f0564
+        with:
+          draft: true
+          prerelease: ${{ needs.check-event.outputs.prerelease == 'true' }}
+          tag_name: ${{ needs.check-event.outputs.version }}
+          name: ${{ needs.check-event.outputs.version }}
+          generate_release_notes: true
+          files: |
+            artifacts/*.zip
