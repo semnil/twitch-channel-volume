@@ -4,9 +4,10 @@ import os
 import json
 
 EXCLUDE_FILES = {
-    'CLAUDE.md', 'gen_icons.py', 'pack.py', 'test.js',
+    'CLAUDE.md', 'gen_icons.py', 'gen_screenshots.py', 'pack.py', 'test.js',
     '.gitignore', '.webstoreignore', 'README.md',
-    'CHANGES.md', 'CHANGES_ja.md', 'LICENSE'
+    'CHANGES.md', 'CHANGES_ja.md', 'LICENSE',
+    'PRIVACY_POLICY.md', 'PRIVACY_POLICY_JA.md'
 }
 EXCLUDE_DIRS = {'.claude', '.git', '.github', '__pycache__', 'screenshots', 'docs'}
 
