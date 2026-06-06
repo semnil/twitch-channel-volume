@@ -101,7 +101,9 @@ options.html / options.js
 | `_locales/` | i18n (ja, en) |
 | `icons/` | 16/48/128 px PNG (Twitch purple 3-bar meter) |
 | `gen_icons.py` | アイコン生成 (Python Pillow) |
+| `gen_screenshots.py` | ストア審査用スクリーンショット生成 (PIL 直接描画, 640×400 ja/en) |
 | `pack.py` | Chrome Web Store 用 zip 生成 |
+| `PRIVACY_POLICY.md` / `PRIVACY_POLICY_JA.md` | プライバシーポリシー (審査・README リンク用, EN/JA) |
 | `test.js` | ユニットテスト (`node test.js`) — utils 全般 |
 
 ## Key design decisions
