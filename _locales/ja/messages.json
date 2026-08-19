@@ -20,6 +20,18 @@
   "hintNoLufs": {
     "message": "ラウドネス計測中..."
   },
+  "hintAutoApplyEnabled": {
+    "message": "この種別は自動追従が有効です"
+  },
+  "autoSaveFailed": {
+    "message": "自動追従の設定を保存できませんでした。もう一度お試しください"
+  },
+  "settingsSaveFailed": {
+    "message": "設定を保存できませんでした。保存済みの値へ戻しました"
+  },
+  "channelUpdateFailed": {
+    "message": "保存済みチャンネルを更新できませんでした。もう一度お試しください"
+  },
   "openOnTwitch": {
     "message": "Twitch タブで開いてください"
   },
@@ -37,6 +49,15 @@
   },
   "targetLufsDesc": {
     "message": "計測ラウドネスから算出するゲインの基準値"
+  },
+  "allChannelsAutoApply": {
+    "message": "全チャンネルの LUFS 自動追従"
+  },
+  "allChannelsAutoApplyDesc": {
+    "message": "個別設定も手動ゲインもない種別の既定値"
+  },
+  "autoApplyLoudness": {
+    "message": "LUFS 自動追従"
   },
   "displayUnit": {
     "message": "表示単位"
@@ -76,6 +97,12 @@
   },
   "labelCurrent": {
     "message": "Current"
+  },
+  "labelAuto": {
+    "message": "Auto"
+  },
+  "labelFallback": {
+    "message": "Fallback"
   },
   "colChannel": {
     "message": "Channel"

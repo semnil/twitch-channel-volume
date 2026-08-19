@@ -2,7 +2,22 @@
 
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
 const u = require('./utils.js');
+const channelStore = require('./channel-store.js');
+
+function readStoredKeys(stored, keys) {
+  const requested = Array.isArray(keys) ? keys : [keys];
+  const result = {};
+  for (const key of requested) {
+    if (Object.prototype.hasOwnProperty.call(stored, key)) {
+      result[key] = structuredClone(stored[key]);
+    }
+  }
+  return result;
+}
 
 test('calcGain: target equals measured → unity gain', () => {
   assert.equal(u.calcGain(-18, -18).toFixed(6), '1.000000');
@@ -32,6 +47,66 @@ test('gainToPercent / percentToGain are inverses', () => {
   assert.equal(u.percentToGain(150), 1.5);
 });
 
+test('formatAutoFallback shows the retained manual gain', () => {
+  assert.equal(u.formatAutoFallback(0.7, '%'), 'Auto (70%)');
+  assert.equal(u.formatAutoFallback(null, '%'), 'Auto (100%)');
+  assert.equal(u.formatAutoFallback(0.5, 'dB', '自動'), '自動 (-6.0 dB)');
+});
+
+test('auto-apply fields are independent for Live, VOD, and Clip', () => {
+  assert.equal(u.autoApplyFieldForKind('live'), 'autoApplyLoudnessLive');
+  assert.equal(u.autoApplyFieldForKind('vod'), 'autoApplyLoudnessVod');
+  assert.equal(u.autoApplyFieldForKind('clip'), 'autoApplyLoudnessClip');
+  assert.equal(
+    u.autoApplyDefaultFieldForKind('vod'),
+    'autoApplyLoudnessVodDefault'
+  );
+});
+
+test('resolveAutoApplySetting prioritizes explicit choice, manual gain, then default', () => {
+  assert.equal(
+    u.resolveAutoApplySetting({ autoApplyLoudnessLive: true, gainLive: 0.5 }, 'live', false),
+    true
+  );
+  assert.equal(
+    u.resolveAutoApplySetting({ autoApplyLoudnessVod: false }, 'vod', true),
+    false
+  );
+  assert.equal(u.resolveAutoApplySetting({ gainClip: 0.8 }, 'clip', true), false);
+  assert.equal(u.resolveAutoApplySetting({ gainLive: 0.8 }, 'vod', true), true);
+  assert.equal(u.resolveAutoApplySetting({ name: 'Unconfigured' }, 'clip', true), true);
+  assert.equal(u.resolveAutoApplySetting(null, 'live', false), false);
+});
+
+test('resolvePreferredGain follows current LUFS only when Auto is enabled', () => {
+  const auto = u.resolvePreferredGain(
+    { autoApplyLoudnessVod: true, gainVod: 0.5 },
+    'vod',
+    false,
+    -23,
+    -18
+  );
+  assert.equal(auto.autoApply, true);
+  assert.ok(Math.abs(auto.gain - Math.pow(10, 5 / 20)) < 1e-9);
+
+  const waiting = u.resolvePreferredGain(
+    { autoApplyLoudnessVod: true, gainVod: 0.5 },
+    'vod',
+    false,
+    -Infinity,
+    -18
+  );
+  assert.deepEqual(waiting, { autoApply: true, gain: 0.5 });
+
+  const manual = u.resolvePreferredGain({ gainLive: 0.7 }, 'live', true, -23, -18);
+  assert.deepEqual(manual, { autoApply: false, gain: 0.7 });
+});
+
+test('extractGainForKind does not leak a typed gain across media kinds', () => {
+  assert.equal(u.extractGainForKind({ gainLive: 0.8 }, 'vod'), null);
+  assert.equal(u.extractGainForKind({ gain: 0.6 }, 'clip'), 0.6);
+});
+
 test('classifyTwitchUrl: live channel', () => {
   const c = u.classifyTwitchUrl('https://www.twitch.tv/shroud');
   assert.deepEqual(c, { kind: 'live', login: 'shroud' });
@@ -59,6 +134,470 @@ test('classifyTwitchUrl: reserved path is not a channel', () => {
 
 test('classifyTwitchUrl: bare twitch.tv → none', () => {
   assert.equal(u.classifyTwitchUrl('https://www.twitch.tv/').kind, 'none');
+});
+
+test('owner metadata is accepted only for the current Twitch content', () => {
+  const vod = u.classifyTwitchUrl('https://www.twitch.tv/videos/2770346335');
+  assert.equal(u.ownerMatchesTwitchContent({
+    userId: '123', source: 'video', contentKind: 'vod', contentId: '2770346335'
+  }, vod), true);
+  assert.equal(u.ownerMatchesTwitchContent({
+    userId: '123', source: 'video', contentKind: 'vod', contentId: 'stale-video'
+  }, vod), false);
+  assert.equal(u.ownerMatchesTwitchContent({
+    userId: '123', source: 'video', contentKind: 'vod', contentId: ''
+  }, vod), false);
+
+  const clip = u.classifyTwitchUrl('https://clips.twitch.tv/SomeClipSlug');
+  assert.equal(u.ownerMatchesTwitchContent({
+    userId: '456', source: 'clip', contentKind: 'clip', contentId: 'SomeClipSlug'
+  }, clip), true);
+  assert.equal(u.provisionalChannelIdForContent(vod), 'vod-owner:2770346335');
+  assert.equal(u.provisionalChannelIdForContent(clip), 'clip-owner:SomeClipSlug');
+});
+
+test('channel aliases resolve persisted direct and chained canonical IDs', () => {
+  assert.equal(u.CHANNEL_ALIASES_KEY, channelStore.CHANNEL_ALIASES_KEY);
+  assert.equal(u.CHANNEL_SEQUENCE_KEY, channelStore.CHANNEL_SEQUENCE_KEY);
+  const aliases = {
+    'vod-owner:2770346335': 'owner-alias',
+    'owner-alias': '123456'
+  };
+  assert.equal(u.resolveChannelIdAlias('vod-owner:2770346335', aliases), '123456');
+  assert.equal(u.resolveChannelIdAlias('123456', aliases), '123456');
+  assert.equal(u.resolveChannelIdAlias('cycle-a', {
+    'cycle-a': 'cycle-b', 'cycle-b': 'cycle-a'
+  }), 'cycle-a');
+});
+
+test('provisional channel migration keeps confirmed data over stale provisional conflicts', () => {
+  const provisionalId = 'vod-owner:2770346335';
+  const confirmedId = '123456';
+  const initial = {
+    [provisionalId]: {
+      name: 'Temporary',
+      gainVod: 0.5,
+      autoApplyLoudnessVod: true,
+      lastLufs: { vod: -20 },
+      lastMeasuredAt: 100
+    },
+    [confirmedId]: {
+      name: 'Confirmed',
+      gainLive: 0.8,
+      gainVod: 0.8,
+      autoApplyLoudnessVod: false,
+      lastLufs: { live: -18, vod: -17 },
+      lastMeasuredAt: 200
+    }
+  };
+  const result = channelStore.applyChannelVolumesMutation(initial, {
+    operation: 'mergeChannelIds',
+    fromId: provisionalId,
+    toId: confirmedId,
+    kind: 'vod',
+    channel: { name: 'Broadcaster', login: 'broadcaster', url: 'https://www.twitch.tv/videos/2770346335' }
+  });
+
+  assert.equal(result[provisionalId], undefined);
+  assert.equal(result[confirmedId].autoApplyLoudnessVod, false);
+  assert.equal(result[confirmedId].gainVod, 0.8);
+  assert.equal(result[confirmedId].gainLive, 0.8);
+  assert.deepEqual(result[confirmedId].lastLufs, { vod: -17, live: -18 });
+  assert.equal(result[confirmedId].name, 'Broadcaster');
+});
+
+test('provisional channel migration uses field update order across tabs', () => {
+  const provisionalId = 'vod-owner:2770346335';
+  const confirmedId = '123456';
+  let state = {
+    [provisionalId]: {
+      name: 'Temporary',
+      gainVod: 0.5,
+      autoApplyLoudnessVod: false,
+      lastLufs: { vod: -24 }
+    },
+    [confirmedId]: {
+      name: 'Confirmed',
+      gainVod: 0.8,
+      autoApplyLoudnessVod: false,
+      lastLufs: { vod: -17 },
+      __fieldVersions: {
+        gainVod: 1,
+        autoApplyLoudnessVod: 2,
+        'lastLufs.vod': 3
+      }
+    }
+  };
+  state = channelStore.applyChannelVolumesMutation(state, {
+    operation: 'saveGain', channelId: provisionalId, kind: 'vod', gain: 0.6, sequence: 4
+  });
+  state = channelStore.applyChannelVolumesMutation(state, {
+    operation: 'saveAuto', channelId: provisionalId, kind: 'vod', enabled: true, sequence: 5
+  }, 300);
+  state = channelStore.applyChannelVolumesMutation(state, {
+    operation: 'saveMeasurement', channelId: provisionalId, kind: 'vod',
+    lufs: -20, sequence: 6
+  }, 300);
+  state = channelStore.applyChannelVolumesMutation(state, {
+    operation: 'mergeChannelIds', fromId: provisionalId, toId: confirmedId, kind: 'vod'
+  });
+
+  assert.equal(state[provisionalId], undefined);
+  assert.equal(state[confirmedId].gainVod, 0.6);
+  assert.equal(state[confirmedId].autoApplyLoudnessVod, true);
+  assert.equal(state[confirmedId].lastLufs.vod, -20);
+  assert.deepEqual(state[confirmedId].__fieldVersions, {
+    gainVod: 4,
+    autoApplyLoudnessVod: 5,
+    'lastLufs.vod': 6
+  });
+});
+
+test('provisional channel migration keeps a later confirmed field update', () => {
+  const provisionalId = 'vod-owner:2770346335';
+  const confirmedId = '123456';
+  let state = {
+    [provisionalId]: { gainVod: 0.6, __fieldVersions: { gainVod: 4 } },
+    [confirmedId]: { gainVod: 0.8, __fieldVersions: { gainVod: 7 } }
+  };
+  state = channelStore.applyChannelVolumesMutation(state, {
+    operation: 'mergeChannelIds', fromId: provisionalId, toId: confirmedId, kind: 'vod'
+  });
+
+  assert.equal(state[provisionalId], undefined);
+  assert.equal(state[confirmedId].gainVod, 0.8);
+  assert.equal(state[confirmedId].__fieldVersions.gainVod, 7);
+});
+
+test('service-worker writer serializes concurrent Auto and LUFS mutations', async () => {
+  let stored = { channelVolumes: {} };
+  const storage = {
+    async get(keys) {
+      await new Promise((resolve) => setImmediate(resolve));
+      return readStoredKeys(stored, keys);
+    },
+    async set(update) {
+      await new Promise((resolve) => setImmediate(resolve));
+      stored = { ...stored, ...structuredClone(update) };
+    }
+  };
+  const write = channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 1234);
+
+  await Promise.all([
+    write({
+      operation: 'saveAuto', channelId: 'login:test', kind: 'live', enabled: true,
+      channel: { name: 'Test' }
+    }),
+    write({
+      operation: 'saveMeasurement', channelId: 'login:test', kind: 'live', lufs: -19,
+      channel: { name: 'Test' }
+    })
+  ]);
+
+  assert.equal(stored.channelVolumes['login:test'].autoApplyLoudnessLive, true);
+  assert.equal(stored.channelVolumes['login:test'].name, 'Test');
+  assert.equal(stored.channelVolumes['login:test'].lastLufs.live, -19);
+  assert.equal(stored.channelVolumes['login:test'].lastMeasuredAt, 1234);
+  assert.equal(stored.channelVolumes['login:test'].__fieldVersions.autoApplyLoudnessLive, 1);
+  assert.equal(stored.channelVolumes['login:test'].__fieldVersions['lastLufs.live'], 2);
+  assert.equal(stored.channelVolumeSequence, 2);
+});
+
+test('service-worker writer preserves a newer provisional setting saved by another tab', async () => {
+  const provisionalId = 'vod-owner:2770346335';
+  const confirmedId = '123456';
+  let stored = {
+    channelVolumes: {
+      [provisionalId]: { name: 'Temporary' },
+      [confirmedId]: {
+        name: 'Confirmed', gainVod: 0.8, autoApplyLoudnessVod: false
+      }
+    }
+  };
+  const storage = {
+    async get(keys) { return readStoredKeys(stored, keys); },
+    async set(update) { stored = { ...stored, ...structuredClone(update) }; }
+  };
+  const write = channelStore.createChannelVolumesWriter(storage);
+
+  await write({ operation: 'saveGain', channelId: provisionalId, kind: 'vod', gain: 0.6 });
+  await write({ operation: 'saveAuto', channelId: provisionalId, kind: 'vod', enabled: true });
+  await write({
+    operation: 'mergeChannelIds', fromId: provisionalId, toId: confirmedId, kind: 'vod'
+  });
+
+  assert.equal(stored.channelVolumes[provisionalId], undefined);
+  assert.equal(stored.channelVolumes[confirmedId].gainVod, 0.6);
+  assert.equal(stored.channelVolumes[confirmedId].autoApplyLoudnessVod, true);
+  assert.equal(stored.channelVolumeAliases[provisionalId], confirmedId);
+});
+
+test('service-worker writer redirects a queued provisional-ID mutation after merge', async () => {
+  const provisionalId = 'vod-owner:2770346335';
+  const confirmedId = '123456';
+  let stored = {
+    channelVolumes: {
+      [provisionalId]: { name: 'Temporary', autoApplyLoudnessVod: false },
+      [confirmedId]: { name: 'Confirmed', autoApplyLoudnessVod: false }
+    }
+  };
+  const storage = {
+    async get(keys) {
+      await new Promise((resolve) => setImmediate(resolve));
+      return readStoredKeys(stored, keys);
+    },
+    async set(update) {
+      await new Promise((resolve) => setImmediate(resolve));
+      stored = { ...stored, ...structuredClone(update) };
+    }
+  };
+  const write = channelStore.createChannelVolumesWriter(storage);
+
+  await Promise.all([
+    write({
+      operation: 'mergeChannelIds', fromId: provisionalId, toId: confirmedId,
+      kind: 'vod'
+    }),
+    write({
+      operation: 'saveAuto', channelId: provisionalId, kind: 'vod', enabled: true
+    })
+  ]);
+
+  assert.equal(stored.channelVolumes[provisionalId], undefined);
+  assert.equal(stored.channelVolumes[confirmedId].autoApplyLoudnessVod, true);
+  assert.equal(stored.channelVolumeAliases[provisionalId], confirmedId);
+});
+
+test('persisted alias redirects writes after the service-worker writer is recreated', async () => {
+  const provisionalId = 'vod-owner:2770346335';
+  const confirmedId = '123456';
+  let stored = {
+    channelVolumes: {
+      [provisionalId]: { name: 'Temporary' },
+      [confirmedId]: { name: 'Confirmed', gainVod: 0.8 }
+    }
+  };
+  const storage = {
+    async get(keys) { return readStoredKeys(stored, keys); },
+    async set(update) { stored = { ...stored, ...structuredClone(update) }; }
+  };
+  const firstWriter = channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 100);
+  await firstWriter({
+    operation: 'mergeChannelIds', fromId: provisionalId, toId: confirmedId, kind: 'vod',
+    channel: { name: 'Owner', login: 'owner', url: 'https://www.twitch.tv/videos/2770346335' }
+  });
+
+  const restartedWriter = channelStore.createChannelVolumesWriter(
+    storage, 'channelVolumes', () => 200
+  );
+  await restartedWriter({
+    operation: 'saveMeasurement', channelId: provisionalId, kind: 'vod', lufs: -19,
+    channel: { name: 'v1', url: 'https://www.twitch.tv/videos/2770346335' }
+  });
+
+  assert.equal(stored.channelVolumes[provisionalId], undefined);
+  assert.equal(stored.channelVolumes[confirmedId].gainVod, 0.8);
+  assert.equal(stored.channelVolumes[confirmedId].lastLufs.vod, -19);
+  assert.equal(stored.channelVolumes[confirmedId].lastMeasuredAt, 200);
+  assert.equal(stored.channelVolumes[confirmedId].name, 'Owner');
+  assert.equal(stored.channelVolumes[confirmedId].login, 'owner');
+  assert.equal(stored.channelVolumeAliases[provisionalId], confirmedId);
+});
+
+test('queued provisional measurement cannot overwrite canonical owner metadata', async () => {
+  const provisionalId = 'vod-owner:2770346335';
+  const confirmedId = '123456';
+  let stored = {
+    channelVolumes: {
+      [provisionalId]: { name: 'v1' },
+      [confirmedId]: { name: 'Previous owner name', gainVod: 0.8 }
+    }
+  };
+  const storage = {
+    async get(keys) {
+      await new Promise((resolve) => setImmediate(resolve));
+      return readStoredKeys(stored, keys);
+    },
+    async set(update) {
+      await new Promise((resolve) => setImmediate(resolve));
+      stored = { ...stored, ...structuredClone(update) };
+    }
+  };
+  const write = channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 300);
+
+  await Promise.all([
+    write({
+      operation: 'mergeChannelIds', fromId: provisionalId, toId: confirmedId, kind: 'vod',
+      channel: { name: 'Owner', login: 'owner' }
+    }),
+    write({
+      operation: 'saveMeasurement', channelId: provisionalId, kind: 'vod', lufs: -18,
+      channel: { name: 'v1', url: 'https://www.twitch.tv/videos/2770346335' }
+    })
+  ]);
+
+  assert.equal(stored.channelVolumes[provisionalId], undefined);
+  assert.equal(stored.channelVolumes[confirmedId].lastLufs.vod, -18);
+  assert.equal(stored.channelVolumes[confirmedId].name, 'Owner');
+  assert.equal(stored.channelVolumes[confirmedId].login, 'owner');
+});
+
+test('field sequence resumes above persisted entry versions after writer recreation', async () => {
+  let stored = {
+    channelVolumes: {
+      'login:test': {
+        autoApplyLoudnessLive: true,
+        __fieldVersions: { autoApplyLoudnessLive: 7 }
+      }
+    }
+  };
+  const storage = {
+    async get(keys) { return readStoredKeys(stored, keys); },
+    async set(update) { stored = { ...stored, ...structuredClone(update) }; }
+  };
+  const restartedWriter = channelStore.createChannelVolumesWriter(storage);
+  await restartedWriter({
+    operation: 'saveGain', channelId: 'login:test', kind: 'live', gain: 0.7
+  });
+
+  assert.equal(stored.channelVolumeSequence, 8);
+  assert.equal(stored.channelVolumes['login:test'].__fieldVersions.gainLive, 8);
+});
+
+test('clearing channels clears aliases without moving the sequence backward', async () => {
+  let stored = {
+    channelVolumes: { '123456': { gainVod: 0.8 } },
+    channelVolumeAliases: { 'vod-owner:2770346335': '123456' },
+    channelVolumeSequence: 9
+  };
+  const storage = {
+    async get(keys) { return readStoredKeys(stored, keys); },
+    async set(update) { stored = { ...stored, ...structuredClone(update) }; }
+  };
+  const write = channelStore.createChannelVolumesWriter(storage);
+  await write({ operation: 'clearChannels' });
+
+  assert.deepEqual(stored.channelVolumes, {});
+  assert.deepEqual(stored.channelVolumeAliases, {});
+  assert.equal(stored.channelVolumeSequence, 9);
+});
+
+test('service-worker writer recovers after a failed storage update', async () => {
+  let stored = { channelVolumes: {} };
+  let failNextSet = true;
+  const storage = {
+    async get(keys) { return readStoredKeys(stored, keys); },
+    async set(update) {
+      if (failNextSet) {
+        failNextSet = false;
+        throw new Error('injected storage failure');
+      }
+      stored = { ...stored, ...structuredClone(update) };
+    }
+  };
+  const write = channelStore.createChannelVolumesWriter(storage);
+  await assert.rejects(write({
+    operation: 'saveAuto', channelId: 'login:test', kind: 'live', enabled: true
+  }), /injected storage failure/);
+  await write({
+    operation: 'saveAuto', channelId: 'login:test', kind: 'live', enabled: false
+  });
+  assert.equal(stored.channelVolumes['login:test'].autoApplyLoudnessLive, false);
+});
+
+test('background mutation listener keeps async response open and reports failures', async () => {
+  let stored = { channelVolumes: {} };
+  let failNextSet = false;
+  let messageListener;
+  const storage = {
+    async get(keys) { return readStoredKeys(stored, keys); },
+    async set(update) {
+      if (failNextSet) {
+        failNextSet = false;
+        throw new Error('injected background failure');
+      }
+      stored = { ...stored, ...structuredClone(update) };
+    }
+  };
+  const context = vm.createContext({
+    console: { error() {} },
+    chrome: {
+      storage: { local: storage },
+      runtime: {
+        onMessage: { addListener(listener) { messageListener = listener; } },
+        onInstalled: { addListener() {} }
+      }
+    }
+  });
+  context.importScripts = (filename) => {
+    const source = fs.readFileSync(path.join(__dirname, filename), 'utf8');
+    vm.runInContext(source, context, { filename });
+  };
+  vm.runInContext(
+    fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8'),
+    context,
+    { filename: 'background.js' }
+  );
+
+  const send = (mutation) => new Promise((resolve) => {
+    const keepOpen = messageListener({
+      type: channelStore.CHANNEL_MUTATION_MESSAGE,
+      mutation
+    }, {}, resolve);
+    assert.equal(keepOpen, true);
+  });
+
+  const successResponse = await send({
+    operation: 'saveAuto', channelId: 'login:test', kind: 'live', enabled: true
+  });
+  assert.equal(successResponse.ok, true);
+  assert.equal(stored.channelVolumes['login:test'].autoApplyLoudnessLive, true);
+
+  failNextSet = true;
+  const failureResponse = await send({
+    operation: 'saveAuto', channelId: 'login:test', kind: 'live', enabled: false
+  });
+  assert.equal(failureResponse.ok, false);
+  assert.equal(failureResponse.reason, 'storage-update-failed');
+  assert.equal(stored.channelVolumes['login:test'].autoApplyLoudnessLive, true);
+});
+
+test('Auto switches expose hit targets, keyboard focus, and reduced-motion behavior', () => {
+  for (const filename of ['popup.html', 'options.html']) {
+    const html = fs.readFileSync(path.join(__dirname, filename), 'utf8');
+    assert.match(
+      html,
+      /\.toggle-switch\s*\{[^}]*width:\s*36px;[^}]*height:\s*36px;/s,
+      `${filename} toggle hit target`
+    );
+    assert.match(
+      html,
+      /\.toggle-switch input\s*\{[^}]*width:\s*100%;[^}]*height:\s*100%;/s,
+      `${filename} input fills the hit target`
+    );
+    assert.match(
+      html,
+      /\.toggle-switch input:focus-visible \+ \.switch-slider\s*\{/,
+      `${filename} focus-visible style`
+    );
+    assert.match(
+      html,
+      /@media \(prefers-reduced-motion: reduce\)\s*\{[^}]*\.toggle-switch \.switch-slider[^}]*transition:\s*none;/s,
+      `${filename} reduced-motion style`
+    );
+  }
+});
+
+test('content reads and observes the persisted channel alias key', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'content.js'), 'utf8');
+  assert.match(
+    source,
+    /chrome\.storage\.local\.get\(\[CHANNEL_VOLUMES_KEY, CHANNEL_ALIASES_KEY\]\)/
+  );
+  assert.match(
+    source,
+    /changes\[CHANNEL_VOLUMES_KEY\] \|\| changes\[CHANNEL_ALIASES_KEY\]/
+  );
 });
 
 test('parseDateRange: extracts attributes', () => {

@@ -3,7 +3,13 @@
 (() => {
   'use strict';
 
+  const CHANNEL_MUTATION_MESSAGE = '__twitch_channel_volume_channel_mutation__';
+
   function $(id) { return document.getElementById(id); }
+
+  function showSettingsError(visible) {
+    $('settingsError').classList.toggle('hidden', !visible);
+  }
 
   function applyI18n() {
     document.querySelectorAll('[data-i18n]').forEach((el) => {
@@ -14,6 +20,11 @@
   }
 
   let displayUnit = '%';
+  let defaultAutoApply = {
+    live: DEFAULT_AUTO_APPLY_LOUDNESS,
+    vod: DEFAULT_AUTO_APPLY_LOUDNESS,
+    clip: DEFAULT_AUTO_APPLY_LOUDNESS
+  };
 
   async function loadAll() {
     const data = await chrome.storage.local.get([SETTINGS_KEY, CHANNEL_VOLUMES_KEY]);
@@ -26,6 +37,12 @@
     $('adGainValue').textContent = (adDb > 0 ? '+' : '') + adDb + ' dB';
     displayUnit = settings.displayUnit || '%';
     setActiveUnit(displayUnit);
+    for (const kind of ['live', 'vod', 'clip']) {
+      defaultAutoApply[kind] =
+        settings[autoApplyDefaultFieldForKind(kind)] ?? DEFAULT_AUTO_APPLY_LOUDNESS;
+      $(`defaultAuto${kind[0].toUpperCase()}${kind.slice(1)}Toggle`).checked =
+        defaultAutoApply[kind];
+    }
     $('overlayToggle').checked = settings.showGainOverlay ?? true;
     renderChannels(data[CHANNEL_VOLUMES_KEY] || {});
   }
@@ -50,11 +67,14 @@
       const link = url
         ? `<a class="ch-link" href="${esc(url)}" target="_blank">${esc(name)}</a>`
         : esc(name);
+      const live = formatChannelGain(entry, 'live');
+      const vod = formatChannelGain(entry, 'vod');
+      const clip = formatChannelGain(entry, 'clip');
       tr.innerHTML = `
         <td class="ch-name">${link}</td>
-        <td class="${gainCellClass(entry.gainLive)}">${formatGainCell(entry.gainLive)}</td>
-        <td class="${gainCellClass(entry.gainVod)}">${formatGainCell(entry.gainVod)}</td>
-        <td class="${gainCellClass(entry.gainClip)}">${formatGainCell(entry.gainClip)}</td>
+        <td class="${live.className}">${live.text}</td>
+        <td class="${vod.className}">${vod.text}</td>
+        <td class="${clip.className}">${clip.text}</td>
         <td style="text-align:right;"><button class="ch-del" data-id="${esc(id)}" title="${esc(msg('delete'))}">&times;</button></td>
       `;
       body.appendChild(tr);
@@ -66,6 +86,25 @@
 
   function gainCellClass(g) {
     return Number.isFinite(g) ? 'ch-vol' : 'ch-vol empty';
+  }
+
+  function manualGainForKind(entry, kind) {
+    return extractGainForKind(entry, kind);
+  }
+
+  function formatChannelGain(entry, kind) {
+    const gain = manualGainForKind(entry, kind);
+    const auto = resolveAutoApplySetting(entry, kind, defaultAutoApply[kind]);
+    if (auto) {
+      return {
+        className: 'ch-vol auto',
+        text: esc(formatAutoFallback(gain, displayUnit, msg('labelAuto')))
+      };
+    }
+    return {
+      className: gainCellClass(gain),
+      text: formatGainCell(gain)
+    };
   }
 
   function formatGainCell(g) {
@@ -81,28 +120,42 @@
     return '';
   }
 
+  async function mutateChannelVolumes(mutation) {
+    const response = await chrome.runtime.sendMessage({
+      type: CHANNEL_MUTATION_MESSAGE,
+      mutation
+    });
+    if (!response?.ok) throw new Error(response?.reason || 'channelVolumes mutation failed');
+  }
+
   async function saveSettings() {
     const settings = {
       targetLufs: Number($('targetLufs').value),
       adGainDb: Number($('adGainDb').value),
       displayUnit,
+      autoApplyLoudnessLiveDefault: $('defaultAutoLiveToggle').checked,
+      autoApplyLoudnessVodDefault: $('defaultAutoVodToggle').checked,
+      autoApplyLoudnessClipDefault: $('defaultAutoClipToggle').checked,
       showGainOverlay: $('overlayToggle').checked
     };
     await chrome.storage.local.set({ [SETTINGS_KEY]: settings });
   }
 
   async function removeChannel(id) {
-    const data = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
-    const all = data[CHANNEL_VOLUMES_KEY] || {};
-    delete all[id];
-    await chrome.storage.local.set({ [CHANNEL_VOLUMES_KEY]: all });
-    renderChannels(all);
+    try {
+      await mutateChannelVolumes({ operation: 'deleteChannel', channelId: id });
+    } catch (_) {
+      alert(msg('channelUpdateFailed'));
+    }
   }
 
   async function clearAll() {
     if (!confirm(msg('clearAllConfirm'))) return;
-    await chrome.storage.local.set({ [CHANNEL_VOLUMES_KEY]: {} });
-    renderChannels({});
+    try {
+      await mutateChannelVolumes({ operation: 'clearChannels' });
+    } catch (_) {
+      alert(msg('channelUpdateFailed'));
+    }
   }
 
   $('targetLufs').addEventListener('input', (e) => {
@@ -114,6 +167,39 @@
     $('adGainValue').textContent = (v > 0 ? '+' : '') + v + ' dB';
   });
   $('adGainDb').addEventListener('change', saveSettings);
+
+  for (const kind of ['live', 'vod', 'clip']) {
+    const id = `defaultAuto${kind[0].toUpperCase()}${kind.slice(1)}Toggle`;
+    const toggle = $(id);
+    toggle.addEventListener('change', async () => {
+      const previous = defaultAutoApply[kind];
+      defaultAutoApply[kind] = toggle.checked;
+      toggle.disabled = true;
+      try {
+        await saveSettings();
+      } catch (error) {
+        defaultAutoApply[kind] = previous;
+        toggle.checked = previous;
+        try {
+          await loadAll();
+        } catch (reloadError) {
+          console.error('[TCV] failed to reload settings after save failure', reloadError);
+        }
+        showSettingsError(true);
+        console.error('[TCV] failed to save Auto default', error);
+        return;
+      } finally {
+        toggle.disabled = false;
+      }
+      showSettingsError(false);
+      try {
+        const data = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
+        renderChannels(data[CHANNEL_VOLUMES_KEY] || {});
+      } catch (error) {
+        console.error('[TCV] failed to refresh channels after settings save', error);
+      }
+    });
+  }
 
   document.querySelectorAll('#unitToggle button').forEach((btn) => {
     btn.addEventListener('click', async () => {
@@ -133,6 +219,7 @@
     if (changes[CHANNEL_VOLUMES_KEY]) {
       renderChannels(changes[CHANNEL_VOLUMES_KEY].newValue || {});
     }
+    if (changes[SETTINGS_KEY]) loadAll();
   });
 
   applyI18n();

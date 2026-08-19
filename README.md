@@ -7,7 +7,9 @@ Twitch does not publish any loudness metadata (no `loudnessDb`-equivalent API, n
 ## Features
 
 - **Real-time LUFS metering**: Momentary (400 ms), Short-term (3 s), Integrated (BS.1770 gated)
-- **Per-channel auto gain**: Save gain per Live / VOD / Clip kind; applied automatically on revisit
+- **Per-channel LUFS auto-follow**: Optional Live / VOD / Clip controls continuously follow the measured Integrated LUFS and Target LUFS
+- **Per-channel manual gain**: Save gain per Live / VOD / Clip kind; applied automatically on revisit and used while Auto is waiting for measurement
+- **Global Auto defaults**: Independent Live / VOD / Clip defaults apply only when a channel kind has neither an explicit Auto choice nor a manual gain
 - **Ad-break handling**: Detects `EXT-X-DATERANGE CLASS="twitch-stitched-ad"` in HLS manifests and `[data-a-target="video-ad-countdown"]` in the DOM; applies a separate gain offset during ads
 - **0–600 % gain range** via Web Audio `GainNode` (HTML5 `video.volume` would cap at 1.0)
 - **No external dependencies** — pure JavaScript, no bundler
@@ -35,15 +37,16 @@ The measurement path applies the BS.1770-4 K-weighting (high-shelf pre-filter + 
 ## Usage
 
 1. Open a Twitch stream, VOD, or clip
-2. Wait a few seconds for integrated LUFS to stabilize
-3. Click the extension icon → **Apply to channel**
-4. The computed gain is saved per channel × kind and re-applied on revisit
-5. Use the manual slider (0–600 %) for one-off adjustments
+2. Click the extension icon and enable **Auto-follow LUFS** for the current kind
+3. The gain follows the current Integrated LUFS toward Target LUFS as measurement stabilizes
+4. Alternatively, leave Auto off and click **Apply to channel** to save the current suggested gain
+5. Use the manual slider (0–600 %) while Auto is off
 6. Ad break gain is configurable in Settings (default −6 dB)
 
 ## Settings
 
 - **Target LUFS**: Reference loudness used to compute gain (default −18 LUFS, range −30 to −6)
+- **Auto-follow defaults**: Independent defaults for Live / VOD / Clip (all off by default)
 - **CM Gain**: Extra gain applied during ad breaks (default −6 dB)
 - **Display unit**: % or dB
 - **Saved channels**: Table view with delete / clear-all

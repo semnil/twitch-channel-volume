@@ -7,6 +7,7 @@
 
   const MSG_IN = '__twitch_channel_volume__';
   const MSG_OUT = '__twitch_channel_volume_cmd__';
+  const CHANNEL_MUTATION_MESSAGE = '__twitch_channel_volume_channel_mutation__';
 
   function isContextValid() {
     try { return !!chrome.runtime?.id; } catch (_) { return false; }
@@ -17,9 +18,17 @@
   let currentAdGainDb = DEFAULT_AD_GAIN_DB;
   let targetLufs = DEFAULT_TARGET_LUFS;
   let showGainOverlay = true;
+  let defaultAutoApplyLoudnessLive = DEFAULT_AUTO_APPLY_LOUDNESS;
+  let defaultAutoApplyLoudnessVod = DEFAULT_AUTO_APPLY_LOUDNESS;
+  let defaultAutoApplyLoudnessClip = DEFAULT_AUTO_APPLY_LOUDNESS;
+  let currentChannelEntry = null;
+  let currentAutoApplyLoudness = false;
   let lastLufs = { momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity };
   let adActive = false;
   let pendingAdRanges = [];
+  let preferenceRevision = 0;
+  let channelMutationQueue = Promise.resolve();
+  let migratingChannelId = '';
 
   // ── Storage helpers ────────────────────────────────────────────────
 
@@ -30,6 +39,12 @@
     targetLufs = s.targetLufs ?? DEFAULT_TARGET_LUFS;
     currentAdGainDb = s.adGainDb ?? DEFAULT_AD_GAIN_DB;
     showGainOverlay = s.showGainOverlay ?? true;
+    defaultAutoApplyLoudnessLive =
+      s.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
+    defaultAutoApplyLoudnessVod =
+      s.autoApplyLoudnessVodDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
+    defaultAutoApplyLoudnessClip =
+      s.autoApplyLoudnessClipDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
     sendCmd({ cmd: 'setAdGain', value: dbToGain(currentAdGainDb) });
   }
 
@@ -38,61 +53,100 @@
     return id;
   }
 
-  function gainFieldForKind(kind) {
-    if (kind === 'live') return 'gainLive';
-    if (kind === 'vod') return 'gainVod';
-    if (kind === 'clip') return 'gainClip';
-    return 'gainLive';
+  function defaultAutoApplyForKind(kind) {
+    if (kind === 'vod') return defaultAutoApplyLoudnessVod;
+    if (kind === 'clip') return defaultAutoApplyLoudnessClip;
+    return defaultAutoApplyLoudnessLive;
   }
 
-  function extractGainForKind(entry, kind) {
-    if (!entry) return null;
-    if ('gain' in entry && !('gainLive' in entry) && !('gainVod' in entry) && !('gainClip' in entry)) {
-      return entry.gain;
-    }
-    const v = entry[gainFieldForKind(kind)];
-    if (Number.isFinite(v)) return v;
-    return entry.gainLive ?? entry.gainVod ?? null;
+  function resolveAutoApplyForKind(entry, kind) {
+    return resolveAutoApplySetting(entry, kind, defaultAutoApplyForKind(kind));
   }
 
-  async function loadChannelGain(channelId, kind) {
+  async function loadChannelEntry(channelId) {
     if (!channelId || !isContextValid()) return null;
-    const data = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
+    const data = await chrome.storage.local.get([CHANNEL_VOLUMES_KEY, CHANNEL_ALIASES_KEY]);
     const all = data[CHANNEL_VOLUMES_KEY] || {};
-    return extractGainForKind(all[channelId], kind);
+    const canonicalId = resolveChannelIdAlias(channelId, data[CHANNEL_ALIASES_KEY] || {});
+    return all[canonicalId] || null;
   }
 
-  async function saveChannelGain(channelId, name, gain, kind, url) {
-    if (!channelId || !isContextValid()) return;
-    const data = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
-    const all = data[CHANNEL_VOLUMES_KEY] || {};
-    const entry = all[channelId] || { name: name || channelId };
-    if (name) entry.name = name;
-    if (url) entry.url = url;
-    if ('gain' in entry) delete entry.gain;
-    entry[gainFieldForKind(kind)] = gain;
-    all[channelId] = entry;
-    await chrome.storage.local.set({ [CHANNEL_VOLUMES_KEY]: all });
+  function sendChannelMutation(mutation) {
+    const task = channelMutationQueue.then(async () => {
+      if (!isContextValid()) throw new Error('runtime context invalid');
+      const response = await chrome.runtime.sendMessage({
+        type: CHANNEL_MUTATION_MESSAGE,
+        mutation
+      });
+      if (!response?.ok) {
+        throw new Error(response?.reason || 'channelVolumes mutation failed');
+      }
+      return response;
+    });
+    // Preserve order within this tab. The service worker adds the global queue
+    // shared by content scripts, popup, and options contexts.
+    channelMutationQueue = task.catch(() => {});
+    return task;
   }
 
-  async function saveLastIntegrated(channelId, kind, lufs) {
-    if (!channelId || !isContextValid() || !Number.isFinite(lufs)) return;
-    const data = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
-    const all = data[CHANNEL_VOLUMES_KEY] || {};
-    const entry = all[channelId] || { name: channelId };
-    entry.lastLufs = entry.lastLufs || {};
-    entry.lastLufs[kind] = lufs;
-    entry.lastMeasuredAt = Date.now();
-    all[channelId] = entry;
-    await chrome.storage.local.set({ [CHANNEL_VOLUMES_KEY]: all });
+  function channelMetadata(channel = currentChannel) {
+    return {
+      name: channel?.name || '',
+      login: channel?.login || '',
+      url: channel?.url || ''
+    };
   }
 
-  async function deleteChannel(channelId) {
-    if (!channelId || !isContextValid()) return;
-    const data = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
-    const all = data[CHANNEL_VOLUMES_KEY] || {};
-    delete all[channelId];
-    await chrome.storage.local.set({ [CHANNEL_VOLUMES_KEY]: all });
+  function saveChannelGain(channelId, name, gain, kind, url) {
+    if (!channelId || !isContextValid()) return Promise.resolve();
+    return sendChannelMutation({
+      operation: 'saveGain',
+      channelId,
+      kind,
+      gain,
+      channel: { name: name || channelId, url: url || '' }
+    });
+  }
+
+  function saveChannelAutoApply(channelId, name, enabled, kind, url) {
+    if (!channelId || !isContextValid()) return Promise.resolve();
+    return sendChannelMutation({
+      operation: 'saveAuto',
+      channelId,
+      kind,
+      enabled: !!enabled,
+      channel: { name: name || channelId, url: url || '' }
+    });
+  }
+
+  function saveLastIntegrated(channelId, kind, lufs) {
+    if (!channelId || !isContextValid() || !Number.isFinite(lufs)) {
+      return Promise.resolve();
+    }
+    const snapshot = currentChannel.id === channelId ? { ...currentChannel } : null;
+    return sendChannelMutation({
+      operation: 'saveMeasurement',
+      channelId,
+      kind,
+      lufs,
+      channel: channelMetadata(snapshot)
+    });
+  }
+
+  function migrateChannelId(fromId, toId, kind, channel) {
+    if (!fromId || !toId || fromId === toId) return Promise.resolve();
+    return sendChannelMutation({
+      operation: 'mergeChannelIds',
+      fromId,
+      toId,
+      kind,
+      channel: channelMetadata(channel)
+    });
+  }
+
+  function deleteChannel(channelId) {
+    if (!channelId || !isContextValid()) return Promise.resolve();
+    return sendChannelMutation({ operation: 'deleteChannel', channelId });
   }
 
   // ── Page-bridge command helpers ────────────────────────────────────
@@ -156,6 +210,52 @@
     return classifyTwitchUrl(location.href);
   }
 
+  async function acceptOwner(owner) {
+    const classified = classify();
+    if (!ownerMatchesTwitchContent(owner, classified)) return false;
+
+    const confirmedId = String(owner.userId);
+    const provisionalId = provisionalChannelIdForContent(classified);
+    const confirmedChannel = {
+      ...currentChannel,
+      id: confirmedId,
+      login: owner.login || currentChannel.login,
+      name: owner.displayName || owner.login || currentChannel.name,
+      url: location.href,
+      kind: classified.kind,
+      slug: classified.slug,
+      videoId: classified.videoId
+    };
+
+    if (provisionalId && currentChannel.id === provisionalId) {
+      migratingChannelId = provisionalId;
+      try {
+        await migrateChannelId(provisionalId, confirmedId, classified.kind, confirmedChannel);
+      } catch (error) {
+        console.warn('[TCV] provisional channel migration failed', error);
+        migratingChannelId = '';
+        return false;
+      }
+    }
+
+    // Navigation can occur while the service worker waits behind earlier
+    // mutations. The storage migration remains valid for the old content, but
+    // its owner must not become the channel for the new URL.
+    if (!ownerMatchesTwitchContent(owner, classify())) {
+      migratingChannelId = '';
+      return false;
+    }
+
+    pendingOwner = owner;
+    try {
+      await resolveChannel();
+    } finally {
+      migratingChannelId = '';
+    }
+    await reapplyForCurrentChannel();
+    return true;
+  }
+
   async function resolveChannel(seed) {
     const c = classify();
     let channelId = '';
@@ -176,7 +276,14 @@
       login = pendingOwner?.login || c.login || '';
       name = pendingOwner?.displayName || login || c.slug;
     }
+    const previousId = currentChannel.id;
+    const previousKind = currentChannel.kind;
     currentChannel = { id: channelId, login, name, url, kind: c.kind, slug: c.slug, videoId: c.videoId };
+    if (previousId !== channelId || previousKind !== c.kind) {
+      preferenceRevision++;
+      currentChannelEntry = null;
+      currentAutoApplyLoudness = false;
+    }
     return currentChannel;
   }
 
@@ -185,15 +292,25 @@
   async function reapplyForCurrentChannel() {
     const ch = currentChannel;
     if (!ch.id || ch.kind === 'none') {
+      currentChannelEntry = null;
+      currentAutoApplyLoudness = false;
       applyGain(1.0);
       return;
     }
-    const saved = await loadChannelGain(ch.id, ch.kind);
-    if (Number.isFinite(saved)) {
-      applyGain(saved);
-    } else {
-      applyGain(1.0);
-    }
+    const revision = ++preferenceRevision;
+    const entry = await loadChannelEntry(ch.id);
+    if (revision !== preferenceRevision ||
+        ch.id !== currentChannel.id || ch.kind !== currentChannel.kind) return;
+    currentChannelEntry = entry;
+    const preferred = resolvePreferredGain(
+      entry,
+      ch.kind,
+      defaultAutoApplyForKind(ch.kind),
+      lastLufs.integrated,
+      targetLufs
+    );
+    currentAutoApplyLoudness = preferred.autoApply;
+    applyGain(preferred.gain);
   }
 
   // ── Message handler from page-bridge ───────────────────────────────
@@ -222,6 +339,9 @@
           integrated: Number.isFinite(data.integrated) ? data.integrated : -Infinity
         };
         if (Number.isFinite(lastLufs.integrated) && currentChannel.id) {
+          if (currentAutoApplyLoudness) {
+            applyGain(calcGain(lastLufs.integrated, targetLufs));
+          }
           throttledSaveIntegrated();
         }
         break;
@@ -229,9 +349,7 @@
         if (Array.isArray(data.ranges)) pendingAdRanges = data.ranges;
         break;
       case 'owner':
-        pendingOwner = data;
-        await resolveChannel();
-        await reapplyForCurrentChannel();
+        await acceptOwner(data);
         break;
       case 'ad':
         adActive = !!data.active;
@@ -271,6 +389,11 @@
     if (location.href === lastHref) return;
     lastHref = location.href;
     pendingOwner = null;
+    preferenceRevision++;
+    currentChannelEntry = null;
+    currentAutoApplyLoudness = false;
+    lastLufs = { momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity };
+    lastSavedAt = 0;
     sendCmd({ cmd: 'resetMeasurement' });
     sendCmd({ cmd: 'attach' });
     await resolveChannel();
@@ -298,6 +421,12 @@
     if (changes[SETTINGS_KEY]) {
       const next = changes[SETTINGS_KEY].newValue || {};
       targetLufs = next.targetLufs ?? DEFAULT_TARGET_LUFS;
+      defaultAutoApplyLoudnessLive =
+        next.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
+      defaultAutoApplyLoudnessVod =
+        next.autoApplyLoudnessVodDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
+      defaultAutoApplyLoudnessClip =
+        next.autoApplyLoudnessClipDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
       const adDb = next.adGainDb ?? DEFAULT_AD_GAIN_DB;
       if (adDb !== currentAdGainDb) {
         currentAdGainDb = adDb;
@@ -305,13 +434,15 @@
       }
       showGainOverlay = next.showGainOverlay ?? true;
       updateGainOverlay();
+      reapplyForCurrentChannel().catch((error) => {
+        console.warn('[TCV] failed to reapply settings', error);
+      });
     }
-    if (changes[CHANNEL_VOLUMES_KEY] && currentChannel.id) {
-      const all = changes[CHANNEL_VOLUMES_KEY].newValue || {};
-      const saved = extractGainForKind(all[currentChannel.id], currentChannel.kind);
-      if (Number.isFinite(saved) && saved !== currentGain) {
-        applyGain(saved);
-      }
+    if ((changes[CHANNEL_VOLUMES_KEY] || changes[CHANNEL_ALIASES_KEY]) && currentChannel.id) {
+      if (currentChannel.id === migratingChannelId) return;
+      reapplyForCurrentChannel().catch((error) => {
+        console.warn('[TCV] failed to synchronize channel settings', error);
+      });
     }
   });
 
@@ -327,22 +458,67 @@
           gain: currentGain,
           adActive,
           targetLufs,
-          adGainDb: currentAdGainDb
+          adGainDb: currentAdGainDb,
+          autoApplyLoudness: currentAutoApplyLoudness,
+          autoApplyLoudnessLive: resolveAutoApplyForKind(currentChannelEntry, 'live'),
+          autoApplyLoudnessVod: resolveAutoApplyForKind(currentChannelEntry, 'vod'),
+          autoApplyLoudnessClip: resolveAutoApplyForKind(currentChannelEntry, 'clip')
         });
         return;
       case 'setGain':
+        if (currentAutoApplyLoudness) {
+          sendResponse({ ok: false, reason: 'auto apply enabled' });
+          return;
+        }
         applyGain(req.gain);
-        saveChannelGain(currentChannel.id, currentChannel.name, currentGain, currentChannel.kind, currentChannel.url);
-        sendResponse({ ok: true });
-        return;
+        saveChannelGain(
+          currentChannel.id,
+          currentChannel.name,
+          currentGain,
+          currentChannel.kind,
+          currentChannel.url
+        ).then(() => {
+          sendResponse({ ok: true });
+        }).catch(async () => {
+          try { await reapplyForCurrentChannel(); } catch (_) {}
+          sendResponse({ ok: false, reason: 'storage update failed' });
+        });
+        return true;
+      case 'setAutoApplyLoudness': {
+        const kind = ['live', 'vod', 'clip'].includes(req.kind) ? req.kind : currentChannel.kind;
+        if (!currentChannel.id || req.channelId !== currentChannel.id || kind !== currentChannel.kind) {
+          sendResponse({ ok: false, reason: 'channel mismatch' });
+          return;
+        }
+        saveChannelAutoApply(
+          currentChannel.id,
+          currentChannel.name,
+          !!req.enabled,
+          kind,
+          currentChannel.url
+        ).then(async () => {
+          await reapplyForCurrentChannel();
+          sendResponse({
+            ok: true,
+            gain: currentGain,
+            autoApplyLoudness: currentAutoApplyLoudness
+          });
+        }).catch(() => {
+          sendResponse({ ok: false, reason: 'storage update failed' });
+        });
+        return true;
+      }
       case 'resume':
         sendCmd({ cmd: 'resume' });
         sendResponse({ ok: true });
         return;
       case 'deleteChannel':
-        deleteChannel(req.channelId);
-        sendResponse({ ok: true });
-        return;
+        deleteChannel(req.channelId).then(() => {
+          sendResponse({ ok: true });
+        }).catch(() => {
+          sendResponse({ ok: false, reason: 'storage update failed' });
+        });
+        return true;
     }
     return false;
   });
