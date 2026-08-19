@@ -49,7 +49,7 @@ The measurement path applies the BS.1770-4 K-weighting (high-shelf pre-filter + 
 - **Auto-follow defaults**: Independent defaults for Live / VOD / Clip (all off by default)
 - **CM Gain**: Extra gain applied during ad breaks (default −6 dB)
 - **Display unit**: % or dB
-- **Saved channels**: Table view with delete / clear-all
+- **Saved channels**: Table view showing the last applied Auto gain, with delete / clear-all
 
 ## Development
 

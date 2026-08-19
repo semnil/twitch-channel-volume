@@ -34,7 +34,7 @@ function formatGain(gain, displayUnit) {
   return { text: String(gainToPercent(gain)), unit: '%' };
 }
 
-function formatAutoFallback(gain, displayUnit, autoLabel = 'Auto') {
+function formatAutoGain(gain, displayUnit, autoLabel = 'Auto') {
   const formatted = formatGain(Number.isFinite(gain) ? gain : 1.0, displayUnit);
   return `${autoLabel} (${formatted.text}${formatted.unit})`;
 }
@@ -50,6 +50,22 @@ function extractGainForKind(entry, kind) {
   const typedGain = entry[gainFieldForKind(kind)];
   if (Number.isFinite(typedGain)) return typedGain;
   return Number.isFinite(entry.gain) ? entry.gain : null;
+}
+
+function autoGainFieldForKind(kind) {
+  if (kind === 'vod') return 'autoGainVod';
+  if (kind === 'clip') return 'autoGainClip';
+  return 'autoGainLive';
+}
+
+function extractAutoGainForKind(entry, kind) {
+  if (!entry) return null;
+  const gain = entry[autoGainFieldForKind(kind)];
+  return Number.isFinite(gain) ? gain : null;
+}
+
+function extractAutoDisplayGain(entry, kind) {
+  return extractAutoGainForKind(entry, kind) ?? extractGainForKind(entry, kind);
 }
 
 function autoApplyFieldForKind(kind) {
@@ -83,7 +99,7 @@ function resolvePreferredGain(entry, kind, defaultAuto, measuredLufs, targetLufs
   const manualGain = extractGainForKind(entry, kind);
   const gain = autoApply && Number.isFinite(measuredLufs)
     ? calcGain(measuredLufs, targetLufs)
-    : manualGain ?? 1.0;
+    : (autoApply ? extractAutoGainForKind(entry, kind) : null) ?? manualGain ?? 1.0;
   return { autoApply, gain };
 }
 
@@ -308,8 +324,9 @@ if (typeof module !== 'undefined' && module.exports) {
     MOMENTARY_WINDOW_SEC, SHORT_TERM_WINDOW_SEC,
     MIN_GAIN, MAX_GAIN,
     gainToPercent, percentToGain, gainToDb, dbToGain,
-    formatGain, formatAutoFallback, calcGain,
+    formatGain, formatAutoGain, calcGain,
     gainFieldForKind, extractGainForKind,
+    autoGainFieldForKind, extractAutoGainForKind, extractAutoDisplayGain,
     autoApplyFieldForKind, autoApplyDefaultFieldForKind,
     resolveAutoApplySetting, resolvePreferredGain,
     classifyTwitchUrl, ownerMatchesTwitchContent, provisionalChannelIdForContent,

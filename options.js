@@ -93,17 +93,21 @@
   }
 
   function formatChannelGain(entry, kind) {
-    const gain = manualGainForKind(entry, kind);
+    const manualGain = manualGainForKind(entry, kind);
     const auto = resolveAutoApplySetting(entry, kind, defaultAutoApply[kind]);
     if (auto) {
       return {
         className: 'ch-vol auto',
-        text: esc(formatAutoFallback(gain, displayUnit, msg('labelAuto')))
+        text: esc(formatAutoGain(
+          extractAutoDisplayGain(entry, kind),
+          displayUnit,
+          msg('labelAuto')
+        ))
       };
     }
     return {
-      className: gainCellClass(gain),
-      text: formatGainCell(gain)
+      className: gainCellClass(manualGain),
+      text: formatGainCell(manualGain)
     };
   }
 

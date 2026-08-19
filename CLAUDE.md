@@ -43,6 +43,7 @@ content.js (ISOLATED world content script, document_idle)
     ├── autoLoudnessSettings: { targetLufs, adGainDb, displayUnit, showGainOverlay,
     │     autoApplyLoudnessLiveDefault, autoApplyLoudnessVodDefault, autoApplyLoudnessClipDefault }
     ├── channelVolumes: { [channelId]: { name, gainLive, gainVod, gainClip,
+          autoGainLive, autoGainVod, autoGainClip,
           autoApplyLoudnessLive, autoApplyLoudnessVod, autoApplyLoudnessClip,
           url, lastLufs, lastMeasuredAt, __fieldVersions } }
     ├── channelVolumeAliases: { [provisionalId]: canonicalOwnerId }
@@ -89,7 +90,7 @@ options.html / options.js
 ├── CM Gain スライダー (-24 ~ +6 dB, default -6 dB)
 ├── 表示単位 (% / dB)
 ├── ゲインオーバーレイ表示 ON/OFF トグル (default ON)
-├── Saved Channels テーブル (Live / VOD / Clip 3列、Auto 時は `Auto (fallback gain)`、削除可)
+├── Saved Channels テーブル (Live / VOD / Clip 3列、Auto 時は最後に適用した Auto gain、削除可)
 └── storage.onChanged で同期
 ```
 

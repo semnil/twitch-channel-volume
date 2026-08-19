@@ -25,7 +25,7 @@ async function flushTasks(turns = 4) {
   }
 }
 
-function createContentHarness({ autoApply }) {
+function createContentHarness({ autoApply, autoGain }) {
   const listeners = {};
   const storageListeners = [];
   const commands = [];
@@ -43,7 +43,8 @@ function createContentHarness({ autoApply }) {
       'vod-owner:100': {
         name: '100',
         gainVod: 0.5,
-        autoApplyLoudnessVod: autoApply
+        autoApplyLoudnessVod: autoApply,
+        ...(Number.isFinite(autoGain) ? { autoGainVod: autoGain } : {})
       }
     },
     [u.CHANNEL_ALIASES_KEY]: {}
@@ -72,10 +73,12 @@ function createContentHarness({ autoApply }) {
       getURL(filename) { return `chrome-extension://test/${filename}`; },
       async sendMessage(message) {
         const mutation = message?.mutation;
-        if (mutation?.operation === 'saveAuto') {
-          const entry = stored[u.CHANNEL_VOLUMES_KEY][mutation.channelId] || {};
-          entry[u.autoApplyFieldForKind(mutation.kind)] = mutation.enabled;
-          stored[u.CHANNEL_VOLUMES_KEY][mutation.channelId] = entry;
+        if (mutation) {
+          stored[u.CHANNEL_VOLUMES_KEY] = channelStore.applyChannelVolumesMutation(
+            stored[u.CHANNEL_VOLUMES_KEY],
+            mutation,
+            1234
+          );
         }
         return { ok: true };
       },
@@ -205,10 +208,10 @@ test('gainToPercent / percentToGain are inverses', () => {
   assert.equal(u.percentToGain(150), 1.5);
 });
 
-test('formatAutoFallback shows the retained manual gain', () => {
-  assert.equal(u.formatAutoFallback(0.7, '%'), 'Auto (70%)');
-  assert.equal(u.formatAutoFallback(null, '%'), 'Auto (100%)');
-  assert.equal(u.formatAutoFallback(0.5, 'dB', '自動'), '自動 (-6.0 dB)');
+test('formatAutoGain shows the last applied Auto gain', () => {
+  assert.equal(u.formatAutoGain(0.7, '%'), 'Auto (70%)');
+  assert.equal(u.formatAutoGain(null, '%'), 'Auto (100%)');
+  assert.equal(u.formatAutoGain(0.5, 'dB', '自動'), '自動 (-6.0 dB)');
 });
 
 test('auto-apply fields are independent for Live, VOD, and Clip', () => {
@@ -219,6 +222,20 @@ test('auto-apply fields are independent for Live, VOD, and Clip', () => {
     u.autoApplyDefaultFieldForKind('vod'),
     'autoApplyLoudnessVodDefault'
   );
+  assert.equal(u.autoGainFieldForKind('live'), 'autoGainLive');
+  assert.equal(u.autoGainFieldForKind('vod'), 'autoGainVod');
+  assert.equal(u.autoGainFieldForKind('clip'), 'autoGainClip');
+});
+
+test('Saved Channels prefers the last Auto gain without overwriting the manual fallback', () => {
+  const entry = { gainVod: 0.5, autoGainVod: 0.8 };
+  assert.equal(u.extractGainForKind(entry, 'vod'), 0.5);
+  assert.equal(u.extractAutoGainForKind(entry, 'vod'), 0.8);
+  assert.equal(u.extractAutoDisplayGain(entry, 'vod'), 0.8);
+  assert.equal(u.extractAutoDisplayGain({ gainVod: 0.5 }, 'vod'), 0.5);
+  assert.equal(u.formatAutoGain(u.extractAutoDisplayGain(entry, 'vod'), 'dB'), 'Auto (-1.9 dB)');
+  const optionsSource = fs.readFileSync(path.join(__dirname, 'options.js'), 'utf8');
+  assert.match(optionsSource, /formatAutoGain\(\s*extractAutoDisplayGain\(entry, kind\)/s);
 });
 
 test('resolveAutoApplySetting prioritizes explicit choice, manual gain, then default', () => {
@@ -248,13 +265,22 @@ test('resolvePreferredGain follows current LUFS only when Auto is enabled', () =
   assert.ok(Math.abs(auto.gain - Math.pow(10, 5 / 20)) < 1e-9);
 
   const waiting = u.resolvePreferredGain(
+    { autoApplyLoudnessVod: true, gainVod: 0.5, autoGainVod: 0.8 },
+    'vod',
+    false,
+    -Infinity,
+    -18
+  );
+  assert.deepEqual(waiting, { autoApply: true, gain: 0.8 });
+
+  const waitingWithoutAutoGain = u.resolvePreferredGain(
     { autoApplyLoudnessVod: true, gainVod: 0.5 },
     'vod',
     false,
     -Infinity,
     -18
   );
-  assert.deepEqual(waiting, { autoApply: true, gain: 0.5 });
+  assert.deepEqual(waitingWithoutAutoGain, { autoApply: true, gain: 0.5 });
 
   const manual = u.resolvePreferredGain({ gainLive: 0.7 }, 'live', true, -23, -18);
   assert.deepEqual(manual, { autoApply: false, gain: 0.7 });
@@ -315,8 +341,10 @@ test('owner metadata is accepted only for the current Twitch content', () => {
 });
 
 test('content Auto mode follows LUFS and recalculates when the target changes', async () => {
-  const harness = createContentHarness({ autoApply: true });
+  const harness = createContentHarness({ autoApply: true, autoGain: 0.8 });
   await flushTasks();
+  let gains = harness.commands.filter((command) => command.cmd === 'setGain');
+  assert.equal(gains.at(-1).value, 0.8);
   harness.commands.length = 0;
 
   await harness.dispatchMessage({
@@ -326,9 +354,15 @@ test('content Auto mode follows LUFS and recalculates when the target changes', 
     shortTerm: -23,
     integrated: -23
   });
-  let gains = harness.commands.filter((command) => command.cmd === 'setGain');
+  gains = harness.commands.filter((command) => command.cmd === 'setGain');
   assert.equal(gains.length, 1);
   assert.ok(Math.abs(gains[0].value - u.calcGain(-23, -18)) < 1e-9);
+  await flushTasks();
+  assert.ok(Math.abs(
+    harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].autoGainVod -
+      u.calcGain(-23, -18)
+  ) < 1e-9);
+  assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].gainVod, 0.5);
 
   harness.commands.length = 0;
   harness.stored[u.SETTINGS_KEY] = {
@@ -341,6 +375,10 @@ test('content Auto mode follows LUFS and recalculates when the target changes', 
   gains = harness.commands.filter((command) => command.cmd === 'setGain');
   assert.equal(gains.length, 1);
   assert.ok(Math.abs(gains[0].value - u.calcGain(-23, -20)) < 1e-9);
+  assert.ok(Math.abs(
+    harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].autoGainVod -
+      u.calcGain(-23, -20)
+  ) < 1e-9);
 });
 
 test('content manual mode does not follow incoming LUFS measurements', async () => {
@@ -385,6 +423,10 @@ test('Auto save remains successful when only the follow-up storage read fails', 
     harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].autoApplyLoudnessVod,
     true
   );
+  assert.ok(Math.abs(
+    harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].autoGainVod -
+      u.calcGain(-23, -18)
+  ) < 1e-9);
 });
 
 test('GraphQL owner fallback keeps the request-time VOD identity across navigation', async () => {
@@ -442,6 +484,7 @@ test('provisional channel migration keeps confirmed data over stale provisional 
     [provisionalId]: {
       name: 'Temporary',
       gainVod: 0.5,
+      autoGainVod: 0.6,
       autoApplyLoudnessVod: true,
       lastLufs: { vod: -20 },
       lastMeasuredAt: 100
@@ -450,6 +493,7 @@ test('provisional channel migration keeps confirmed data over stale provisional 
       name: 'Confirmed',
       gainLive: 0.8,
       gainVod: 0.8,
+      autoGainVod: 0.8,
       autoApplyLoudnessVod: false,
       lastLufs: { live: -18, vod: -17 },
       lastMeasuredAt: 200
@@ -466,6 +510,7 @@ test('provisional channel migration keeps confirmed data over stale provisional 
   assert.equal(result[provisionalId], undefined);
   assert.equal(result[confirmedId].autoApplyLoudnessVod, false);
   assert.equal(result[confirmedId].gainVod, 0.8);
+  assert.equal(result[confirmedId].autoGainVod, 0.8);
   assert.equal(result[confirmedId].gainLive, 0.8);
   assert.deepEqual(result[confirmedId].lastLufs, { vod: -17, live: -18 });
   assert.equal(result[confirmedId].name, 'Broadcaster');
@@ -501,7 +546,7 @@ test('provisional channel migration uses field update order across tabs', () => 
   }, 300);
   state = channelStore.applyChannelVolumesMutation(state, {
     operation: 'saveMeasurement', channelId: provisionalId, kind: 'vod',
-    lufs: -20, sequence: 6
+    lufs: -20, autoGain: 0.9, sequence: 6
   }, 300);
   state = channelStore.applyChannelVolumesMutation(state, {
     operation: 'mergeChannelIds', fromId: provisionalId, toId: confirmedId, kind: 'vod'
@@ -510,11 +555,13 @@ test('provisional channel migration uses field update order across tabs', () => 
   assert.equal(state[provisionalId], undefined);
   assert.equal(state[confirmedId].gainVod, 0.6);
   assert.equal(state[confirmedId].autoApplyLoudnessVod, true);
+  assert.equal(state[confirmedId].autoGainVod, 0.9);
   assert.equal(state[confirmedId].lastLufs.vod, -20);
   assert.deepEqual(state[confirmedId].__fieldVersions, {
     gainVod: 4,
     autoApplyLoudnessVod: 5,
-    'lastLufs.vod': 6
+    'lastLufs.vod': 6,
+    autoGainVod: 6
   });
 });
 
@@ -522,8 +569,16 @@ test('provisional channel migration keeps a later confirmed field update', () =>
   const provisionalId = 'vod-owner:2770346335';
   const confirmedId = '123456';
   let state = {
-    [provisionalId]: { gainVod: 0.6, __fieldVersions: { gainVod: 4 } },
-    [confirmedId]: { gainVod: 0.8, __fieldVersions: { gainVod: 7 } }
+    [provisionalId]: {
+      gainVod: 0.6,
+      autoGainVod: 0.7,
+      __fieldVersions: { gainVod: 4, autoGainVod: 5 }
+    },
+    [confirmedId]: {
+      gainVod: 0.8,
+      autoGainVod: 0.9,
+      __fieldVersions: { gainVod: 7, autoGainVod: 8 }
+    }
   };
   state = channelStore.applyChannelVolumesMutation(state, {
     operation: 'mergeChannelIds', fromId: provisionalId, toId: confirmedId, kind: 'vod'
@@ -531,7 +586,9 @@ test('provisional channel migration keeps a later confirmed field update', () =>
 
   assert.equal(state[provisionalId], undefined);
   assert.equal(state[confirmedId].gainVod, 0.8);
+  assert.equal(state[confirmedId].autoGainVod, 0.9);
   assert.equal(state[confirmedId].__fieldVersions.gainVod, 7);
+  assert.equal(state[confirmedId].__fieldVersions.autoGainVod, 8);
 });
 
 test('service-worker writer serializes concurrent Auto and LUFS mutations', async () => {
@@ -555,6 +612,7 @@ test('service-worker writer serializes concurrent Auto and LUFS mutations', asyn
     }),
     write({
       operation: 'saveMeasurement', channelId: 'login:test', kind: 'live', lufs: -19,
+      autoGain: 0.75,
       channel: { name: 'Test' }
     })
   ]);
@@ -563,8 +621,10 @@ test('service-worker writer serializes concurrent Auto and LUFS mutations', asyn
   assert.equal(stored.channelVolumes['login:test'].name, 'Test');
   assert.equal(stored.channelVolumes['login:test'].lastLufs.live, -19);
   assert.equal(stored.channelVolumes['login:test'].lastMeasuredAt, 1234);
+  assert.equal(stored.channelVolumes['login:test'].autoGainLive, 0.75);
   assert.equal(stored.channelVolumes['login:test'].__fieldVersions.autoApplyLoudnessLive, 1);
   assert.equal(stored.channelVolumes['login:test'].__fieldVersions['lastLufs.live'], 2);
+  assert.equal(stored.channelVolumes['login:test'].__fieldVersions.autoGainLive, 2);
   assert.equal(stored.channelVolumeSequence, 2);
 });
 
@@ -657,11 +717,13 @@ test('persisted alias redirects writes after the service-worker writer is recrea
   );
   await restartedWriter({
     operation: 'saveMeasurement', channelId: provisionalId, kind: 'vod', lufs: -19,
+    autoGain: 0.9,
     channel: { name: 'v1', url: 'https://www.twitch.tv/videos/2770346335' }
   });
 
   assert.equal(stored.channelVolumes[provisionalId], undefined);
   assert.equal(stored.channelVolumes[confirmedId].gainVod, 0.8);
+  assert.equal(stored.channelVolumes[confirmedId].autoGainVod, 0.9);
   assert.equal(stored.channelVolumes[confirmedId].lastLufs.vod, -19);
   assert.equal(stored.channelVolumes[confirmedId].lastMeasuredAt, 200);
   assert.equal(stored.channelVolumes[confirmedId].name, 'Owner');
@@ -697,12 +759,14 @@ test('queued provisional measurement cannot overwrite canonical owner metadata',
     }),
     write({
       operation: 'saveMeasurement', channelId: provisionalId, kind: 'vod', lufs: -18,
+      autoGain: 0.9,
       channel: { name: 'v1', url: 'https://www.twitch.tv/videos/2770346335' }
     })
   ]);
 
   assert.equal(stored.channelVolumes[provisionalId], undefined);
   assert.equal(stored.channelVolumes[confirmedId].lastLufs.vod, -18);
+  assert.equal(stored.channelVolumes[confirmedId].autoGainVod, 0.9);
   assert.equal(stored.channelVolumes[confirmedId].name, 'Owner');
   assert.equal(stored.channelVolumes[confirmedId].login, 'owner');
 });
@@ -727,6 +791,34 @@ test('field sequence resumes above persisted entry versions after writer recreat
 
   assert.equal(stored.channelVolumeSequence, 8);
   assert.equal(stored.channelVolumes['login:test'].__fieldVersions.gainLive, 8);
+});
+
+test('Auto gain mutations validate range and advance the persistent field sequence', async () => {
+  assert.throws(() => channelStore.applyChannelVolumesMutation({}, {
+    operation: 'saveAutoGain', channelId: 'login:test', kind: 'live', autoGain: -0.01
+  }), /autoGain/);
+  assert.throws(() => channelStore.applyChannelVolumesMutation({}, {
+    operation: 'saveMeasurement', channelId: 'login:test', kind: 'live',
+    lufs: -18, autoGain: 6.01
+  }), /autoGain/);
+  assert.throws(() => channelStore.applyChannelVolumesMutation({}, {
+    operation: 'saveAuto', channelId: 'login:test', kind: 'live',
+    enabled: true, autoGain: NaN
+  }), /autoGain/);
+
+  let stored = { channelVolumes: {}, channelVolumeSequence: 4 };
+  const storage = {
+    async get(keys) { return readStoredKeys(stored, keys); },
+    async set(update) { stored = { ...stored, ...structuredClone(update) }; }
+  };
+  const write = channelStore.createChannelVolumesWriter(storage);
+  await write({
+    operation: 'saveAutoGain', channelId: 'login:test', kind: 'live', autoGain: 0.7
+  });
+
+  assert.equal(stored.channelVolumeSequence, 5);
+  assert.equal(stored.channelVolumes['login:test'].autoGainLive, 0.7);
+  assert.equal(stored.channelVolumes['login:test'].__fieldVersions.autoGainLive, 5);
 });
 
 test('clearing channels clears aliases without moving the sequence backward', async () => {

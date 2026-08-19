@@ -108,18 +108,19 @@
     });
   }
 
-  function saveChannelAutoApply(channelId, name, enabled, kind, url) {
+  function saveChannelAutoApply(channelId, name, enabled, kind, url, autoGain) {
     if (!channelId || !isContextValid()) return Promise.resolve();
     return sendChannelMutation({
       operation: 'saveAuto',
       channelId,
       kind,
       enabled: !!enabled,
+      ...(Number.isFinite(autoGain) ? { autoGain } : {}),
       channel: { name: name || channelId, url: url || '' }
     });
   }
 
-  function saveLastIntegrated(channelId, kind, lufs) {
+  function saveLastIntegrated(channelId, kind, lufs, autoGain) {
     if (!channelId || !isContextValid() || !Number.isFinite(lufs)) {
       return Promise.resolve();
     }
@@ -129,6 +130,21 @@
       channelId,
       kind,
       lufs,
+      ...(Number.isFinite(autoGain) ? { autoGain } : {}),
+      channel: channelMetadata(snapshot)
+    });
+  }
+
+  function saveChannelAutoGain(channelId, kind, autoGain) {
+    if (!channelId || !isContextValid() || !Number.isFinite(autoGain)) {
+      return Promise.resolve();
+    }
+    const snapshot = currentChannel.id === channelId ? { ...currentChannel } : null;
+    return sendChannelMutation({
+      operation: 'saveAutoGain',
+      channelId,
+      kind,
+      autoGain,
       channel: channelMetadata(snapshot)
     });
   }
@@ -295,12 +311,12 @@
       currentChannelEntry = null;
       currentAutoApplyLoudness = false;
       applyGain(1.0);
-      return;
+      return true;
     }
     const revision = ++preferenceRevision;
     const entry = await loadChannelEntry(ch.id);
     if (revision !== preferenceRevision ||
-        ch.id !== currentChannel.id || ch.kind !== currentChannel.kind) return;
+        ch.id !== currentChannel.id || ch.kind !== currentChannel.kind) return false;
     currentChannelEntry = entry;
     const preferred = resolvePreferredGain(
       entry,
@@ -311,6 +327,7 @@
     );
     currentAutoApplyLoudness = preferred.autoApply;
     applyGain(preferred.gain);
+    return true;
   }
 
   // ── Message handler from page-bridge ───────────────────────────────
@@ -364,7 +381,15 @@
     const now = Date.now();
     if (now - lastSavedAt < 5000) return;
     lastSavedAt = now;
-    saveLastIntegrated(currentChannel.id, currentChannel.kind, lastLufs.integrated);
+    saveLastIntegrated(
+      currentChannel.id,
+      currentChannel.kind,
+      lastLufs.integrated,
+      currentAutoApplyLoudness ? currentGain : undefined
+    ).catch((error) => {
+      lastSavedAt = 0;
+      console.warn('[TCV] failed to persist measurement and Auto gain', error);
+    });
   }
 
   // ── DOM-based ad detection (fallback) ─────────────────────────────
@@ -434,8 +459,13 @@
       }
       showGainOverlay = next.showGainOverlay ?? true;
       updateGainOverlay();
-      reapplyForCurrentChannel().catch((error) => {
-        console.warn('[TCV] failed to reapply settings', error);
+      reapplyForCurrentChannel().then((applied) => {
+        if (!applied || !currentAutoApplyLoudness || !Number.isFinite(lastLufs.integrated)) {
+          return;
+        }
+        return saveChannelAutoGain(currentChannel.id, currentChannel.kind, currentGain);
+      }).catch((error) => {
+        console.warn('[TCV] failed to reapply or persist settings', error);
       });
     }
     if ((changes[CHANNEL_VOLUMES_KEY] || changes[CHANNEL_ALIASES_KEY]) && currentChannel.id) {
@@ -499,12 +529,16 @@
           sendResponse({ ok: false, reason: 'channel mismatch' });
           return;
         }
+        const autoGain = req.enabled && Number.isFinite(lastLufs.integrated)
+          ? calcGain(lastLufs.integrated, targetLufs)
+          : undefined;
         saveChannelAutoApply(
           currentChannel.id,
           currentChannel.name,
           !!req.enabled,
           kind,
-          currentChannel.url
+          currentChannel.url,
+          autoGain
         ).then(async () => {
           try {
             await reapplyForCurrentChannel();
@@ -514,7 +548,10 @@
             if (currentChannel.id === req.channelId && currentChannel.kind === kind) {
               currentChannelEntry = {
                 ...(currentChannelEntry || {}),
-                [autoApplyFieldForKind(kind)]: !!req.enabled
+                [autoApplyFieldForKind(kind)]: !!req.enabled,
+                ...(Number.isFinite(autoGain)
+                  ? { [autoGainFieldForKind(kind)]: autoGain }
+                  : {})
               };
               const preferred = resolvePreferredGain(
                 currentChannelEntry,

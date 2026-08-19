@@ -19,6 +19,12 @@ function storeAutoFieldForKind(kind) {
   return 'autoApplyLoudnessLive';
 }
 
+function storeAutoGainFieldForKind(kind) {
+  if (kind === 'vod') return 'autoGainVod';
+  if (kind === 'clip') return 'autoGainClip';
+  return 'autoGainLive';
+}
+
 function assertChannelId(value, field = 'channelId') {
   if (typeof value !== 'string' || value.length === 0) {
     throw new TypeError(`${field} must be a non-empty string`);
@@ -141,6 +147,7 @@ function mergeProvisionalEntry(all, mutation) {
   for (const mergeKind of CHANNEL_MUTATION_KINDS) {
     copyNewerField(merged, mergedVersions, source, target, storeGainFieldForKind(mergeKind));
     copyNewerField(merged, mergedVersions, source, target, storeAutoFieldForKind(mergeKind));
+    copyNewerField(merged, mergedVersions, source, target, storeAutoGainFieldForKind(mergeKind));
   }
 
   const sourceLufs = source.lastLufs || {};
@@ -193,6 +200,13 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
       copyMetadata(entry, mutation.channel);
       entry[storeAutoFieldForKind(mutation.kind)] = mutation.enabled;
       setFieldVersion(entry, storeAutoFieldForKind(mutation.kind), mutation.sequence);
+      if (mutation.autoGain !== undefined) {
+        if (!Number.isFinite(mutation.autoGain) || mutation.autoGain < 0 || mutation.autoGain > 6) {
+          throw new TypeError('autoGain must be finite and within [0, 6]');
+        }
+        entry[storeAutoGainFieldForKind(mutation.kind)] = mutation.autoGain;
+        setFieldVersion(entry, storeAutoGainFieldForKind(mutation.kind), mutation.sequence);
+      }
       all[mutation.channelId] = entry;
       break;
     }
@@ -205,6 +219,26 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
       entry.lastLufs = { ...(entry.lastLufs || {}), [mutation.kind]: mutation.lufs };
       entry.lastMeasuredAt = now;
       setFieldVersion(entry, `lastLufs.${mutation.kind}`, mutation.sequence);
+      if (mutation.autoGain !== undefined) {
+        if (!Number.isFinite(mutation.autoGain) || mutation.autoGain < 0 || mutation.autoGain > 6) {
+          throw new TypeError('autoGain must be finite and within [0, 6]');
+        }
+        entry[storeAutoGainFieldForKind(mutation.kind)] = mutation.autoGain;
+        setFieldVersion(entry, storeAutoGainFieldForKind(mutation.kind), mutation.sequence);
+      }
+      all[mutation.channelId] = entry;
+      break;
+    }
+    case 'saveAutoGain': {
+      assertChannelId(mutation.channelId);
+      assertKind(mutation.kind);
+      if (!Number.isFinite(mutation.autoGain) || mutation.autoGain < 0 || mutation.autoGain > 6) {
+        throw new TypeError('autoGain must be finite and within [0, 6]');
+      }
+      const entry = cloneEntry(all[mutation.channelId], mutation.channel?.name || mutation.channelId);
+      copyMetadata(entry, mutation.channel);
+      entry[storeAutoGainFieldForKind(mutation.kind)] = mutation.autoGain;
+      setFieldVersion(entry, storeAutoGainFieldForKind(mutation.kind), mutation.sequence);
       all[mutation.channelId] = entry;
       break;
     }
@@ -272,7 +306,8 @@ function resolveMutation(mutation, aliases) {
 }
 
 function mutationNeedsSequence(operation) {
-  return operation === 'saveGain' || operation === 'saveAuto' || operation === 'saveMeasurement';
+  return operation === 'saveGain' || operation === 'saveAuto' ||
+    operation === 'saveMeasurement' || operation === 'saveAutoGain';
 }
 
 function createChannelVolumesWriter(
