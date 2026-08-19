@@ -57,12 +57,19 @@ The measurement path applies the BS.1770-4 K-weighting (high-shelf pre-filter + 
 # Run tests
 node test.js
 
+# Check Python syntax without creating Chrome-reserved __pycache__
+python3 -B -c "import ast,pathlib; [ast.parse(p.read_text()) for p in pathlib.Path('.').glob('*.py')]"
+
 # Regenerate icons (requires Pillow)
 python3 gen_icons.py
 
 # Build Chrome Web Store zip
 python3 pack.py
 ```
+
+Do not run `python3 -m py_compile` in the unpacked extension directory: it creates
+`__pycache__`, which Chrome rejects. `node test.js` also checks the complete tree
+for reserved underscore-prefixed paths before loading the extension.
 
 ## Why not just use a compressor?
 

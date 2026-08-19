@@ -26,5 +26,8 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Check Python Syntax 🐍
+        run: python3 -B -c "import ast,pathlib; [ast.parse(p.read_text()) for p in pathlib.Path('.').glob('*.py')]"
+
       - name: Run Unit Tests ✅
         run: node test.js

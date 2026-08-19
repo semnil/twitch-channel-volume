@@ -177,6 +177,9 @@ python3 gen_icons.py
 # Run tests
 node test.js
 
+# Python 構文検査 (__pycache__ を生成しない)
+python3 -B -c "import ast,pathlib; [ast.parse(p.read_text()) for p in pathlib.Path('.').glob('*.py')]"
+
 # Package for Chrome Web Store
 python3 pack.py
 ```
@@ -184,6 +187,7 @@ python3 pack.py
 ## Development notes
 
 - Gain value 1.0 = 100% (passthrough). Range 0.0–6.0
+- unpacked extension のルートでは `python3 -m py_compile` を実行しない。Chrome が拒否する `__pycache__` を生成するため、Python 構文検査は上記の AST parse を使う。`node test.js` は `_locales` 以外の underscore 始まりのパスも検出する
 - AudioContext may be `suspended` until first user interaction (Chrome autoplay policy) — content.js sends `resume` on first click capture
 - BS.1770 reference is 48 kHz. Chrome の AudioContext は通常 48000 だが、サンプルレート変動には redesignBiquad で対応
 - Storage keys: `autoLoudnessSettings` (target LUFS, ad gain, display unit, kind 別 Auto 既定値), `channelVolumes` (per-channel saved gains + kind 別 Auto + lastLufs cache), `channelVolumeAliases` (仮 ID → 正準 ID), `channelVolumeSequence` (永続更新番号)

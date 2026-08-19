@@ -20,6 +20,24 @@ function readStoredKeys(stored, keys) {
   return result;
 }
 
+test('unpacked extension tree contains no Chrome-reserved filenames', () => {
+  const forbidden = [];
+  function walk(directory, relative = '') {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      if (entry.name === '.git' || entry.name === 'node_modules') continue;
+      const nextRelative = path.join(relative, entry.name);
+      const allowedLocaleDirectory = nextRelative === '_locales';
+      if ((entry.name.startsWith('_') && !allowedLocaleDirectory) || entry.name.endsWith('.pyc')) {
+        forbidden.push(nextRelative);
+        continue;
+      }
+      if (entry.isDirectory()) walk(path.join(directory, entry.name), nextRelative);
+    }
+  }
+  walk(__dirname);
+  assert.deepEqual(forbidden, []);
+});
+
 async function flushTasks(turns = 4) {
   for (let i = 0; i < turns; i++) {
     await new Promise((resolve) => setImmediate(resolve));
