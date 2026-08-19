@@ -332,8 +332,25 @@
 
   // ── Fetch hook: HLS manifests + GraphQL ─────────────────────────────
 
+  function currentContentIdentity() {
+    try {
+      const url = new URL(location.href);
+      const segs = url.pathname.split('/').filter(Boolean);
+      if (segs[0] === 'videos' && segs[1]) return { kind: 'vod', id: segs[1] };
+      if (segs.length >= 3 && segs[1] === 'clip') {
+        return { kind: 'clip', id: segs[2] };
+      }
+      if (url.hostname === 'clips.twitch.tv' && segs[0]) {
+        return { kind: 'clip', id: segs[0] };
+      }
+      if (segs.length === 1) return { kind: 'live', id: segs[0].toLowerCase() };
+    } catch (_) {}
+    return { kind: 'none', id: '' };
+  }
+
   const origFetch = window.fetch;
   window.fetch = function (...args) {
+    const requestIdentity = currentContentIdentity();
     const result = origFetch.apply(this, args);
     let url = '';
     try { url = (typeof args[0] === 'string') ? args[0] : (args[0]?.url || ''); } catch (_) {}
@@ -344,7 +361,7 @@
       }).catch(() => {});
     } else if (url.includes('gql.twitch.tv')) {
       result.then((resp) => resp.clone().json()).then((data) => {
-        extractOwnerFromGraphQL(data);
+        extractOwnerFromGraphQL(data, requestIdentity);
       }).catch(() => {});
     }
     return result;
@@ -376,7 +393,7 @@
     }
   }
 
-  function extractOwnerFromGraphQL(payload) {
+  function extractOwnerFromGraphQL(payload, requestIdentity) {
     const items = Array.isArray(payload) ? payload : [payload];
     for (const item of items) {
       try {
@@ -385,17 +402,42 @@
         // VideoMetadata: data.video.owner.{id,login,displayName}
         const v = data.video;
         if (v?.owner?.id && v?.owner?.login) {
-          postOwner({ userId: String(v.owner.id), login: v.owner.login, displayName: v.owner.displayName || v.owner.login, source: 'video' });
+          postOwner({
+            userId: String(v.owner.id),
+            login: v.owner.login,
+            displayName: v.owner.displayName || v.owner.login,
+            source: 'video',
+            contentKind: 'vod',
+            contentId: v.id != null
+              ? String(v.id)
+              : (requestIdentity?.kind === 'vod' ? requestIdentity.id : '')
+          });
         }
         // StreamMetadata / User: data.user.{id,login,displayName}
         const u = data.user;
         if (u?.id && u?.login) {
-          postOwner({ userId: String(u.id), login: u.login, displayName: u.displayName || u.login, source: 'user' });
+          postOwner({
+            userId: String(u.id),
+            login: u.login,
+            displayName: u.displayName || u.login,
+            source: 'user',
+            contentKind: 'live',
+            contentId: u.login.toLowerCase()
+          });
         }
         // Clip
         const c = data.clip;
         if (c?.broadcaster?.id && c?.broadcaster?.login) {
-          postOwner({ userId: String(c.broadcaster.id), login: c.broadcaster.login, displayName: c.broadcaster.displayName || c.broadcaster.login, source: 'clip' });
+          postOwner({
+            userId: String(c.broadcaster.id),
+            login: c.broadcaster.login,
+            displayName: c.broadcaster.displayName || c.broadcaster.login,
+            source: 'clip',
+            contentKind: 'clip',
+            contentId: typeof c.slug === 'string'
+              ? c.slug
+              : (requestIdentity?.kind === 'clip' ? requestIdentity.id : '')
+          });
         }
       } catch (_) {}
     }

@@ -20,6 +20,21 @@
   "hintNoLufs": {
     "message": "Measuring loudness..."
   },
+  "hintAutoApplyEnabled": {
+    "message": "Auto-follow is enabled for this type"
+  },
+  "autoSaveFailed": {
+    "message": "Could not save the Auto-follow setting. Please try again."
+  },
+  "gainSaveFailed": {
+    "message": "Could not save the gain. Please try again."
+  },
+  "settingsSaveFailed": {
+    "message": "Could not save the setting. The saved value was restored."
+  },
+  "channelUpdateFailed": {
+    "message": "Could not update saved channels. Please try again."
+  },
   "openOnTwitch": {
     "message": "Open on a Twitch tab"
   },
@@ -37,6 +52,15 @@
   },
   "targetLufsDesc": {
     "message": "Reference loudness used to compute gain from measurement"
+  },
+  "allChannelsAutoApply": {
+    "message": "Auto-follow LUFS for all channels"
+  },
+  "allChannelsAutoApplyDesc": {
+    "message": "Default for types without an individual setting or manual gain"
+  },
+  "autoApplyLoudness": {
+    "message": "Auto-follow LUFS"
   },
   "displayUnit": {
     "message": "Display unit"
@@ -76,6 +100,12 @@
   },
   "labelCurrent": {
     "message": "Current"
+  },
+  "labelAuto": {
+    "message": "Auto"
+  },
+  "labelFallback": {
+    "message": "Fallback"
   },
   "colChannel": {
     "message": "Channel"

@@ -18,7 +18,8 @@ page-bridge.js (MAIN world content script, document_start)
 ├── buildMeasurementChain: worklet ロードが attach より遅れた場合は後付けで接続
 ├── Fetch hook:
 │   ├── usher.ttvnw.net / *.m3u8 → EXT-X-DATERANGE をパースし CM 区間検出
-│   └── gql.twitch.tv → user.id / video.owner.id / clip.broadcaster.id を抽出
+│   └── gql.twitch.tv → user.id / video.owner.id / clip.broadcaster.id と
+│       リクエスト時点の content kind/id を抽出
 ├── GainNode は ad active 時に baseline * adGainOffset (dB → gain) を適用
 └── postMessage (`__twitch_channel_volume__`) → content.js
 
@@ -26,26 +27,50 @@ content.js (ISOLATED world content script, document_idle)
 ├── postMessage listener: page-bridge.js から LUFS / owner / manifest-ad を受信
 ├── URL 分類 (classifyTwitchUrl): live / vod / clip / none
 ├── Channel resolution:
-│   ├── live: URL の login 名 (`login:<name>`)
+│   ├── live: URL の login 名 (`login:<name>`) / GraphQL user.id 解決後は数値 ID
 │   ├── vod: GraphQL owner.id (`<numeric>`) / fallback `vod-owner:<videoId>`
 │   └── clip: GraphQL broadcaster.id / fallback `clip-owner:<slug>`
+├── owner 応答を現在の login / videoId / clip slug と照合し、仮 ID の設定を数値 ID へマージ
 ├── 保存済み gain の自動適用 (Live/VOD/Clip 種別ごとに別管理)
+├── LUFS 自動追従: チャンネル × Live/VOD/Clip 別の Auto 設定が ON の間、
+│   Integrated LUFS 更新ごとに Target LUFS との差から baseline gain を再計算
 ├── Gain overlay: `.volume-slider__slider-container` の **次の兄弟** として span を挿入。 mute wrapper と slider container はプレイヤーコントロール内の flex 行に並ぶ sibling 構造のため、 slider container の右隣に span が並ぶ。 表示/非表示は親 `[data-a-target="player-controls"][data-a-visible]` の切り替えに自動追従する (= プレイヤーコントロール内に埋め込んでいるため)。 gain ≠ 1.0 時のみ、表示は `%` 固定 / displayUnit に依存しない
 ├── DOM ad detection fallback (`[data-a-target="video-ad-countdown"]`)
 ├── SPA navigation: history.pushState/replaceState hook + popstate + MutationObserver
-├── chrome.storage.onChanged でクロスタブ同期
-├── popup/options からの chrome.tabs.sendMessage を `getState` / `setGain` / `resume` / `deleteChannel` で処理
+├── channelVolumes の更新は Service Worker の単一キューへ委譲し、onChanged でクロスタブ同期
+├── popup/options からの chrome.tabs.sendMessage を `getState` / `setGain` / `setAutoApplyLoudness` / `resume` / `deleteChannel` で処理
 └── Storage
-    ├── autoLoudnessSettings: { targetLufs, adGainDb, displayUnit, showGainOverlay }
-    └── channelVolumes: { [channelId]: { name, gainLive, gainVod, gainClip, url, lastLufs, lastMeasuredAt } }
+    ├── autoLoudnessSettings: { targetLufs, adGainDb, displayUnit, showGainOverlay,
+    │     autoApplyLoudnessLiveDefault, autoApplyLoudnessVodDefault, autoApplyLoudnessClipDefault }
+    ├── channelVolumes: { [channelId]: { name, gainLive, gainVod, gainClip,
+          autoGainLive, autoGainVod, autoGainClip,
+          autoApplyLoudnessLive, autoApplyLoudnessVod, autoApplyLoudnessClip,
+          url, lastLufs, lastMeasuredAt, __fieldVersions } }
+    ├── channelVolumeAliases: { [loginOrContentProvisionalId]: canonicalOwnerId }
+    └── channelVolumeSequence: フィールド更新順序の永続カウンタ
 
 audio-worklet.js (page context, loaded by page-bridge.js)
 └── KMeanSquareProcessor: blockSec (default 0.1) ごとに L²+R² 平均を port.postMessage
 
+channel-store.js (service worker helper)
+├── channelVolumes の全 read-modify-write を単一キューで直列化
+├── gain / Auto / LUFS / delete / clear mutation を検証して適用
+├── 仮 ID → 数値 owner ID の alias を永続化し、全 mutation で正準 ID を解決
+│   (alias 転送時は仮 ID 側の name / login / url を適用しない)
+├── 同じ login の Live 行と数値 owner 行を統合し、URL をチャンネル URL へ正規化
+└── フィールド単位の永続更新番号で仮 ID と確定 ID をマージ
+
+settings-store.js (service worker helper)
+├── autoLoudnessSettings のフィールド単位 mutation を検証
+└── 全 read-modify-write を単一キューで直列化し、設定タブ間の上書きを防止
+
 utils.js (shared, popup/options + page-bridge + content.js + test.js)
-├── Constants: SETTINGS_KEY, CHANNEL_VOLUMES_KEY, DEFAULT_TARGET_LUFS, DEFAULT_AD_GAIN_DB,
+├── Constants: SETTINGS_KEY, CHANNEL_VOLUMES_KEY, CHANNEL_ALIASES_KEY,
+│              CHANNEL_SEQUENCE_KEY, DEFAULT_TARGET_LUFS, DEFAULT_AD_GAIN_DB,
+│              DEFAULT_AUTO_APPLY_LOUDNESS,
 │              ABSOLUTE_GATE_LUFS, RELATIVE_GATE_LU, MIN_GAIN, MAX_GAIN
-├── Gain utilities: gainToPercent, percentToGain, gainToDb, dbToGain, formatGain, calcGain
+├── Gain utilities: gainToPercent, percentToGain, gainToDb, dbToGain, formatGain, calcGain,
+│                  resolveAutoApplySetting, resolvePreferredGain
 ├── URL classification: classifyTwitchUrl (TWITCH_RESERVED_PATHS 除外)
 ├── HLS parsing: parseDateRange, isAdDateRange, parseAdRangesFromManifest
 ├── BS.1770: K_PRE_48K / K_RLB_48K 係数 + redesignBiquad (任意 sample rate 対応)
@@ -59,16 +84,21 @@ popup.html / popup.js
 │   ├── Suggested gain は target との差分から算出 (integrated 優先 / short-term フォールバック)
 │   ├── Suggested / Current の表示は displayUnit (% / dB) に追従
 │   └── 単位 (LUFS / dB / %) は setCardValue で <span class="unit"> に分離して灰色小文字表示
+├── 現在視聴中の種別に対するチャンネル別「LUFS 自動追従」トグル
+├── Auto 保存失敗時はローカライズ済みエラーを表示して最新状態を再取得
+├── Auto 保存中は Apply / Manual 操作を無効化し、content 側でも手動 gain mutation を拒否
 ├── Manual slider (slider 自体は 0–600%, 表示値は displayUnit 追従) + 6 プリセット (0/50/100/200/400/MAX)
 └── SETTINGS_KEY を初期ロード + storage.onChanged で options の単位切替に即時反応
 
 options.html / options.js
 ├── Target LUFS スライダー (-30 ~ -6 LUFS, default -18)
+├── 全チャンネルの LUFS 自動追従既定値 (Live / VOD / Clip 別、default OFF)
 ├── CM Gain スライダー (-24 ~ +6 dB, default -6 dB)
 ├── 表示単位 (% / dB)
 ├── ゲインオーバーレイ表示 ON/OFF トグル (default ON)
-├── Saved Channels テーブル (Live / VOD / Clip 3列、削除可)
-└── storage.onChanged で同期
+├── Saved Channels テーブル (Live / VOD / Clip 3列、Auto 時は最後に適用した Auto gain、削除可)
+├── 初期設定の読込完了まで全設定操作を無効化
+└── 各項目だけを Service Worker の設定 mutation で保存し、storage.onChanged で同期
 ```
 
 ## i18n
@@ -80,9 +110,9 @@ options.html / options.js
 
 ## User workflow
 
-1. 配信または VOD を開く → 数秒〜数十秒で integrated LUFS が安定
-2. 「チャンネルに適用」ボタン → 計測 LUFS と target LUFS の差分からゲイン算出・種別ごとに保存
-3. 同チャンネルの他コンテンツ (Live ↔ VOD ↔ Clip) を開いても種別ごとの保存値が自動適用
+1. 配信または VOD を開く → ポップアップで現在種別の「LUFS 自動追従」を ON
+2. Integrated LUFS の測定値が更新されるたび、Target LUFS に対応するゲインへ自動追従
+3. Auto が OFF の種別では「チャンネルに適用」または Manual Volume で従来どおり保存
 4. CM 区間は CM Gain (default -6 dB) が追加で適用される
 5. Manual Volume スライダーで任意のゲインに変更も可
 
@@ -97,7 +127,9 @@ options.html / options.js
 | `utils.js` | 共通定数・ユーティリティ (popup/options/test 共有) |
 | `popup.html` / `popup.js` | Popup UI |
 | `options.html` / `options.js` | 設定画面 |
-| `background.js` | Service worker (install 時にデフォルト設定書き込み) |
+| `background.js` | Service worker (install defaults + channelVolumes / settings 単一ライター) |
+| `channel-store.js` | channelVolumes mutation・直列化・仮 ID マージ |
+| `settings-store.js` | autoLoudnessSettings のフィールド mutation・直列化 |
 | `_locales/` | i18n (ja, en) |
 | `icons/` | 16/48/128 px PNG (Twitch purple 3-bar meter) |
 | `gen_icons.py` | アイコン生成 (Python Pillow) |
@@ -115,9 +147,13 @@ options.html / options.js
 - **GainNode, not HTMLMediaElement.volume**: volume は 1.0 でクリップする。GainNode で 0.0–6.0 (0–600%) を提供
 - **MAIN world + ISOLATED world 分離**: Twitch の CSP は inline script を禁止するため、AudioContext と fetch hook は page-bridge.js (MAIN world, document_start) で実行
 - **Channel ID 戦略**: 
-  - Live は URL の login (`login:<name>`)。Twitch login は改名可能だが Helix OAuth 不要で取得できる現実解
+  - Live は owner 応答前のみ URL の login (`login:<name>`) を使用し、GraphQL `user.id` 解決後は VOD / Clip と同じ数値 ID へ統合
   - VOD / Clip は GraphQL レスポンスの `owner.id` / `broadcaster.id` (数値、不変)。フォールバックは `vod-owner:<videoId>` / `clip-owner:<slug>`
-  - 将来的に Helix `Get Users` で login → user_id にマイグレーション可能な構造
+  - 数値 ID を取得できない間だけ種別固有の仮 ID を使い、取得後は永続 alias で正準化する
+- **仮 ID → 確定 ID 遷移**: page-bridge が GraphQL リクエスト時点の content kind/id を owner イベントへ付与。content.js は現在 URL と一致した応答だけを受理し、初期設定の読込中でも `login:<name>` / `vod-owner:<videoId>` / `clip-owner:<slug>` を Service Worker 内で数値 ID へマージしてから currentChannel を切り替える。各 gain / Auto / LUFS フィールドは単一ライターが採番した更新順序で競合解決し、別タブの最新保存も維持する。仮 ID の正準 ID 対応は Storage に永続化し、content の読取と Worker の書込の両方で解決する
+- **Saved Channels のチャンネル不変条件**: 数値 owner ID と login が対応する場合は 1 行へ統合し、保存・表示するリンクは常に `https://www.twitch.tv/<login>` とする。既存の Live/VOD 重複行は拡張更新時の正規化 mutation で移行する
+- **channelVolumes 単一ライター**: aggregate key の read-modify-write は background.js → channel-store.js のキューだけが実行。content scripts と options は mutation message を送り、複数タブの LUFS キャッシュ保存と Auto/手動設定保存が古い全体オブジェクトで互いを上書きしないようにする
+- **設定のフィールド単位保存**: options は初期ロード完了後に操作を有効化し、変更した設定フィールドだけを background.js → settings-store.js の単一キューへ送る。複数の設定タブが異なる項目を古い表示状態から変更しても、`autoLoudnessSettings` 全体を置換せず最新値へマージする
 - **CM 区間検出 (HLS 経路)**: usher.ttvnw.net / *.m3u8 を fetch hook で傍受し `EXT-X-DATERANGE CLASS="twitch-stitched-ad"` をパース。Streamlink の Twitch plugin と同等の判定ロジック
 - **CM 区間検出 (DOM 経路)**: `[data-a-target="video-ad-countdown"]` の存在で判定するフォールバック。HLS 取得が間に合わない preroll で有効
 - **CM 中の挙動**: GainNode に baseline × adGainOffset (dB → gain) を適用。Integrated 計測は CM 中スキップして本編の値を保持
@@ -142,6 +178,9 @@ python3 gen_icons.py
 # Run tests
 node test.js
 
+# Python 構文検査 (__pycache__ を生成しない)
+python3 -B -c "import ast,pathlib; [ast.parse(p.read_text()) for p in pathlib.Path('.').glob('*.py')]"
+
 # Package for Chrome Web Store
 python3 pack.py
 ```
@@ -149,13 +188,14 @@ python3 pack.py
 ## Development notes
 
 - Gain value 1.0 = 100% (passthrough). Range 0.0–6.0
+- unpacked extension のルートでは `python3 -m py_compile` を実行しない。Chrome が拒否する `__pycache__` を生成するため、Python 構文検査は上記の AST parse を使う。`node test.js` は `_locales` 以外の underscore 始まりのパスも検出する
 - AudioContext may be `suspended` until first user interaction (Chrome autoplay policy) — content.js sends `resume` on first click capture
 - BS.1770 reference is 48 kHz. Chrome の AudioContext は通常 48000 だが、サンプルレート変動には redesignBiquad で対応
-- Storage keys: `autoLoudnessSettings` (target LUFS, ad gain, display unit), `channelVolumes` (per-channel saved gains + lastLufs cache)
-- Storage format: `channelVolumes.{id}` = `{ name, gainLive, gainVod, gainClip, url, lastLufs: { live, vod, clip }, lastMeasuredAt }`
+- Storage keys: `autoLoudnessSettings` (target LUFS, ad gain, display unit, kind 別 Auto 既定値), `channelVolumes` (per-channel saved gains + kind 別 Auto + lastLufs cache), `channelVolumeAliases` (仮 ID → 正準 ID), `channelVolumeSequence` (永続更新番号)
+- Storage format: `channelVolumes.{id}` = `{ name, gainLive, gainVod, gainClip, autoApplyLoudnessLive, autoApplyLoudnessVod, autoApplyLoudnessClip, url, lastLufs: { live, vod, clip }, lastMeasuredAt, __fieldVersions }`
 - 旧形式 `{ gain }` 単一ゲインは extractGainForKind で自動マイグレーション
 - HLS 経路の CM 検出は Streamlink twitch.py の判定 (`CLASS="twitch-stitched-ad"` または `ID` が `stitched-ad-` で始まる) と同等
-- popup は 1 秒毎に getState をポーリングし LUFS / Suggested / Current カードを更新。Manual slider は**ポーリングでは更新しない**。`syncSlider(gain)` を呼ぶのは popup 初回表示・「チャンネルに適用」ボタン・ユーザー操作 (input/change/プリセット) の 3 ケースのみ (`sliderSynced` フラグで初回判定)。計測自体は popup の開閉に依存せず、Twitch ページが開いている限り常時走る
+- popup は 1 秒毎に getState をポーリングし LUFS / Suggested / Current カードを更新。Manual slider は**通常のポーリングでは更新しない**。初回表示・「チャンネルに適用」・Auto 切替・表示単位変更・ユーザー操作時だけ同期する。計測自体は popup の開閉に依存せず、Twitch ページが開いている限り常時走る
 - 拡張機能の再ロードで chrome.runtime が無効化された場合、popup は `reloadPageNeeded` を表示して F5 を促す
 - 計測パイプラインの診断: DevTools Console で `[TCV]` ログを確認。`waiting for <video>` → `attached to video` → `measurement chain ready` → `first measurement block received` の順に出る。`createMediaElementSource failed` で止まる場合は他拡張競合 (技術的限界)
 

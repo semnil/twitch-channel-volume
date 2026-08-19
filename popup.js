@@ -8,6 +8,24 @@
   let displayUnit = '%';
   let lastSuggestedGain = null;
   let sliderSynced = false;
+  let currentChannel = { id: '', kind: 'none' };
+  let currentAutoApplyLoudness = false;
+  let autoUpdatePending = false;
+  let gainSaveError = false;
+
+  function syncInteractionDisabledState() {
+    const validChannel = !!currentChannel.id &&
+      ['live', 'vod', 'clip'].includes(currentChannel.kind);
+    $('autoApplyToggle').disabled = autoUpdatePending || !validChannel;
+    if (autoUpdatePending) $('applyBtn').disabled = true;
+
+    const manualDisabled = currentAutoApplyLoudness || autoUpdatePending;
+    $('manualSection').classList.toggle('disabled', manualDisabled);
+    $('manualSlider').disabled = manualDisabled;
+    document.querySelectorAll('.presets button').forEach((btn) => {
+      btn.disabled = manualDisabled;
+    });
+  }
 
   function formatGainText(gain) {
     const f = formatGain(gain, displayUnit);
@@ -62,17 +80,17 @@
     return tabs[0];
   }
 
-  async function requestState() {
+  async function requestState({ showConnectionError = true } = {}) {
     const tab = await getActiveTab();
     if (!tab?.url || !/twitch\.tv/.test(tab.url)) {
-      showError(msg('openOnTwitch'));
+      if (showConnectionError) showError(msg('openOnTwitch'));
       return null;
     }
     try {
       const res = await chrome.tabs.sendMessage(tab.id, { cmd: 'getState' });
       return res;
     } catch (err) {
-      showError(msg('reloadPageNeeded'));
+      if (showConnectionError) showError(msg('reloadPageNeeded'));
       return null;
     }
   }
@@ -87,6 +105,9 @@
   function renderState(state) {
     if (!state) return;
     const ch = state.channel || {};
+    if (currentChannel.id && ch.id !== currentChannel.id) gainSaveError = false;
+    currentChannel = ch;
+    currentAutoApplyLoudness = !!state.autoApplyLoudness;
     const nameEl = $('channelName');
     if (ch.name) {
       nameEl.textContent = ch.name;
@@ -110,48 +131,129 @@
 
     const lufs = state.lufs || {};
     setLufsCell('integrated', lufs.integrated);
+    const measured = Number.isFinite(lufs.integrated) ? lufs.integrated : lufs.shortTerm;
+    const hasIntegrated = Number.isFinite(lufs.integrated);
+
+    const autoToggle = $('autoApplyToggle');
+    if (!autoUpdatePending) autoToggle.checked = currentAutoApplyLoudness;
+    $('fallbackBadge').classList.toggle(
+      'hidden',
+      !currentAutoApplyLoudness || hasIntegrated
+    );
 
     const suggestedEl = $('suggested');
-    const measured = Number.isFinite(lufs.integrated) ? lufs.integrated : lufs.shortTerm;
     if (Number.isFinite(measured) && Number.isFinite(state.targetLufs)) {
       const g = calcGain(measured, state.targetLufs);
       lastSuggestedGain = g;
       const fs = formatGain(g, displayUnit);
       setCardValue(suggestedEl, fs.text, fs.unit, 'suggested');
-      $('applyBtn').disabled = false;
-      $('applyHint').textContent = '';
     } else {
       lastSuggestedGain = null;
       setCardValue(suggestedEl, '---', null, 'suggested unknown');
-      $('applyBtn').disabled = true;
-      $('applyHint').textContent = msg('hintNoLufs');
     }
 
+    $('applyHint').classList.toggle('error', gainSaveError);
+    if (gainSaveError) {
+      $('applyBtn').disabled = currentAutoApplyLoudness ||
+        !Number.isFinite(lastSuggestedGain) || !ch.id;
+      $('applyHint').textContent = msg('gainSaveFailed');
+    } else if (currentAutoApplyLoudness && ch.id) {
+      $('applyBtn').disabled = true;
+      $('applyHint').textContent = msg('hintAutoApplyEnabled');
+    } else if (Number.isFinite(lastSuggestedGain) && ch.id) {
+      $('applyBtn').disabled = false;
+      $('applyHint').textContent = '';
+    } else {
+      $('applyBtn').disabled = true;
+      $('applyHint').textContent = ch.id ? msg('hintNoLufs') : msg('channelNotDetected');
+    }
+
+    const actualGain = Number.isFinite(state.gain) ? state.gain : 1.0;
+    const currentFormatted = formatGain(actualGain, displayUnit);
+    setCardValue($('current'), currentFormatted.text, currentFormatted.unit, 'current');
     if (!sliderSynced) {
-      syncSlider(state.gain || 1);
+      syncSlider(actualGain);
       sliderSynced = true;
     }
+
+    syncInteractionDisabledState();
 
     $('adFlag').classList.toggle('hidden', !state.adActive);
   }
 
   async function applyMeasured() {
-    if (!Number.isFinite(lastSuggestedGain)) return;
-    const tab = await getActiveTab();
-    if (!tab) return;
-    await chrome.tabs.sendMessage(tab.id, { cmd: 'resume' });
-    const res = await chrome.tabs.sendMessage(tab.id, { cmd: 'setGain', gain: lastSuggestedGain });
-    if (res?.ok) {
+    if (autoUpdatePending || !Number.isFinite(lastSuggestedGain)) return;
+    try {
+      const tab = await getActiveTab();
+      if (!tab) throw new Error('No active tab');
+      await chrome.tabs.sendMessage(tab.id, { cmd: 'resume' });
+      const res = await chrome.tabs.sendMessage(
+        tab.id,
+        { cmd: 'setGain', gain: lastSuggestedGain }
+      );
+      if (!res?.ok) throw new Error(res?.reason || 'Gain update failed');
+      gainSaveError = false;
       syncSlider(lastSuggestedGain);
-      refresh();
+    } catch (_) {
+      gainSaveError = true;
+      sliderSynced = false;
     }
+    await refresh();
   }
 
   async function setGain(percent) {
-    const tab = await getActiveTab();
-    if (!tab) return;
-    const gain = percentToGain(percent);
-    await chrome.tabs.sendMessage(tab.id, { cmd: 'setGain', gain });
+    if (autoUpdatePending) return;
+    try {
+      const tab = await getActiveTab();
+      if (!tab) throw new Error('No active tab');
+      const gain = percentToGain(percent);
+      const res = await chrome.tabs.sendMessage(tab.id, { cmd: 'setGain', gain });
+      if (!res?.ok) throw new Error(res?.reason || 'Gain update failed');
+      gainSaveError = false;
+    } catch (_) {
+      gainSaveError = true;
+      sliderSynced = false;
+    }
+    await refresh();
+  }
+
+  async function setAutoApplyLoudness() {
+    const toggle = $('autoApplyToggle');
+    if (autoUpdatePending || !currentChannel.id || currentChannel.kind === 'none') return;
+    const enabled = toggle.checked;
+    $('autoError').classList.add('hidden');
+    autoUpdatePending = true;
+    syncInteractionDisabledState();
+    try {
+      const tab = await getActiveTab();
+      if (!tab) throw new Error('No active tab');
+      const res = await chrome.tabs.sendMessage(tab.id, {
+        cmd: 'setAutoApplyLoudness',
+        channelId: currentChannel.id,
+        kind: currentChannel.kind,
+        enabled
+      });
+      if (!res?.ok) throw new Error(res?.reason || 'Auto update failed');
+      currentAutoApplyLoudness = !!res.autoApplyLoudness;
+      autoUpdatePending = false;
+      $('autoError').classList.add('hidden');
+      if (Number.isFinite(res.gain)) {
+        syncSlider(res.gain);
+        sliderSynced = true;
+      }
+      await refresh();
+    } catch (_) {
+      autoUpdatePending = false;
+      $('autoError').textContent = msg('autoSaveFailed');
+      $('autoError').classList.remove('hidden');
+      const latestState = await requestState({ showConnectionError: false });
+      if (latestState) {
+        renderState(latestState);
+      } else {
+        toggle.checked = currentAutoApplyLoudness;
+        syncInteractionDisabledState();
+      }
+    }
   }
 
   async function refresh() {
@@ -160,7 +262,9 @@
   }
 
   $('applyBtn').addEventListener('click', applyMeasured);
+  $('autoApplyToggle').addEventListener('change', setAutoApplyLoudness);
   $('manualSlider').addEventListener('input', (e) => {
+    if (autoUpdatePending) return;
     const g = percentToGain(Number(e.target.value));
     const f = formatGain(g, displayUnit);
     setCardValue($('current'), f.text, f.unit, 'current');
@@ -169,6 +273,7 @@
   $('manualSlider').addEventListener('change', (e) => setGain(Number(e.target.value)));
   document.querySelectorAll('.presets button').forEach((btn) => {
     btn.addEventListener('click', () => {
+      if (autoUpdatePending) return;
       const v = Number(btn.getAttribute('data-gain'));
       const g = percentToGain(v);
       const f = formatGain(g, displayUnit);
@@ -190,14 +295,20 @@
     if (changes[SETTINGS_KEY]) {
       const next = changes[SETTINGS_KEY].newValue || {};
       displayUnit = next.displayUnit || '%';
+      sliderSynced = false;
       refresh();
     }
   });
 
   applyI18n();
   (async () => {
-    await loadDisplayUnit();
-    refresh();
+    try {
+      await loadDisplayUnit();
+      await refresh();
+    } finally {
+      void document.body.offsetWidth;
+      requestAnimationFrame(() => document.body.classList.remove('initializing'));
+    }
   })();
   setInterval(refresh, 1000);
 })();

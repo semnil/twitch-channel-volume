@@ -69,10 +69,14 @@ STRINGS = {
         'channel': 'サンプル配信ch.',
         'live': 'LIVE',
         'apply': '63% をチャンネルに適用',
+        'auto_label': 'LUFS 自動追従',
+        'auto_hint': 'この種別は自動追従が\n有効です',
         'manual': 'MANUAL VOLUME',
         'settings': 'SETTINGS',
         'target_label': 'Target LUFS',
         'target_desc': '計測ラウドネスから算出するゲインの基準値',
+        'auto_defaults_label': '全チャンネルの LUFS 自動追従',
+        'auto_defaults_desc': '個別設定も手動ゲインもない種別の既定値',
         'adgain_label': 'CM Gain',
         'adgain_desc': 'CM 区間で適用する追加ゲイン (dB)',
         'unit_label': '表示単位',
@@ -82,9 +86,9 @@ STRINGS = {
         'saved': 'SAVED CHANNELS',
         'col_channel': 'CHANNEL',
         'channels': [
-            ('Game Stream TV', '63%', '80%', '—'),
-            ('雑談ラジオ', '120%', '—', '95%'),
-            ('Music Box', '55%', '70%', '—'),
+            ('Game Stream TV', 'Auto (63%)', '80%', '—'),
+            ('雑談ラジオ', '120%', '—', 'Auto (95%)'),
+            ('Music Box', 'Auto (55%)', '70%', '—'),
         ],
         'stream_title': '【雑談】ゲーム配信のあとに少しだけ',
         'viewers': '1,234 人が視聴中',
@@ -94,10 +98,14 @@ STRINGS = {
         'channel': 'Sample Stream',
         'live': 'LIVE',
         'apply': 'Apply 63% to channel',
+        'auto_label': 'Auto-follow LUFS',
+        'auto_hint': 'Auto-follow is enabled\nfor this type',
         'manual': 'MANUAL VOLUME',
         'settings': 'SETTINGS',
         'target_label': 'Target LUFS',
         'target_desc': 'Reference loudness used to compute gain from measurement',
+        'auto_defaults_label': 'Auto-follow LUFS for all channels',
+        'auto_defaults_desc': 'Default for types without an individual setting or manual gain',
         'adgain_label': 'Ad gain',
         'adgain_desc': 'Extra gain applied during ad breaks (dB)',
         'unit_label': 'Display unit',
@@ -107,9 +115,9 @@ STRINGS = {
         'saved': 'SAVED CHANNELS',
         'col_channel': 'CHANNEL',
         'channels': [
-            ('Game Stream TV', '63%', '80%', '—'),
-            ('Talk Radio', '120%', '—', '95%'),
-            ('Music Box', '55%', '70%', '—'),
+            ('Game Stream TV', 'Auto (63%)', '80%', '—'),
+            ('Talk Radio', '120%', '—', 'Auto (95%)'),
+            ('Music Box', 'Auto (55%)', '70%', '—'),
         ],
         'stream_title': 'Just chatting after the game',
         'viewers': '1,234 watching',
@@ -124,7 +132,7 @@ def screenshot_popup(lang):
     draw = ImageDraw.Draw(img)
 
     px, pw = 160, 320
-    py, ph = 30, 326
+    py, ph = 20, 350
     rr(draw, [px, py, px + pw, py + ph], 10, POPUP_BG)
 
     # Header
@@ -160,23 +168,32 @@ def screenshot_popup(lang):
         cx += cw + gap
     draw.line([(px, iy + 108), (px + pw, iy + 108)], fill=BORDER)
 
-    # Apply button (full width)
-    ay = iy + 120
-    rr(draw, [px + 16, ay, px + pw - 16, ay + 32], 6, TEAL)
+    # Auto-follow switch (ON)
+    auto_y = iy + 108
+    draw.text((px + 16, auto_y + 14), s['auto_label'], fill=CC, font=FONT_BOLD)
+    switch_x = px + pw - 52
+    rr(draw, [switch_x, auto_y + 10, switch_x + 36, auto_y + 30], 10, SWITCH_ON)
+    draw.ellipse([switch_x + 19, auto_y + 13, switch_x + 33, auto_y + 27], fill=TEAL)
+    draw.line([(px, auto_y + 44), (px + pw, auto_y + 44)], fill=BORDER)
+
+    # Apply button is disabled while Auto-follow is enabled.
+    ay = auto_y + 54
+    rr(draw, [px + 16, ay, px + 172, ay + 32], 6, BORDER)
     tw = draw.textlength(s['apply'], font=FONT_BOLD)
-    draw.text((px + (pw - tw) / 2, ay + 8), s['apply'], fill=POPUP_BG, font=FONT_BOLD)
+    draw.text((px + 16 + (156 - tw) / 2, ay + 8), s['apply'], fill=DIM2, font=FONT_BOLD)
+    draw.multiline_text((px + 182, ay + 4), s['auto_hint'], fill=DIM, font=FONT_XS, spacing=1)
     draw.line([(px, ay + 44), (px + pw, ay + 44)], fill=BORDER)
 
     # Manual volume
     my = ay + 56
-    draw.text((px + 16, my), s['manual'], fill=GRAY, font=FONT_SM)
+    draw.text((px + 16, my), s['manual'], fill=DIM2, font=FONT_SM)
     sy = my + 22
     track_l, track_r = px + 16, px + pw - 58
     draw.rounded_rectangle([track_l, sy + 4, track_r, sy + 10], radius=3, fill=BORDER)
     thumb_x = int(track_l + (track_r - track_l) * 0.63)
-    draw.rounded_rectangle([track_l, sy + 4, thumb_x, sy + 10], radius=3, fill=PINK)
-    draw.ellipse([thumb_x - 8, sy - 1, thumb_x + 8, sy + 15], fill=PINK, outline=POPUP_BG, width=2)
-    draw.text((px + pw - 48, sy - 1), '63%', fill=PINK, font=FONT_BOLD)
+    draw.rounded_rectangle([track_l, sy + 4, thumb_x, sy + 10], radius=3, fill=DIM3)
+    draw.ellipse([thumb_x - 8, sy - 1, thumb_x + 8, sy + 15], fill=DIM2, outline=POPUP_BG, width=2)
+    draw.text((px + pw - 48, sy - 1), '63%', fill=DIM2, font=FONT_BOLD)
 
     # Presets
     presets = ['0%', '50%', '100%', '200%', '400%', 'MAX']
@@ -186,7 +203,7 @@ def screenshot_popup(lang):
     for p in presets:
         rr(draw, [bx, by, bx + bw, by + 20], 4, BORDER)
         ptw = draw.textlength(p, font=FONT_PRESET)
-        draw.text((bx + (bw - ptw) / 2, by + 4), p, fill=(170, 170, 170), font=FONT_PRESET)
+        draw.text((bx + (bw - ptw) / 2, by + 4), p, fill=DIM2, font=FONT_PRESET)
         bx += bw + 4
 
     img.save(f'screenshots/popup_{lang}.png')
@@ -202,8 +219,8 @@ def screenshot_settings(lang):
 
     # Settings section
     sx, sw = 24, 592
-    sy = 50
-    sh = 186
+    sy = 43
+    sh = 218
     rr(draw, [sx, sy, sx + sw, sy + sh], 10, POPUP_BG)
     draw.text((sx + 20, sy + 14), s['settings'], fill=GRAY, font=FONT_SM)
 
@@ -219,15 +236,33 @@ def screenshot_settings(lang):
         draw.ellipse([tx - 8, y, tx + 8, y + 16], fill=thumb, outline=POPUP_BG, width=2)
         draw.text((sx + sw - 85, y), value, fill=TEAL, font=FONT_BOLD)
 
-    ry = sy + 36
+    ry = sy + 31
     # Target LUFS: -30..-6, value -18 -> frac (−18−(−30))/24 = 0.5
     row(ry, s['target_label'], s['target_desc'], lambda y: slider(y, 0.5, '-18 LUFS'))
-    draw.line([(sx + 20, ry + 34), (sx + sw - 20, ry + 34)], fill=BORDER)
-    ry += 40
+    draw.line([(sx + 20, ry + 31), (sx + sw - 20, ry + 31)], fill=BORDER)
+    ry += 36
+
+    # Auto-follow defaults for Live / VOD / Clip.
+    def type_switches(y):
+        gx = sx + sw - 245
+        states = (('LIVE', True), ('VOD', False), ('CLIP', True))
+        for label, enabled in states:
+            draw.text((gx, y), label, fill=GRAY, font=FONT_XS)
+            track_x = gx + 30
+            rr(draw, [track_x, y - 3, track_x + 36, y + 17], 10,
+               SWITCH_ON if enabled else BORDER)
+            knob_x = track_x + (19 if enabled else 3)
+            draw.ellipse([knob_x, y, knob_x + 14, y + 14],
+                         fill=TEAL if enabled else GRAY)
+            gx += 78
+    row(ry, s['auto_defaults_label'], s['auto_defaults_desc'], type_switches)
+    draw.line([(sx + 20, ry + 31), (sx + sw - 20, ry + 31)], fill=BORDER)
+    ry += 36
+
     # CM Gain: -24..6, value -6 -> frac (−6−(−24))/30 = 0.6
     row(ry, s['adgain_label'], s['adgain_desc'], lambda y: slider(y, 0.6, '-6 dB'))
-    draw.line([(sx + 20, ry + 34), (sx + sw - 20, ry + 34)], fill=BORDER)
-    ry += 40
+    draw.line([(sx + 20, ry + 31), (sx + sw - 20, ry + 31)], fill=BORDER)
+    ry += 36
 
     # Display unit toggle
     def unit_toggle(y):
@@ -237,8 +272,8 @@ def screenshot_settings(lang):
         rr(draw, [gx + 36, y - 2, gx + 72, y + 18], 6, INFO_BG)
         draw.text((gx + 47, y + 1), 'dB', fill=GRAY, font=FONT_BOLD)
     row(ry, s['unit_label'], s['unit_desc'], unit_toggle)
-    draw.line([(sx + 20, ry + 34), (sx + sw - 20, ry + 34)], fill=BORDER)
-    ry += 40
+    draw.line([(sx + 20, ry + 31), (sx + sw - 20, ry + 31)], fill=BORDER)
+    ry += 36
 
     # Gain overlay switch (ON)
     def switch_on(y):
@@ -248,26 +283,27 @@ def screenshot_settings(lang):
     row(ry, s['overlay_label'], s['overlay_desc'], switch_on)
 
     # Saved Channels section
-    cy = sy + sh + 16
-    ch = 144
+    cy = sy + sh + 9
+    ch = 126
     rr(draw, [sx, cy, sx + sw, cy + ch], 10, POPUP_BG)
     draw.text((sx + 20, cy + 14), s['saved'], fill=GRAY, font=FONT_SM)
 
     # Header row: CHANNEL | Live | VOD | Clip
-    hy = cy + 36
-    col_live, col_vod, col_clip = sx + 330, sx + 420, sx + 510
+    hy = cy + 31
+    col_live, col_vod, col_clip = sx + 300, sx + 405, sx + 500
     draw.text((sx + 20, hy), s['col_channel'], fill=DIM, font=FONT_SM)
     for cxh, t in ((col_live, 'LIVE'), (col_vod, 'VOD'), (col_clip, 'CLIP')):
         draw.text((cxh, hy), t, fill=DIM, font=FONT_SM)
     draw.line([(sx + 20, hy + 18), (sx + sw - 20, hy + 18)], fill=BORDER)
 
-    ry = hy + 26
+    ry = hy + 23
     for name, live, vod, clip in s['channels']:
         draw.text((sx + 20, ry), name, fill=TEAL, font=FONT)
         for cxh, v in ((col_live, live), (col_vod, vod), (col_clip, clip)):
-            draw.text((cxh, ry), v, fill=PINK if v != '—' else DIM3, font=FONT_BOLD)
+            color = TEAL if v.startswith('Auto') else (PINK if v != '—' else DIM3)
+            draw.text((cxh, ry), v, fill=color, font=FONT_BOLD)
         draw.text((sx + sw - 36, ry - 2), '×', fill=DIM2, font=FONT_LG)
-        ry += 30
+        ry += 23
 
     img.save(f'screenshots/settings_{lang}.png')
     print(f'Generated screenshots/settings_{lang}.png')

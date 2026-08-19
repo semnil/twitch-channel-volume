@@ -14,7 +14,7 @@ body {
 }
 
 .container {
-  max-width: 600px;
+  max-width: 760px;
   margin: 0 auto;
   padding: 32px 24px;
 }
@@ -115,6 +115,26 @@ h1 {
 .toggle-group button:hover:not(.active) {
   color: #ccc;
 }
+.toggle-group button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+.type-switches {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.type-switch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.type-switch-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: #888;
+  text-transform: uppercase;
+}
 
 .channel-table {
   width: 100%;
@@ -171,6 +191,11 @@ h1 {
   color: #444;
   font-weight: 400;
 }
+.ch-vol.auto {
+  color: #4ecdc4;
+  min-width: 95px;
+  white-space: nowrap;
+}
 .ch-del {
   background: none;
   border: none;
@@ -208,24 +233,41 @@ h1 {
   text-align: center;
 }
 
+.settings-error {
+  color: #ff6b9d;
+  font-size: 11px;
+  line-height: 1.4;
+  margin: -6px 0 8px;
+}
+.settings-error.hidden { display: none; }
+
 .toggle-switch {
   position: relative;
   width: 36px;
-  height: 20px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
+  cursor: pointer;
 }
 .toggle-switch input {
-  opacity: 0;
-  width: 0;
-  height: 0;
-}
-.toggle-switch .switch-slider {
   position: absolute;
   inset: 0;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  cursor: pointer;
+}
+.toggle-switch .switch-slider {
+  position: relative;
+  width: 36px;
+  height: 20px;
   background: #2a2a4a;
   border-radius: 10px;
-  cursor: pointer;
   transition: background 0.2s;
+  pointer-events: none;
 }
 .toggle-switch .switch-slider::before {
   content: '';
@@ -245,6 +287,18 @@ h1 {
   transform: translateX(16px);
   background: #4ecdc4;
 }
+.toggle-switch input:focus-visible + .switch-slider {
+  outline: 2px solid #4ecdc4;
+  outline-offset: 2px;
+}
+.toggle-switch input:disabled { cursor: default; }
+.toggle-switch input:disabled + .switch-slider { opacity: 0.45; }
+@media (prefers-reduced-motion: reduce) {
+  .toggle-switch .switch-slider,
+  .toggle-switch .switch-slider::before {
+    transition: none;
+  }
+}
 </style>
 </head>
 <body>
@@ -253,6 +307,7 @@ h1 {
 
   <div class="section">
     <h2 data-i18n="settings">Settings</h2>
+    <div id="settingsError" class="settings-error hidden" role="status" data-i18n="settingsSaveFailed">設定を保存できませんでした。保存済みの値へ戻しました</div>
 
     <div class="setting-row">
       <div>
@@ -260,8 +315,38 @@ h1 {
         <div class="setting-desc" data-i18n="targetLufsDesc">計測ラウドネスから算出するゲインの基準値</div>
       </div>
       <div style="display:flex; align-items:center;">
-        <input type="range" id="targetLufs" min="-30" max="-6" value="-18" step="1">
+        <input type="range" id="targetLufs" min="-30" max="-6" value="-18" step="1" disabled>
         <span id="targetLufsValue" class="setting-value">-18 LUFS</span>
+      </div>
+    </div>
+
+    <div class="setting-row">
+      <div>
+        <div id="allChannelsAutoLabel" class="setting-label" data-i18n="allChannelsAutoApply">全チャンネルの LUFS 自動追従</div>
+        <div class="setting-desc" data-i18n="allChannelsAutoApplyDesc">個別設定がないチャンネルの既定値</div>
+      </div>
+      <div class="type-switches">
+        <div class="type-switch">
+          <span id="defaultAutoLiveLabel" class="type-switch-label" data-i18n="typeLive">Live</span>
+          <label class="toggle-switch">
+            <input type="checkbox" id="defaultAutoLiveToggle" aria-labelledby="allChannelsAutoLabel defaultAutoLiveLabel" disabled>
+            <span class="switch-slider"></span>
+          </label>
+        </div>
+        <div class="type-switch">
+          <span id="defaultAutoVodLabel" class="type-switch-label" data-i18n="typeVod">VOD</span>
+          <label class="toggle-switch">
+            <input type="checkbox" id="defaultAutoVodToggle" aria-labelledby="allChannelsAutoLabel defaultAutoVodLabel" disabled>
+            <span class="switch-slider"></span>
+          </label>
+        </div>
+        <div class="type-switch">
+          <span id="defaultAutoClipLabel" class="type-switch-label" data-i18n="typeClip">Clip</span>
+          <label class="toggle-switch">
+            <input type="checkbox" id="defaultAutoClipToggle" aria-labelledby="allChannelsAutoLabel defaultAutoClipLabel" disabled>
+            <span class="switch-slider"></span>
+          </label>
+        </div>
       </div>
     </div>
 
@@ -271,7 +356,7 @@ h1 {
         <div class="setting-desc" data-i18n="adGainDesc">CM 区間で適用する追加ゲイン (dB)</div>
       </div>
       <div style="display:flex; align-items:center;">
-        <input type="range" id="adGainDb" min="-24" max="6" value="-6" step="1">
+        <input type="range" id="adGainDb" min="-24" max="6" value="-6" step="1" disabled>
         <span id="adGainValue" class="setting-value">-6 dB</span>
       </div>
     </div>
@@ -282,8 +367,8 @@ h1 {
         <div class="setting-desc" data-i18n="displayUnitDesc">ゲイン値の表示形式</div>
       </div>
       <div class="toggle-group" id="unitToggle">
-        <button data-unit="%" class="active">%</button>
-        <button data-unit="dB">dB</button>
+        <button data-unit="%" class="active" disabled>%</button>
+        <button data-unit="dB" disabled>dB</button>
       </div>
     </div>
 
@@ -293,7 +378,7 @@ h1 {
         <div class="setting-desc" data-i18n="showGainOverlayDesc">プレイヤーのボリューム横に現在のゲインを表示</div>
       </div>
       <label class="toggle-switch">
-        <input type="checkbox" id="overlayToggle">
+        <input type="checkbox" id="overlayToggle" disabled>
         <span class="switch-slider"></span>
       </label>
     </div>

@@ -1,9 +1,13 @@
 // utils.js — Shared constants and utilities for Twitch Channel Volume
 
 const SETTINGS_KEY = 'autoLoudnessSettings';
+const SETTINGS_MUTATION_MESSAGE = '__twitch_channel_volume_settings_mutation__';
 const CHANNEL_VOLUMES_KEY = 'channelVolumes';
+const CHANNEL_ALIASES_KEY = 'channelVolumeAliases';
+const CHANNEL_SEQUENCE_KEY = 'channelVolumeSequence';
 const DEFAULT_TARGET_LUFS = -18;
 const DEFAULT_AD_GAIN_DB = -6;
+const DEFAULT_AUTO_APPLY_LOUDNESS = false;
 const ABSOLUTE_GATE_LUFS = -70;
 const RELATIVE_GATE_LU = -10;
 const MOMENTARY_WINDOW_SEC = 0.4;
@@ -29,6 +33,75 @@ function msg(key, substitutions) {
 function formatGain(gain, displayUnit) {
   if (displayUnit === 'dB') return { text: gainToDb(gain), unit: ' dB' };
   return { text: String(gainToPercent(gain)), unit: '%' };
+}
+
+function formatAutoGain(gain, displayUnit, autoLabel = 'Auto') {
+  const formatted = formatGain(Number.isFinite(gain) ? gain : 1.0, displayUnit);
+  return `${autoLabel} (${formatted.text}${formatted.unit})`;
+}
+
+function gainFieldForKind(kind) {
+  if (kind === 'vod') return 'gainVod';
+  if (kind === 'clip') return 'gainClip';
+  return 'gainLive';
+}
+
+function extractGainForKind(entry, kind) {
+  if (!entry) return null;
+  const typedGain = entry[gainFieldForKind(kind)];
+  if (Number.isFinite(typedGain)) return typedGain;
+  return Number.isFinite(entry.gain) ? entry.gain : null;
+}
+
+function autoGainFieldForKind(kind) {
+  if (kind === 'vod') return 'autoGainVod';
+  if (kind === 'clip') return 'autoGainClip';
+  return 'autoGainLive';
+}
+
+function extractAutoGainForKind(entry, kind) {
+  if (!entry) return null;
+  const gain = entry[autoGainFieldForKind(kind)];
+  return Number.isFinite(gain) ? gain : null;
+}
+
+function extractAutoDisplayGain(entry, kind) {
+  return extractAutoGainForKind(entry, kind) ?? extractGainForKind(entry, kind);
+}
+
+function autoApplyFieldForKind(kind) {
+  if (kind === 'vod') return 'autoApplyLoudnessVod';
+  if (kind === 'clip') return 'autoApplyLoudnessClip';
+  return 'autoApplyLoudnessLive';
+}
+
+function autoApplyDefaultFieldForKind(kind) {
+  return autoApplyFieldForKind(kind) + 'Default';
+}
+
+function resolveAutoApplySetting(entry, kind, defaultValue) {
+  if (!entry) return !!defaultValue;
+  const autoKey = autoApplyFieldForKind(kind);
+  if (Object.prototype.hasOwnProperty.call(entry, autoKey)) return !!entry[autoKey];
+  // Read compatibility for a possible early all-types implementation.
+  if (Object.prototype.hasOwnProperty.call(entry, 'autoApplyLoudness')) {
+    return !!entry.autoApplyLoudness;
+  }
+
+  // A saved manual gain is an implicit per-channel choice. Global Auto
+  // defaults only apply to a channel/type with neither an Auto choice nor a
+  // manual gain.
+  if (extractGainForKind(entry, kind) !== null) return false;
+  return !!defaultValue;
+}
+
+function resolvePreferredGain(entry, kind, defaultAuto, measuredLufs, targetLufs) {
+  const autoApply = resolveAutoApplySetting(entry, kind, defaultAuto);
+  const manualGain = extractGainForKind(entry, kind);
+  const gain = autoApply && Number.isFinite(measuredLufs)
+    ? calcGain(measuredLufs, targetLufs)
+    : (autoApply ? extractAutoGainForKind(entry, kind) : null) ?? manualGain ?? 1.0;
+  return { autoApply, gain };
 }
 
 function calcGain(measuredLufs, targetLufs) {
@@ -74,6 +147,59 @@ function classifyTwitchUrl(href) {
     }
   }
   return { kind: 'none' };
+}
+
+function ownerMatchesTwitchContent(owner, classified) {
+  if (!owner?.userId || !owner.contentId || owner.contentKind !== classified?.kind) {
+    return false;
+  }
+  if (classified.kind === 'live') {
+    return owner.source === 'user' &&
+      owner.contentId.toLowerCase() === classified.login;
+  }
+  if (classified.kind === 'vod') {
+    return owner.source === 'video' && owner.contentId === String(classified.videoId);
+  }
+  if (classified.kind === 'clip') {
+    return owner.source === 'clip' && owner.contentId === classified.slug;
+  }
+  return false;
+}
+
+function provisionalChannelIdForContent(classified) {
+  if (classified?.kind === 'live' && classified.login) {
+    return `login:${classified.login}`;
+  }
+  if (classified?.kind === 'vod') return `vod-owner:${classified.videoId}`;
+  if (classified?.kind === 'clip') return `clip-owner:${classified.slug}`;
+  return '';
+}
+
+function resolveChannelIdAlias(channelId, aliases) {
+  if (typeof channelId !== 'string' || !aliases || typeof aliases !== 'object') {
+    return channelId;
+  }
+  let resolved = channelId;
+  const visited = new Set();
+  while (!visited.has(resolved)) {
+    visited.add(resolved);
+    const next = aliases[resolved];
+    if (typeof next !== 'string' || next.length === 0 || next === resolved) {
+      return resolved;
+    }
+    resolved = next;
+  }
+  // A valid alias graph is acyclic. On corrupt/cyclic input, do not redirect
+  // the caller to a path-dependent ID.
+  return channelId;
+}
+
+function twitchChannelUrlForEntry(channelId, entry) {
+  let login = typeof entry?.login === 'string' ? entry.login.trim().toLowerCase() : '';
+  if (!login && typeof channelId === 'string' && channelId.startsWith('login:')) {
+    login = channelId.slice('login:'.length).trim().toLowerCase();
+  }
+  return /^[a-z0-9_]+$/.test(login) ? `https://www.twitch.tv/${login}` : '';
 }
 
 // HLS EXT-X-DATERANGE parsing ------------------------------------------
@@ -204,14 +330,20 @@ function gatedIntegratedLufs(blockMs) {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
-    SETTINGS_KEY, CHANNEL_VOLUMES_KEY,
-    DEFAULT_TARGET_LUFS, DEFAULT_AD_GAIN_DB,
+    SETTINGS_KEY, SETTINGS_MUTATION_MESSAGE,
+    CHANNEL_VOLUMES_KEY, CHANNEL_ALIASES_KEY, CHANNEL_SEQUENCE_KEY,
+    DEFAULT_TARGET_LUFS, DEFAULT_AD_GAIN_DB, DEFAULT_AUTO_APPLY_LOUDNESS,
     ABSOLUTE_GATE_LUFS, RELATIVE_GATE_LU,
     MOMENTARY_WINDOW_SEC, SHORT_TERM_WINDOW_SEC,
     MIN_GAIN, MAX_GAIN,
     gainToPercent, percentToGain, gainToDb, dbToGain,
-    formatGain, calcGain,
-    classifyTwitchUrl,
+    formatGain, formatAutoGain, calcGain,
+    gainFieldForKind, extractGainForKind,
+    autoGainFieldForKind, extractAutoGainForKind, extractAutoDisplayGain,
+    autoApplyFieldForKind, autoApplyDefaultFieldForKind,
+    resolveAutoApplySetting, resolvePreferredGain,
+    classifyTwitchUrl, ownerMatchesTwitchContent, provisionalChannelIdForContent,
+    resolveChannelIdAlias, twitchChannelUrlForEntry,
     parseDateRange, isAdDateRange, parseAdRangesFromManifest,
     kWeightingForSampleRate, redesignBiquad,
     K_PRE_48K, K_RLB_48K,
