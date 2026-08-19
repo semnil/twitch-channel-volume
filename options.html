@@ -115,6 +115,10 @@ h1 {
 .toggle-group button:hover:not(.active) {
   color: #ccc;
 }
+.toggle-group button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
 .type-switches {
   display: flex;
   align-items: center;
@@ -311,7 +315,7 @@ h1 {
         <div class="setting-desc" data-i18n="targetLufsDesc">計測ラウドネスから算出するゲインの基準値</div>
       </div>
       <div style="display:flex; align-items:center;">
-        <input type="range" id="targetLufs" min="-30" max="-6" value="-18" step="1">
+        <input type="range" id="targetLufs" min="-30" max="-6" value="-18" step="1" disabled>
         <span id="targetLufsValue" class="setting-value">-18 LUFS</span>
       </div>
     </div>
@@ -325,21 +329,21 @@ h1 {
         <div class="type-switch">
           <span id="defaultAutoLiveLabel" class="type-switch-label" data-i18n="typeLive">Live</span>
           <label class="toggle-switch">
-            <input type="checkbox" id="defaultAutoLiveToggle" aria-labelledby="allChannelsAutoLabel defaultAutoLiveLabel">
+            <input type="checkbox" id="defaultAutoLiveToggle" aria-labelledby="allChannelsAutoLabel defaultAutoLiveLabel" disabled>
             <span class="switch-slider"></span>
           </label>
         </div>
         <div class="type-switch">
           <span id="defaultAutoVodLabel" class="type-switch-label" data-i18n="typeVod">VOD</span>
           <label class="toggle-switch">
-            <input type="checkbox" id="defaultAutoVodToggle" aria-labelledby="allChannelsAutoLabel defaultAutoVodLabel">
+            <input type="checkbox" id="defaultAutoVodToggle" aria-labelledby="allChannelsAutoLabel defaultAutoVodLabel" disabled>
             <span class="switch-slider"></span>
           </label>
         </div>
         <div class="type-switch">
           <span id="defaultAutoClipLabel" class="type-switch-label" data-i18n="typeClip">Clip</span>
           <label class="toggle-switch">
-            <input type="checkbox" id="defaultAutoClipToggle" aria-labelledby="allChannelsAutoLabel defaultAutoClipLabel">
+            <input type="checkbox" id="defaultAutoClipToggle" aria-labelledby="allChannelsAutoLabel defaultAutoClipLabel" disabled>
             <span class="switch-slider"></span>
           </label>
         </div>
@@ -352,7 +356,7 @@ h1 {
         <div class="setting-desc" data-i18n="adGainDesc">CM 区間で適用する追加ゲイン (dB)</div>
       </div>
       <div style="display:flex; align-items:center;">
-        <input type="range" id="adGainDb" min="-24" max="6" value="-6" step="1">
+        <input type="range" id="adGainDb" min="-24" max="6" value="-6" step="1" disabled>
         <span id="adGainValue" class="setting-value">-6 dB</span>
       </div>
     </div>
@@ -363,8 +367,8 @@ h1 {
         <div class="setting-desc" data-i18n="displayUnitDesc">ゲイン値の表示形式</div>
       </div>
       <div class="toggle-group" id="unitToggle">
-        <button data-unit="%" class="active">%</button>
-        <button data-unit="dB">dB</button>
+        <button data-unit="%" class="active" disabled>%</button>
+        <button data-unit="dB" disabled>dB</button>
       </div>
     </div>
 
@@ -374,7 +378,7 @@ h1 {
         <div class="setting-desc" data-i18n="showGainOverlayDesc">プレイヤーのボリューム横に現在のゲインを表示</div>
       </div>
       <label class="toggle-switch">
-        <input type="checkbox" id="overlayToggle">
+        <input type="checkbox" id="overlayToggle" disabled>
         <span class="switch-slider"></span>
       </label>
     </div>

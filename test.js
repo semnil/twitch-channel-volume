@@ -7,6 +7,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const u = require('./utils.js');
 const channelStore = require('./channel-store.js');
+const settingsStore = require('./settings-store.js');
 
 function readStoredKeys(stored, keys) {
   const requested = Array.isArray(keys) ? keys : [keys];
@@ -862,8 +863,81 @@ test('service-worker writer recovers after a failed storage update', async () =>
   assert.equal(stored.channelVolumes['login:test'].autoApplyLoudnessLive, false);
 });
 
+test('settings writer preserves unrelated fields across concurrent tabs', async () => {
+  let stored = {
+    autoLoudnessSettings: {
+      targetLufs: -18,
+      displayUnit: '%',
+      autoApplyLoudnessLiveDefault: true,
+      autoApplyLoudnessVodDefault: true,
+      autoApplyLoudnessClipDefault: false
+    }
+  };
+  const storage = {
+    async get(keys) {
+      await new Promise((resolve) => setImmediate(resolve));
+      return readStoredKeys(stored, keys);
+    },
+    async set(update) {
+      await new Promise((resolve) => setImmediate(resolve));
+      stored = { ...stored, ...structuredClone(update) };
+    }
+  };
+  const write = settingsStore.createSettingsWriter(storage);
+
+  await Promise.all([
+    write({ operation: 'patchSettings', patch: { displayUnit: 'dB' } }),
+    write({
+      operation: 'patchSettings',
+      patch: { autoApplyLoudnessClipDefault: true }
+    })
+  ]);
+
+  assert.deepEqual(stored.autoLoudnessSettings, {
+    targetLufs: -18,
+    displayUnit: 'dB',
+    autoApplyLoudnessLiveDefault: true,
+    autoApplyLoudnessVodDefault: true,
+    autoApplyLoudnessClipDefault: true
+  });
+});
+
+test('settings mutations reject unknown fields and invalid values', () => {
+  assert.throws(() => settingsStore.applySettingsMutation({}, {
+    operation: 'patchSettings', patch: { futureSetting: true }
+  }), /unknown settings field/);
+  assert.throws(() => settingsStore.applySettingsMutation({}, {
+    operation: 'patchSettings', patch: { targetLufs: -31 }
+  }), /invalid settings value/);
+  assert.throws(() => settingsStore.applySettingsMutation({}, {
+    operation: 'patchSettings', patch: {}
+  }), /must not be empty/);
+});
+
+test('settings initialization preserves existing Auto defaults', () => {
+  const existing = {
+    targetLufs: -16,
+    autoApplyLoudnessLiveDefault: true
+  };
+  const result = settingsStore.applySettingsMutation(existing, {
+    operation: 'initializeSettings',
+    defaults: {
+      targetLufs: -18,
+      autoApplyLoudnessLiveDefault: false
+    }
+  });
+  assert.deepEqual(result, existing);
+});
+
 test('background mutation listener keeps async response open and reports failures', async () => {
-  let stored = { channelVolumes: {} };
+  let stored = {
+    channelVolumes: {},
+    autoLoudnessSettings: {
+      targetLufs: -18,
+      displayUnit: '%',
+      autoApplyLoudnessLiveDefault: true
+    }
+  };
   let failNextSet = false;
   let messageListener;
   const storage = {
@@ -886,9 +960,11 @@ test('background mutation listener keeps async response open and reports failure
       }
     }
   });
-  context.importScripts = (filename) => {
-    const source = fs.readFileSync(path.join(__dirname, filename), 'utf8');
-    vm.runInContext(source, context, { filename });
+  context.importScripts = (...filenames) => {
+    for (const filename of filenames) {
+      const source = fs.readFileSync(path.join(__dirname, filename), 'utf8');
+      vm.runInContext(source, context, { filename });
+    }
   };
   vm.runInContext(
     fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8'),
@@ -896,9 +972,9 @@ test('background mutation listener keeps async response open and reports failure
     { filename: 'background.js' }
   );
 
-  const send = (mutation) => new Promise((resolve) => {
+  const send = (mutation, type = channelStore.CHANNEL_MUTATION_MESSAGE) => new Promise((resolve) => {
     const keepOpen = messageListener({
-      type: channelStore.CHANNEL_MUTATION_MESSAGE,
+      type,
       mutation
     }, {}, resolve);
     assert.equal(keepOpen, true);
@@ -917,6 +993,43 @@ test('background mutation listener keeps async response open and reports failure
   assert.equal(failureResponse.ok, false);
   assert.equal(failureResponse.reason, 'storage-update-failed');
   assert.equal(stored.channelVolumes['login:test'].autoApplyLoudnessLive, true);
+
+  const settingsResponse = await send({
+    operation: 'patchSettings', patch: { displayUnit: 'dB' }
+  }, settingsStore.SETTINGS_MUTATION_MESSAGE);
+  assert.equal(settingsResponse.ok, true);
+  assert.equal(settingsResponse.settings.displayUnit, 'dB');
+  assert.equal(stored.autoLoudnessSettings.autoApplyLoudnessLiveDefault, true);
+
+  failNextSet = true;
+  const settingsFailureResponse = await send({
+    operation: 'patchSettings', patch: { autoApplyLoudnessLiveDefault: false }
+  }, settingsStore.SETTINGS_MUTATION_MESSAGE);
+  assert.equal(settingsFailureResponse.ok, false);
+  assert.equal(settingsFailureResponse.reason, 'settings-update-failed');
+  assert.equal(stored.autoLoudnessSettings.autoApplyLoudnessLiveDefault, true);
+});
+
+test('options disables settings until load and saves only field mutations', () => {
+  const html = fs.readFileSync(path.join(__dirname, 'options.html'), 'utf8');
+  for (const id of [
+    'targetLufs',
+    'adGainDb',
+    'defaultAutoLiveToggle',
+    'defaultAutoVodToggle',
+    'defaultAutoClipToggle',
+    'overlayToggle'
+  ]) {
+    assert.match(html, new RegExp(`<[^>]+id="${id}"[^>]*\\bdisabled\\b`), id);
+  }
+  assert.match(html, /<button[^>]+data-unit="%"[^>]*\bdisabled\b/);
+  assert.match(html, /<button[^>]+data-unit="dB"[^>]*\bdisabled\b/);
+
+  const source = fs.readFileSync(path.join(__dirname, 'options.js'), 'utf8');
+  assert.match(source, /type:\s*SETTINGS_MUTATION_MESSAGE/);
+  assert.match(source, /operation:\s*'patchSettings',\s*patch/);
+  assert.match(source, /setSettingsControlsDisabled\(true\);\s*loadAll\(\)/s);
+  assert.doesNotMatch(source, /chrome\.storage\.local\.set\(\{\s*\[SETTINGS_KEY\]/);
 });
 
 test('Auto switches expose hit targets, keyboard focus, and reduced-motion behavior', () => {

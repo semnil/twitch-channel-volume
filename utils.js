@@ -1,6 +1,7 @@
 // utils.js — Shared constants and utilities for Twitch Channel Volume
 
 const SETTINGS_KEY = 'autoLoudnessSettings';
+const SETTINGS_MUTATION_MESSAGE = '__twitch_channel_volume_settings_mutation__';
 const CHANNEL_VOLUMES_KEY = 'channelVolumes';
 const CHANNEL_ALIASES_KEY = 'channelVolumeAliases';
 const CHANNEL_SEQUENCE_KEY = 'channelVolumeSequence';
@@ -318,7 +319,8 @@ function gatedIntegratedLufs(blockMs) {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
-    SETTINGS_KEY, CHANNEL_VOLUMES_KEY, CHANNEL_ALIASES_KEY, CHANNEL_SEQUENCE_KEY,
+    SETTINGS_KEY, SETTINGS_MUTATION_MESSAGE,
+    CHANNEL_VOLUMES_KEY, CHANNEL_ALIASES_KEY, CHANNEL_SEQUENCE_KEY,
     DEFAULT_TARGET_LUFS, DEFAULT_AD_GAIN_DB, DEFAULT_AUTO_APPLY_LOUDNESS,
     ABSOLUTE_GATE_LUFS, RELATIVE_GATE_LU,
     MOMENTARY_WINDOW_SEC, SHORT_TERM_WINDOW_SEC,

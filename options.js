@@ -20,31 +20,73 @@
   }
 
   let displayUnit = '%';
+  let settingsReady = false;
+  let settingsRevision = 0;
+  let channelRevision = 0;
+  let currentSettings = {};
+  let channelVolumes = {};
   let defaultAutoApply = {
     live: DEFAULT_AUTO_APPLY_LOUDNESS,
     vod: DEFAULT_AUTO_APPLY_LOUDNESS,
     clip: DEFAULT_AUTO_APPLY_LOUDNESS
   };
 
-  async function loadAll() {
-    const data = await chrome.storage.local.get([SETTINGS_KEY, CHANNEL_VOLUMES_KEY]);
-    const settings = data[SETTINGS_KEY] || {};
-    const target = settings.targetLufs ?? DEFAULT_TARGET_LUFS;
+  function setSettingsControlsDisabled(disabled) {
+    for (const id of [
+      'targetLufs',
+      'adGainDb',
+      'defaultAutoLiveToggle',
+      'defaultAutoVodToggle',
+      'defaultAutoClipToggle',
+      'overlayToggle'
+    ]) {
+      $(id).disabled = disabled;
+    }
+    document.querySelectorAll('#unitToggle button').forEach((button) => {
+      button.disabled = disabled;
+    });
+  }
+
+  function renderSettings(settings) {
+    currentSettings = {
+      targetLufs: settings.targetLufs ?? DEFAULT_TARGET_LUFS,
+      adGainDb: settings.adGainDb ?? DEFAULT_AD_GAIN_DB,
+      displayUnit: settings.displayUnit || '%',
+      showGainOverlay: settings.showGainOverlay ?? true,
+      autoApplyLoudnessLiveDefault:
+        settings.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS,
+      autoApplyLoudnessVodDefault:
+        settings.autoApplyLoudnessVodDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS,
+      autoApplyLoudnessClipDefault:
+        settings.autoApplyLoudnessClipDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS
+    };
+    const target = currentSettings.targetLufs;
     $('targetLufs').value = String(target);
     $('targetLufsValue').textContent = target + ' LUFS';
-    const adDb = settings.adGainDb ?? DEFAULT_AD_GAIN_DB;
+    const adDb = currentSettings.adGainDb;
     $('adGainDb').value = String(adDb);
     $('adGainValue').textContent = (adDb > 0 ? '+' : '') + adDb + ' dB';
-    displayUnit = settings.displayUnit || '%';
+    displayUnit = currentSettings.displayUnit;
     setActiveUnit(displayUnit);
     for (const kind of ['live', 'vod', 'clip']) {
-      defaultAutoApply[kind] =
-        settings[autoApplyDefaultFieldForKind(kind)] ?? DEFAULT_AUTO_APPLY_LOUDNESS;
+      defaultAutoApply[kind] = currentSettings[autoApplyDefaultFieldForKind(kind)];
       $(`defaultAuto${kind[0].toUpperCase()}${kind.slice(1)}Toggle`).checked =
         defaultAutoApply[kind];
     }
-    $('overlayToggle').checked = settings.showGainOverlay ?? true;
-    renderChannels(data[CHANNEL_VOLUMES_KEY] || {});
+    $('overlayToggle').checked = currentSettings.showGainOverlay;
+  }
+
+  async function loadAll() {
+    const initialSettingsRevision = settingsRevision;
+    const initialChannelRevision = channelRevision;
+    const data = await chrome.storage.local.get([SETTINGS_KEY, CHANNEL_VOLUMES_KEY]);
+    if (initialSettingsRevision === settingsRevision) {
+      renderSettings(data[SETTINGS_KEY] || {});
+    }
+    if (initialChannelRevision === channelRevision) {
+      channelVolumes = data[CHANNEL_VOLUMES_KEY] || {};
+      renderChannels(channelVolumes);
+    }
   }
 
   function setActiveUnit(unit) {
@@ -132,17 +174,40 @@
     if (!response?.ok) throw new Error(response?.reason || 'channelVolumes mutation failed');
   }
 
-  async function saveSettings() {
-    const settings = {
-      targetLufs: Number($('targetLufs').value),
-      adGainDb: Number($('adGainDb').value),
-      displayUnit,
-      autoApplyLoudnessLiveDefault: $('defaultAutoLiveToggle').checked,
-      autoApplyLoudnessVodDefault: $('defaultAutoVodToggle').checked,
-      autoApplyLoudnessClipDefault: $('defaultAutoClipToggle').checked,
-      showGainOverlay: $('overlayToggle').checked
-    };
-    await chrome.storage.local.set({ [SETTINGS_KEY]: settings });
+  async function mutateSettings(patch) {
+    if (!settingsReady) throw new Error('settings not loaded');
+    const response = await chrome.runtime.sendMessage({
+      type: SETTINGS_MUTATION_MESSAGE,
+      mutation: { operation: 'patchSettings', patch }
+    });
+    if (!response?.ok) throw new Error(response?.reason || 'settings mutation failed');
+  }
+
+  async function reloadSettingsAfterFailure(error) {
+    const revision = settingsRevision;
+    try {
+      const data = await chrome.storage.local.get(SETTINGS_KEY);
+      if (revision === settingsRevision) renderSettings(data[SETTINGS_KEY] || {});
+      renderChannels(channelVolumes);
+    } catch (reloadError) {
+      console.error('[TCV] failed to reload settings after save failure', reloadError);
+    }
+    showSettingsError(true);
+    console.error('[TCV] failed to save settings field', error);
+  }
+
+  async function updateSettings(patch) {
+    if (!settingsReady) return false;
+    renderSettings({ ...currentSettings, ...patch });
+    renderChannels(channelVolumes);
+    try {
+      await mutateSettings(patch);
+      showSettingsError(false);
+      return true;
+    } catch (error) {
+      await reloadSettingsAfterFailure(error);
+      return false;
+    }
   }
 
   async function removeChannel(id) {
@@ -165,67 +230,65 @@
   $('targetLufs').addEventListener('input', (e) => {
     $('targetLufsValue').textContent = e.target.value + ' LUFS';
   });
-  $('targetLufs').addEventListener('change', saveSettings);
+  $('targetLufs').addEventListener('change', (e) => {
+    void updateSettings({ targetLufs: Number(e.target.value) });
+  });
   $('adGainDb').addEventListener('input', (e) => {
     const v = Number(e.target.value);
     $('adGainValue').textContent = (v > 0 ? '+' : '') + v + ' dB';
   });
-  $('adGainDb').addEventListener('change', saveSettings);
+  $('adGainDb').addEventListener('change', (e) => {
+    void updateSettings({ adGainDb: Number(e.target.value) });
+  });
 
   for (const kind of ['live', 'vod', 'clip']) {
     const id = `defaultAuto${kind[0].toUpperCase()}${kind.slice(1)}Toggle`;
     const toggle = $(id);
     toggle.addEventListener('change', async () => {
-      const previous = defaultAutoApply[kind];
-      defaultAutoApply[kind] = toggle.checked;
+      if (!settingsReady) return;
+      const field = autoApplyDefaultFieldForKind(kind);
       toggle.disabled = true;
       try {
-        await saveSettings();
-      } catch (error) {
-        defaultAutoApply[kind] = previous;
-        toggle.checked = previous;
-        try {
-          await loadAll();
-        } catch (reloadError) {
-          console.error('[TCV] failed to reload settings after save failure', reloadError);
-        }
-        showSettingsError(true);
-        console.error('[TCV] failed to save Auto default', error);
-        return;
+        await updateSettings({ [field]: toggle.checked });
       } finally {
         toggle.disabled = false;
-      }
-      showSettingsError(false);
-      try {
-        const data = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
-        renderChannels(data[CHANNEL_VOLUMES_KEY] || {});
-      } catch (error) {
-        console.error('[TCV] failed to refresh channels after settings save', error);
       }
     });
   }
 
   document.querySelectorAll('#unitToggle button').forEach((btn) => {
     btn.addEventListener('click', async () => {
-      displayUnit = btn.getAttribute('data-unit');
-      setActiveUnit(displayUnit);
-      await saveSettings();
-      const data = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
-      renderChannels(data[CHANNEL_VOLUMES_KEY] || {});
+      if (!settingsReady) return;
+      await updateSettings({ displayUnit: btn.getAttribute('data-unit') });
     });
   });
 
-  $('overlayToggle').addEventListener('change', saveSettings);
+  $('overlayToggle').addEventListener('change', (event) => {
+    void updateSettings({ showGainOverlay: event.target.checked });
+  });
 
   $('clearAllBtn').addEventListener('click', clearAll);
 
   chrome.storage.onChanged.addListener((changes) => {
     if (changes[CHANNEL_VOLUMES_KEY]) {
-      renderChannels(changes[CHANNEL_VOLUMES_KEY].newValue || {});
+      channelRevision++;
+      channelVolumes = changes[CHANNEL_VOLUMES_KEY].newValue || {};
+      renderChannels(channelVolumes);
     }
-    if (changes[SETTINGS_KEY]) loadAll();
+    if (changes[SETTINGS_KEY]) {
+      settingsRevision++;
+      renderSettings(changes[SETTINGS_KEY].newValue || {});
+      renderChannels(channelVolumes);
+    }
   });
 
   applyI18n();
-  loadAll();
+  setSettingsControlsDisabled(true);
+  loadAll().then(() => {
+    settingsReady = true;
+    setSettingsControlsDisabled(false);
+  }).catch((error) => {
+    showSettingsError(true);
+    console.error('[TCV] failed to load settings', error);
+  });
 })();

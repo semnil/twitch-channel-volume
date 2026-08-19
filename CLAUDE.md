@@ -59,6 +59,10 @@ channel-store.js (service worker helper)
 │   (alias 転送時は仮 ID 側の name / login / url を適用しない)
 └── フィールド単位の永続更新番号で VOD/Clip 仮 ID と確定 ID をマージ
 
+settings-store.js (service worker helper)
+├── autoLoudnessSettings のフィールド単位 mutation を検証
+└── 全 read-modify-write を単一キューで直列化し、設定タブ間の上書きを防止
+
 utils.js (shared, popup/options + page-bridge + content.js + test.js)
 ├── Constants: SETTINGS_KEY, CHANNEL_VOLUMES_KEY, CHANNEL_ALIASES_KEY,
 │              CHANNEL_SEQUENCE_KEY, DEFAULT_TARGET_LUFS, DEFAULT_AD_GAIN_DB,
@@ -91,7 +95,8 @@ options.html / options.js
 ├── 表示単位 (% / dB)
 ├── ゲインオーバーレイ表示 ON/OFF トグル (default ON)
 ├── Saved Channels テーブル (Live / VOD / Clip 3列、Auto 時は最後に適用した Auto gain、削除可)
-└── storage.onChanged で同期
+├── 初期設定の読込完了まで全設定操作を無効化
+└── 各項目だけを Service Worker の設定 mutation で保存し、storage.onChanged で同期
 ```
 
 ## i18n
@@ -120,8 +125,9 @@ options.html / options.js
 | `utils.js` | 共通定数・ユーティリティ (popup/options/test 共有) |
 | `popup.html` / `popup.js` | Popup UI |
 | `options.html` / `options.js` | 設定画面 |
-| `background.js` | Service worker (install defaults + channelVolumes 単一ライター) |
+| `background.js` | Service worker (install defaults + channelVolumes / settings 単一ライター) |
 | `channel-store.js` | channelVolumes mutation・直列化・仮 ID マージ |
+| `settings-store.js` | autoLoudnessSettings のフィールド mutation・直列化 |
 | `_locales/` | i18n (ja, en) |
 | `icons/` | 16/48/128 px PNG (Twitch purple 3-bar meter) |
 | `gen_icons.py` | アイコン生成 (Python Pillow) |
@@ -144,6 +150,7 @@ options.html / options.js
   - 将来的に Helix `Get Users` で login → user_id にマイグレーション可能な構造
 - **仮 ID → 確定 ID 遷移**: page-bridge が GraphQL リクエスト時点の content kind/id を owner イベントへ付与。content.js は現在 URL と一致した応答だけを受理し、`vod-owner:<videoId>` / `clip-owner:<slug>` を Service Worker 内で数値 ID へマージしてから currentChannel を切り替える。各 gain / Auto / LUFS フィールドは単一ライターが採番した更新順序で競合解決し、別タブの最新保存も維持する。仮 ID の正準 ID 対応は Storage に永続化し、content の読取と Worker の書込の両方で解決する
 - **channelVolumes 単一ライター**: aggregate key の read-modify-write は background.js → channel-store.js のキューだけが実行。content scripts と options は mutation message を送り、複数タブの LUFS キャッシュ保存と Auto/手動設定保存が古い全体オブジェクトで互いを上書きしないようにする
+- **設定のフィールド単位保存**: options は初期ロード完了後に操作を有効化し、変更した設定フィールドだけを background.js → settings-store.js の単一キューへ送る。複数の設定タブが異なる項目を古い表示状態から変更しても、`autoLoudnessSettings` 全体を置換せず最新値へマージする
 - **CM 区間検出 (HLS 経路)**: usher.ttvnw.net / *.m3u8 を fetch hook で傍受し `EXT-X-DATERANGE CLASS="twitch-stitched-ad"` をパース。Streamlink の Twitch plugin と同等の判定ロジック
 - **CM 区間検出 (DOM 経路)**: `[data-a-target="video-ad-countdown"]` の存在で判定するフォールバック。HLS 取得が間に合わない preroll で有効
 - **CM 中の挙動**: GainNode に baseline × adGainOffset (dB → gain) を適用。Integrated 計測は CM 中スキップして本編の値を保持
