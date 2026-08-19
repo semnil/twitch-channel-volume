@@ -143,13 +143,19 @@ function copyNewerLufs(mergedLufs, mergedVersions, source, target, kind) {
   const versionField = `lastLufs.${kind}`;
   const sourceHas = Object.prototype.hasOwnProperty.call(sourceLufs, kind);
   const targetHas = Object.prototype.hasOwnProperty.call(targetLufs, kind);
-  if (!sourceHas ||
-      (targetHas && fieldVersion(source, versionField) <= fieldVersion(target, versionField))) {
-    return;
-  }
-  mergedLufs[kind] = sourceLufs[kind];
-  const version = fieldVersion(source, versionField);
-  if (version) mergedVersions[versionField] = version;
+  const sourceVersion = fieldVersion(source, versionField);
+  const targetVersion = fieldVersion(target, versionField);
+  const sourceHasState = sourceHas || sourceVersion > 0;
+  const targetHasState = targetHas || targetVersion > 0;
+  if (!sourceHasState && !targetHasState) return;
+  const sourceWins = sourceHasState &&
+    (!targetHasState || sourceVersion > targetVersion);
+  const winnerHasValue = sourceWins ? sourceHas : targetHas;
+  const winnerValue = sourceWins ? sourceLufs[kind] : targetLufs[kind];
+  const winnerVersion = sourceWins ? sourceVersion : targetVersion;
+  if (winnerHasValue) mergedLufs[kind] = winnerValue;
+  else delete mergedLufs[kind];
+  if (winnerVersion) mergedVersions[versionField] = winnerVersion;
   else delete mergedVersions[versionField];
 }
 
@@ -184,14 +190,16 @@ function mergeProvisionalEntry(all, mutation) {
     copyNewerLufs(mergedLufs, mergedVersions, source, target, mergeKind);
   }
   if (Object.keys(mergedLufs).length) merged.lastLufs = mergedLufs;
+  else delete merged.lastLufs;
   if (Object.keys(mergedVersions).length) merged[FIELD_VERSIONS_FIELD] = mergedVersions;
   else delete merged[FIELD_VERSIONS_FIELD];
-  if (Number.isFinite(source.lastMeasuredAt) || Number.isFinite(target.lastMeasuredAt)) {
+  if (Object.keys(mergedLufs).length &&
+      (Number.isFinite(source.lastMeasuredAt) || Number.isFinite(target.lastMeasuredAt))) {
     merged.lastMeasuredAt = Math.max(
       Number.isFinite(source.lastMeasuredAt) ? source.lastMeasuredAt : 0,
       Number.isFinite(target.lastMeasuredAt) ? target.lastMeasuredAt : 0
     );
-  }
+  } else delete merged.lastMeasuredAt;
   copyMetadata(merged, channel);
   all[toId] = merged;
   delete all[fromId];
@@ -284,6 +292,21 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
       all[mutation.channelId] = entry;
       break;
     }
+    case 'clearMeasurement': {
+      assertChannelId(mutation.channelId);
+      assertKind(mutation.kind);
+      const entry = cloneEntry(all[mutation.channelId], mutation.channelId);
+      const lastLufs = { ...(entry.lastLufs || {}) };
+      delete lastLufs[mutation.kind];
+      if (Object.keys(lastLufs).length) entry.lastLufs = lastLufs;
+      else {
+        delete entry.lastLufs;
+        delete entry.lastMeasuredAt;
+      }
+      setFieldVersion(entry, `lastLufs.${mutation.kind}`, mutation.sequence);
+      all[mutation.channelId] = entry;
+      break;
+    }
     case 'saveAutoGain': {
       assertChannelId(mutation.channelId);
       assertKind(mutation.kind);
@@ -364,7 +387,8 @@ function resolveMutation(mutation, aliases) {
 
 function mutationNeedsSequence(operation) {
   return operation === 'saveGain' || operation === 'saveAuto' ||
-    operation === 'saveMeasurement' || operation === 'saveAutoGain';
+    operation === 'saveMeasurement' || operation === 'clearMeasurement' ||
+    operation === 'saveAutoGain';
 }
 
 function createChannelVolumesWriter(

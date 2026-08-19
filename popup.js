@@ -11,13 +11,18 @@
   let currentChannel = { id: '', kind: 'none' };
   let currentAutoApplyLoudness = false;
   let autoUpdatePending = false;
+  let measurementResetPending = false;
+  let hasResettableMeasurement = false;
   let gainSaveError = false;
 
   function syncInteractionDisabledState() {
     const validChannel = !!currentChannel.id &&
       ['live', 'vod', 'clip'].includes(currentChannel.kind);
-    $('autoApplyToggle').disabled = autoUpdatePending || !validChannel;
+    $('autoApplyToggle').disabled = autoUpdatePending || measurementResetPending || !validChannel;
+    $('resetMeasurementBtn').disabled = autoUpdatePending || measurementResetPending ||
+      !validChannel || !hasResettableMeasurement;
     if (autoUpdatePending) $('applyBtn').disabled = true;
+    if (measurementResetPending) $('applyBtn').disabled = true;
 
     const manualDisabled = currentAutoApplyLoudness || autoUpdatePending;
     $('manualSection').classList.toggle('disabled', manualDisabled);
@@ -105,7 +110,11 @@
   function renderState(state) {
     if (!state) return;
     const ch = state.channel || {};
-    if (currentChannel.id && ch.id !== currentChannel.id) gainSaveError = false;
+    if (currentChannel.id &&
+        (ch.id !== currentChannel.id || ch.kind !== currentChannel.kind)) {
+      gainSaveError = false;
+      $('resetMeasurementError').classList.add('hidden');
+    }
     currentChannel = ch;
     currentAutoApplyLoudness = !!state.autoApplyLoudness;
     const nameEl = $('channelName');
@@ -133,6 +142,7 @@
     setLufsCell('integrated', lufs.integrated);
     const measured = Number.isFinite(lufs.integrated) ? lufs.integrated : lufs.shortTerm;
     const hasIntegrated = Number.isFinite(lufs.integrated);
+    hasResettableMeasurement = hasIntegrated || !!state.hasSavedMeasurement;
 
     const autoToggle = $('autoApplyToggle');
     if (!autoUpdatePending) autoToggle.checked = currentAutoApplyLoudness;
@@ -182,7 +192,8 @@
   }
 
   async function applyMeasured() {
-    if (autoUpdatePending || !Number.isFinite(lastSuggestedGain)) return;
+    if (autoUpdatePending || measurementResetPending ||
+        !Number.isFinite(lastSuggestedGain)) return;
     try {
       const tab = await getActiveTab();
       if (!tab) throw new Error('No active tab');
@@ -219,7 +230,8 @@
 
   async function setAutoApplyLoudness() {
     const toggle = $('autoApplyToggle');
-    if (autoUpdatePending || !currentChannel.id || currentChannel.kind === 'none') return;
+    if (autoUpdatePending || measurementResetPending ||
+        !currentChannel.id || currentChannel.kind === 'none') return;
     const enabled = toggle.checked;
     $('autoError').classList.add('hidden');
     autoUpdatePending = true;
@@ -256,12 +268,41 @@
     }
   }
 
+  async function resetMeasurement() {
+    if (measurementResetPending || !hasResettableMeasurement ||
+        !currentChannel.id || currentChannel.kind === 'none') return;
+    $('resetMeasurementError').classList.add('hidden');
+    measurementResetPending = true;
+    syncInteractionDisabledState();
+    try {
+      const tab = await getActiveTab();
+      if (!tab) throw new Error('No active tab');
+      const res = await chrome.tabs.sendMessage(tab.id, {
+        cmd: 'resetMeasurement',
+        channelId: currentChannel.id,
+        kind: currentChannel.kind
+      });
+      if (!res?.ok) throw new Error(res?.reason || 'Measurement reset failed');
+      hasResettableMeasurement = false;
+      await refresh();
+    } catch (_) {
+      $('resetMeasurementError').textContent = msg('resetMeasurementFailed');
+      $('resetMeasurementError').classList.remove('hidden');
+      const latestState = await requestState({ showConnectionError: false });
+      if (latestState) renderState(latestState);
+    } finally {
+      measurementResetPending = false;
+      syncInteractionDisabledState();
+    }
+  }
+
   async function refresh() {
     const state = await requestState();
     renderState(state);
   }
 
   $('applyBtn').addEventListener('click', applyMeasured);
+  $('resetMeasurementBtn').addEventListener('click', resetMeasurement);
   $('autoApplyToggle').addEventListener('change', setAutoApplyLoudness);
   $('manualSlider').addEventListener('input', (e) => {
     if (autoUpdatePending) return;

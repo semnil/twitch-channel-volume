@@ -27,6 +27,9 @@ BORDER = (42, 42, 74)     # #2a2a4a
 LIVE_RED = (233, 25, 22)  # #e91916
 PURPLE = (145, 71, 255)   # #9147ff Twitch / clip badge
 SWITCH_ON = (27, 58, 75)  # #1b3a4b
+RESET_BORDER = (49, 116, 126)  # rgba(78, 205, 196, 0.48) on INFO_BG
+RESET_BG = (25, 43, 70)        # rgba(78, 205, 196, 0.06) on INFO_BG
+RESET_BUTTON_HEIGHT = 36
 
 
 def _font(size, bold=False):
@@ -56,6 +59,7 @@ FONT_VAL = _font(17, bold=True)
 FONT_XL = _font(20, bold=True)
 FONT_XS = _font(9)
 FONT_PRESET = _font(11, bold=True)
+FONT_RESET = _font(10, bold=True)
 
 
 def rr(draw, box, radius, fill):
@@ -68,6 +72,7 @@ STRINGS = {
     'ja': {
         'channel': 'サンプル配信ch.',
         'live': 'LIVE',
+        'reset': '測定値をリセット',
         'apply': '63% をチャンネルに適用',
         'auto_label': 'LUFS 自動追従',
         'auto_hint': 'この種別は自動追従が\n有効です',
@@ -97,6 +102,7 @@ STRINGS = {
     'en': {
         'channel': 'Sample Stream',
         'live': 'LIVE',
+        'reset': 'Reset measurement',
         'apply': 'Apply 63% to channel',
         'auto_label': 'Auto-follow LUFS',
         'auto_hint': 'Auto-follow is enabled\nfor this type',
@@ -132,7 +138,7 @@ def screenshot_popup(lang):
     draw = ImageDraw.Draw(img)
 
     px, pw = 160, 320
-    py, ph = 20, 350
+    py, ph = 20, 368
     rr(draw, [px, py, px + pw, py + ph], 10, POPUP_BG)
 
     # Header
@@ -142,13 +148,43 @@ def screenshot_popup(lang):
 
     # Info section
     iy = py + 39
-    rr(draw, [px, iy, px + pw, iy + 108], 0, INFO_BG)
-    draw.text((px + 16, iy + 12), s['channel'], fill=WHITE, font=FONT_BOLD)
+    info_height = 126
+    rr(draw, [px, iy, px + pw, iy + info_height], 0, INFO_BG)
+    channel_y = iy + 20
+    draw.text((px + 16, channel_y), s['channel'], fill=WHITE, font=FONT_BOLD)
     # LIVE badge
     cl = draw.textlength(s['channel'], font=FONT_BOLD)
     bx = px + 16 + cl + 8
-    rr(draw, [bx, iy + 11, bx + 34, iy + 27], 3, LIVE_RED)
-    draw.text((bx + 6, iy + 13), s['live'], fill=WHITE, font=FONT_XS)
+    rr(draw, [bx, iy + 19, bx + 34, iy + 35], 3, LIVE_RED)
+    draw.text((bx + 6, iy + 21), s['live'], fill=WHITE, font=FONT_XS)
+
+    # Measurement reset button
+    reset_text_width = draw.textlength(s['reset'], font=FONT_RESET)
+    reset_width = int(reset_text_width + 15 + 5 + 16)
+    reset_x = px + pw - 16 - reset_width
+    reset_y = iy + 9
+    draw.rounded_rectangle(
+        [reset_x, reset_y, reset_x + reset_width - 1,
+         reset_y + RESET_BUTTON_HEIGHT - 1],
+        radius=6,
+        fill=RESET_BG,
+        outline=RESET_BORDER,
+        width=1,
+    )
+    icon_x, icon_y = reset_x + 8, reset_y + 10
+    draw.arc([icon_x, icon_y, icon_x + 14, icon_y + 14], 35, 330, fill=TEAL, width=2)
+    draw.line(
+        [(icon_x + 1, icon_y + 3), (icon_x + 1, icon_y + 8),
+         (icon_x + 6, icon_y + 8)],
+        fill=TEAL,
+        width=2,
+    )
+    draw.text(
+        (icon_x + 20, reset_y + 12),
+        s['reset'],
+        fill=TEAL,
+        font=FONT_RESET,
+    )
 
     # Cards
     cards = [
@@ -158,7 +194,7 @@ def screenshot_popup(lang):
     ]
     cw, gap = 92, 5
     cx = px + 16
-    cy = iy + 40
+    cy = iy + 58
     for label, val, unit, color in cards:
         rr(draw, [cx, cy, cx + cw, cy + 52], 6, CARD_BG)
         draw.text((cx + 9, cy + 8), label, fill=GRAY, font=FONT_XS)
@@ -166,10 +202,10 @@ def screenshot_popup(lang):
         vw = draw.textlength(val, font=FONT_VAL)
         draw.text((cx + 9 + vw + 2, cy + 28), unit, fill=GRAY, font=FONT_SM)
         cx += cw + gap
-    draw.line([(px, iy + 108), (px + pw, iy + 108)], fill=BORDER)
+    draw.line([(px, iy + info_height), (px + pw, iy + info_height)], fill=BORDER)
 
     # Auto-follow switch (ON)
-    auto_y = iy + 108
+    auto_y = iy + info_height
     draw.text((px + 16, auto_y + 14), s['auto_label'], fill=CC, font=FONT_BOLD)
     switch_x = px + pw - 52
     rr(draw, [switch_x, auto_y + 10, switch_x + 36, auto_y + 30], 10, SWITCH_ON)

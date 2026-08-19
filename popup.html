@@ -73,7 +73,22 @@ body.initializing .toggle-switch .switch-slider::before { transition: none; }
   background: #16213e;
   border-bottom: 1px solid #2a2a4a;
 }
+.channel-row {
+  min-height: 36px;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.channel-identity {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 .channel-name {
+  min-width: 0;
   font-size: 13px;
   font-weight: 600;
   color: #fff;
@@ -84,6 +99,53 @@ body.initializing .toggle-switch .switch-slider::before { transition: none; }
 .channel-name.empty {
   color: #666;
   font-weight: 400;
+}
+.reset-measurement-btn {
+  flex: 0 0 auto;
+  height: 36px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid rgba(78, 205, 196, 0.48);
+  border-radius: 6px;
+  color: #4ecdc4;
+  background: rgba(78, 205, 196, 0.06);
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.reset-measurement-btn svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.reset-measurement-btn:hover:not(:disabled) {
+  background: rgba(78, 205, 196, 0.14);
+}
+.reset-measurement-btn:focus-visible {
+  outline: 2px solid #4ecdc4;
+  outline-offset: 2px;
+}
+.reset-measurement-btn:disabled {
+  border-color: #2a2a4a;
+  color: #666;
+  background: transparent;
+  cursor: default;
+}
+.reset-measurement-error {
+  margin: -4px 0 8px;
+  color: #ff6b9d;
+  font-size: 9px;
+  line-height: 1.25;
+  text-align: right;
 }
 
 .loudness-grid {
@@ -336,11 +398,21 @@ body.initializing .toggle-switch .switch-slider::before { transition: none; }
 
 <div id="mainArea">
   <div class="info-section">
-    <div style="display:flex; align-items:center; gap:6px; margin-bottom:10px;">
-      <div id="channelName" class="channel-name empty" data-i18n="channelNotDetected">チャンネル未検出</div>
-      <span id="channelKind" class="type-badge hidden"></span>
-      <span id="adFlag" class="ad-badge hidden" data-i18n="adDetected">CM 検出中</span>
+    <div class="channel-row">
+      <div class="channel-identity">
+        <div id="channelName" class="channel-name empty" data-i18n="channelNotDetected">チャンネル未検出</div>
+        <span id="channelKind" class="type-badge hidden"></span>
+        <span id="adFlag" class="ad-badge hidden" data-i18n="adDetected">CM 検出中</span>
+      </div>
+      <button id="resetMeasurementBtn" class="reset-measurement-btn" disabled>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 4v6h6"></path>
+          <path d="M5.6 16.5a8 8 0 1 0 .5-9.6L4 10"></path>
+        </svg>
+        <span data-i18n="resetMeasurement">測定値をリセット</span>
+      </button>
     </div>
+    <div id="resetMeasurementError" class="reset-measurement-error hidden" role="status" data-i18n="resetMeasurementFailed">測定値をリセットできませんでした。もう一度お試しください</div>
     <div class="loudness-grid">
       <div class="loudness-card">
         <div class="label" data-i18n="labelIntegrated">Integrated</div>

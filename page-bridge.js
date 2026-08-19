@@ -79,8 +79,129 @@
   const BLOCK_SEC = 0.1;
   const MOMENTARY_BLOCKS = 4;
   const SHORT_BLOCKS = 30;
-  const MAX_BLOCKS = 60 * 60 * 10;
-  const integratedBlocks = [];
+  const MAX_INTEGRATED_BLOCKS = 60 * 60 * 10;
+  const ABSOLUTE_GATE_MEAN_SQUARE = Math.pow(10, (-70 + 0.691) / 10);
+  const RELATIVE_GATE_FACTOR = Math.pow(10, -10 / 10);
+  const integratedBlocks = new Array(MAX_INTEGRATED_BLOCKS);
+  let integratedBlockStart = 0;
+  let integratedBlockLength = 0;
+  let absoluteGatedRoot = null;
+
+  function treeHeight(node) {
+    return node?.height || 0;
+  }
+
+  function treeCount(node) {
+    return node?.subtreeCount || 0;
+  }
+
+  function treeSum(node) {
+    return node?.subtreeSum || 0;
+  }
+
+  function updateTreeNode(node) {
+    node.height = 1 + Math.max(treeHeight(node.left), treeHeight(node.right));
+    node.subtreeCount = node.count + treeCount(node.left) + treeCount(node.right);
+    node.subtreeSum = node.key * node.count + treeSum(node.left) + treeSum(node.right);
+    return node;
+  }
+
+  function rotateTreeLeft(node) {
+    const root = node.right;
+    node.right = root.left;
+    root.left = updateTreeNode(node);
+    return updateTreeNode(root);
+  }
+
+  function rotateTreeRight(node) {
+    const root = node.left;
+    node.left = root.right;
+    root.right = updateTreeNode(node);
+    return updateTreeNode(root);
+  }
+
+  function balanceTree(node) {
+    if (!node) return null;
+    updateTreeNode(node);
+    const balance = treeHeight(node.left) - treeHeight(node.right);
+    if (balance > 1) {
+      if (treeHeight(node.left.left) < treeHeight(node.left.right)) {
+        node.left = rotateTreeLeft(node.left);
+      }
+      return rotateTreeRight(node);
+    }
+    if (balance < -1) {
+      if (treeHeight(node.right.right) < treeHeight(node.right.left)) {
+        node.right = rotateTreeRight(node.right);
+      }
+      return rotateTreeLeft(node);
+    }
+    return node;
+  }
+
+  function insertTreeValue(node, key) {
+    if (!node) {
+      return {
+        key,
+        count: 1,
+        height: 1,
+        subtreeCount: 1,
+        subtreeSum: key,
+        left: null,
+        right: null
+      };
+    }
+    if (key < node.key) node.left = insertTreeValue(node.left, key);
+    else if (key > node.key) node.right = insertTreeValue(node.right, key);
+    else node.count++;
+    return balanceTree(node);
+  }
+
+  function removeTreeValue(node, key, removeAll = false) {
+    if (!node) return null;
+    if (key < node.key) node.left = removeTreeValue(node.left, key, removeAll);
+    else if (key > node.key) node.right = removeTreeValue(node.right, key, removeAll);
+    else if (node.count > 1 && !removeAll) node.count--;
+    else {
+      if (!node.left) return node.right;
+      if (!node.right) return node.left;
+      let successor = node.right;
+      while (successor.left) successor = successor.left;
+      node.key = successor.key;
+      node.count = successor.count;
+      node.right = removeTreeValue(node.right, successor.key, true);
+    }
+    return balanceTree(node);
+  }
+
+  function treeValuesAtOrAbove(node, threshold) {
+    if (!node) return { sum: 0, count: 0 };
+    if (node.key < threshold) return treeValuesAtOrAbove(node.right, threshold);
+    const left = treeValuesAtOrAbove(node.left, threshold);
+    return {
+      sum: left.sum + node.key * node.count + treeSum(node.right),
+      count: left.count + node.count + treeCount(node.right)
+    };
+  }
+
+  function appendIntegratedBlock(ms) {
+    let removed;
+    if (integratedBlockLength < MAX_INTEGRATED_BLOCKS) {
+      const index = (integratedBlockStart + integratedBlockLength) % MAX_INTEGRATED_BLOCKS;
+      integratedBlocks[index] = ms;
+      integratedBlockLength++;
+    } else {
+      removed = integratedBlocks[integratedBlockStart];
+      integratedBlocks[integratedBlockStart] = ms;
+      integratedBlockStart = (integratedBlockStart + 1) % MAX_INTEGRATED_BLOCKS;
+    }
+    if (removed >= ABSOLUTE_GATE_MEAN_SQUARE) {
+      absoluteGatedRoot = removeTreeValue(absoluteGatedRoot, removed);
+    }
+    if (ms >= ABSOLUTE_GATE_MEAN_SQUARE) {
+      absoluteGatedRoot = insertTreeValue(absoluteGatedRoot, ms);
+    }
+  }
 
   function postReady(extra) {
     window.postMessage({
@@ -128,22 +249,29 @@
   }
 
   function integratedLufs() {
-    if (integratedBlocks.length === 0) return -Infinity;
-    const ABS_GATE_MS = Math.pow(10, (-70 + 0.691) / 10);
-    const passAbs = integratedBlocks.filter((v) => v >= ABS_GATE_MS);
-    if (passAbs.length === 0) return -Infinity;
-    const meanAbs = passAbs.reduce((s, v) => s + v, 0) / passAbs.length;
-    const relGateLufs = msToLufs(meanAbs) - 10;
-    const relGateMs = Math.pow(10, (relGateLufs + 0.691) / 10);
-    const passRel = passAbs.filter((v) => v >= relGateMs);
-    if (passRel.length === 0) return -Infinity;
-    const meanRel = passRel.reduce((s, v) => s + v, 0) / passRel.length;
-    return msToLufs(meanRel);
+    const absoluteGatedCount = treeCount(absoluteGatedRoot);
+    if (absoluteGatedCount === 0) return -Infinity;
+    const absoluteMeanSquare = treeSum(absoluteGatedRoot) / absoluteGatedCount;
+    const relativeGate = absoluteMeanSquare * RELATIVE_GATE_FACTOR;
+    const gated = treeValuesAtOrAbove(absoluteGatedRoot, relativeGate);
+    return gated.count === 0 ? -Infinity : msToLufs(gated.sum / gated.count);
   }
 
-  function resetMeasurement() {
+  function updateIntegratedLufs(ms) {
+    appendIntegratedBlock(ms);
+    return integratedLufs();
+  }
+
+  function resetMeasurement(initialIntegratedLufs) {
     blocks.length = 0;
-    integratedBlocks.length = 0;
+    integratedBlockStart = 0;
+    integratedBlockLength = 0;
+    absoluteGatedRoot = null;
+    if (!Number.isFinite(initialIntegratedLufs)) return;
+    const initialMeanSquare = Math.pow(10, (initialIntegratedLufs + 0.691) / 10);
+    if (!Number.isFinite(initialMeanSquare) ||
+        initialMeanSquare < ABSOLUTE_GATE_MEAN_SQUARE) return;
+    appendIntegratedBlock(initialMeanSquare);
   }
 
   let ctxPromise = null;
@@ -297,13 +425,9 @@
     if (blocks.length > Math.max(MOMENTARY_BLOCKS, SHORT_BLOCKS) * 4) {
       blocks.splice(0, blocks.length - SHORT_BLOCKS * 4);
     }
-    if (!adActive) {
-      integratedBlocks.push(ms);
-      if (integratedBlocks.length > MAX_BLOCKS) integratedBlocks.shift();
-    }
     const mom = blocksToLufs(blocks, MOMENTARY_BLOCKS);
     const st = blocksToLufs(blocks, SHORT_BLOCKS);
-    const intg = integratedLufs();
+    const intg = adActive ? integratedLufs() : updateIntegratedLufs(ms);
     postLufs(mom, st, intg);
   }
 
@@ -469,7 +593,7 @@
         setAdActive(data.active, data.range);
         break;
       case 'resetMeasurement':
-        resetMeasurement();
+        resetMeasurement(data.initialIntegratedLufs);
         break;
       case 'resume':
         try { await ctx?.resume(); } catch (_) {}

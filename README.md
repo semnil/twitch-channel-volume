@@ -6,8 +6,9 @@ Twitch does not publish any loudness metadata (no `loudnessDb`-equivalent API, n
 
 ## Features
 
-- **Real-time LUFS metering**: Momentary (400 ms), Short-term (3 s), Integrated (BS.1770 gated)
+- **Real-time LUFS metering**: Momentary (400 ms), Short-term (3 s), Integrated (BS.1770 absolute and relative gates with indexed updates)
 - **Per-channel LUFS auto-follow**: Optional Live / VOD / Clip controls continuously follow the measured Integrated LUFS and Target LUFS
+- **Measurement reset**: Clears the current media kind's saved LUFS seed and restarts its active measurement without changing saved gains
 - **Per-channel manual gain**: Save gain per Live / VOD / Clip kind; applied automatically on revisit and used while Auto is waiting for measurement
 - **Global Auto defaults**: Independent Live / VOD / Clip defaults apply only when a channel kind has neither an explicit Auto choice nor a manual gain
 - **Ad-break handling**: Detects `EXT-X-DATERANGE CLASS="twitch-stitched-ad"` in HLS manifests and `[data-a-target="video-ad-countdown"]` in the DOM; applies a separate gain offset during ads
@@ -25,7 +26,7 @@ Twitch does not publish any loudness metadata (no `loudnessDb`-equivalent API, n
                                                   (per 100 ms mean-square)
 ```
 
-The measurement path applies the BS.1770-4 K-weighting (high-shelf pre-filter + RLB high-pass), accumulates mean-square in an AudioWorklet, and the main thread aggregates 400 ms momentary, 3 s short-term, and gated integrated LUFS in real time.
+The measurement path applies the BS.1770-4 K-weighting (high-shelf pre-filter + RLB high-pass) and accumulates mean-square in an AudioWorklet. The main thread aggregates 400 ms momentary and 3 s short-term LUFS. Integrated LUFS starts from the saved value for the current channel and media kind. A one-hour ring buffer and balanced energy index preserve the absolute and relative two-stage gate while updating each block in logarithmic time instead of rescanning the retained history.
 
 ## Install (developer mode)
 
@@ -39,9 +40,10 @@ The measurement path applies the BS.1770-4 K-weighting (high-shelf pre-filter + 
 1. Open a Twitch stream, VOD, or clip
 2. Click the extension icon and enable **Auto-follow LUFS** for the current kind
 3. The gain follows the current Integrated LUFS toward Target LUFS as measurement stabilizes
-4. Alternatively, leave Auto off and click **Apply to channel** to save the current suggested gain
-5. Use the manual slider (0–600 %) while Auto is off
-6. Ad break gain is configurable in Settings (default −6 dB)
+4. Use **Reset measurement** to discard the saved LUFS seed and restart the current kind's measurement
+5. Alternatively, leave Auto off and click **Apply to channel** to save the current suggested gain
+6. Use the manual slider (0–600 %) while Auto is off
+7. Ad break gain is configurable in Settings (default −6 dB)
 
 ## Settings
 
