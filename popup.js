@@ -364,5 +364,5 @@
       requestAnimationFrame(() => document.body.classList.remove('initializing'));
     }
   })();
-  setInterval(refresh, 1000);
+  setInterval(refresh, DISPLAY_UPDATE_INTERVAL_MS);
 })();

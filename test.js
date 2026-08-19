@@ -67,6 +67,7 @@ function createContentHarness({
   let pendingStorageGetDeferred = false;
   let resolvePendingStorageGet;
   let resolveChannelMutation;
+  let currentTimeMs = 10_000;
   const location = { href };
   const stored = {
     [u.SETTINGS_KEY]: {
@@ -102,6 +103,9 @@ function createContentHarness({
   class MutationObserver {
     constructor(callback) { this.callback = callback; }
     observe() {}
+  }
+  class HarnessDate extends Date {
+    static now() { return currentTimeMs; }
   }
   const history = {
     pushState(_state, _unused, url) {
@@ -172,6 +176,7 @@ function createContentHarness({
       error() {},
       info() {}
     },
+    Date: HarnessDate,
     document,
     history,
     location,
@@ -217,6 +222,9 @@ function createContentHarness({
     },
     invalidateRuntime() {
       runtimeId = '';
+    },
+    advanceTime(ms) {
+      currentTimeMs += ms;
     },
     releaseInitialStorageGet() {
       assert.ok(resolveInitialStorageGet, 'initial storage read is not pending');
@@ -736,6 +744,36 @@ test('content Auto mode follows LUFS and recalculates when the target changes', 
   ) < 1e-9);
 });
 
+test('content limits Auto gain updates to the popup display interval', async () => {
+  assert.equal(u.DISPLAY_UPDATE_INTERVAL_MS, 1000);
+  const popupSource = fs.readFileSync(path.join(__dirname, 'popup.js'), 'utf8');
+  assert.match(popupSource, /setInterval\(refresh, DISPLAY_UPDATE_INTERVAL_MS\);/);
+  const harness = createContentHarness({ autoApply: true, autoGain: 0.8 });
+  await flushTasks();
+  harness.commands.length = 0;
+
+  const emitIntegrated = (integrated) => harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    momentary: integrated,
+    shortTerm: integrated,
+    integrated
+  });
+
+  await emitIntegrated(-23);
+  harness.advanceTime(u.DISPLAY_UPDATE_INTERVAL_MS - 1);
+  await emitIntegrated(-22);
+  let gains = harness.commands.filter((command) => command.cmd === 'setGain');
+  assert.equal(gains.length, 1);
+  assert.ok(Math.abs(gains[0].value - u.calcGain(-23, -18)) < 1e-9);
+
+  harness.advanceTime(1);
+  await emitIntegrated(-21);
+  gains = harness.commands.filter((command) => command.cmd === 'setGain');
+  assert.equal(gains.length, 2);
+  assert.ok(Math.abs(gains[1].value - u.calcGain(-21, -18)) < 1e-9);
+});
+
 test('content manual mode does not follow incoming LUFS measurements', async () => {
   const harness = createContentHarness({ autoApply: false });
   await flushTasks();
@@ -877,6 +915,16 @@ test('content clears the saved and active measurement for the current media kind
     }
   });
   await flushTasks();
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    momentary: -23,
+    shortTerm: -23,
+    integrated: -23
+  });
+  await flushTasks();
+  const autoGainBeforeReset =
+    harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].autoGainVod;
   harness.commands.length = 0;
 
   const response = await harness.dispatchRuntime({
@@ -889,7 +937,7 @@ test('content clears the saved and active measurement for the current media kind
   const stored = harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'];
   assert.deepEqual(stored.lastLufs, { live: -17 });
   assert.equal(stored.gainVod, 0.5);
-  assert.equal(stored.autoGainVod, 0.75);
+  assert.equal(stored.autoGainVod, autoGainBeforeReset);
   assert.equal(stored.autoApplyLoudnessVod, true);
   const resetCommands = harness.commands
     .filter((command) => command.cmd === 'resetMeasurement');
@@ -898,6 +946,19 @@ test('content clears the saved and active measurement for the current media kind
   const state = await harness.dispatchRuntime({ cmd: 'getState' });
   assert.equal(state.lufs.integrated, -Infinity);
   assert.equal(state.hasSavedMeasurement, false);
+
+  await flushTasks();
+  harness.commands.length = 0;
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    momentary: -22,
+    shortTerm: -22,
+    integrated: -22
+  });
+  const gains = harness.commands.filter((command) => command.cmd === 'setGain');
+  assert.equal(gains.length, 1);
+  assert.ok(Math.abs(gains[0].value - u.calcGain(-22, -18)) < 1e-9);
 });
 
 test('content ignores measurements while the reset storage mutation is pending', async () => {
