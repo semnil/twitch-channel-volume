@@ -99,7 +99,7 @@ STRINGS = {
     'ja': {
         'channel': 'サンプル配信ch.',
         'live': 'LIVE',
-        'apply': '63% をチャンネルに適用',
+        'apply': 'チャンネルに適用',
         'auto_label': 'LUFS 自動追従',
         'auto_hint': 'この種別は自動追従が\n有効です',
         'manual': 'MANUAL VOLUME',
@@ -128,7 +128,7 @@ STRINGS = {
     'en': {
         'channel': 'Sample Stream',
         'live': 'LIVE',
-        'apply': 'Apply 63% to channel',
+        'apply': 'Apply to channel',
         'auto_label': 'Auto-follow LUFS',
         'auto_hint': 'Auto-follow is enabled\nfor this type',
         'manual': 'MANUAL VOLUME',

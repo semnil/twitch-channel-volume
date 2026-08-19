@@ -2006,6 +2006,21 @@ test('popup disables Manual and Apply controls while an Auto update is pending',
   );
 });
 
+test('popup keeps Auto gain displays synchronized and labels apply in the display unit', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'popup.js'), 'utf8');
+  assert.match(source, /if \(currentAutoApplyLoudness \|\| !sliderSynced\) \{/);
+  assert.match(
+    source,
+    /msg\('applyToChannelWithValue', \[formatGainText\(lastSuggestedGain\)\]\)/
+  );
+
+  const ja = JSON.parse(fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json')));
+  const en = JSON.parse(fs.readFileSync(path.join(__dirname, '_locales/en/messages.json')));
+  // The button saves the gain, so its label stays an apply action.
+  assert.equal(ja.applyToChannelWithValue.message, '$VALUE$ をチャンネルに適用');
+  assert.equal(en.applyToChannelWithValue.message, 'Apply $VALUE$ to channel');
+});
+
 test('popup exposes the selected channel-row measurement reset control', () => {
   const html = fs.readFileSync(path.join(__dirname, 'popup.html'), 'utf8');
   assert.match(
@@ -2068,8 +2083,13 @@ test('popup re-enables its controls in the render that reports the reset result'
   assert.ok(clearedOnFailure < failure, 'pending flag clears before the failure render');
 });
 
-test('store popup screenshot generator includes the measurement reset row', () => {
+test('store popup screenshot generator matches the Auto-follow state', () => {
+
   const source = fs.readFileSync(path.join(__dirname, 'gen_screenshots.py'), 'utf8');
+  assert.match(source, /'apply':\s*'チャンネルに適用'/);
+  assert.match(source, /'apply':\s*'Apply to channel'/);
+  assert.match(source, /\('CURRENT', '63', '%', PINK\)/);
+  assert.match(source, /draw\.text\(\(px \+ pw - 48, sy - 1\), '63%'/);
   assert.match(source, /RESET_BUTTON_HEIGHT\s*=\s*36/);
   // The mock mirrors the icon-only control: square, unlabelled, never overlapping.
   assert.match(source, /reset_width = RESET_BUTTON_HEIGHT/);

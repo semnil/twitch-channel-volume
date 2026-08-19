@@ -90,6 +90,7 @@ popup.html / popup.js
 │   ├── Suggested gain は target との差分から算出 (integrated 優先 / short-term フォールバック)
 │   ├── Suggested / Current の表示は displayUnit (% / dB) に追従
 │   └── 単位 (LUFS / dB / %) は setCardValue で <span class="unit"> に分離して灰色小文字表示
+├── Auto OFF 時の適用ボタンは Suggested gain を displayUnit で表示し、Auto ON 時は Current と Manual Volume を適用中 gain へ同期
 ├── 現在視聴中の種別に対するチャンネル別「LUFS 自動追従」トグル
 ├── Auto 保存失敗時はローカライズ済みエラーを表示して最新状態を再取得
 ├── Auto 保存中は Apply / Manual 操作を無効化し、content 側でも手動 gain mutation を拒否
@@ -204,7 +205,7 @@ python3 pack.py
 - Storage format: `channelVolumes.{id}` = `{ name, gainLive, gainVod, gainClip, autoApplyLoudnessLive, autoApplyLoudnessVod, autoApplyLoudnessClip, url, lastLufs: { live, vod, clip }, lastMeasuredAt, __fieldVersions }`
 - 旧形式 `{ gain }` 単一ゲインは extractGainForKind で自動マイグレーション
 - HLS 経路の CM 検出は Streamlink twitch.py の判定 (`CLASS="twitch-stitched-ad"` または `ID` が `stitched-ad-` で始まる) と同等
-- popup は 1 秒毎に getState をポーリングし LUFS / Suggested / Current カードを更新。Manual slider は**通常のポーリングでは更新しない**。初回表示・「チャンネルに適用」・Auto 切替・表示単位変更・ユーザー操作時だけ同期する。計測自体は popup の開閉に依存せず、Twitch ページが開いている限り常時走る
+- popup は 1 秒毎に getState をポーリングし LUFS / Suggested / Current カードを更新。Manual slider は Auto ON の間だけ適用中 gain へ同期し、Auto OFF の通常ポーリングでは更新しない。Auto OFF では初回表示・「チャンネルに適用」・Auto 切替・表示単位変更・ユーザー操作時だけ同期する。計測自体は popup の開閉に依存せず、Twitch ページが開いている限り常時走る
 - 拡張機能の再ロードで chrome.runtime が無効化された場合、popup は `reloadPageNeeded` を表示して F5 を促す
 - 計測パイプラインの診断: DevTools Console で `[TCV]` ログを確認。`waiting for <video>` → `attached to video` → `measurement chain ready` → `first measurement block received` の順に出る。`createMediaElementSource failed` で止まる場合は他拡張競合 (技術的限界)
 
