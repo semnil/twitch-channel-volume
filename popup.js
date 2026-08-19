@@ -11,6 +11,7 @@
   let currentChannel = { id: '', kind: 'none' };
   let currentAutoApplyLoudness = false;
   let autoUpdatePending = false;
+  let gainSaveError = false;
 
   function formatGainText(gain) {
     const f = formatGain(gain, displayUnit);
@@ -90,6 +91,7 @@
   function renderState(state) {
     if (!state) return;
     const ch = state.channel || {};
+    if (currentChannel.id && ch.id !== currentChannel.id) gainSaveError = false;
     currentChannel = ch;
     currentAutoApplyLoudness = !!state.autoApplyLoudness;
     const nameEl = $('channelName');
@@ -138,7 +140,12 @@
       setCardValue(suggestedEl, '---', null, 'suggested unknown');
     }
 
-    if (currentAutoApplyLoudness && ch.id) {
+    $('applyHint').classList.toggle('error', gainSaveError);
+    if (gainSaveError) {
+      $('applyBtn').disabled = currentAutoApplyLoudness ||
+        !Number.isFinite(lastSuggestedGain) || !ch.id;
+      $('applyHint').textContent = msg('gainSaveFailed');
+    } else if (currentAutoApplyLoudness && ch.id) {
       $('applyBtn').disabled = true;
       $('applyHint').textContent = msg('hintAutoApplyEnabled');
     } else if (Number.isFinite(lastSuggestedGain) && ch.id) {
@@ -168,25 +175,37 @@
 
   async function applyMeasured() {
     if (!Number.isFinite(lastSuggestedGain)) return;
-    const tab = await getActiveTab();
-    if (!tab) return;
-    await chrome.tabs.sendMessage(tab.id, { cmd: 'resume' });
-    const res = await chrome.tabs.sendMessage(tab.id, { cmd: 'setGain', gain: lastSuggestedGain });
-    if (res?.ok) {
+    try {
+      const tab = await getActiveTab();
+      if (!tab) throw new Error('No active tab');
+      await chrome.tabs.sendMessage(tab.id, { cmd: 'resume' });
+      const res = await chrome.tabs.sendMessage(
+        tab.id,
+        { cmd: 'setGain', gain: lastSuggestedGain }
+      );
+      if (!res?.ok) throw new Error(res?.reason || 'Gain update failed');
+      gainSaveError = false;
       syncSlider(lastSuggestedGain);
-      refresh();
+    } catch (_) {
+      gainSaveError = true;
+      sliderSynced = false;
     }
+    await refresh();
   }
 
   async function setGain(percent) {
-    const tab = await getActiveTab();
-    if (!tab) return;
-    const gain = percentToGain(percent);
-    const res = await chrome.tabs.sendMessage(tab.id, { cmd: 'setGain', gain });
-    if (!res?.ok) {
+    try {
+      const tab = await getActiveTab();
+      if (!tab) throw new Error('No active tab');
+      const gain = percentToGain(percent);
+      const res = await chrome.tabs.sendMessage(tab.id, { cmd: 'setGain', gain });
+      if (!res?.ok) throw new Error(res?.reason || 'Gain update failed');
+      gainSaveError = false;
+    } catch (_) {
+      gainSaveError = true;
       sliderSynced = false;
-      refresh();
     }
+    await refresh();
   }
 
   async function setAutoApplyLoudness() {

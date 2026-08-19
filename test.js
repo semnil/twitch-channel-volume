@@ -19,6 +19,164 @@ function readStoredKeys(stored, keys) {
   return result;
 }
 
+async function flushTasks(turns = 4) {
+  for (let i = 0; i < turns; i++) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
+function createContentHarness({ autoApply }) {
+  const listeners = {};
+  const storageListeners = [];
+  const commands = [];
+  let runtimeMessageListener;
+  let failNextStorageGet = false;
+  const location = { href: 'https://www.twitch.tv/videos/100' };
+  const stored = {
+    [u.SETTINGS_KEY]: {
+      targetLufs: -18,
+      adGainDb: -6,
+      displayUnit: '%',
+      showGainOverlay: true
+    },
+    [u.CHANNEL_VOLUMES_KEY]: {
+      'vod-owner:100': {
+        name: '100',
+        gainVod: 0.5,
+        autoApplyLoudnessVod: autoApply
+      }
+    },
+    [u.CHANNEL_ALIASES_KEY]: {}
+  };
+  const window = {
+    addEventListener(type, listener) {
+      (listeners[type] ||= []).push(listener);
+    },
+    postMessage(message) {
+      commands.push(structuredClone(message));
+    }
+  };
+  const document = {
+    documentElement: {},
+    querySelector() { return null; },
+    addEventListener() {},
+    contains() { return false; }
+  };
+  class MutationObserver {
+    constructor(callback) { this.callback = callback; }
+    observe() {}
+  }
+  const chrome = {
+    runtime: {
+      id: 'test-extension',
+      getURL(filename) { return `chrome-extension://test/${filename}`; },
+      async sendMessage(message) {
+        const mutation = message?.mutation;
+        if (mutation?.operation === 'saveAuto') {
+          const entry = stored[u.CHANNEL_VOLUMES_KEY][mutation.channelId] || {};
+          entry[u.autoApplyFieldForKind(mutation.kind)] = mutation.enabled;
+          stored[u.CHANNEL_VOLUMES_KEY][mutation.channelId] = entry;
+        }
+        return { ok: true };
+      },
+      onMessage: { addListener(listener) { runtimeMessageListener = listener; } }
+    },
+    storage: {
+      local: {
+        async get(keys) {
+          if (failNextStorageGet) {
+            failNextStorageGet = false;
+            throw new Error('injected storage read failure');
+          }
+          return readStoredKeys(stored, keys);
+        }
+      },
+      onChanged: {
+        addListener(listener) { storageListeners.push(listener); }
+      }
+    }
+  };
+  const context = vm.createContext({
+    ...u,
+    chrome,
+    console: { warn() {}, error() {}, info() {} },
+    document,
+    history: { pushState() {}, replaceState() {} },
+    location,
+    MutationObserver,
+    queueMicrotask,
+    setInterval() { return 1; },
+    setTimeout(callback) { queueMicrotask(callback); return 1; },
+    URL,
+    window
+  });
+  vm.runInContext(
+    fs.readFileSync(path.join(__dirname, 'content.js'), 'utf8'),
+    context,
+    { filename: 'content.js' }
+  );
+
+  return {
+    commands,
+    stored,
+    async dispatchMessage(data) {
+      await Promise.all((listeners.message || []).map((listener) => listener({ source: window, data })));
+    },
+    async dispatchStorage(changes) {
+      for (const listener of storageListeners) listener(changes);
+      await flushTasks();
+    },
+    failNextStorageGet() {
+      failNextStorageGet = true;
+    },
+    dispatchRuntime(request) {
+      return new Promise((resolve) => {
+        const keepOpen = runtimeMessageListener(request, {}, resolve);
+        assert.equal(keepOpen, true);
+      });
+    }
+  };
+}
+
+function createPageBridgeHarness() {
+  const messages = [];
+  const listeners = {};
+  const location = { href: 'https://www.twitch.tv/videos/100' };
+  let resolveFetch;
+  const window = {
+    addEventListener(type, listener) {
+      (listeners[type] ||= []).push(listener);
+    },
+    fetch() {
+      return new Promise((resolve) => { resolveFetch = resolve; });
+    },
+    postMessage(message) {
+      messages.push(structuredClone(message));
+    }
+  };
+  const context = vm.createContext({
+    AudioWorkletNode: class {},
+    clearInterval() {},
+    console: { warn() {}, error() {}, info() {} },
+    document: { querySelectorAll() { return []; } },
+    location,
+    setInterval() { return 1; },
+    URL,
+    window
+  });
+  vm.runInContext(
+    fs.readFileSync(path.join(__dirname, 'page-bridge.js'), 'utf8'),
+    context,
+    { filename: 'page-bridge.js' }
+  );
+  return {
+    location,
+    messages,
+    fetch: (...args) => window.fetch(...args),
+    resolveFetch(response) { resolveFetch(response); }
+  };
+}
+
 test('calcGain: target equals measured → unity gain', () => {
   assert.equal(u.calcGain(-18, -18).toFixed(6), '1.000000');
 });
@@ -154,6 +312,113 @@ test('owner metadata is accepted only for the current Twitch content', () => {
   }, clip), true);
   assert.equal(u.provisionalChannelIdForContent(vod), 'vod-owner:2770346335');
   assert.equal(u.provisionalChannelIdForContent(clip), 'clip-owner:SomeClipSlug');
+});
+
+test('content Auto mode follows LUFS and recalculates when the target changes', async () => {
+  const harness = createContentHarness({ autoApply: true });
+  await flushTasks();
+  harness.commands.length = 0;
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    momentary: -23,
+    shortTerm: -23,
+    integrated: -23
+  });
+  let gains = harness.commands.filter((command) => command.cmd === 'setGain');
+  assert.equal(gains.length, 1);
+  assert.ok(Math.abs(gains[0].value - u.calcGain(-23, -18)) < 1e-9);
+
+  harness.commands.length = 0;
+  harness.stored[u.SETTINGS_KEY] = {
+    ...harness.stored[u.SETTINGS_KEY],
+    targetLufs: -20
+  };
+  await harness.dispatchStorage({
+    [u.SETTINGS_KEY]: { newValue: structuredClone(harness.stored[u.SETTINGS_KEY]) }
+  });
+  gains = harness.commands.filter((command) => command.cmd === 'setGain');
+  assert.equal(gains.length, 1);
+  assert.ok(Math.abs(gains[0].value - u.calcGain(-23, -20)) < 1e-9);
+});
+
+test('content manual mode does not follow incoming LUFS measurements', async () => {
+  const harness = createContentHarness({ autoApply: false });
+  await flushTasks();
+  harness.commands.length = 0;
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    momentary: -23,
+    shortTerm: -23,
+    integrated: -23
+  });
+  assert.equal(harness.commands.some((command) => command.cmd === 'setGain'), false);
+});
+
+test('Auto save remains successful when only the follow-up storage read fails', async () => {
+  const harness = createContentHarness({ autoApply: false });
+  await flushTasks();
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    momentary: -23,
+    shortTerm: -23,
+    integrated: -23
+  });
+  harness.commands.length = 0;
+  harness.failNextStorageGet();
+
+  const response = await harness.dispatchRuntime({
+    cmd: 'setAutoApplyLoudness',
+    channelId: 'vod-owner:100',
+    kind: 'vod',
+    enabled: true
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.autoApplyLoudness, true);
+  assert.ok(Math.abs(response.gain - u.calcGain(-23, -18)) < 1e-9);
+  assert.equal(
+    harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].autoApplyLoudnessVod,
+    true
+  );
+});
+
+test('GraphQL owner fallback keeps the request-time VOD identity across navigation', async () => {
+  const harness = createPageBridgeHarness();
+  harness.messages.length = 0;
+  harness.fetch('https://gql.twitch.tv/gql');
+  harness.location.href = 'https://www.twitch.tv/videos/200';
+  harness.resolveFetch({
+    clone() {
+      return {
+        async json() {
+          return {
+            data: {
+              video: {
+                owner: { id: '123', login: 'owner', displayName: 'Owner' }
+              },
+              clip: {
+                slug: 'DirectClip',
+                broadcaster: { id: '123', login: 'owner', displayName: 'Owner' }
+              }
+            }
+          };
+        }
+      };
+    }
+  });
+  await flushTasks();
+
+  const owners = harness.messages.filter((message) => message.event === 'owner');
+  assert.equal(owners.length, 2);
+  assert.equal(owners[0].contentKind, 'vod');
+  assert.equal(owners[0].contentId, '100');
+  assert.equal(owners[1].contentKind, 'clip');
+  assert.equal(owners[1].contentId, 'DirectClip');
 });
 
 test('channel aliases resolve persisted direct and chained canonical IDs', () => {

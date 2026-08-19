@@ -479,8 +479,17 @@
           currentChannel.url
         ).then(() => {
           sendResponse({ ok: true });
-        }).catch(async () => {
-          try { await reapplyForCurrentChannel(); } catch (_) {}
+        }).catch(async (saveError) => {
+          try {
+            await reapplyForCurrentChannel();
+          } catch (reapplyError) {
+            console.warn('[TCV] failed to restore gain after save failure', {
+              channelId: currentChannel.id,
+              kind: currentChannel.kind,
+              saveError,
+              reapplyError
+            });
+          }
           sendResponse({ ok: false, reason: 'storage update failed' });
         });
         return true;
@@ -497,13 +506,35 @@
           kind,
           currentChannel.url
         ).then(async () => {
-          await reapplyForCurrentChannel();
+          try {
+            await reapplyForCurrentChannel();
+          } catch (error) {
+            // The mutation is already durable. Keep this tab consistent with
+            // the saved Auto choice even if the follow-up read fails.
+            if (currentChannel.id === req.channelId && currentChannel.kind === kind) {
+              currentChannelEntry = {
+                ...(currentChannelEntry || {}),
+                [autoApplyFieldForKind(kind)]: !!req.enabled
+              };
+              const preferred = resolvePreferredGain(
+                currentChannelEntry,
+                kind,
+                defaultAutoApplyForKind(kind),
+                lastLufs.integrated,
+                targetLufs
+              );
+              currentAutoApplyLoudness = preferred.autoApply;
+              applyGain(preferred.gain);
+            }
+            console.warn('[TCV] Auto setting saved but local reapply failed', error);
+          }
           sendResponse({
             ok: true,
             gain: currentGain,
             autoApplyLoudness: currentAutoApplyLoudness
           });
-        }).catch(() => {
+        }, (error) => {
+          console.warn('[TCV] failed to save Auto setting', error);
           sendResponse({ ok: false, reason: 'storage update failed' });
         });
         return true;

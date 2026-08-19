@@ -26,6 +26,9 @@
   "autoSaveFailed": {
     "message": "Could not save the Auto-follow setting. Please try again."
   },
+  "gainSaveFailed": {
+    "message": "Could not save the gain. Please try again."
+  },
   "settingsSaveFailed": {
     "message": "Could not save the setting. The saved value was restored."
   },

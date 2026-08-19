@@ -26,6 +26,9 @@
   "autoSaveFailed": {
     "message": "自動追従の設定を保存できませんでした。もう一度お試しください"
   },
+  "gainSaveFailed": {
+    "message": "ゲインを保存できませんでした。もう一度お試しください"
+  },
   "settingsSaveFailed": {
     "message": "設定を保存できませんでした。保存済みの値へ戻しました"
   },
