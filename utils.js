@@ -167,6 +167,9 @@ function ownerMatchesTwitchContent(owner, classified) {
 }
 
 function provisionalChannelIdForContent(classified) {
+  if (classified?.kind === 'live' && classified.login) {
+    return `login:${classified.login}`;
+  }
   if (classified?.kind === 'vod') return `vod-owner:${classified.videoId}`;
   if (classified?.kind === 'clip') return `clip-owner:${classified.slug}`;
   return '';
@@ -189,6 +192,14 @@ function resolveChannelIdAlias(channelId, aliases) {
   // A valid alias graph is acyclic. On corrupt/cyclic input, do not redirect
   // the caller to a path-dependent ID.
   return channelId;
+}
+
+function twitchChannelUrlForEntry(channelId, entry) {
+  let login = typeof entry?.login === 'string' ? entry.login.trim().toLowerCase() : '';
+  if (!login && typeof channelId === 'string' && channelId.startsWith('login:')) {
+    login = channelId.slice('login:'.length).trim().toLowerCase();
+  }
+  return /^[a-z0-9_]+$/.test(login) ? `https://www.twitch.tv/${login}` : '';
 }
 
 // HLS EXT-X-DATERANGE parsing ------------------------------------------
@@ -332,7 +343,7 @@ if (typeof module !== 'undefined' && module.exports) {
     autoApplyFieldForKind, autoApplyDefaultFieldForKind,
     resolveAutoApplySetting, resolvePreferredGain,
     classifyTwitchUrl, ownerMatchesTwitchContent, provisionalChannelIdForContent,
-    resolveChannelIdAlias,
+    resolveChannelIdAlias, twitchChannelUrlForEntry,
     parseDateRange, isAdDateRange, parseAdRangesFromManifest,
     kWeightingForSampleRate, redesignBiquad,
     K_PRE_48K, K_RLB_48K,

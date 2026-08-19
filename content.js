@@ -63,6 +63,12 @@
     return resolveAutoApplySetting(entry, kind, defaultAutoApplyForKind(kind));
   }
 
+  function twitchChannelUrl(login) {
+    return typeof login === 'string' && login
+      ? `https://www.twitch.tv/${login.toLowerCase()}`
+      : '';
+  }
+
   async function loadChannelEntry(channelId) {
     if (!channelId || !isContextValid()) return null;
     const data = await chrome.storage.local.get([CHANNEL_VOLUMES_KEY, CHANNEL_ALIASES_KEY]);
@@ -90,10 +96,11 @@
   }
 
   function channelMetadata(channel = currentChannel) {
+    const login = channel?.login || '';
     return {
       name: channel?.name || '',
-      login: channel?.login || '',
-      url: channel?.url || ''
+      login,
+      url: twitchChannelUrl(login)
     };
   }
 
@@ -237,7 +244,7 @@
       id: confirmedId,
       login: owner.login || currentChannel.login,
       name: owner.displayName || owner.login || currentChannel.name,
-      url: location.href,
+      url: twitchChannelUrl(owner.login || currentChannel.login),
       kind: classified.kind,
       slug: classified.slug,
       videoId: classified.videoId
@@ -277,11 +284,11 @@
     let channelId = '';
     let login = '';
     let name = '';
-    const url = location.href;
+    let url = '';
 
     if (c.kind === 'live') {
       login = c.login;
-      channelId = `login:${login}`;
+      channelId = pendingOwner?.userId ? String(pendingOwner.userId) : `login:${login}`;
       name = pendingOwner?.displayName || login;
     } else if (c.kind === 'vod') {
       channelId = pendingOwner?.userId ? String(pendingOwner.userId) : `vod-owner:${c.videoId}`;
@@ -292,6 +299,7 @@
       login = pendingOwner?.login || c.login || '';
       name = pendingOwner?.displayName || login || c.slug;
     }
+    url = twitchChannelUrl(login);
     const previousId = currentChannel.id;
     const previousKind = currentChannel.kind;
     currentChannel = { id: channelId, login, name, url, kind: c.kind, slug: c.slug, videoId: c.videoId };

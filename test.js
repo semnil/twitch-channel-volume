@@ -26,13 +26,18 @@ async function flushTasks(turns = 4) {
   }
 }
 
-function createContentHarness({ autoApply, autoGain }) {
+function createContentHarness({
+  autoApply = false,
+  autoGain,
+  href = 'https://www.twitch.tv/videos/100',
+  channelVolumes
+} = {}) {
   const listeners = {};
   const storageListeners = [];
   const commands = [];
   let runtimeMessageListener;
   let failNextStorageGet = false;
-  const location = { href: 'https://www.twitch.tv/videos/100' };
+  const location = { href };
   const stored = {
     [u.SETTINGS_KEY]: {
       targetLufs: -18,
@@ -40,7 +45,7 @@ function createContentHarness({ autoApply, autoGain }) {
       displayUnit: '%',
       showGainOverlay: true
     },
-    [u.CHANNEL_VOLUMES_KEY]: {
+    [u.CHANNEL_VOLUMES_KEY]: channelVolumes || {
       'vod-owner:100': {
         name: '100',
         gainVod: 0.5,
@@ -135,8 +140,12 @@ function createContentHarness({ autoApply, autoGain }) {
     },
     dispatchRuntime(request) {
       return new Promise((resolve) => {
-        const keepOpen = runtimeMessageListener(request, {}, resolve);
-        assert.equal(keepOpen, true);
+        let responded = false;
+        const keepOpen = runtimeMessageListener(request, {}, (response) => {
+          responded = true;
+          resolve(response);
+        });
+        if (keepOpen !== true && !responded) resolve(undefined);
       });
     }
   };
@@ -293,8 +302,8 @@ test('extractGainForKind does not leak a typed gain across media kinds', () => {
 });
 
 test('classifyTwitchUrl: live channel', () => {
-  const c = u.classifyTwitchUrl('https://www.twitch.tv/shroud');
-  assert.deepEqual(c, { kind: 'live', login: 'shroud' });
+  const c = u.classifyTwitchUrl('https://www.twitch.tv/fixture_channel');
+  assert.deepEqual(c, { kind: 'live', login: 'fixture_channel' });
 });
 
 test('classifyTwitchUrl: VOD', () => {
@@ -308,8 +317,8 @@ test('classifyTwitchUrl: clip on clips subdomain', () => {
 });
 
 test('classifyTwitchUrl: clip on channel path', () => {
-  const c = u.classifyTwitchUrl('https://www.twitch.tv/shroud/clip/AbcDef');
-  assert.deepEqual(c, { kind: 'clip', slug: 'AbcDef', login: 'shroud' });
+  const c = u.classifyTwitchUrl('https://www.twitch.tv/fixture_channel/clip/AbcDef');
+  assert.deepEqual(c, { kind: 'clip', slug: 'AbcDef', login: 'fixture_channel' });
 });
 
 test('classifyTwitchUrl: reserved path is not a channel', () => {
@@ -322,6 +331,7 @@ test('classifyTwitchUrl: bare twitch.tv → none', () => {
 });
 
 test('owner metadata is accepted only for the current Twitch content', () => {
+  const live = u.classifyTwitchUrl('https://www.twitch.tv/fixture_channel');
   const vod = u.classifyTwitchUrl('https://www.twitch.tv/videos/2770346335');
   assert.equal(u.ownerMatchesTwitchContent({
     userId: '123', source: 'video', contentKind: 'vod', contentId: '2770346335'
@@ -339,6 +349,61 @@ test('owner metadata is accepted only for the current Twitch content', () => {
   }, clip), true);
   assert.equal(u.provisionalChannelIdForContent(vod), 'vod-owner:2770346335');
   assert.equal(u.provisionalChannelIdForContent(clip), 'clip-owner:SomeClipSlug');
+  assert.equal(u.provisionalChannelIdForContent(live), 'login:fixture_channel');
+});
+
+test('Saved Channels links only to the canonical channel URL', () => {
+  assert.equal(u.twitchChannelUrlForEntry('123456789', {
+    login: 'Fixture_Channel',
+    url: 'https://www.twitch.tv/videos/111222333'
+  }), 'https://www.twitch.tv/fixture_channel');
+  assert.equal(u.twitchChannelUrlForEntry('login:Fixture_Channel', {
+    url: 'https://www.twitch.tv/videos/111222333'
+  }), 'https://www.twitch.tv/fixture_channel');
+  assert.equal(u.twitchChannelUrlForEntry('123456789', {
+    url: 'https://www.twitch.tv/videos/111222333'
+  }), '');
+});
+
+test('live owner resolution merges a duplicate VOD row into one canonical channel', async () => {
+  const harness = createContentHarness({
+    href: 'https://www.twitch.tv/fixture_channel',
+    channelVolumes: {
+      'login:fixture_channel': {
+        name: 'Fixture Channel',
+        gainLive: 0.7,
+        url: 'https://www.twitch.tv/fixture_channel'
+      },
+      '123456789': {
+        name: 'Fixture Channel',
+        login: 'fixture_channel',
+        gainVod: 0.8,
+        url: 'https://www.twitch.tv/videos/111222333'
+      }
+    }
+  });
+  await flushTasks();
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '123456789',
+    login: 'fixture_channel',
+    displayName: 'Fixture Channel',
+    source: 'user',
+    contentKind: 'live',
+    contentId: 'fixture_channel'
+  });
+
+  const channels = harness.stored[u.CHANNEL_VOLUMES_KEY];
+  assert.equal(channels['login:fixture_channel'], undefined);
+  assert.equal(channels['123456789'].gainLive, 0.7);
+  assert.equal(channels['123456789'].gainVod, 0.8);
+  assert.equal(channels['123456789'].login, 'fixture_channel');
+  assert.equal(channels['123456789'].url, 'https://www.twitch.tv/fixture_channel');
+
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.channel.id, '123456789');
+  assert.equal(state.channel.url, 'https://www.twitch.tv/fixture_channel');
 });
 
 test('content Auto mode follows LUFS and recalculates when the target changes', async () => {
@@ -476,6 +541,41 @@ test('channel aliases resolve persisted direct and chained canonical IDs', () =>
   assert.equal(u.resolveChannelIdAlias('cycle-a', {
     'cycle-a': 'cycle-b', 'cycle-b': 'cycle-a'
   }), 'cycle-a');
+});
+
+test('legacy Live and VOD rows normalize to one numeric channel and channel URL', async () => {
+  let stored = {
+    channelVolumes: {
+      'login:fixture_channel': {
+        name: 'Fixture Channel',
+        gainLive: 0.7,
+        autoApplyLoudnessLive: true,
+        url: 'https://www.twitch.tv/fixture_channel'
+      },
+      '123456789': {
+        name: 'Fixture Channel',
+        login: 'fixture_channel',
+        gainVod: 0.8,
+        autoApplyLoudnessVod: false,
+        url: 'https://www.twitch.tv/videos/111222333'
+      }
+    }
+  };
+  const storage = {
+    async get(keys) { return readStoredKeys(stored, keys); },
+    async set(update) { stored = { ...stored, ...structuredClone(update) }; }
+  };
+  const write = channelStore.createChannelVolumesWriter(storage);
+
+  await write({ operation: 'normalizeChannels' });
+
+  assert.equal(stored.channelVolumes['login:fixture_channel'], undefined);
+  assert.equal(stored.channelVolumes['123456789'].gainLive, 0.7);
+  assert.equal(stored.channelVolumes['123456789'].gainVod, 0.8);
+  assert.equal(stored.channelVolumes['123456789'].autoApplyLoudnessLive, true);
+  assert.equal(stored.channelVolumes['123456789'].autoApplyLoudnessVod, false);
+  assert.equal(stored.channelVolumes['123456789'].url, 'https://www.twitch.tv/fixture_channel');
+  assert.equal(stored.channelVolumeAliases['login:fixture_channel'], '123456789');
 });
 
 test('provisional channel migration keeps confirmed data over stale provisional conflicts', () => {
@@ -931,7 +1031,15 @@ test('settings initialization preserves existing Auto defaults', () => {
 
 test('background mutation listener keeps async response open and reports failures', async () => {
   let stored = {
-    channelVolumes: {},
+    channelVolumes: {
+      'login:fixture_channel': { name: 'Fixture Channel', gainLive: 0.7 },
+      '123456789': {
+        name: 'Fixture Channel',
+        login: 'fixture_channel',
+        gainVod: 0.8,
+        url: 'https://www.twitch.tv/videos/111222333'
+      }
+    },
     autoLoudnessSettings: {
       targetLufs: -18,
       displayUnit: '%',
@@ -940,6 +1048,7 @@ test('background mutation listener keeps async response open and reports failure
   };
   let failNextSet = false;
   let messageListener;
+  let installedListener;
   const storage = {
     async get(keys) { return readStoredKeys(stored, keys); },
     async set(update) {
@@ -956,7 +1065,7 @@ test('background mutation listener keeps async response open and reports failure
       storage: { local: storage },
       runtime: {
         onMessage: { addListener(listener) { messageListener = listener; } },
-        onInstalled: { addListener() {} }
+        onInstalled: { addListener(listener) { installedListener = listener; } }
       }
     }
   });
@@ -971,6 +1080,13 @@ test('background mutation listener keeps async response open and reports failure
     context,
     { filename: 'background.js' }
   );
+
+  installedListener();
+  await flushTasks();
+  assert.equal(stored.channelVolumes['login:fixture_channel'], undefined);
+  assert.equal(stored.channelVolumes['123456789'].gainLive, 0.7);
+  assert.equal(stored.channelVolumes['123456789'].gainVod, 0.8);
+  assert.equal(stored.channelVolumes['123456789'].url, 'https://www.twitch.tv/fixture_channel');
 
   const send = (mutation, type = channelStore.CHANNEL_MUTATION_MESSAGE) => new Promise((resolve) => {
     const keepOpen = messageListener({

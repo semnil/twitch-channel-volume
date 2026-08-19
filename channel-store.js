@@ -84,6 +84,27 @@ function cloneEntry(entry, fallbackName) {
   return expandLegacyAuto(expandLegacyGain(cloned));
 }
 
+function normalizeLogin(value) {
+  if (typeof value !== 'string') return '';
+  const login = value.trim().toLowerCase();
+  return /^[a-z0-9_]+$/.test(login) ? login : '';
+}
+
+function knownLoginTargets(all) {
+  const idsByLogin = new Map();
+  for (const [id, entry] of Object.entries(all)) {
+    if (!/^\d+$/.test(id)) continue;
+    const login = normalizeLogin(entry?.login);
+    if (!login) continue;
+    const ids = idsByLogin.get(login) || [];
+    ids.push(id);
+    idsByLogin.set(login, ids);
+  }
+  return [...idsByLogin.entries()]
+    .filter(([, ids]) => ids.length === 1)
+    .map(([login, ids]) => ({ login, fromId: `login:${login}`, toId: ids[0] }));
+}
+
 function setFieldVersion(entry, field, sequence) {
   if (sequence === undefined) return;
   if (!validSequence(sequence)) throw new TypeError('sequence must be a positive safe integer');
@@ -170,6 +191,34 @@ function mergeProvisionalEntry(all, mutation) {
   delete all[fromId];
 }
 
+function normalizeKnownChannelEntries(all) {
+  for (const { login, fromId, toId } of knownLoginTargets(all)) {
+    const source = all[fromId];
+    const target = cloneEntry(all[toId], login);
+    const name = target.name && target.name !== toId
+      ? target.name
+      : (source?.name && source.name !== fromId ? source.name : login);
+    const channel = {
+      name,
+      login,
+      url: `https://www.twitch.tv/${login}`
+    };
+    all[toId] = target;
+    if (source) {
+      mergeProvisionalEntry(all, {
+        operation: 'mergeChannelIds',
+        fromId,
+        toId,
+        kind: 'live',
+        channel
+      });
+    } else {
+      copyMetadata(target, channel);
+    }
+  }
+  return all;
+}
+
 function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
   if (!mutation || typeof mutation !== 'object') {
     throw new TypeError('mutation must be an object');
@@ -245,6 +294,8 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
     case 'mergeChannelIds':
       mergeProvisionalEntry(all, mutation);
       break;
+    case 'normalizeChannels':
+      break;
     case 'deleteChannel':
       assertChannelId(mutation.channelId);
       delete all[mutation.channelId];
@@ -255,7 +306,7 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
       throw new TypeError('unknown channelVolumes mutation');
   }
 
-  return all;
+  return normalizeKnownChannelEntries(all);
 }
 
 function maxStoredSequence(all) {
@@ -345,6 +396,11 @@ function createChannelVolumesWriter(
         }
       } else if (resolvedMutation.operation === 'clearChannels') {
         for (const id of Object.keys(aliases)) delete aliases[id];
+      }
+      if (resolvedMutation.operation !== 'clearChannels') {
+        for (const { fromId, toId } of knownLoginTargets(next)) {
+          aliases[fromId] = toId;
+        }
       }
       await storageArea.set({
         [storageKey]: next,

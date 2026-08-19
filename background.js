@@ -35,6 +35,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 chrome.runtime.onInstalled.addListener(() => {
+  writeChannelVolumes({ operation: 'normalizeChannels' }).catch((error) => {
+    console.error('[TCV] stored channel normalization failed', error);
+  });
   writeSettings({
     operation: 'initializeSettings',
     defaults: {

@@ -27,10 +27,10 @@ content.js (ISOLATED world content script, document_idle)
 ├── postMessage listener: page-bridge.js から LUFS / owner / manifest-ad を受信
 ├── URL 分類 (classifyTwitchUrl): live / vod / clip / none
 ├── Channel resolution:
-│   ├── live: URL の login 名 (`login:<name>`)
+│   ├── live: URL の login 名 (`login:<name>`) / GraphQL user.id 解決後は数値 ID
 │   ├── vod: GraphQL owner.id (`<numeric>`) / fallback `vod-owner:<videoId>`
 │   └── clip: GraphQL broadcaster.id / fallback `clip-owner:<slug>`
-├── owner 応答を現在の videoId / clip slug と照合し、仮 ID の設定を確定 ID へマージ
+├── owner 応答を現在の login / videoId / clip slug と照合し、仮 ID の設定を数値 ID へマージ
 ├── 保存済み gain の自動適用 (Live/VOD/Clip 種別ごとに別管理)
 ├── LUFS 自動追従: チャンネル × Live/VOD/Clip 別の Auto 設定が ON の間、
 │   Integrated LUFS 更新ごとに Target LUFS との差から baseline gain を再計算
@@ -46,7 +46,7 @@ content.js (ISOLATED world content script, document_idle)
           autoGainLive, autoGainVod, autoGainClip,
           autoApplyLoudnessLive, autoApplyLoudnessVod, autoApplyLoudnessClip,
           url, lastLufs, lastMeasuredAt, __fieldVersions } }
-    ├── channelVolumeAliases: { [provisionalId]: canonicalOwnerId }
+    ├── channelVolumeAliases: { [loginOrContentProvisionalId]: canonicalOwnerId }
     └── channelVolumeSequence: フィールド更新順序の永続カウンタ
 
 audio-worklet.js (page context, loaded by page-bridge.js)
@@ -57,7 +57,8 @@ channel-store.js (service worker helper)
 ├── gain / Auto / LUFS / delete / clear mutation を検証して適用
 ├── 仮 ID → 数値 owner ID の alias を永続化し、全 mutation で正準 ID を解決
 │   (alias 転送時は仮 ID 側の name / login / url を適用しない)
-└── フィールド単位の永続更新番号で VOD/Clip 仮 ID と確定 ID をマージ
+├── 同じ login の Live 行と数値 owner 行を統合し、URL をチャンネル URL へ正規化
+└── フィールド単位の永続更新番号で仮 ID と確定 ID をマージ
 
 settings-store.js (service worker helper)
 ├── autoLoudnessSettings のフィールド単位 mutation を検証
@@ -145,10 +146,11 @@ options.html / options.js
 - **GainNode, not HTMLMediaElement.volume**: volume は 1.0 でクリップする。GainNode で 0.0–6.0 (0–600%) を提供
 - **MAIN world + ISOLATED world 分離**: Twitch の CSP は inline script を禁止するため、AudioContext と fetch hook は page-bridge.js (MAIN world, document_start) で実行
 - **Channel ID 戦略**: 
-  - Live は URL の login (`login:<name>`)。Twitch login は改名可能だが Helix OAuth 不要で取得できる現実解
+  - Live は owner 応答前のみ URL の login (`login:<name>`) を使用し、GraphQL `user.id` 解決後は VOD / Clip と同じ数値 ID へ統合
   - VOD / Clip は GraphQL レスポンスの `owner.id` / `broadcaster.id` (数値、不変)。フォールバックは `vod-owner:<videoId>` / `clip-owner:<slug>`
-  - 将来的に Helix `Get Users` で login → user_id にマイグレーション可能な構造
-- **仮 ID → 確定 ID 遷移**: page-bridge が GraphQL リクエスト時点の content kind/id を owner イベントへ付与。content.js は現在 URL と一致した応答だけを受理し、`vod-owner:<videoId>` / `clip-owner:<slug>` を Service Worker 内で数値 ID へマージしてから currentChannel を切り替える。各 gain / Auto / LUFS フィールドは単一ライターが採番した更新順序で競合解決し、別タブの最新保存も維持する。仮 ID の正準 ID 対応は Storage に永続化し、content の読取と Worker の書込の両方で解決する
+  - 数値 ID を取得できない間だけ種別固有の仮 ID を使い、取得後は永続 alias で正準化する
+- **仮 ID → 確定 ID 遷移**: page-bridge が GraphQL リクエスト時点の content kind/id を owner イベントへ付与。content.js は現在 URL と一致した応答だけを受理し、`login:<name>` / `vod-owner:<videoId>` / `clip-owner:<slug>` を Service Worker 内で数値 ID へマージしてから currentChannel を切り替える。各 gain / Auto / LUFS フィールドは単一ライターが採番した更新順序で競合解決し、別タブの最新保存も維持する。仮 ID の正準 ID 対応は Storage に永続化し、content の読取と Worker の書込の両方で解決する
+- **Saved Channels のチャンネル不変条件**: 数値 owner ID と login が対応する場合は 1 行へ統合し、保存・表示するリンクは常に `https://www.twitch.tv/<login>` とする。既存の Live/VOD 重複行は拡張更新時の正規化 mutation で移行する
 - **channelVolumes 単一ライター**: aggregate key の read-modify-write は background.js → channel-store.js のキューだけが実行。content scripts と options は mutation message を送り、複数タブの LUFS キャッシュ保存と Auto/手動設定保存が古い全体オブジェクトで互いを上書きしないようにする
 - **設定のフィールド単位保存**: options は初期ロード完了後に操作を有効化し、変更した設定フィールドだけを background.js → settings-store.js の単一キューへ送る。複数の設定タブが異なる項目を古い表示状態から変更しても、`autoLoudnessSettings` 全体を置換せず最新値へマージする
 - **CM 区間検出 (HLS 経路)**: usher.ttvnw.net / *.m3u8 を fetch hook で傍受し `EXT-X-DATERANGE CLASS="twitch-stitched-ad"` をパース。Streamlink の Twitch plugin と同等の判定ロジック

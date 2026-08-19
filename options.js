@@ -160,10 +160,7 @@
   }
 
   function twitchUrlForId(id, entry) {
-    if (entry?.url) return entry.url;
-    if (id.startsWith('login:')) return `https://www.twitch.tv/${id.slice(6)}`;
-    if (entry?.login) return `https://www.twitch.tv/${entry.login}`;
-    return '';
+    return twitchChannelUrlForEntry(id, entry);
   }
 
   async function mutateChannelVolumes(mutation) {
