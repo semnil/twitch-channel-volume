@@ -77,6 +77,11 @@
   }
 
   async function loadAll() {
+    try {
+      await mutateChannelVolumes({ operation: 'normalizeChannels' });
+    } catch (error) {
+      console.warn('[TCV] failed to normalize stored channels', error);
+    }
     const initialSettingsRevision = settingsRevision;
     const initialChannelRevision = channelRevision;
     const data = await chrome.storage.local.get([SETTINGS_KEY, CHANNEL_VOLUMES_KEY]);

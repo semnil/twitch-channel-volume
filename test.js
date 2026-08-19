@@ -1144,6 +1144,7 @@ test('options disables settings until load and saves only field mutations', () =
   const source = fs.readFileSync(path.join(__dirname, 'options.js'), 'utf8');
   assert.match(source, /type:\s*SETTINGS_MUTATION_MESSAGE/);
   assert.match(source, /operation:\s*'patchSettings',\s*patch/);
+  assert.match(source, /loadAll\(\)[\s\S]*operation:\s*'normalizeChannels'/);
   assert.match(source, /setSettingsControlsDisabled\(true\);\s*loadAll\(\)/s);
   assert.doesNotMatch(source, /chrome\.storage\.local\.set\(\{\s*\[SETTINGS_KEY\]/);
 });
