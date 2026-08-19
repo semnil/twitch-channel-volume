@@ -48,13 +48,19 @@ function createContentHarness({
   autoApply = false,
   autoGain,
   href = 'https://www.twitch.tv/videos/100',
-  channelVolumes
+  channelVolumes,
+  deferInitialStorageGet = false,
+  deferChannelMutationOperation = ''
 } = {}) {
   const listeners = {};
   const storageListeners = [];
   const commands = [];
   let runtimeMessageListener;
   let failNextStorageGet = false;
+  let initialStorageGetDeferred = deferInitialStorageGet;
+  let channelMutationDeferred = !!deferChannelMutationOperation;
+  let resolveInitialStorageGet;
+  let resolveChannelMutation;
   const location = { href };
   const stored = {
     [u.SETTINGS_KEY]: {
@@ -98,6 +104,11 @@ function createContentHarness({
       async sendMessage(message) {
         const mutation = message?.mutation;
         if (mutation) {
+          if (channelMutationDeferred &&
+              mutation.operation === deferChannelMutationOperation) {
+            channelMutationDeferred = false;
+            await new Promise((resolve) => { resolveChannelMutation = resolve; });
+          }
           stored[u.CHANNEL_VOLUMES_KEY] = channelStore.applyChannelVolumesMutation(
             stored[u.CHANNEL_VOLUMES_KEY],
             mutation,
@@ -111,6 +122,12 @@ function createContentHarness({
     storage: {
       local: {
         async get(keys) {
+          if (initialStorageGetDeferred) {
+            initialStorageGetDeferred = false;
+            return new Promise((resolve) => {
+              resolveInitialStorageGet = () => resolve(readStoredKeys(stored, keys));
+            });
+          }
           if (failNextStorageGet) {
             failNextStorageGet = false;
             throw new Error('injected storage read failure');
@@ -155,6 +172,16 @@ function createContentHarness({
     },
     failNextStorageGet() {
       failNextStorageGet = true;
+    },
+    releaseInitialStorageGet() {
+      assert.ok(resolveInitialStorageGet, 'initial storage read is not pending');
+      resolveInitialStorageGet();
+      resolveInitialStorageGet = null;
+    },
+    releaseChannelMutation() {
+      assert.ok(resolveChannelMutation, 'channel mutation is not pending');
+      resolveChannelMutation();
+      resolveChannelMutation = null;
     },
     dispatchRuntime(request) {
       return new Promise((resolve) => {
@@ -381,6 +408,9 @@ test('Saved Channels links only to the canonical channel URL', () => {
   assert.equal(u.twitchChannelUrlForEntry('123456789', {
     url: 'https://www.twitch.tv/videos/111222333'
   }), '');
+  const optionsSource = fs.readFileSync(path.join(__dirname, 'options.js'), 'utf8');
+  assert.match(optionsSource, /const url = twitchUrlForId\(id, entry\);/);
+  assert.doesNotMatch(optionsSource, /entry\.url\s*\|\|\s*twitchUrlForId/);
 });
 
 test('live owner resolution merges a duplicate VOD row into one canonical channel', async () => {
@@ -388,13 +418,12 @@ test('live owner resolution merges a duplicate VOD row into one canonical channe
     href: 'https://www.twitch.tv/fixture_channel',
     channelVolumes: {
       'login:fixture_channel': {
-        name: 'Fixture Channel',
+        name: 'Fixture_Channel',
         gainLive: 0.7,
         url: 'https://www.twitch.tv/fixture_channel'
       },
       '123456789': {
-        name: 'Fixture Channel',
-        login: 'fixture_channel',
+        name: 'Fixture_Channel',
         gainVod: 0.8,
         url: 'https://www.twitch.tv/videos/111222333'
       }
@@ -422,6 +451,43 @@ test('live owner resolution merges a duplicate VOD row into one canonical channe
   const state = await harness.dispatchRuntime({ cmd: 'getState' });
   assert.equal(state.channel.id, '123456789');
   assert.equal(state.channel.url, 'https://www.twitch.tv/fixture_channel');
+});
+
+test('owner resolution during initial settings load migrates and applies the saved Live gain', async () => {
+  const harness = createContentHarness({
+    href: 'https://www.twitch.tv/fixture_channel',
+    deferInitialStorageGet: true,
+    channelVolumes: {
+      'login:fixture_channel': {
+        name: 'Fixture_Channel',
+        gainLive: 0.7,
+        url: 'https://www.twitch.tv/fixture_channel'
+      }
+    }
+  });
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '123456789',
+    login: 'fixture_channel',
+    displayName: 'Fixture_Channel',
+    source: 'user',
+    contentKind: 'live',
+    contentId: 'fixture_channel'
+  });
+
+  assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['login:fixture_channel'], undefined);
+  assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['123456789'].gainLive, 0.7);
+  let state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.channel.id, '123456789');
+  assert.equal(state.gain, 0.7);
+
+  harness.releaseInitialStorageGet();
+  await flushTasks();
+  state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.channel.id, '123456789');
+  assert.equal(state.gain, 0.7);
 });
 
 test('content Auto mode follows LUFS and recalculates when the target changes', async () => {
@@ -513,6 +579,37 @@ test('Auto save remains successful when only the follow-up storage read fails', 
   ) < 1e-9);
 });
 
+test('content rejects Manual gain changes while an Auto mutation is pending', async () => {
+  const harness = createContentHarness({
+    autoApply: false,
+    deferChannelMutationOperation: 'saveAuto'
+  });
+  await flushTasks();
+
+  const autoResponsePromise = harness.dispatchRuntime({
+    cmd: 'setAutoApplyLoudness',
+    channelId: 'vod-owner:100',
+    kind: 'vod',
+    enabled: true
+  });
+  await flushTasks();
+
+  const manualResponse = await harness.dispatchRuntime({ cmd: 'setGain', gain: 1.2 });
+  assert.equal(manualResponse.ok, false);
+  assert.equal(manualResponse.reason, 'auto update pending');
+  assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].gainVod, 0.5);
+
+  harness.releaseChannelMutation();
+  const autoResponse = await autoResponsePromise;
+  assert.equal(autoResponse.ok, true);
+  assert.equal(autoResponse.autoApplyLoudness, true);
+  assert.equal(
+    harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].autoApplyLoudnessVod,
+    true
+  );
+  assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].gainVod, 0.5);
+});
+
 test('GraphQL owner fallback keeps the request-time VOD identity across navigation', async () => {
   const harness = createPageBridgeHarness();
   harness.messages.length = 0;
@@ -565,14 +662,13 @@ test('legacy Live and VOD rows normalize to one numeric channel and channel URL'
   let stored = {
     channelVolumes: {
       'login:fixture_channel': {
-        name: 'Fixture Channel',
+        name: 'Fixture_Channel',
         gainLive: 0.7,
         autoApplyLoudnessLive: true,
         url: 'https://www.twitch.tv/fixture_channel'
       },
       '123456789': {
-        name: 'Fixture Channel',
-        login: 'fixture_channel',
+        name: 'Fixture_Channel',
         gainVod: 0.8,
         autoApplyLoudnessVod: false,
         url: 'https://www.twitch.tv/videos/111222333'
@@ -1050,10 +1146,9 @@ test('settings initialization preserves existing Auto defaults', () => {
 test('background mutation listener keeps async response open and reports failures', async () => {
   let stored = {
     channelVolumes: {
-      'login:fixture_channel': { name: 'Fixture Channel', gainLive: 0.7 },
+      'login:fixture_channel': { name: 'Fixture_Channel', gainLive: 0.7 },
       '123456789': {
-        name: 'Fixture Channel',
-        login: 'fixture_channel',
+        name: 'Fixture_Channel',
         gainVod: 0.8,
         url: 'https://www.twitch.tv/videos/111222333'
       }
@@ -1165,6 +1260,24 @@ test('options disables settings until load and saves only field mutations', () =
   assert.match(source, /loadAll\(\)[\s\S]*operation:\s*'normalizeChannels'/);
   assert.match(source, /setSettingsControlsDisabled\(true\);\s*loadAll\(\)/s);
   assert.doesNotMatch(source, /chrome\.storage\.local\.set\(\{\s*\[SETTINGS_KEY\]/);
+});
+
+test('popup disables Manual and Apply controls while an Auto update is pending', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'popup.js'), 'utf8');
+  assert.match(
+    source,
+    /const manualDisabled = currentAutoApplyLoudness \|\| autoUpdatePending;/
+  );
+  assert.match(source, /if \(autoUpdatePending\) \$\('applyBtn'\)\.disabled = true;/);
+  assert.match(
+    source,
+    /async function applyMeasured\(\) \{\s*if \(autoUpdatePending \|\|/s
+  );
+  assert.match(source, /async function setGain\(percent\) \{\s*if \(autoUpdatePending\) return;/s);
+  assert.match(
+    source,
+    /autoUpdatePending = true;\s*syncInteractionDisabledState\(\);/s
+  );
 });
 
 test('Auto switches expose hit targets, keyboard focus, and reduced-motion behavior', () => {

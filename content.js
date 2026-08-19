@@ -29,6 +29,7 @@
   let preferenceRevision = 0;
   let channelMutationQueue = Promise.resolve();
   let migratingChannelId = '';
+  let autoMutationPending = false;
 
   // ── Storage helpers ────────────────────────────────────────────────
 
@@ -250,7 +251,7 @@
       videoId: classified.videoId
     };
 
-    if (provisionalId && currentChannel.id === provisionalId) {
+    if (provisionalId && provisionalId !== confirmedId) {
       migratingChannelId = provisionalId;
       try {
         await migrateChannelId(provisionalId, confirmedId, classified.kind, confirmedChannel);
@@ -504,8 +505,11 @@
         });
         return;
       case 'setGain':
-        if (currentAutoApplyLoudness) {
-          sendResponse({ ok: false, reason: 'auto apply enabled' });
+        if (autoMutationPending || currentAutoApplyLoudness) {
+          sendResponse({
+            ok: false,
+            reason: autoMutationPending ? 'auto update pending' : 'auto apply enabled'
+          });
           return;
         }
         applyGain(req.gain);
@@ -537,9 +541,14 @@
           sendResponse({ ok: false, reason: 'channel mismatch' });
           return;
         }
+        if (autoMutationPending) {
+          sendResponse({ ok: false, reason: 'auto update pending' });
+          return;
+        }
         const autoGain = req.enabled && Number.isFinite(lastLufs.integrated)
           ? calcGain(lastLufs.integrated, targetLufs)
           : undefined;
+        autoMutationPending = true;
         saveChannelAutoApply(
           currentChannel.id,
           currentChannel.name,
@@ -581,6 +590,8 @@
         }, (error) => {
           console.warn('[TCV] failed to save Auto setting', error);
           sendResponse({ ok: false, reason: 'storage update failed' });
+        }).finally(() => {
+          autoMutationPending = false;
         });
         return true;
       }

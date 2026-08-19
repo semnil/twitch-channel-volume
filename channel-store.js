@@ -94,7 +94,13 @@ function knownLoginTargets(all) {
   const idsByLogin = new Map();
   for (const [id, entry] of Object.entries(all)) {
     if (!/^\d+$/.test(id)) continue;
-    const login = normalizeLogin(entry?.login);
+    const explicitLogin = normalizeLogin(entry?.login);
+    const nameLogin = normalizeLogin(entry?.name);
+    const login = explicitLogin || (
+      nameLogin && Object.prototype.hasOwnProperty.call(all, `login:${nameLogin}`)
+        ? nameLogin
+        : ''
+    );
     if (!login) continue;
     const ids = idsByLogin.get(login) || [];
     ids.push(id);

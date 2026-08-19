@@ -13,6 +13,20 @@
   let autoUpdatePending = false;
   let gainSaveError = false;
 
+  function syncInteractionDisabledState() {
+    const validChannel = !!currentChannel.id &&
+      ['live', 'vod', 'clip'].includes(currentChannel.kind);
+    $('autoApplyToggle').disabled = autoUpdatePending || !validChannel;
+    if (autoUpdatePending) $('applyBtn').disabled = true;
+
+    const manualDisabled = currentAutoApplyLoudness || autoUpdatePending;
+    $('manualSection').classList.toggle('disabled', manualDisabled);
+    $('manualSlider').disabled = manualDisabled;
+    document.querySelectorAll('.presets button').forEach((btn) => {
+      btn.disabled = manualDisabled;
+    });
+  }
+
   function formatGainText(gain) {
     const f = formatGain(gain, displayUnit);
     return f.text + f.unit;
@@ -122,8 +136,6 @@
 
     const autoToggle = $('autoApplyToggle');
     if (!autoUpdatePending) autoToggle.checked = currentAutoApplyLoudness;
-    autoToggle.disabled = autoUpdatePending || !ch.id ||
-      !['live', 'vod', 'clip'].includes(ch.kind);
     $('fallbackBadge').classList.toggle(
       'hidden',
       !currentAutoApplyLoudness || hasIntegrated
@@ -164,17 +176,13 @@
       sliderSynced = true;
     }
 
-    $('manualSection').classList.toggle('disabled', currentAutoApplyLoudness);
-    $('manualSlider').disabled = currentAutoApplyLoudness;
-    document.querySelectorAll('.presets button').forEach((btn) => {
-      btn.disabled = currentAutoApplyLoudness;
-    });
+    syncInteractionDisabledState();
 
     $('adFlag').classList.toggle('hidden', !state.adActive);
   }
 
   async function applyMeasured() {
-    if (!Number.isFinite(lastSuggestedGain)) return;
+    if (autoUpdatePending || !Number.isFinite(lastSuggestedGain)) return;
     try {
       const tab = await getActiveTab();
       if (!tab) throw new Error('No active tab');
@@ -194,6 +202,7 @@
   }
 
   async function setGain(percent) {
+    if (autoUpdatePending) return;
     try {
       const tab = await getActiveTab();
       if (!tab) throw new Error('No active tab');
@@ -210,11 +219,11 @@
 
   async function setAutoApplyLoudness() {
     const toggle = $('autoApplyToggle');
-    if (!currentChannel.id || currentChannel.kind === 'none') return;
+    if (autoUpdatePending || !currentChannel.id || currentChannel.kind === 'none') return;
     const enabled = toggle.checked;
     $('autoError').classList.add('hidden');
     autoUpdatePending = true;
-    toggle.disabled = true;
+    syncInteractionDisabledState();
     try {
       const tab = await getActiveTab();
       if (!tab) throw new Error('No active tab');
@@ -242,7 +251,7 @@
         renderState(latestState);
       } else {
         toggle.checked = currentAutoApplyLoudness;
-        toggle.disabled = !currentChannel.id || currentChannel.kind === 'none';
+        syncInteractionDisabledState();
       }
     }
   }
@@ -255,6 +264,7 @@
   $('applyBtn').addEventListener('click', applyMeasured);
   $('autoApplyToggle').addEventListener('change', setAutoApplyLoudness);
   $('manualSlider').addEventListener('input', (e) => {
+    if (autoUpdatePending) return;
     const g = percentToGain(Number(e.target.value));
     const f = formatGain(g, displayUnit);
     setCardValue($('current'), f.text, f.unit, 'current');
@@ -263,6 +273,7 @@
   $('manualSlider').addEventListener('change', (e) => setGain(Number(e.target.value)));
   document.querySelectorAll('.presets button').forEach((btn) => {
     btn.addEventListener('click', () => {
+      if (autoUpdatePending) return;
       const v = Number(btn.getAttribute('data-gain'));
       const g = percentToGain(v);
       const f = formatGain(g, displayUnit);

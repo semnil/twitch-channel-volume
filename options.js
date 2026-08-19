@@ -110,7 +110,7 @@
       const entry = all[id];
       const tr = document.createElement('tr');
       const name = entry.name || id;
-      const url = entry.url || twitchUrlForId(id, entry);
+      const url = twitchUrlForId(id, entry);
       const link = url
         ? `<a class="ch-link" href="${esc(url)}" target="_blank">${esc(name)}</a>`
         : esc(name);
