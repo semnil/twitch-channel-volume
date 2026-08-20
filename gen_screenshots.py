@@ -74,6 +74,25 @@ def fit_text(draw, text, font, max_width):
     return trimmed + '…'
 
 
+def draw_reset_icon(draw, left, top, size, color):
+    """popup.html の SVG (24 単位 viewBox) と同じ形の回転矢印を描く。"""
+    k = size / 24.0
+    width = max(2, round(1.8 * k))
+    cx, cy, r = 12.0, 12.0, 7.81
+    arc_end = (6.1, 6.9)
+
+    def pt(x, y):
+        return (left + x * k, top + y * k)
+
+    draw.arc(
+        [left + (cx - r) * k, top + (cy - r) * k,
+         left + (cx + r) * k, top + (cy + r) * k],
+        220.8, 144.9, fill=color, width=width,
+    )
+    draw.line([pt(*arc_end), pt(4, 10)], fill=color, width=width)
+    draw.line([pt(4, 4), pt(4, 10), pt(10, 10)], fill=color, width=width)
+
+
 # ── Localized strings ────────────────────────────────────────────────
 
 STRINGS = {
@@ -179,14 +198,7 @@ def screenshot_popup(lang):
         outline=RESET_BORDER,
         width=1,
     )
-    icon_x, icon_y = reset_x + 9, reset_y + 9
-    draw.arc([icon_x, icon_y, icon_x + 17, icon_y + 17], 270, 170, fill=TEAL, width=2)
-    draw.line(
-        [(icon_x + 3, icon_y + 3), (icon_x + 3, icon_y + 7),
-         (icon_x + 7, icon_y + 7)],
-        fill=TEAL,
-        width=2,
-    )
+    draw_reset_icon(draw, reset_x + 9, reset_y + 9, 17, TEAL)
 
     # Cards
     cards = [

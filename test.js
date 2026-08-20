@@ -1966,6 +1966,37 @@ test('store popup screenshot generator includes the measurement reset row', () =
   assert.ok(!source.includes("'reset'"));
 });
 
+test('store popup reset icon follows the popup SVG geometry', () => {
+  const html = fs.readFileSync(path.join(__dirname, 'popup.html'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, 'gen_screenshots.py'), 'utf8');
+
+  const arcPath = html.match(/M([\d.]+) ([\d.]+)a8 8 0 1 0 ([\d.]+)(-[\d.]+)L([\d.]+) ([\d.]+)/);
+  const headPath = html.match(/M([\d.]+) ([\d.]+)v([\d.]+)h([\d.]+)/);
+  assert.ok(arcPath && headPath, 'popup.html still declares the reset icon paths');
+  const [sx, sy, dx, dy, hx, hy] = arcPath.slice(1).map(Number);
+  const end = [sx + dx, sy + dy];
+  const [mx, my, down, right] = headPath.slice(1).map(Number);
+  const corner = [mx, my + down];
+
+  const circle = source.match(/cx, cy, r = ([\d.]+), ([\d.]+), ([\d.]+)/).slice(1).map(Number);
+  const [cx, cy, r] = circle;
+  for (const point of [[sx, sy], end]) {
+    const radius = Math.hypot(point[0] - cx, point[1] - cy);
+    assert.ok(Math.abs(radius - r) < 0.05, `arc endpoint ${point} off the mock circle`);
+  }
+
+  const angle = (point) =>
+    ((Math.atan2(point[1] - cy, point[0] - cx) * 180) / Math.PI + 360) % 360;
+  const arcCall = source.match(/\n\s+([\d.]+), ([\d.]+), fill=color, width=width,/);
+  assert.ok(arcCall, 'the mock draws the arc with explicit angles');
+  assert.ok(Math.abs(Number(arcCall[1]) - angle(end)) < 0.2);
+  assert.ok(Math.abs(Number(arcCall[2]) - angle([sx, sy])) < 0.2);
+
+  assert.match(source, new RegExp(`arc_end = \\(${end[0]}, ${end[1]}\\)`));
+  assert.match(source, new RegExp(`pt\\(${corner[0]}, ${corner[1]}\\)`));
+  assert.match(source, new RegExp(`pt\\(${mx}, ${my}\\), pt\\(${corner[0]}, ${corner[1]}\\), pt\\(${mx + right}, ${corner[1]}\\)`));
+});
+
 test('Auto switches expose hit targets, keyboard focus, and reduced-motion behavior', () => {
   for (const filename of ['popup.html', 'options.html']) {
     const html = fs.readFileSync(path.join(__dirname, filename), 'utf8');
