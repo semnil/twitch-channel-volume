@@ -27,7 +27,7 @@ BORDER = (42, 42, 74)     # #2a2a4a
 LIVE_RED = (233, 25, 22)  # #e91916
 PURPLE = (145, 71, 255)   # #9147ff Twitch / clip badge
 SWITCH_ON = (27, 58, 75)  # #1b3a4b
-RESET_BORDER = (49, 116, 126)  # rgba(78, 205, 196, 0.48) on INFO_BG
+RESET_BORDER = (50, 119, 129)  # rgba(78, 205, 196, 0.5) on INFO_BG
 RESET_BG = (25, 43, 70)        # rgba(78, 205, 196, 0.06) on INFO_BG
 RESET_BUTTON_HEIGHT = 36
 

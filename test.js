@@ -1902,6 +1902,18 @@ test('popup exposes the selected channel-row measurement reset control', () => {
   assert.match(html, /\.reset-measurement-btn \.sr-only\s*\{[^}]*clip-path:\s*inset\(50%\);/s);
   assert.match(html, /\.reset-measurement-btn:focus-visible\s*\{/);
 
+  // WCAG 2.1 SC 1.4.11: the control boundary against the panel background.
+  const alpha = Number(
+    html.match(/\.reset-measurement-btn\s*\{[^}]*border:\s*1px solid rgba\(78, 205, 196, ([\d.]+)\)/s)[1]
+  );
+  const panel = [0x16, 0x21, 0x3e];
+  const border = [78, 205, 196].map((c, i) => c * alpha + panel[i] * (1 - alpha));
+  const luminance = (rgb) => rgb
+    .map((v) => (v / 255 <= 0.03928 ? v / 255 / 12.92 : Math.pow((v / 255 + 0.055) / 1.055, 2.4)))
+    .reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
+  const contrast = (luminance(border) + 0.05) / (luminance(panel) + 0.05);
+  assert.ok(contrast >= 3, `reset button border contrast ${contrast.toFixed(3)} < 3`);
+
   const source = fs.readFileSync(path.join(__dirname, 'popup.js'), 'utf8');
   assert.match(source, /\$\('resetMeasurementBtn'\)\.title = msg\('resetMeasurement'\);/);
   assert.match(source, /nameEl\.title = nameEl\.textContent;/);
