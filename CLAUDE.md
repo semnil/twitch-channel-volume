@@ -118,7 +118,7 @@ options.html / options.js
 
 1. 配信または VOD を開く → ポップアップで現在種別の「LUFS 自動追従」を ON
 2. Integrated LUFS の測定値が更新されるたび、Target LUFS に対応するゲインへ自動追従
-3. 「測定値をリセット」は現在種別の保存済み LUFS を削除し、実行中の計測をゼロから再開
+3. 「測定値をリセット」は現在種別の保存済み LUFS を削除して実行中の計測をゼロから再開する。再開後の計測値は従来どおり保存される
 4. Auto が OFF の種別では「チャンネルに適用」または Manual Volume で従来どおり保存
 5. CM 区間は CM Gain (default -6 dB) が追加で適用される
 6. Manual Volume スライダーで任意のゲインに変更も可
@@ -143,6 +143,7 @@ options.html / options.js
 | `gen_screenshots.py` | ストア審査用スクリーンショット生成 (PIL 直接描画, 640×400 ja/en) |
 | `pack.py` | Chrome Web Store 用 zip 生成 |
 | `PRIVACY_POLICY.md` / `PRIVACY_POLICY_JA.md` | プライバシーポリシー (審査・README リンク用, EN/JA) |
+| `docs/security-audit.md` | セキュリティ監査レポート |
 | `test.js` | ユニットテスト (`node test.js`) — utils 全般 |
 
 ## Key design decisions

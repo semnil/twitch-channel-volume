@@ -8,7 +8,7 @@ Twitch does not publish any loudness metadata (no `loudnessDb`-equivalent API, n
 
 - **Real-time LUFS metering**: Momentary (400 ms), Short-term (3 s), Integrated (BS.1770 absolute and relative gates with indexed updates)
 - **Per-channel LUFS auto-follow**: Optional Live / VOD / Clip controls continuously follow the measured Integrated LUFS and Target LUFS
-- **Measurement reset**: Clears the current media kind's saved LUFS seed and restarts its active measurement without changing saved gains
+- **Measurement reset**: Discards the current media kind's measurement history and restarts it from zero. The stored value tracks the restarted measurement from its first block onward; saved gains are unchanged
 - **Per-channel manual gain**: Save gain per Live / VOD / Clip kind; applied automatically on revisit and used while Auto is waiting for measurement
 - **Global Auto defaults**: Independent Live / VOD / Clip defaults apply only when a channel kind has neither an explicit Auto choice nor a manual gain
 - **Ad-break handling**: Detects `EXT-X-DATERANGE CLASS="twitch-stitched-ad"` in HLS manifests and `[data-a-target="video-ad-countdown"]` in the DOM; applies a separate gain offset during ads
@@ -40,7 +40,7 @@ The measurement path applies the BS.1770-4 K-weighting (high-shelf pre-filter + 
 1. Open a Twitch stream, VOD, or clip
 2. Click the extension icon and enable **Auto-follow LUFS** for the current kind
 3. The gain follows the current Integrated LUFS toward Target LUFS as measurement stabilizes
-4. Use **Reset measurement** to discard the saved LUFS seed and restart the current kind's measurement
+4. Use **Reset measurement** to discard the current kind's measurement history and restart it from zero
 5. Alternatively, leave Auto off and click **Apply to channel** to save the current suggested gain
 6. Use the manual slider (0–600 %) while Auto is off
 7. Ad break gain is configurable in Settings (default −6 dB)
