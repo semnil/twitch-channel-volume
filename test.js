@@ -788,7 +788,7 @@ test('content seeds the measurement once the owner ID resolves', async () => {
   assert.equal(state.channel.id, '777');
 });
 
-test('content keeps the running measurement when the owner adds no new seed', async () => {
+test('content keeps the running measurement when the owner resolves the same channel', async () => {
   const harness = createContentHarness({
     href: 'https://www.twitch.tv/streamer',
     channelVolumes: { '777': { name: 'Streamer', lastLufs: { live: -16 } } }
@@ -813,6 +813,34 @@ test('content keeps the running measurement when the owner adds no new seed', as
   });
   await flushTasks();
 
+  assert.equal(
+    harness.commands.some((command) => command.cmd === 'resetMeasurement'),
+    false
+  );
+
+  // The tab overwrites the stored LUFS while measuring, so a later owner event
+  // must not read this tab's own save as a reason to restart.
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    momentary: -16.2,
+    shortTerm: -16.2,
+    integrated: -16.2
+  });
+  await flushTasks();
+  assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['777'].lastLufs.live, -16.2);
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '777',
+    login: 'streamer',
+    displayName: 'Streamer',
+    source: 'user',
+    contentKind: 'live',
+    contentId: 'streamer'
+  });
+  await flushTasks();
   assert.equal(
     harness.commands.some((command) => command.cmd === 'resetMeasurement'),
     false

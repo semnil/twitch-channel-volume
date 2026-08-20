@@ -32,7 +32,8 @@
   let autoMutationPending = false;
   let measurementResetPending = false;
   let measurementEpoch = 0;
-  let seededIntegratedLufs;
+  let currentCanonicalChannelId = '';
+  let seededMeasurementTarget = '';
 
   // ── Storage helpers ────────────────────────────────────────────────
 
@@ -78,7 +79,7 @@
     const data = await chrome.storage.local.get([CHANNEL_VOLUMES_KEY, CHANNEL_ALIASES_KEY]);
     const all = data[CHANNEL_VOLUMES_KEY] || {};
     const canonicalId = resolveChannelIdAlias(channelId, data[CHANNEL_ALIASES_KEY] || {});
-    return all[canonicalId] || null;
+    return { canonicalId, entry: all[canonicalId] || null };
   }
 
   function sendChannelMutation(mutation) {
@@ -193,9 +194,6 @@
 
   function sendResetMeasurement(initialIntegratedLufs) {
     measurementEpoch++;
-    seededIntegratedLufs = Number.isFinite(initialIntegratedLufs)
-      ? initialIntegratedLufs
-      : undefined;
     sendCmd({
       cmd: 'resetMeasurement',
       epoch: measurementEpoch,
@@ -208,7 +206,14 @@
     return Number.isFinite(saved) ? saved : undefined;
   }
 
+  // Identity of the measurement in progress. The stored LUFS is not usable here
+  // because this tab overwrites it every few seconds while measuring.
+  function currentMeasurementTarget() {
+    return `${currentCanonicalChannelId}\n${currentChannel.kind}`;
+  }
+
   function resetMeasurementForCurrentChannel() {
+    seededMeasurementTarget = currentMeasurementTarget();
     sendResetMeasurement(savedIntegratedLufsForCurrentChannel());
   }
 
@@ -311,7 +316,7 @@
       migratingChannelId = '';
     }
     if (await reapplyForCurrentChannel() &&
-        savedIntegratedLufsForCurrentChannel() !== seededIntegratedLufs) {
+        currentMeasurementTarget() !== seededMeasurementTarget) {
       resetMeasurementForCurrentChannel();
     }
     return true;
@@ -343,6 +348,7 @@
     currentChannel = { id: channelId, login, name, url, kind: c.kind, slug: c.slug, videoId: c.videoId };
     if (previousId !== channelId || previousKind !== c.kind) {
       preferenceRevision++;
+      currentCanonicalChannelId = channelId;
       currentChannelEntry = null;
       currentAutoApplyLoudness = false;
     }
@@ -354,18 +360,20 @@
   async function reapplyForCurrentChannel() {
     const ch = currentChannel;
     if (!ch.id || ch.kind === 'none') {
+      currentCanonicalChannelId = ch.id;
       currentChannelEntry = null;
       currentAutoApplyLoudness = false;
       applyGain(1.0);
       return true;
     }
     const revision = ++preferenceRevision;
-    const entry = await loadChannelEntry(ch.id);
+    const resolved = await loadChannelEntry(ch.id);
     if (revision !== preferenceRevision ||
         ch.id !== currentChannel.id || ch.kind !== currentChannel.kind) return false;
-    currentChannelEntry = entry;
+    currentCanonicalChannelId = resolved?.canonicalId || ch.id;
+    currentChannelEntry = resolved?.entry || null;
     const preferred = resolvePreferredGain(
-      entry,
+      currentChannelEntry,
       ch.kind,
       defaultAutoApplyForKind(ch.kind),
       lastLufs.integrated,
