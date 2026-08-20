@@ -31,6 +31,7 @@
   let migratingChannelId = '';
   let autoMutationPending = false;
   let measurementResetPending = false;
+  let measurementEpoch = 0;
 
   // ── Storage helpers ────────────────────────────────────────────────
 
@@ -189,12 +190,17 @@
     window.postMessage({ type: MSG_OUT, ...payload }, '*');
   }
 
-  function resetMeasurementForCurrentChannel() {
-    const savedIntegratedLufs = currentChannelEntry?.lastLufs?.[currentChannel.kind];
+  function sendResetMeasurement(initialIntegratedLufs) {
+    measurementEpoch++;
     sendCmd({
       cmd: 'resetMeasurement',
-      ...(Number.isFinite(savedIntegratedLufs) ? { initialIntegratedLufs: savedIntegratedLufs } : {})
+      epoch: measurementEpoch,
+      ...(Number.isFinite(initialIntegratedLufs) ? { initialIntegratedLufs } : {})
     });
+  }
+
+  function resetMeasurementForCurrentChannel() {
+    sendResetMeasurement(currentChannelEntry?.lastLufs?.[currentChannel.kind]);
   }
 
   let initResolve;
@@ -381,6 +387,7 @@
         break;
       case 'lufs':
         if (measurementResetPending) break;
+        if (Number.isFinite(data.epoch) && data.epoch < measurementEpoch) break;
         lastLufs = {
           momentary: Number.isFinite(data.momentary) ? data.momentary : -Infinity,
           shortTerm: Number.isFinite(data.shortTerm) ? data.shortTerm : -Infinity,
@@ -450,7 +457,7 @@
     currentAutoApplyLoudness = false;
     lastLufs = { momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity };
     lastSavedAt = 0;
-    sendCmd({ cmd: 'resetMeasurement' });
+    sendResetMeasurement();
     sendCmd({ cmd: 'attach' });
     await resolveChannel();
     if (await reapplyForCurrentChannel()) resetMeasurementForCurrentChannel();
@@ -651,7 +658,7 @@
               }
               currentChannelEntry = entry;
             }
-            sendCmd({ cmd: 'resetMeasurement' });
+            sendResetMeasurement();
           }
           sendResponse({ ok: true });
         }).catch((error) => {

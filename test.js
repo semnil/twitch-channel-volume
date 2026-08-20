@@ -783,13 +783,10 @@ test('content clears the saved and active measurement for the current media kind
   assert.equal(stored.gainVod, 0.5);
   assert.equal(stored.autoGainVod, 0.75);
   assert.equal(stored.autoApplyLoudnessVod, true);
-  assert.deepEqual(
-    harness.commands.filter((command) => command.cmd === 'resetMeasurement'),
-    [{
-      type: '__twitch_channel_volume_cmd__',
-      cmd: 'resetMeasurement'
-    }]
-  );
+  const resetCommands = harness.commands
+    .filter((command) => command.cmd === 'resetMeasurement');
+  assert.equal(resetCommands.length, 1);
+  assert.equal(resetCommands[0].initialIntegratedLufs, undefined);
   const state = await harness.dispatchRuntime({ cmd: 'getState' });
   assert.equal(state.lufs.integrated, -Infinity);
   assert.equal(state.hasSavedMeasurement, false);
@@ -892,6 +889,76 @@ test('content rejects a measurement reset for a different channel or media kind'
     harness.commands.some((command) => command.cmd === 'resetMeasurement'),
     false
   );
+});
+
+test('content drops a measurement produced before the reset it requested', async () => {
+  const harness = createContentHarness({
+    channelVolumes: {
+      'vod-owner:100': { name: '100', lastLufs: { vod: -21 } }
+    }
+  });
+  await flushTasks();
+
+  const response = await harness.dispatchRuntime({
+    cmd: 'resetMeasurement',
+    channelId: 'vod-owner:100',
+    kind: 'vod'
+  });
+  await flushTasks();
+  assert.equal(response.ok, true);
+
+  const resetCommand = harness.commands
+    .filter((command) => command.cmd === 'resetMeasurement').at(-1);
+  assert.ok(Number.isFinite(resetCommand.epoch));
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    epoch: resetCommand.epoch - 1,
+    momentary: -15,
+    shortTerm: -15,
+    integrated: -15
+  });
+  await flushTasks();
+
+  assert.equal(
+    harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].lastLufs?.vod,
+    undefined
+  );
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.lufs.integrated, -Infinity);
+  assert.equal(state.hasSavedMeasurement, false);
+});
+
+test('content accepts a measurement stamped with the current reset epoch', async () => {
+  const harness = createContentHarness({
+    channelVolumes: {
+      'vod-owner:100': { name: '100', lastLufs: { vod: -21 } }
+    }
+  });
+  await flushTasks();
+
+  await harness.dispatchRuntime({
+    cmd: 'resetMeasurement',
+    channelId: 'vod-owner:100',
+    kind: 'vod'
+  });
+  await flushTasks();
+  const resetCommand = harness.commands
+    .filter((command) => command.cmd === 'resetMeasurement').at(-1);
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    epoch: resetCommand.epoch,
+    momentary: -15,
+    shortTerm: -15,
+    integrated: -15
+  });
+  await flushTasks();
+
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.lufs.integrated, -15);
 });
 
 test('content reseeds from the new media entry only after SPA navigation', async () => {
@@ -2017,6 +2084,21 @@ test('page bridge uses saved LUFS as the initial Integrated mean', async () => {
   const savedMeanSquare = Math.pow(10, (savedLufs + 0.691) / 10);
   const expected = u.meanSquareToLufs((savedMeanSquare + nextMeanSquare) / 2);
   assert.ok(Math.abs(harness.messages.at(-1).integrated - expected) < 1e-12);
+});
+
+test('page bridge stamps posted measurements with the reset epoch', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.emitMeasurementBlock(0.1);
+  assert.equal(harness.messages.at(-1).epoch, 0);
+
+  await harness.dispatchCommand('resetMeasurement', { epoch: 7 });
+  harness.emitMeasurementBlock(0.1);
+  assert.equal(harness.messages.at(-1).epoch, 7);
+
+  await harness.dispatchCommand('resetMeasurement');
+  harness.emitMeasurementBlock(0.1);
+  assert.equal(harness.messages.at(-1).epoch, 7);
 });
 
 test('page bridge ignores invalid saved LUFS initial values', async () => {

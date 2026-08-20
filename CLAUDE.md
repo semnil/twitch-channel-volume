@@ -14,6 +14,7 @@ page-bridge.js (MAIN world content script, document_start)
 │   ├── Momentary: 直近 4 ブロック (400ms) の MS 平均 → LUFS
 │   ├── Short-term: 直近 30 ブロック (3s) の MS 平均 → LUFS
 │   └── Integrated: 保存済みの種別別 LUFS を初期値とし、1 時間リングバッファ + 平衡木で絶対ゲート (-70 LUFS) と相対ゲート (-10 LU) を O(log n) 更新
+├── 計測世代 (measurement epoch): resetMeasurement で受け取った番号を保持し、以降の lufs 通知へ付与
 ├── attach loop (scheduleAttach): video 出現を 1s 間隔でリトライ + DOM detach 検出で再 attach
 ├── buildMeasurementChain: worklet ロードが attach より遅れた場合は後付けで接続
 ├── Fetch hook:
@@ -35,6 +36,7 @@ content.js (ISOLATED world content script, document_idle)
 ├── LUFS 自動追従: チャンネル × Live/VOD/Clip 別の Auto 設定が ON の間、
 │   Integrated LUFS 更新ごとに Target LUFS との差から baseline gain を再計算
 ├── Gain overlay: `.volume-slider__slider-container` の **次の兄弟** として span を挿入。 mute wrapper と slider container はプレイヤーコントロール内の flex 行に並ぶ sibling 構造のため、 slider container の右隣に span が並ぶ。 表示/非表示は親 `[data-a-target="player-controls"][data-a-visible]` の切り替えに自動追従する (= プレイヤーコントロール内に埋め込んでいるため)。 gain ≠ 1.0 時のみ、表示は `%` 固定 / displayUnit に依存しない
+├── 計測リセットは世代番号を進めて送り、それより古い世代の lufs 通知は破棄する
 ├── DOM ad detection fallback (`[data-a-target="video-ad-countdown"]`)
 ├── SPA navigation: history.pushState/replaceState hook + popstate + MutationObserver
 ├── channelVolumes の更新は Service Worker の単一キューへ委譲し、onChanged でクロスタブ同期
@@ -164,6 +166,7 @@ options.html / options.js
 - **attach のリトライ**: video 要素は document_start 時点では存在しないため、`scheduleAttach()` で 1s 間隔のループ。`clearStaleAttachment()` が DOM から消えた video を検出して再 attach を許可 (Twitch SPA で video が入れ替わるケース対応)。SPA navigation 時にも content.js が `attach` を再送
 - **measurement chain の後付け**: `audioWorklet.addModule()` が attach より遅れた場合に備え、`buildMeasurementChain()` を分離。worklet ロード完了時に既に attached なら計測経路を後から接続
 - **SPA navigation**: history.pushState/replaceState フック + popstate + MutationObserver の 3 段構え。URL 変更で resetMeasurement + 種別判定再実行 + attach 再送
+- **計測リセットの世代番号**: content.js は resetMeasurement を送るたびに世代番号を進め、page-bridge はその番号を以降の lufs 通知へ付与する。content.js は現在の世代より古い通知を破棄するため、リセット送信前に page-bridge が算出したブロックが保存済み LUFS を復活させない
 - **Live/VOD/Clip 別ゲイン**: 配信は時間帯で音作りが変わるため種別ごとに別管理。同チャンネルの過去 VOD のゲインを現 Live にコピーしない
 - **Twitch reserved paths**: `/directory`, `/settings`, `/videos`, `/p`, `/jobs` 等は live channel として誤検出しないよう TWITCH_RESERVED_PATHS で除外
 - **CSP 対応**: AudioWorklet モジュールは web_accessible_resources で公開し、content.js が chrome.runtime.getURL で解決して page-bridge に渡す

@@ -86,6 +86,9 @@
   let integratedBlockStart = 0;
   let integratedBlockLength = 0;
   let absoluteGatedRoot = null;
+  // Stamped onto every posted measurement so content.js can drop blocks that
+  // the bridge produced before it handled the matching reset command.
+  let measurementEpoch = 0;
 
   function treeHeight(node) {
     return node?.height || 0;
@@ -217,6 +220,7 @@
     window.postMessage({
       type: MSG_OUT,
       event: 'lufs',
+      epoch: measurementEpoch,
       momentary,
       shortTerm,
       integrated
@@ -262,7 +266,8 @@
     return integratedLufs();
   }
 
-  function resetMeasurement(initialIntegratedLufs) {
+  function resetMeasurement(initialIntegratedLufs, epoch) {
+    if (Number.isFinite(epoch)) measurementEpoch = epoch;
     blocks.length = 0;
     integratedBlockStart = 0;
     integratedBlockLength = 0;
@@ -593,7 +598,7 @@
         setAdActive(data.active, data.range);
         break;
       case 'resetMeasurement':
-        resetMeasurement(data.initialIntegratedLufs);
+        resetMeasurement(data.initialIntegratedLufs, data.epoch);
         break;
       case 'resume':
         try { await ctx?.resume(); } catch (_) {}
