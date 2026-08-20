@@ -50,6 +50,7 @@
   }
 
   function applyI18n() {
+    $('resetMeasurementBtn').title = msg('resetMeasurement');
     document.querySelectorAll('[data-i18n]').forEach((el) => {
       const key = el.getAttribute('data-i18n');
       const text = msg(key);
@@ -125,6 +126,8 @@
       nameEl.textContent = msg('channelNotDetected');
       nameEl.classList.add('empty');
     }
+    // The name truncates to fit the row, so keep the full text on hover.
+    nameEl.title = nameEl.textContent;
     const kindEl = $('channelKind');
     if (ch.kind && ch.kind !== 'none') {
       kindEl.className = 'type-badge ' + ch.kind;

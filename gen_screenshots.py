@@ -59,11 +59,19 @@ FONT_VAL = _font(17, bold=True)
 FONT_XL = _font(20, bold=True)
 FONT_XS = _font(9)
 FONT_PRESET = _font(11, bold=True)
-FONT_RESET = _font(10, bold=True)
 
 
 def rr(draw, box, radius, fill):
     draw.rounded_rectangle(box, radius=radius, fill=fill)
+
+
+def fit_text(draw, text, font, max_width):
+    if draw.textlength(text, font=font) <= max_width:
+        return text
+    trimmed = text
+    while trimmed and draw.textlength(trimmed + '…', font=font) > max_width:
+        trimmed = trimmed[:-1]
+    return trimmed + '…'
 
 
 # ── Localized strings ────────────────────────────────────────────────
@@ -72,7 +80,6 @@ STRINGS = {
     'ja': {
         'channel': 'サンプル配信ch.',
         'live': 'LIVE',
-        'reset': '測定値をリセット',
         'apply': '63% をチャンネルに適用',
         'auto_label': 'LUFS 自動追従',
         'auto_hint': 'この種別は自動追従が\n有効です',
@@ -102,7 +109,6 @@ STRINGS = {
     'en': {
         'channel': 'Sample Stream',
         'live': 'LIVE',
-        'reset': 'Reset measurement',
         'apply': 'Apply 63% to channel',
         'auto_label': 'Auto-follow LUFS',
         'auto_hint': 'Auto-follow is enabled\nfor this type',
@@ -151,18 +157,20 @@ def screenshot_popup(lang):
     info_height = 126
     rr(draw, [px, iy, px + pw, iy + info_height], 0, INFO_BG)
     channel_y = iy + 20
-    draw.text((px + 16, channel_y), s['channel'], fill=WHITE, font=FONT_BOLD)
-    # LIVE badge
-    cl = draw.textlength(s['channel'], font=FONT_BOLD)
-    bx = px + 16 + cl + 8
-    rr(draw, [bx, iy + 19, bx + 34, iy + 35], 3, LIVE_RED)
-    draw.text((bx + 6, iy + 21), s['live'], fill=WHITE, font=FONT_XS)
 
-    # Measurement reset button
-    reset_text_width = draw.textlength(s['reset'], font=FONT_RESET)
-    reset_width = int(reset_text_width + 15 + 5 + 16)
+    # Measurement reset button. It keeps its width; the channel name shrinks.
+    reset_width = RESET_BUTTON_HEIGHT
     reset_x = px + pw - 16 - reset_width
     reset_y = iy + 9
+
+    # Channel name + LIVE badge share the width left of the button
+    name = fit_text(draw, s['channel'], FONT_BOLD, reset_x - 8 - 34 - 8 - (px + 16))
+    draw.text((px + 16, channel_y), name, fill=WHITE, font=FONT_BOLD)
+    cl = draw.textlength(name, font=FONT_BOLD)
+    bx = px + 16 + cl + 8
+    assert bx + 34 <= reset_x - 8, f'{lang}: LIVE badge overlaps the reset button'
+    rr(draw, [bx, iy + 19, bx + 34, iy + 35], 3, LIVE_RED)
+    draw.text((bx + 6, iy + 21), s['live'], fill=WHITE, font=FONT_XS)
     draw.rounded_rectangle(
         [reset_x, reset_y, reset_x + reset_width - 1,
          reset_y + RESET_BUTTON_HEIGHT - 1],
@@ -171,19 +179,13 @@ def screenshot_popup(lang):
         outline=RESET_BORDER,
         width=1,
     )
-    icon_x, icon_y = reset_x + 8, reset_y + 10
-    draw.arc([icon_x, icon_y, icon_x + 14, icon_y + 14], 35, 330, fill=TEAL, width=2)
+    icon_x, icon_y = reset_x + 9, reset_y + 9
+    draw.arc([icon_x, icon_y, icon_x + 17, icon_y + 17], 270, 170, fill=TEAL, width=2)
     draw.line(
-        [(icon_x + 1, icon_y + 3), (icon_x + 1, icon_y + 8),
-         (icon_x + 6, icon_y + 8)],
+        [(icon_x + 3, icon_y + 3), (icon_x + 3, icon_y + 7),
+         (icon_x + 7, icon_y + 7)],
         fill=TEAL,
         width=2,
-    )
-    draw.text(
-        (icon_x + 20, reset_y + 12),
-        s['reset'],
-        fill=TEAL,
-        font=FONT_RESET,
     )
 
     # Cards

@@ -102,12 +102,12 @@ body.initializing .toggle-switch .switch-slider::before { transition: none; }
 }
 .reset-measurement-btn {
   flex: 0 0 auto;
+  width: 36px;
   height: 36px;
-  padding: 0 8px;
+  padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
   border: 1px solid rgba(78, 205, 196, 0.48);
   border-radius: 6px;
   color: #4ecdc4;
@@ -118,9 +118,20 @@ body.initializing .toggle-switch .switch-slider::before { transition: none; }
   white-space: nowrap;
   cursor: pointer;
 }
+.reset-measurement-btn .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 .reset-measurement-btn svg {
-  width: 15px;
-  height: 15px;
+  width: 17px;
+  height: 17px;
   fill: none;
   stroke: currentColor;
   stroke-width: 1.8;
@@ -409,7 +420,7 @@ body.initializing .toggle-switch .switch-slider::before { transition: none; }
           <path d="M4 4v6h6"></path>
           <path d="M5.6 16.5a8 8 0 1 0 .5-9.6L4 10"></path>
         </svg>
-        <span data-i18n="resetMeasurement">測定値をリセット</span>
+        <span class="sr-only" data-i18n="resetMeasurement">測定値をリセット</span>
       </button>
     </div>
     <div id="resetMeasurementError" class="reset-measurement-error hidden" role="status" data-i18n="resetMeasurementFailed">測定値をリセットできませんでした。もう一度お試しください</div>

@@ -1890,13 +1890,21 @@ test('popup exposes the selected channel-row measurement reset control', () => {
     html,
     /<button[^>]+id="resetMeasurementBtn"[^>]*\bdisabled\b[^>]*>[\s\S]*?<svg[^>]+aria-hidden="true"/s
   );
+  // Icon-only control: square hit target, accessible name from a visually hidden label.
   assert.match(
     html,
-    /\.reset-measurement-btn\s*\{[^}]*height:\s*36px;/s
+    /\.reset-measurement-btn\s*\{[^}]*width:\s*36px;[^}]*height:\s*36px;/s
   );
+  assert.match(
+    html,
+    /<span class="sr-only" data-i18n="resetMeasurement">[^<]+<\/span>/
+  );
+  assert.match(html, /\.reset-measurement-btn \.sr-only\s*\{[^}]*clip-path:\s*inset\(50%\);/s);
   assert.match(html, /\.reset-measurement-btn:focus-visible\s*\{/);
 
   const source = fs.readFileSync(path.join(__dirname, 'popup.js'), 'utf8');
+  assert.match(source, /\$\('resetMeasurementBtn'\)\.title = msg\('resetMeasurement'\);/);
+  assert.match(source, /nameEl\.title = nameEl\.textContent;/);
   assert.match(source, /cmd:\s*'resetMeasurement'/);
   assert.match(source, /channelId:\s*currentChannel\.id/);
   assert.match(source, /kind:\s*currentChannel\.kind/);
@@ -1911,10 +1919,11 @@ test('popup exposes the selected channel-row measurement reset control', () => {
 
 test('store popup screenshot generator includes the measurement reset row', () => {
   const source = fs.readFileSync(path.join(__dirname, 'gen_screenshots.py'), 'utf8');
-  assert.match(source, /'reset':\s*'測定値をリセット'/);
-  assert.match(source, /'reset':\s*'Reset measurement'/);
   assert.match(source, /RESET_BUTTON_HEIGHT\s*=\s*36/);
-  assert.match(source, /s\['reset'\]/);
+  // The mock mirrors the icon-only control: square, unlabelled, never overlapping.
+  assert.match(source, /reset_width = RESET_BUTTON_HEIGHT/);
+  assert.match(source, /assert bx \+ 34 <= reset_x - 8/);
+  assert.ok(!source.includes("'reset'"));
 });
 
 test('Auto switches expose hit targets, keyboard focus, and reduced-motion behavior', () => {

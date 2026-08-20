@@ -84,7 +84,8 @@ utils.js (shared, popup/options + page-bridge + content.js + test.js)
 
 popup.html / popup.js
 ├── Channel name + kind badge (Live/VOD/Clip) + CM 検出 badge
-├── チャンネル行の「測定値をリセット」で現在種別の保存済み LUFS と実行中の計測を初期化
+├── チャンネル行のアイコンボタン (36×36) で現在種別の保存済み LUFS と実行中の計測を初期化。ラベルは視覚的に隠して読み上げ名に使い、title で hover 表示する
+├── チャンネル名は行幅に合わせて切り詰めるため、全文を title に持たせる
 ├── 3 カード 1 行グリッド: Integrated LUFS / Suggested gain / Current gain (姉妹拡張と共通レイアウト)
 │   ├── Suggested gain は target との差分から算出 (integrated 優先 / short-term フォールバック)
 │   ├── Suggested / Current の表示は displayUnit (% / dB) に追従
