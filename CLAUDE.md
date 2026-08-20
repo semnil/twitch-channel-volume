@@ -36,6 +36,7 @@ content.js (ISOLATED world content script, document_idle)
 ├── LUFS 自動追従: チャンネル × Live/VOD/Clip 別の Auto 設定が ON の間、
 │   Integrated LUFS 更新ごとに Target LUFS との差から baseline gain を再計算
 ├── Gain overlay: `.volume-slider__slider-container` の **次の兄弟** として span を挿入。 mute wrapper と slider container はプレイヤーコントロール内の flex 行に並ぶ sibling 構造のため、 slider container の右隣に span が並ぶ。 表示/非表示は親 `[data-a-target="player-controls"][data-a-visible]` の切り替えに自動追従する (= プレイヤーコントロール内に埋め込んでいるため)。 gain ≠ 1.0 時のみ、表示は `%` 固定 / displayUnit に依存しない
+├── 保存済み LUFS による計測の初期化は、起動時・SPA 遷移時に加えて owner ID 解決後にも行い、初期化に使った値と同じ場合は再初期化しない
 ├── 計測リセットは世代番号を進めて送り、それより古い世代の lufs 通知は破棄する
 ├── DOM ad detection fallback (`[data-a-target="video-ad-countdown"]`)
 ├── SPA navigation: history.pushState/replaceState hook + popstate + MutationObserver

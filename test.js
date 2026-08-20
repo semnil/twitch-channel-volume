@@ -756,6 +756,69 @@ test('content seeds measurement with the saved LUFS for the current media kind',
   assert.equal(state.hasSavedMeasurement, true);
 });
 
+test('content seeds the measurement once the owner ID resolves', async () => {
+  const harness = createContentHarness({
+    href: 'https://www.twitch.tv/videos/100',
+    channelVolumes: { '777': { name: 'Streamer', lastLufs: { vod: -16 } } }
+  });
+  await flushTasks();
+
+  // A first-visit VOD has no alias, so the startup seed finds nothing.
+  const startup = harness.commands.filter((command) => command.cmd === 'resetMeasurement');
+  assert.equal(startup.length, 1);
+  assert.equal(startup[0].initialIntegratedLufs, undefined);
+  harness.commands.length = 0;
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '777',
+    login: 'streamer',
+    displayName: 'Streamer',
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '100'
+  });
+  await flushTasks();
+
+  const afterOwner = harness.commands.filter((command) => command.cmd === 'resetMeasurement');
+  assert.equal(afterOwner.length, 1);
+  assert.equal(afterOwner[0].initialIntegratedLufs, -16);
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.channel.id, '777');
+});
+
+test('content keeps the running measurement when the owner adds no new seed', async () => {
+  const harness = createContentHarness({
+    href: 'https://www.twitch.tv/streamer',
+    channelVolumes: { '777': { name: 'Streamer', lastLufs: { live: -16 } } }
+  });
+  harness.stored[u.CHANNEL_ALIASES_KEY] = { 'login:streamer': '777' };
+  await flushTasks();
+
+  const startup = harness.commands.filter((command) => command.cmd === 'resetMeasurement');
+  assert.equal(startup.length, 1);
+  assert.equal(startup[0].initialIntegratedLufs, -16);
+  harness.commands.length = 0;
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '777',
+    login: 'streamer',
+    displayName: 'Streamer',
+    source: 'user',
+    contentKind: 'live',
+    contentId: 'streamer'
+  });
+  await flushTasks();
+
+  assert.equal(
+    harness.commands.some((command) => command.cmd === 'resetMeasurement'),
+    false
+  );
+});
+
 test('content clears the saved and active measurement for the current media kind', async () => {
   const harness = createContentHarness({
     channelVolumes: {

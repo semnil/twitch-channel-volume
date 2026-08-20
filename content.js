@@ -32,6 +32,7 @@
   let autoMutationPending = false;
   let measurementResetPending = false;
   let measurementEpoch = 0;
+  let seededIntegratedLufs;
 
   // ── Storage helpers ────────────────────────────────────────────────
 
@@ -192,6 +193,9 @@
 
   function sendResetMeasurement(initialIntegratedLufs) {
     measurementEpoch++;
+    seededIntegratedLufs = Number.isFinite(initialIntegratedLufs)
+      ? initialIntegratedLufs
+      : undefined;
     sendCmd({
       cmd: 'resetMeasurement',
       epoch: measurementEpoch,
@@ -199,8 +203,13 @@
     });
   }
 
+  function savedIntegratedLufsForCurrentChannel() {
+    const saved = currentChannelEntry?.lastLufs?.[currentChannel.kind];
+    return Number.isFinite(saved) ? saved : undefined;
+  }
+
   function resetMeasurementForCurrentChannel() {
-    sendResetMeasurement(currentChannelEntry?.lastLufs?.[currentChannel.kind]);
+    sendResetMeasurement(savedIntegratedLufsForCurrentChannel());
   }
 
   let initResolve;
@@ -301,7 +310,10 @@
     } finally {
       migratingChannelId = '';
     }
-    await reapplyForCurrentChannel();
+    if (await reapplyForCurrentChannel() &&
+        savedIntegratedLufsForCurrentChannel() !== seededIntegratedLufs) {
+      resetMeasurementForCurrentChannel();
+    }
     return true;
   }
 
