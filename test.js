@@ -44,6 +44,42 @@ async function flushTasks(turns = 4) {
   }
 }
 
+function cssRule(css, selector) {
+  const escaped = selector.replace(/[.:]/g, (c) => '\\' + c);
+  const rule = css.match(new RegExp(escaped + '\\s*\\{([^}]*)\\}', 's'));
+  assert.ok(rule, `${selector} rule is still declared`);
+  return rule[1];
+}
+
+function cssColor(css, selector, property) {
+  // `border-color` also ends in "color:", so require a non-hyphen before it.
+  const pattern = property === 'color'
+    ? /(?:^|[^-])color:\s*#([0-9a-f]{3,6})/i
+    : /background(?:-color)?:\s*#([0-9a-f]{3,6})/i;
+  const hex = cssRule(css, selector).match(pattern);
+  assert.ok(hex, `${selector} still declares ${property}`);
+  const full = hex[1].length === 3 ? hex[1].split('').map((c) => c + c).join('') : hex[1];
+  return [0, 2, 4].map((i) => parseInt(full.slice(i, i + 2), 16));
+}
+
+function contrastRatio(fg, bg) {
+  const luminance = (rgb) => rgb
+    .map((v) => (v / 255 <= 0.03928 ? v / 255 / 12.92 : Math.pow((v / 255 + 0.055) / 1.055, 2.4)))
+    .reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
+  return (Math.max(luminance(fg), luminance(bg)) + 0.05) /
+    (Math.min(luminance(fg), luminance(bg)) + 0.05);
+}
+
+function assertContrastFloor(css, pairs, floor) {
+  for (const [selector, panel] of pairs) {
+    const ratio = contrastRatio(
+      cssColor(css, selector, 'color'),
+      cssColor(css, panel, 'background')
+    );
+    assert.ok(ratio >= floor, `${selector} on ${panel} contrast ${ratio.toFixed(2)} < ${floor}`);
+  }
+}
+
 function createContentHarness({
   autoApply = false,
   autoGain,
@@ -67,6 +103,7 @@ function createContentHarness({
   let pendingStorageGetDeferred = false;
   let resolvePendingStorageGet;
   let resolveChannelMutation;
+  let currentTimeMs = 10_000;
   const location = { href };
   const stored = {
     [u.SETTINGS_KEY]: {
@@ -102,6 +139,9 @@ function createContentHarness({
   class MutationObserver {
     constructor(callback) { this.callback = callback; }
     observe() {}
+  }
+  class HarnessDate extends Date {
+    static now() { return currentTimeMs; }
   }
   const history = {
     pushState(_state, _unused, url) {
@@ -172,6 +212,7 @@ function createContentHarness({
       error() {},
       info() {}
     },
+    Date: HarnessDate,
     document,
     history,
     location,
@@ -217,6 +258,9 @@ function createContentHarness({
     },
     invalidateRuntime() {
       runtimeId = '';
+    },
+    advanceTime(ms) {
+      currentTimeMs += ms;
     },
     releaseInitialStorageGet() {
       assert.ok(resolveInitialStorageGet, 'initial storage read is not pending');
@@ -736,6 +780,42 @@ test('content Auto mode follows LUFS and recalculates when the target changes', 
   ) < 1e-9);
 });
 
+test('content limits Auto gain updates to the popup display interval', async () => {
+  const popupSource = fs.readFileSync(path.join(__dirname, 'popup.js'), 'utf8');
+  assert.match(popupSource, /setInterval\(refresh, DISPLAY_UPDATE_INTERVAL_MS\);/);
+  const harness = createContentHarness({ autoApply: true, autoGain: 0.8 });
+  await flushTasks();
+  harness.commands.length = 0;
+
+  const emitIntegrated = (integrated) => harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    momentary: integrated,
+    shortTerm: integrated,
+    integrated
+  });
+
+  await emitIntegrated(-23);
+  harness.advanceTime(u.DISPLAY_UPDATE_INTERVAL_MS - 1);
+  await emitIntegrated(-22);
+  let gains = harness.commands.filter((command) => command.cmd === 'setGain');
+  assert.equal(gains.length, 1);
+  assert.ok(Math.abs(gains[0].value - u.calcGain(-23, -18)) < 1e-9);
+
+  harness.advanceTime(1);
+  await emitIntegrated(-21);
+  gains = harness.commands.filter((command) => command.cmd === 'setGain');
+  assert.equal(gains.length, 2);
+  assert.ok(Math.abs(gains[1].value - u.calcGain(-21, -18)) < 1e-9);
+
+  // A clock that steps backwards must not stall Auto until it catches up.
+  harness.advanceTime(-u.DISPLAY_UPDATE_INTERVAL_MS);
+  await emitIntegrated(-20);
+  gains = harness.commands.filter((command) => command.cmd === 'setGain');
+  assert.equal(gains.length, 3);
+  assert.ok(Math.abs(gains[2].value - u.calcGain(-20, -18)) < 1e-9);
+});
+
 test('content manual mode does not follow incoming LUFS measurements', async () => {
   const harness = createContentHarness({ autoApply: false });
   await flushTasks();
@@ -877,6 +957,16 @@ test('content clears the saved and active measurement for the current media kind
     }
   });
   await flushTasks();
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    momentary: -23,
+    shortTerm: -23,
+    integrated: -23
+  });
+  await flushTasks();
+  const autoGainBeforeReset =
+    harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].autoGainVod;
   harness.commands.length = 0;
 
   const response = await harness.dispatchRuntime({
@@ -889,7 +979,7 @@ test('content clears the saved and active measurement for the current media kind
   const stored = harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'];
   assert.deepEqual(stored.lastLufs, { live: -17 });
   assert.equal(stored.gainVod, 0.5);
-  assert.equal(stored.autoGainVod, 0.75);
+  assert.equal(stored.autoGainVod, autoGainBeforeReset);
   assert.equal(stored.autoApplyLoudnessVod, true);
   const resetCommands = harness.commands
     .filter((command) => command.cmd === 'resetMeasurement');
@@ -898,6 +988,19 @@ test('content clears the saved and active measurement for the current media kind
   const state = await harness.dispatchRuntime({ cmd: 'getState' });
   assert.equal(state.lufs.integrated, -Infinity);
   assert.equal(state.hasSavedMeasurement, false);
+
+  await flushTasks();
+  harness.commands.length = 0;
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    momentary: -22,
+    shortTerm: -22,
+    integrated: -22
+  });
+  const gains = harness.commands.filter((command) => command.cmd === 'setGain');
+  assert.equal(gains.length, 1);
+  assert.ok(Math.abs(gains[0].value - u.calcGain(-22, -18)) < 1e-9);
 });
 
 test('content ignores measurements while the reset storage mutation is pending', async () => {
@@ -2006,6 +2109,65 @@ test('popup disables Manual and Apply controls while an Auto update is pending',
   );
 });
 
+test('popup keeps Auto gain displays synchronized and labels apply in the display unit', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'popup.js'), 'utf8');
+  assert.match(source, /if \(currentAutoApplyLoudness \|\| !sliderSynced\) \{/);
+  assert.match(
+    source,
+    /msg\('applyToChannelWithValue', \[formatGainText\(lastSuggestedGain\)\]\)/
+  );
+
+  const ja = JSON.parse(fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json')));
+  const en = JSON.parse(fs.readFileSync(path.join(__dirname, '_locales/en/messages.json')));
+  // The button saves the gain, so its label stays an apply action.
+  assert.equal(ja.applyToChannelWithValue.message, '$VALUE$ をチャンネルに適用');
+  assert.equal(en.applyToChannelWithValue.message, 'Apply $VALUE$ to channel');
+});
+
+test('popup keeps the apply label on one line and owns the Current card once', () => {
+  const html = fs.readFileSync(path.join(__dirname, 'popup.html'), 'utf8');
+  // The hint caps the row width, so a wrapping label grows the section instead
+  // of the button taking room from the hint.
+  assert.match(html, /\.apply-btn\s*\{[^}]*white-space:\s*nowrap;/s);
+  // A wider hint pushes its own text to a third line, which moves the section
+  // height; 9px keeps it at two lines next to the one-line label.
+  assert.match(html, /\.apply-hint\s*\{[^}]*font-size:\s*9px;/s);
+
+  // WCAG 2.1 SC 1.4.3: muted text against the panel it sits on. Both sides are
+  // read from the stylesheet so a background change cannot pass unnoticed.
+  const MUTED = [
+    ['.settings-link', 'body'],
+    ['.channel-name.empty', '.info-section'],
+    ['.reset-measurement-btn:disabled', '.info-section'],
+    ['.apply-hint', 'body'],
+    ['.loudness-card .value.unknown', '.loudness-card'],
+    ['.status-msg', 'body']
+  ];
+  assertContrastFloor(html, MUTED, 4.5);
+
+  const source = fs.readFileSync(path.join(__dirname, 'popup.js'), 'utf8');
+  const start = source.indexOf('const actualGain =');
+  const body = source.slice(start, source.indexOf('syncInteractionDisabledState();', start));
+  assert.ok(start > -1 && body.length > 0);
+  // Exactly one of the two paths writes the card: syncSlider, or the else arm.
+  assert.match(body, /syncSlider\(actualGain\);/);
+  assert.match(body, /\} else \{[\s\S]*setCardValue\(\$\('current'\)/);
+  assert.equal((body.match(/setCardValue\(\$\('current'\)/g) || []).length, 1);
+  assert.match(source, /function syncSlider\(gain\) \{[\s\S]*?setCardValue\(\$\('current'\)/);
+});
+
+test('options keeps muted text above the AA contrast floor', () => {
+  const html = fs.readFileSync(path.join(__dirname, 'options.html'), 'utf8');
+  assertContrastFloor(html, [
+    ['.setting-row .setting-desc', '.section'],
+    ['.channel-table th', '.section'],
+    ['.empty-msg', '.section'],
+    ['.ch-del', '.section'],
+    ['.ch-vol.empty', '.section'],
+    ['.toggle-group button', '.toggle-group button']
+  ], 4.5);
+});
+
 test('popup exposes the selected channel-row measurement reset control', () => {
   const html = fs.readFileSync(path.join(__dirname, 'popup.html'), 'utf8');
   assert.match(
@@ -2068,8 +2230,49 @@ test('popup re-enables its controls in the render that reports the reset result'
   assert.ok(clearedOnFailure < failure, 'pending flag clears before the failure render');
 });
 
-test('store popup screenshot generator includes the measurement reset row', () => {
+test('store screenshot generator mirrors the stylesheet muted colors', () => {
   const source = fs.readFileSync(path.join(__dirname, 'gen_screenshots.py'), 'utf8');
+  const popup = fs.readFileSync(path.join(__dirname, 'popup.html'), 'utf8');
+  const options = fs.readFileSync(path.join(__dirname, 'options.html'), 'utf8');
+  const constant = (name) => {
+    const match = source.match(new RegExp(`^${name} = \\((\\d+), (\\d+), (\\d+)\\)`, 'm'));
+    assert.ok(match, `${name} is still declared`);
+    return match.slice(1, 4).map(Number);
+  };
+
+  // The mock stands in for the real UI, so its fills track the stylesheets.
+  assert.deepEqual(constant('HINT'), cssColor(popup, '.apply-hint', 'color'));
+  assert.deepEqual(constant('HINT'), cssColor(options, '.setting-row .setting-desc', 'color'));
+  assert.deepEqual(constant('HINT'), cssColor(options, '.toggle-group button', 'color'));
+  assert.deepEqual(constant('GRAY'), cssColor(popup, '.loudness-card .label', 'color'));
+  assert.deepEqual(constant('HINT'), cssColor(popup, '.settings-link', 'color'));
+
+  // Every muted site the mock draws uses that colour.
+  for (const call of [
+    /s\['auto_hint'\], fill=HINT/,
+    /draw\.text\(\(sx \+ 20, y \+ 18\), desc, fill=HINT/,
+    /s\['col_channel'\], fill=HINT/,
+    /draw\.text\(\(cxh, hy\), t, fill=HINT/,
+    /v != '—' else HINT\)/,
+    /'×', fill=HINT/,
+    /'dB', fill=HINT/
+  ]) {
+    assert.match(source, call);
+  }
+  // The header gear is drawn as a glyph today and as strokes once #5 lands.
+  assert.ok(
+    /'⚙', fill=HINT/.test(source) ||
+      /draw_gear\(draw, \(px \+ pw - 19, py \+ 20\), HINT\)/.test(source),
+    'the popup header gear uses the stylesheet muted colour'
+  );
+});
+
+test('store popup screenshot generator matches the Auto-follow state', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'gen_screenshots.py'), 'utf8');
+  assert.match(source, /'apply':\s*'チャンネルに適用'/);
+  assert.match(source, /'apply':\s*'Apply to channel'/);
+  assert.match(source, /\('CURRENT', '63', '%', PINK\)/);
+  assert.match(source, /draw\.text\(\(px \+ pw - 48, sy - 1\), '63%'/);
   assert.match(source, /RESET_BUTTON_HEIGHT\s*=\s*36/);
   // The mock mirrors the icon-only control: square, unlabelled, never overlapping.
   assert.match(source, /reset_width = RESET_BUTTON_HEIGHT/);

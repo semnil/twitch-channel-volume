@@ -165,28 +165,38 @@
       setCardValue(suggestedEl, '---', null, 'suggested unknown');
     }
 
+    const applyButton = $('applyBtn');
+    if (!currentAutoApplyLoudness && Number.isFinite(lastSuggestedGain) && ch.id) {
+      applyButton.textContent =
+        msg('applyToChannelWithValue', [formatGainText(lastSuggestedGain)]);
+    } else {
+      applyButton.textContent = msg('applyToChannel');
+    }
+
     $('applyHint').classList.toggle('error', gainSaveError);
     if (gainSaveError) {
-      $('applyBtn').disabled = currentAutoApplyLoudness ||
+      applyButton.disabled = currentAutoApplyLoudness ||
         !Number.isFinite(lastSuggestedGain) || !ch.id;
       $('applyHint').textContent = msg('gainSaveFailed');
     } else if (currentAutoApplyLoudness && ch.id) {
-      $('applyBtn').disabled = true;
+      applyButton.disabled = true;
       $('applyHint').textContent = msg('hintAutoApplyEnabled');
     } else if (Number.isFinite(lastSuggestedGain) && ch.id) {
-      $('applyBtn').disabled = false;
+      applyButton.disabled = false;
       $('applyHint').textContent = '';
     } else {
-      $('applyBtn').disabled = true;
+      applyButton.disabled = true;
       $('applyHint').textContent = ch.id ? msg('hintNoLufs') : msg('channelNotDetected');
     }
 
     const actualGain = Number.isFinite(state.gain) ? state.gain : 1.0;
-    const currentFormatted = formatGain(actualGain, displayUnit);
-    setCardValue($('current'), currentFormatted.text, currentFormatted.unit, 'current');
-    if (!sliderSynced) {
+    if (currentAutoApplyLoudness || !sliderSynced) {
+      // syncSlider owns the Current card whenever it runs.
       syncSlider(actualGain);
       sliderSynced = true;
+    } else {
+      const currentFormatted = formatGain(actualGain, displayUnit);
+      setCardValue($('current'), currentFormatted.text, currentFormatted.unit, 'current');
     }
 
     syncInteractionDisabledState();
@@ -356,5 +366,5 @@
       requestAnimationFrame(() => document.body.classList.remove('initializing'));
     }
   })();
-  setInterval(refresh, 1000);
+  setInterval(refresh, DISPLAY_UPDATE_INTERVAL_MS);
 })();

@@ -34,6 +34,7 @@
   let measurementEpoch = 0;
   let currentCanonicalChannelId = '';
   let seededMeasurementTarget = '';
+  let lastAutoGainUpdateAt = -Infinity;
 
   // ── Storage helpers ────────────────────────────────────────────────
 
@@ -194,6 +195,7 @@
 
   function sendResetMeasurement(initialIntegratedLufs) {
     measurementEpoch++;
+    lastAutoGainUpdateAt = -Infinity;
     sendCmd({
       cmd: 'resetMeasurement',
       epoch: measurementEpoch,
@@ -230,6 +232,14 @@
     currentGain = Math.max(MIN_GAIN, Math.min(MAX_GAIN, gain));
     sendCmd({ cmd: 'setGain', value: currentGain });
     updateGainOverlay();
+  }
+
+  function applyAutoGain(integratedLufs) {
+    const now = Date.now();
+    const elapsed = now - lastAutoGainUpdateAt;
+    if (elapsed >= 0 && elapsed < DISPLAY_UPDATE_INTERVAL_MS) return;
+    lastAutoGainUpdateAt = now;
+    applyGain(calcGain(integratedLufs, targetLufs));
   }
 
   // ── Gain overlay on Twitch player ───────────────────────────────────
@@ -415,7 +425,7 @@
         };
         if (Number.isFinite(lastLufs.integrated) && currentChannel.id) {
           if (currentAutoApplyLoudness) {
-            applyGain(calcGain(lastLufs.integrated, targetLufs));
+            applyAutoGain(lastLufs.integrated);
           }
           throttledSaveIntegrated();
         }

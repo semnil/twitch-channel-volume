@@ -21,6 +21,7 @@ LIGHT = (225, 225, 225)   # #e1e1e1
 CC = (204, 204, 204)      # #cccccc
 GRAY = (136, 136, 136)    # #888
 DIM = (102, 102, 102)     # #666
+HINT = (153, 153, 153)    # #999 popup の淡色テキスト
 DIM2 = (85, 85, 85)       # #555
 DIM3 = (68, 68, 68)       # #444
 BORDER = (42, 42, 74)     # #2a2a4a
@@ -99,7 +100,7 @@ STRINGS = {
     'ja': {
         'channel': 'サンプル配信ch.',
         'live': 'LIVE',
-        'apply': '63% をチャンネルに適用',
+        'apply': 'チャンネルに適用',
         'auto_label': 'LUFS 自動追従',
         'auto_hint': 'この種別は自動追従が\n有効です',
         'manual': 'MANUAL VOLUME',
@@ -128,7 +129,7 @@ STRINGS = {
     'en': {
         'channel': 'Sample Stream',
         'live': 'LIVE',
-        'apply': 'Apply 63% to channel',
+        'apply': 'Apply to channel',
         'auto_label': 'Auto-follow LUFS',
         'auto_hint': 'Auto-follow is enabled\nfor this type',
         'manual': 'MANUAL VOLUME',
@@ -168,7 +169,7 @@ def screenshot_popup(lang):
 
     # Header
     draw.text((px + 16, py + 12), 'Twitch Channel Volume', fill=TEAL, font=FONT_TITLE)
-    draw.text((px + pw - 28, py + 11), '⚙', fill=GRAY, font=FONT_LG)
+    draw.text((px + pw - 28, py + 11), '⚙', fill=HINT, font=FONT_LG)
     draw.line([(px, py + 39), (px + pw, py + 39)], fill=BORDER)
 
     # Info section
@@ -231,7 +232,7 @@ def screenshot_popup(lang):
     rr(draw, [px + 16, ay, px + 172, ay + 32], 6, BORDER)
     tw = draw.textlength(s['apply'], font=FONT_BOLD)
     draw.text((px + 16 + (156 - tw) / 2, ay + 8), s['apply'], fill=DIM2, font=FONT_BOLD)
-    draw.multiline_text((px + 182, ay + 4), s['auto_hint'], fill=DIM, font=FONT_XS, spacing=1)
+    draw.multiline_text((px + 182, ay + 4), s['auto_hint'], fill=HINT, font=FONT_XS, spacing=1)
     draw.line([(px, ay + 44), (px + pw, ay + 44)], fill=BORDER)
 
     # Manual volume
@@ -276,7 +277,7 @@ def screenshot_settings(lang):
 
     def row(y, label, desc, draw_control):
         draw.text((sx + 20, y), label, fill=CC, font=FONT)
-        draw.text((sx + 20, y + 18), desc, fill=DIM, font=FONT_SM)
+        draw.text((sx + 20, y + 18), desc, fill=HINT, font=FONT_SM)
         draw_control(y)
 
     def slider(y, frac, value, thumb=TEAL):
@@ -320,7 +321,7 @@ def screenshot_settings(lang):
         rr(draw, [gx, y - 2, gx + 36, y + 18], 6, TEAL)
         draw.text((gx + 13, y + 1), '%', fill=POPUP_BG, font=FONT_BOLD)
         rr(draw, [gx + 36, y - 2, gx + 72, y + 18], 6, INFO_BG)
-        draw.text((gx + 47, y + 1), 'dB', fill=GRAY, font=FONT_BOLD)
+        draw.text((gx + 47, y + 1), 'dB', fill=HINT, font=FONT_BOLD)
     row(ry, s['unit_label'], s['unit_desc'], unit_toggle)
     draw.line([(sx + 20, ry + 31), (sx + sw - 20, ry + 31)], fill=BORDER)
     ry += 36
@@ -341,18 +342,18 @@ def screenshot_settings(lang):
     # Header row: CHANNEL | Live | VOD | Clip
     hy = cy + 31
     col_live, col_vod, col_clip = sx + 300, sx + 405, sx + 500
-    draw.text((sx + 20, hy), s['col_channel'], fill=DIM, font=FONT_SM)
+    draw.text((sx + 20, hy), s['col_channel'], fill=HINT, font=FONT_SM)
     for cxh, t in ((col_live, 'LIVE'), (col_vod, 'VOD'), (col_clip, 'CLIP')):
-        draw.text((cxh, hy), t, fill=DIM, font=FONT_SM)
+        draw.text((cxh, hy), t, fill=HINT, font=FONT_SM)
     draw.line([(sx + 20, hy + 18), (sx + sw - 20, hy + 18)], fill=BORDER)
 
     ry = hy + 23
     for name, live, vod, clip in s['channels']:
         draw.text((sx + 20, ry), name, fill=TEAL, font=FONT)
         for cxh, v in ((col_live, live), (col_vod, vod), (col_clip, clip)):
-            color = TEAL if v.startswith('Auto') else (PINK if v != '—' else DIM3)
+            color = TEAL if v.startswith('Auto') else (PINK if v != '—' else HINT)
             draw.text((cxh, ry), v, fill=color, font=FONT_BOLD)
-        draw.text((sx + sw - 36, ry - 2), '×', fill=DIM2, font=FONT_LG)
+        draw.text((sx + sw - 36, ry - 2), '×', fill=HINT, font=FONT_LG)
         ry += 23
 
     img.save(f'screenshots/settings_{lang}.png')
