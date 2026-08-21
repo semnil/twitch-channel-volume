@@ -64,6 +64,8 @@ function createContentHarness({
   let channelMutationDeferred = !!deferChannelMutationOperation;
   let failingChannelMutationOperation = failChannelMutationOperation;
   let resolveInitialStorageGet;
+  let pendingStorageGetDeferred = false;
+  let resolvePendingStorageGet;
   let resolveChannelMutation;
   const location = { href };
   const stored = {
@@ -144,6 +146,12 @@ function createContentHarness({
               resolveInitialStorageGet = () => resolve(readStoredKeys(stored, keys));
             });
           }
+          if (pendingStorageGetDeferred) {
+            pendingStorageGetDeferred = false;
+            return new Promise((resolve) => {
+              resolvePendingStorageGet = () => resolve(readStoredKeys(stored, keys));
+            });
+          }
           if (failNextStorageGet) {
             failNextStorageGet = false;
             throw new Error('injected storage read failure');
@@ -197,6 +205,15 @@ function createContentHarness({
     },
     failNextStorageGet() {
       failNextStorageGet = true;
+    },
+    deferNextStorageGet() {
+      pendingStorageGetDeferred = true;
+    },
+    async releaseStorageGet() {
+      assert.ok(resolvePendingStorageGet, 'storage read is not pending');
+      resolvePendingStorageGet();
+      resolvePendingStorageGet = null;
+      await flushTasks(8);
     },
     invalidateRuntime() {
       runtimeId = '';
@@ -1074,6 +1091,59 @@ test('content reseeds from the new media entry only after SPA navigation', async
   assert.equal(resetCommands.length, 2);
   assert.equal(resetCommands[0].initialIntegratedLufs, undefined);
   assert.equal(resetCommands[1].initialIntegratedLufs, -19);
+});
+
+test('content reseeds on a kind change when SPA navigation lost the reapply race', async () => {
+  const channelVolumes = {
+    '777': { name: 'Streamer', lastLufs: { live: -16, vod: -23 } }
+  };
+  const harness = createContentHarness({
+    href: 'https://www.twitch.tv/streamer',
+    channelVolumes
+  });
+  harness.stored[u.CHANNEL_ALIASES_KEY] = { 'login:streamer': '777' };
+  await flushTasks();
+  const startup = harness.commands.filter((command) => command.cmd === 'resetMeasurement');
+  assert.equal(startup.length, 1);
+  assert.equal(startup[0].initialIntegratedLufs, -16);
+  harness.commands.length = 0;
+
+  // Navigate to the same owner's VOD, but hold the reapply read open and let a
+  // storage change start a second reapply. The first one then loses the
+  // revision race and returns false, so navigation never reseeds.
+  harness.deferNextStorageGet();
+  const navigation = harness.navigate('https://www.twitch.tv/videos/100');
+  await flushTasks();
+  await harness.dispatchStorage({
+    [u.CHANNEL_VOLUMES_KEY]: { newValue: structuredClone(channelVolumes) }
+  });
+  await harness.releaseStorageGet();
+  await navigation;
+
+  // Only the unconditional reset from onNavigate ran: the reapply that would
+  // have reseeded lost the race, so the seeded target is still the live one.
+  const duringNavigation = harness.commands
+    .filter((command) => command.cmd === 'resetMeasurement');
+  assert.equal(duringNavigation.length, 1);
+  assert.equal(duringNavigation[0].initialIntegratedLufs, undefined);
+  harness.commands.length = 0;
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '777',
+    login: 'streamer',
+    displayName: 'Streamer',
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '100'
+  });
+  await flushTasks();
+
+  // Same canonical channel as before the navigation; only the kind changed.
+  const afterOwner = harness.commands.filter((command) => command.cmd === 'resetMeasurement');
+  assert.equal(afterOwner.length, 1);
+  assert.equal(afterOwner[0].initialIntegratedLufs, -23);
 });
 
 test('Auto save remains successful when only the follow-up storage read fails', async () => {
