@@ -274,8 +274,9 @@
     absoluteGatedRoot = null;
     if (!Number.isFinite(initialIntegratedLufs)) return;
     const initialMeanSquare = Math.pow(10, (initialIntegratedLufs + 0.691) / 10);
-    if (!Number.isFinite(initialMeanSquare) ||
-        initialMeanSquare < ABSOLUTE_GATE_MEAN_SQUARE) return;
+    if (!Number.isFinite(initialMeanSquare)) return;
+    // Values below the absolute gate reach the ring buffer but not the index,
+    // so they never contribute to Integrated.
     appendIntegratedBlock(initialMeanSquare);
   }
 
