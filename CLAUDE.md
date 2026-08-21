@@ -74,8 +74,7 @@ utils.js (shared, popup/options + content.js + test.js。page-bridge.js は MAIN
 ├── Constants: SETTINGS_KEY, CHANNEL_VOLUMES_KEY, CHANNEL_ALIASES_KEY,
 │              CHANNEL_SEQUENCE_KEY, DEFAULT_TARGET_LUFS, DEFAULT_AD_GAIN_DB,
 │              DEFAULT_AUTO_APPLY_LOUDNESS, LUFS_REFERENCE_VOLUME_1,
-│              ABSOLUTE_GATE_LUFS, RELATIVE_GATE_LU,
-│              MOMENTARY_WINDOW_SEC, SHORT_TERM_WINDOW_SEC, DISPLAY_UPDATE_INTERVAL_MS,
+│              ABSOLUTE_GATE_LUFS, RELATIVE_GATE_LU, DISPLAY_UPDATE_INTERVAL_MS,
 │              MIN_GAIN, MAX_GAIN
 ├── Gain utilities: gainToPercent, percentToGain, gainToDb, dbToGain, formatGain, calcGain,
 │                  suggestedGain, resolveAutoApplySetting, resolvePreferredGain
