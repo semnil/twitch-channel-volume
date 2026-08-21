@@ -303,9 +303,10 @@ function gatingWindows(subBlocks) {
   return windows;
 }
 
-// Entering an ad removes this many of the most recent windows: the DOM marker
-// appears after the ad's first audio.
-const AD_START_ROLLBACK = 5;
+// Entering an ad removes up to this many of the most recent windows: the DOM
+// marker appears after the ad's first audio.
+const AD_START_ROLLBACK = 50;
+const ROLLBACK_LOG_SAMPLES = 8;
 
 function assertLufsClose(actual, expected) {
   if (expected === -Infinity) assert.equal(actual, -Infinity);
@@ -2668,14 +2669,15 @@ test('page bridge drops exactly the windows that span the end of an ad', async (
   await harness.startMeasurement();
   harness.messages.length = 0;
 
-  const content = [
-    0.01, 0.012, 0.011, 0.013, 0.0125, 0.0115, 0.0105, 0.0135, 0.0128, 0.0118, 0.0122, 0.0112
-  ];
+  // Long enough that the ad-start rollback cannot take every window.
+  const content = Array.from({ length: 60 }, (_, i) => 0.01 + i * 0.0005);
   for (const ms of content) harness.emitMeasurementBlock(ms);
   assert.ok(Number.isFinite(expectedIntegrated(content)));
 
   await harness.dispatchCommand('setAdActive', { active: true });
-  const beforeAd = u.gatedIntegratedLufs(gatingWindows(content).slice(0, -AD_START_ROLLBACK));
+  const kept = gatingWindows(content).slice(0, -AD_START_ROLLBACK);
+  assert.ok(kept.length > 0);
+  const beforeAd = u.gatedIntegratedLufs(kept);
   harness.emitMeasurementBlock(1.0);
   assert.ok(Math.abs(harness.messages.at(-1).integrated - beforeAd) < 1e-12);
 
@@ -2689,9 +2691,7 @@ test('page bridge drops exactly the windows that span the end of an ad', async (
 
   // The fifth window is clear of the boundary and counts again.
   harness.emitMeasurementBlock(1.0);
-  const expected = u.gatedIntegratedLufs(
-    [...gatingWindows(content).slice(0, -AD_START_ROLLBACK), 1.0]
-  );
+  const expected = u.gatedIntegratedLufs([...kept, 1.0]);
   assert.ok(Math.abs(expected - beforeAd) > 0.1);
   assert.ok(Math.abs(harness.messages.at(-1).integrated - expected) < 1e-12);
 });
@@ -2702,30 +2702,38 @@ test('page bridge removes the windows appended before an ad was detected', async
   harness.messages.length = 0;
 
   const quiet = 0.01;
-  for (let i = 0; i < 7; i++) harness.emitMeasurementBlock(quiet);
+  const quietBlocks = 60;
+  const adBlocks = 5;
+  for (let i = 0; i < quietBlocks; i++) harness.emitMeasurementBlock(quiet);
   const beforeAd = harness.messages.at(-1).integrated;
   assert.ok(Math.abs(beforeAd - u.meanSquareToLufs(quiet)) < 1e-12);
 
   // The ad's first audio reaches the gate before its DOM marker appears.
-  for (let i = 0; i < AD_START_ROLLBACK; i++) harness.emitMeasurementBlock(1.0);
+  for (let i = 0; i < adBlocks; i++) harness.emitMeasurementBlock(1.0);
   assert.ok(harness.messages.at(-1).integrated > beforeAd + 1);
 
   harness.logs.length = 0;
   await harness.dispatchCommand('setAdActive', { active: true });
   harness.emitMeasurementBlock(1.0);
+  // The cap leaves the oldest windows, which never saw the ad.
   assert.ok(Math.abs(harness.messages.at(-1).integrated - beforeAd) < 1e-12);
 
   // The removed windows are reported so their level can be read.
   const rollback = harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback');
   assert.equal(rollback.length, 1);
   assert.equal(rollback[0][1].removed, AD_START_ROLLBACK);
-  // Oldest first, and the values are the windows that were actually removed.
-  const emitted = [...Array(7).fill(quiet), ...Array(AD_START_ROLLBACK).fill(1.0)];
-  const expectedRemoved = gatingWindows(emitted)
+  assert.equal(rollback[0][1].truncated, true);
+  // Oldest first, thinned to the two ends when there are too many to print.
+  const emitted = [...Array(quietBlocks).fill(quiet), ...Array(adBlocks).fill(1.0)];
+  const removedWindows = gatingWindows(emitted)
     .slice(-AD_START_ROLLBACK)
     .map((window) => Number(u.meanSquareToLufs(window).toFixed(2)));
+  const half = ROLLBACK_LOG_SAMPLES / 2;
   // The log object comes from the script's realm, so copy before comparing.
-  assert.deepEqual(Array.from(rollback[0][1].windowLufs), expectedRemoved);
+  assert.deepEqual(
+    Array.from(rollback[0][1].windowLufs),
+    [...removedWindows.slice(0, half), ...removedWindows.slice(-half)]
+  );
 
   // Nothing is removed twice, and the seeded sample is never removed.
   const seeded = createPageBridgeHarness();

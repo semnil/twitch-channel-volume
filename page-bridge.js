@@ -93,8 +93,11 @@
   let boundarySkipLufs = [];
   let lastVolumeState = '';
   // The ad marker appears in the DOM after the ad's first audio, so the windows
-  // appended just before it are removed again.
-  const AD_START_ROLLBACK_BLOCKS = 5;
+  // appended just before it are removed again. Removing more than the ad
+  // covers costs nothing: dropping content windows leaves the mean where it
+  // was, while leaving ad windows in moves it.
+  const AD_START_ROLLBACK_BLOCKS = 50;
+  const ROLLBACK_LOG_SAMPLES = 8;
   let windowsSinceReset = 0;
   let loggedFirstAudibleBlock = false;
   const ABSOLUTE_GATE_MEAN_SQUARE = Math.pow(10, (-70 + 0.691) / 10);
@@ -591,9 +594,14 @@
     if (adActive) {
       const removed = removeRecentIntegratedBlocks(AD_START_ROLLBACK_BLOCKS);
       if (removed.length) {
+        const half = ROLLBACK_LOG_SAMPLES / 2;
+        const truncated = removed.length > ROLLBACK_LOG_SAMPLES;
         console.info('[TCV] ad start rollback', {
           removed: removed.length,
-          windowLufs: removed
+          windowLufs: truncated
+            ? [...removed.slice(0, half), ...removed.slice(-half)]
+            : removed,
+          ...(truncated ? { truncated: true } : {})
         });
       }
     } else armBoundarySkip('ad-end');
