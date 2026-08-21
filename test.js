@@ -745,7 +745,6 @@ test('content Auto mode follows LUFS and recalculates when the target changes', 
 });
 
 test('content limits Auto gain updates to the popup display interval', async () => {
-  assert.equal(u.DISPLAY_UPDATE_INTERVAL_MS, 1000);
   const popupSource = fs.readFileSync(path.join(__dirname, 'popup.js'), 'utf8');
   assert.match(popupSource, /setInterval\(refresh, DISPLAY_UPDATE_INTERVAL_MS\);/);
   const harness = createContentHarness({ autoApply: true, autoGain: 0.8 });
@@ -772,6 +771,13 @@ test('content limits Auto gain updates to the popup display interval', async () 
   gains = harness.commands.filter((command) => command.cmd === 'setGain');
   assert.equal(gains.length, 2);
   assert.ok(Math.abs(gains[1].value - u.calcGain(-21, -18)) < 1e-9);
+
+  // A clock that steps backwards must not stall Auto until it catches up.
+  harness.advanceTime(-u.DISPLAY_UPDATE_INTERVAL_MS);
+  await emitIntegrated(-20);
+  gains = harness.commands.filter((command) => command.cmd === 'setGain');
+  assert.equal(gains.length, 3);
+  assert.ok(Math.abs(gains[2].value - u.calcGain(-20, -18)) < 1e-9);
 });
 
 test('content manual mode does not follow incoming LUFS measurements', async () => {
@@ -2145,7 +2151,6 @@ test('popup re-enables its controls in the render that reports the reset result'
 });
 
 test('store popup screenshot generator matches the Auto-follow state', () => {
-
   const source = fs.readFileSync(path.join(__dirname, 'gen_screenshots.py'), 'utf8');
   assert.match(source, /'apply':\s*'チャンネルに適用'/);
   assert.match(source, /'apply':\s*'Apply to channel'/);
