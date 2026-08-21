@@ -303,6 +303,10 @@ function gatingWindows(subBlocks) {
   return windows;
 }
 
+// Entering an ad removes this many of the most recent windows: the DOM marker
+// appears after the ad's first audio.
+const AD_START_ROLLBACK = 5;
+
 function assertLufsClose(actual, expected) {
   if (expected === -Infinity) assert.equal(actual, -Infinity);
   else assert.ok(Math.abs(actual - expected) < 1e-12);
@@ -2628,7 +2632,7 @@ test('page bridge maintains the two-stage Integrated LUFS gate incrementally', a
   await harness.startMeasurement();
   harness.messages.length = 0;
 
-  const blocks = [0.01, 1.0, 0.001, 0.02, 0.5, 0.03];
+  const blocks = [0.01, 1.0, 0.001, 0.02, 0.5, 0.03, 0.04, 0.02, 0.05, 0.03, 0.02, 0.06];
   for (const ms of blocks) harness.emitMeasurementBlock(ms);
 
   const measurements = harness.messages.filter((message) => message.event === 'lufs');
@@ -2636,11 +2640,12 @@ test('page bridge maintains the two-stage Integrated LUFS gate incrementally', a
   for (let i = 0; i < blocks.length; i++) {
     assertLufsClose(measurements[i].integrated, expectedIntegrated(blocks.slice(0, i + 1)));
   }
-  const expected = expectedIntegrated(blocks);
-
+  // Entering an ad rolls back the windows appended just before the marker.
   await harness.dispatchCommand('setAdActive', { active: true });
   harness.emitMeasurementBlock(1.0);
-  assert.equal(harness.messages.at(-1).integrated, expected);
+  const kept = gatingWindows(blocks).slice(0, -AD_START_ROLLBACK);
+  const expected = u.gatedIntegratedLufs(kept);
+  assertLufsClose(harness.messages.at(-1).integrated, expected);
 
   await harness.dispatchCommand('setAdActive', { active: false });
   await harness.dispatchCommand('resetMeasurement');
@@ -2657,12 +2662,14 @@ test('page bridge drops exactly the windows that span the end of an ad', async (
   await harness.startMeasurement();
   harness.messages.length = 0;
 
-  const content = [0.01, 0.012, 0.011, 0.013, 0.0125];
+  const content = [
+    0.01, 0.012, 0.011, 0.013, 0.0125, 0.0115, 0.0105, 0.0135, 0.0128, 0.0118, 0.0122, 0.0112
+  ];
   for (const ms of content) harness.emitMeasurementBlock(ms);
-  const beforeAd = expectedIntegrated(content);
-  assert.ok(Number.isFinite(beforeAd));
+  assert.ok(Number.isFinite(expectedIntegrated(content)));
 
   await harness.dispatchCommand('setAdActive', { active: true });
+  const beforeAd = u.gatedIntegratedLufs(gatingWindows(content).slice(0, -AD_START_ROLLBACK));
   harness.emitMeasurementBlock(1.0);
   assert.ok(Math.abs(harness.messages.at(-1).integrated - beforeAd) < 1e-12);
 
@@ -2676,9 +2683,40 @@ test('page bridge drops exactly the windows that span the end of an ad', async (
 
   // The fifth window is clear of the boundary and counts again.
   harness.emitMeasurementBlock(1.0);
-  const expected = u.gatedIntegratedLufs([...gatingWindows(content), 1.0]);
+  const expected = u.gatedIntegratedLufs(
+    [...gatingWindows(content).slice(0, -AD_START_ROLLBACK), 1.0]
+  );
   assert.ok(Math.abs(expected - beforeAd) > 0.1);
   assert.ok(Math.abs(harness.messages.at(-1).integrated - expected) < 1e-12);
+});
+
+test('page bridge removes the windows appended before an ad was detected', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.messages.length = 0;
+
+  const quiet = 0.01;
+  for (let i = 0; i < 7; i++) harness.emitMeasurementBlock(quiet);
+  const beforeAd = harness.messages.at(-1).integrated;
+  assert.ok(Math.abs(beforeAd - u.meanSquareToLufs(quiet)) < 1e-12);
+
+  // The ad's first audio reaches the gate before its DOM marker appears.
+  for (let i = 0; i < AD_START_ROLLBACK; i++) harness.emitMeasurementBlock(1.0);
+  assert.ok(harness.messages.at(-1).integrated > beforeAd + 1);
+
+  await harness.dispatchCommand('setAdActive', { active: true });
+  harness.emitMeasurementBlock(1.0);
+  assert.ok(Math.abs(harness.messages.at(-1).integrated - beforeAd) < 1e-12);
+
+  // Nothing is removed twice, and the seeded sample is never removed.
+  const seeded = createPageBridgeHarness();
+  await seeded.startMeasurement();
+  await seeded.dispatchCommand('resetMeasurement', { initialIntegratedLufs: -20 });
+  seeded.messages.length = 0;
+  for (let i = 0; i < 4; i++) seeded.emitMeasurementBlock(1.0);
+  await seeded.dispatchCommand('setAdActive', { active: true });
+  seeded.emitMeasurementBlock(1.0);
+  assert.ok(Math.abs(seeded.messages.at(-1).integrated - (-20)) < 1e-12);
 });
 
 test('page bridge references the measurement to player volume 1.0', async () => {

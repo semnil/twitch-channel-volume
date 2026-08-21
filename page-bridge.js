@@ -92,6 +92,10 @@
   let boundarySkipDropped = 0;
   let boundarySkipLufs = [];
   let lastVolumeState = '';
+  // The ad marker appears in the DOM after the ad's first audio, so the windows
+  // appended just before it are removed again.
+  const AD_START_ROLLBACK_BLOCKS = 5;
+  let windowsSinceReset = 0;
   const ABSOLUTE_GATE_MEAN_SQUARE = Math.pow(10, (-70 + 0.691) / 10);
   const RELATIVE_GATE_FACTOR = Math.pow(10, -10 / 10);
   const integratedBlocks = new Array(MAX_INTEGRATED_BLOCKS);
@@ -286,7 +290,26 @@
 
   function updateIntegratedLufs(ms) {
     appendIntegratedBlock(ms);
+    windowsSinceReset++;
     return integratedLufs();
+  }
+
+  // Only windows appended since the last reset are removable, and only while
+  // the ring buffer has not started evicting: an evicted value cannot return.
+  function removeRecentIntegratedBlocks(count) {
+    let removed = 0;
+    while (removed < count && windowsSinceReset > 0 &&
+           integratedBlockLength > 0 && integratedBlockLength < MAX_INTEGRATED_BLOCKS) {
+      const index = (integratedBlockStart + integratedBlockLength - 1) % MAX_INTEGRATED_BLOCKS;
+      const ms = integratedBlocks[index];
+      if (ms >= ABSOLUTE_GATE_MEAN_SQUARE) {
+        absoluteGatedRoot = removeTreeValue(absoluteGatedRoot, ms);
+      }
+      integratedBlockLength--;
+      windowsSinceReset--;
+      removed++;
+    }
+    return removed;
   }
 
   function resetMeasurement(initialIntegratedLufs, epoch) {
@@ -295,6 +318,7 @@
     integratedBlockStart = 0;
     integratedBlockLength = 0;
     absoluteGatedRoot = null;
+    windowsSinceReset = 0;
     if (!Number.isFinite(initialIntegratedLufs)) return;
     const initialMeanSquare = Math.pow(10, (initialIntegratedLufs + 0.691) / 10);
     if (!Number.isFinite(initialMeanSquare)) return;
@@ -539,7 +563,10 @@
   function setAdActive(active, range) {
     if (adActive === !!active) return;
     adActive = !!active;
-    if (!adActive) armBoundarySkip('ad-end');
+    if (adActive) {
+      const removed = removeRecentIntegratedBlocks(AD_START_ROLLBACK_BLOCKS);
+      if (removed) console.info('[TCV] ad start rollback', { removed });
+    } else armBoundarySkip('ad-end');
     applyEffectiveGain();
     postAd(adActive, range);
   }
