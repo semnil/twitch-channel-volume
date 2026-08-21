@@ -2362,6 +2362,11 @@ test('store screenshot generator draws icons the bundled font lacks', () => {
   assert.match(source, /draw_gear\(draw, \(px \+ pw - 19, py \+ 20\), \w+\)/);
   assert.match(source, /draw_gear\(draw, \(W - 62, cy\), WHITE, radius=5\)/);
   assert.match(source, /draw_fullscreen\(draw, \(W - 34, cy\), WHITE\)/);
+
+  // Source strings cannot tell an empty helper from a drawing one, so the
+  // generator checks its own output; keep that check wired into every run.
+  assert.match(source, /def verify_icons\(\):/);
+  assert.match(source, /def main\(\):\n    verify_icons\(\)/);
 });
 
 test('parseDateRange: extracts attributes', () => {

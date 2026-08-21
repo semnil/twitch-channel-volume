@@ -437,7 +437,49 @@ def screenshot_overlay(lang):
     print(f'Generated screenshots/overlay_{lang}.png')
 
 
+def verify_icons():
+    """描画ヘルパーが実際に線を置いていることを確かめる。
+
+    ソース文字列だけの検査では本体が空になっても気付けないため、生成の
+    たびに小さな canvas へ描いて形の契約を確かめる。座標そのものではなく
+    「歯が 8 方向にある」「四隅に角がある」だけを見る。歯の判定は輪の外側
+    だけを見る (輪を拾うと歯が欠けても通ってしまう)。
+    """
+    size, fg, bg = 48, (255, 255, 255), (0, 0, 0)
+
+    def canvas():
+        img = Image.new('RGB', (size, size), bg)
+        return img, ImageDraw.Draw(img)
+
+    def painted(px, x, y):
+        return any(px[x + dx, y + dy] != bg
+                   for dx in (-1, 0, 1) for dy in (-1, 0, 1))
+
+    img, draw = canvas()
+    radius = 12
+    draw_gear(draw, (size / 2, size / 2), fg, radius=radius)
+    px = img.load()
+    for step in range(8):
+        angle = math.pi * step / 4
+        assert any(painted(px,
+                           int(size / 2 + math.cos(angle) * r),
+                           int(size / 2 + math.sin(angle) * r))
+                   for r in range(radius + 3, radius + 5)), \
+            f'draw_gear: {step} 番目の歯が描かれていない'
+    assert painted(px, size // 2, size // 2), 'draw_gear: 軸が描かれていない'
+
+    img, draw = canvas()
+    half = 12
+    draw_fullscreen(draw, (size / 2, size / 2), fg, size=half * 2)
+    px = img.load()
+    for sx in (-1, 1):
+        for sy in (-1, 1):
+            assert painted(px, int(size / 2 + half * sx), int(size / 2 + half * sy)), \
+                f'draw_fullscreen: 角 ({sx}, {sy}) が描かれていない'
+
+
 def main():
+    verify_icons()
     os.makedirs('screenshots', exist_ok=True)
     for lang in ('ja', 'en'):
         screenshot_popup(lang)
