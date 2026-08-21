@@ -215,7 +215,8 @@ python3 pack.py
 - popup は `DISPLAY_UPDATE_INTERVAL_MS` ごとに getState をポーリングし LUFS / Suggested / Current カードを更新。Auto gain も同じ周期を上限として更新する。Manual slider は Auto ON の間だけ適用中 gain へ同期し、Auto OFF の通常ポーリングでは更新しない。Auto OFF では初回表示・「チャンネルに適用」・Auto 切替・表示単位変更・ユーザー操作時だけ同期する。計測自体は popup の開閉に依存せず、Twitch ページが開いている限り常時走る
 - 拡張機能の再ロードで chrome.runtime が無効化された場合、popup は `reloadPageNeeded` を表示して F5 を促す
 - 計測パイプラインの診断: DevTools Console で `[TCV]` ログを確認。`waiting for <video>` → `attached to video` → `measurement chain ready` → `first measurement block received` の順に出る。`createMediaElementSource failed` で止まる場合は他拡張競合 (技術的限界)
-- CM 境界・音量変更の診断: `[TCV] ad detected in DOM` (DOM 検出と `video.currentTime`)、`[TCV] gate boundary` (境界の理由・volume・muted・再生位置)、`[TCV] gate window dropped` (除外した窓の LUFS と残り窓数) を Console で追う。実ブラウザで CM を再生させたときの検出遅れは、この 3 種の時刻を突き合わせて読む
+- CM 境界・音量変更の診断: `[TCV] ad detected in DOM` (DOM 検出と `video.currentTime`)、`[TCV] gate boundary` / `[TCV] gate resumed` (境界の理由・volume・muted・再生位置と、除外した窓数・直近 4 窓の LUFS)、`[TCV] ad start rollback` (取り消した窓数) を Console で追う
+- CM マーカーの遅れが検出遅れか CM 先頭の無音かの判別: `[TCV] attached to video` と `[TCV] first audible block` の `videoTime` を `ad detected in DOM` の `videoTime` と突き合わせる。`first audible block` が attach 直後なら遅れは検出側、CM マーカーに近ければ先頭が無音
 
 ## Existing extensions (reference)
 
