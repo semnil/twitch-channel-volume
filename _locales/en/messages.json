@@ -29,6 +29,12 @@
   "gainSaveFailed": {
     "message": "Could not save the gain. Please try again."
   },
+  "resetMeasurement": {
+    "message": "Reset measurement"
+  },
+  "resetMeasurementFailed": {
+    "message": "Could not reset the measurement. Please try again."
+  },
   "settingsSaveFailed": {
     "message": "Could not save the setting. The saved value was restored."
   },

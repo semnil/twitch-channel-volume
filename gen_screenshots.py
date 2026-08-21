@@ -27,6 +27,9 @@ BORDER = (42, 42, 74)     # #2a2a4a
 LIVE_RED = (233, 25, 22)  # #e91916
 PURPLE = (145, 71, 255)   # #9147ff Twitch / clip badge
 SWITCH_ON = (27, 58, 75)  # #1b3a4b
+RESET_BORDER = (50, 119, 129)  # rgba(78, 205, 196, 0.5) on INFO_BG
+RESET_BG = (25, 43, 70)        # rgba(78, 205, 196, 0.06) on INFO_BG
+RESET_BUTTON_HEIGHT = 36
 
 
 def _font(size, bold=False):
@@ -60,6 +63,34 @@ FONT_PRESET = _font(11, bold=True)
 
 def rr(draw, box, radius, fill):
     draw.rounded_rectangle(box, radius=radius, fill=fill)
+
+
+def fit_text(draw, text, font, max_width):
+    if draw.textlength(text, font=font) <= max_width:
+        return text
+    trimmed = text
+    while trimmed and draw.textlength(trimmed + '…', font=font) > max_width:
+        trimmed = trimmed[:-1]
+    return trimmed + '…'
+
+
+def draw_reset_icon(draw, left, top, size, color):
+    """popup.html の SVG (24 単位 viewBox) と同じ形の回転矢印を描く。"""
+    k = size / 24.0
+    width = max(2, round(1.8 * k))
+    cx, cy, r = 12.0, 12.0, 7.81
+    arc_end = (6.1, 6.9)
+
+    def pt(x, y):
+        return (left + x * k, top + y * k)
+
+    draw.arc(
+        [left + (cx - r) * k, top + (cy - r) * k,
+         left + (cx + r) * k, top + (cy + r) * k],
+        220.8, 144.9, fill=color, width=width,
+    )
+    draw.line([pt(*arc_end), pt(4, 10)], fill=color, width=width)
+    draw.line([pt(4, 4), pt(4, 10), pt(10, 10)], fill=color, width=width)
 
 
 # ── Localized strings ────────────────────────────────────────────────
@@ -132,7 +163,7 @@ def screenshot_popup(lang):
     draw = ImageDraw.Draw(img)
 
     px, pw = 160, 320
-    py, ph = 20, 350
+    py, ph = 20, 368
     rr(draw, [px, py, px + pw, py + ph], 10, POPUP_BG)
 
     # Header
@@ -142,13 +173,32 @@ def screenshot_popup(lang):
 
     # Info section
     iy = py + 39
-    rr(draw, [px, iy, px + pw, iy + 108], 0, INFO_BG)
-    draw.text((px + 16, iy + 12), s['channel'], fill=WHITE, font=FONT_BOLD)
-    # LIVE badge
-    cl = draw.textlength(s['channel'], font=FONT_BOLD)
+    info_height = 126
+    rr(draw, [px, iy, px + pw, iy + info_height], 0, INFO_BG)
+    channel_y = iy + 20
+
+    # Measurement reset button. It keeps its width; the channel name shrinks.
+    reset_width = RESET_BUTTON_HEIGHT
+    reset_x = px + pw - 16 - reset_width
+    reset_y = iy + 9
+
+    # Channel name + LIVE badge share the width left of the button
+    name = fit_text(draw, s['channel'], FONT_BOLD, reset_x - 8 - 34 - 8 - (px + 16))
+    draw.text((px + 16, channel_y), name, fill=WHITE, font=FONT_BOLD)
+    cl = draw.textlength(name, font=FONT_BOLD)
     bx = px + 16 + cl + 8
-    rr(draw, [bx, iy + 11, bx + 34, iy + 27], 3, LIVE_RED)
-    draw.text((bx + 6, iy + 13), s['live'], fill=WHITE, font=FONT_XS)
+    assert bx + 34 <= reset_x - 8, f'{lang}: LIVE badge overlaps the reset button'
+    rr(draw, [bx, iy + 19, bx + 34, iy + 35], 3, LIVE_RED)
+    draw.text((bx + 6, iy + 21), s['live'], fill=WHITE, font=FONT_XS)
+    draw.rounded_rectangle(
+        [reset_x, reset_y, reset_x + reset_width - 1,
+         reset_y + RESET_BUTTON_HEIGHT - 1],
+        radius=6,
+        fill=RESET_BG,
+        outline=RESET_BORDER,
+        width=1,
+    )
+    draw_reset_icon(draw, reset_x + 9, reset_y + 9, 17, TEAL)
 
     # Cards
     cards = [
@@ -158,7 +208,7 @@ def screenshot_popup(lang):
     ]
     cw, gap = 92, 5
     cx = px + 16
-    cy = iy + 40
+    cy = iy + 58
     for label, val, unit, color in cards:
         rr(draw, [cx, cy, cx + cw, cy + 52], 6, CARD_BG)
         draw.text((cx + 9, cy + 8), label, fill=GRAY, font=FONT_XS)
@@ -166,10 +216,10 @@ def screenshot_popup(lang):
         vw = draw.textlength(val, font=FONT_VAL)
         draw.text((cx + 9 + vw + 2, cy + 28), unit, fill=GRAY, font=FONT_SM)
         cx += cw + gap
-    draw.line([(px, iy + 108), (px + pw, iy + 108)], fill=BORDER)
+    draw.line([(px, iy + info_height), (px + pw, iy + info_height)], fill=BORDER)
 
     # Auto-follow switch (ON)
-    auto_y = iy + 108
+    auto_y = iy + info_height
     draw.text((px + 16, auto_y + 14), s['auto_label'], fill=CC, font=FONT_BOLD)
     switch_x = px + pw - 52
     rr(draw, [switch_x, auto_y + 10, switch_x + 36, auto_y + 30], 10, SWITCH_ON)

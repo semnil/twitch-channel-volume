@@ -30,6 +30,10 @@
   let channelMutationQueue = Promise.resolve();
   let migratingChannelId = '';
   let autoMutationPending = false;
+  let measurementResetPending = false;
+  let measurementEpoch = 0;
+  let currentCanonicalChannelId = '';
+  let seededMeasurementTarget = '';
 
   // ── Storage helpers ────────────────────────────────────────────────
 
@@ -75,7 +79,7 @@
     const data = await chrome.storage.local.get([CHANNEL_VOLUMES_KEY, CHANNEL_ALIASES_KEY]);
     const all = data[CHANNEL_VOLUMES_KEY] || {};
     const canonicalId = resolveChannelIdAlias(channelId, data[CHANNEL_ALIASES_KEY] || {});
-    return all[canonicalId] || null;
+    return { canonicalId, entry: all[canonicalId] || null };
   }
 
   function sendChannelMutation(mutation) {
@@ -157,6 +161,15 @@
     });
   }
 
+  function clearSavedMeasurement(channelId, kind) {
+    if (!channelId || !isContextValid()) return Promise.resolve();
+    return sendChannelMutation({
+      operation: 'clearMeasurement',
+      channelId,
+      kind
+    });
+  }
+
   function migrateChannelId(fromId, toId, kind, channel) {
     if (!fromId || !toId || fromId === toId) return Promise.resolve();
     return sendChannelMutation({
@@ -177,6 +190,31 @@
 
   function sendCmd(payload) {
     window.postMessage({ type: MSG_OUT, ...payload }, '*');
+  }
+
+  function sendResetMeasurement(initialIntegratedLufs) {
+    measurementEpoch++;
+    sendCmd({
+      cmd: 'resetMeasurement',
+      epoch: measurementEpoch,
+      ...(Number.isFinite(initialIntegratedLufs) ? { initialIntegratedLufs } : {})
+    });
+  }
+
+  function savedIntegratedLufsForCurrentChannel() {
+    const saved = currentChannelEntry?.lastLufs?.[currentChannel.kind];
+    return Number.isFinite(saved) ? saved : undefined;
+  }
+
+  // Identity of the measurement in progress. The stored LUFS is not usable here
+  // because this tab overwrites it every few seconds while measuring.
+  function currentMeasurementTarget() {
+    return `${currentCanonicalChannelId}\n${currentChannel.kind}`;
+  }
+
+  function resetMeasurementForCurrentChannel() {
+    seededMeasurementTarget = currentMeasurementTarget();
+    sendResetMeasurement(savedIntegratedLufsForCurrentChannel());
   }
 
   let initResolve;
@@ -256,8 +294,9 @@
       try {
         await migrateChannelId(provisionalId, confirmedId, classified.kind, confirmedChannel);
       } catch (error) {
-        console.warn('[TCV] provisional channel migration failed', error);
         migratingChannelId = '';
+        if (!isContextValid()) return false;
+        console.warn('[TCV] provisional channel migration failed', error);
         return false;
       }
     }
@@ -276,7 +315,10 @@
     } finally {
       migratingChannelId = '';
     }
-    await reapplyForCurrentChannel();
+    if (await reapplyForCurrentChannel() &&
+        currentMeasurementTarget() !== seededMeasurementTarget) {
+      resetMeasurementForCurrentChannel();
+    }
     return true;
   }
 
@@ -306,6 +348,7 @@
     currentChannel = { id: channelId, login, name, url, kind: c.kind, slug: c.slug, videoId: c.videoId };
     if (previousId !== channelId || previousKind !== c.kind) {
       preferenceRevision++;
+      currentCanonicalChannelId = channelId;
       currentChannelEntry = null;
       currentAutoApplyLoudness = false;
     }
@@ -317,18 +360,20 @@
   async function reapplyForCurrentChannel() {
     const ch = currentChannel;
     if (!ch.id || ch.kind === 'none') {
+      currentCanonicalChannelId = ch.id;
       currentChannelEntry = null;
       currentAutoApplyLoudness = false;
       applyGain(1.0);
       return true;
     }
     const revision = ++preferenceRevision;
-    const entry = await loadChannelEntry(ch.id);
+    const resolved = await loadChannelEntry(ch.id);
     if (revision !== preferenceRevision ||
         ch.id !== currentChannel.id || ch.kind !== currentChannel.kind) return false;
-    currentChannelEntry = entry;
+    currentCanonicalChannelId = resolved?.canonicalId || ch.id;
+    currentChannelEntry = resolved?.entry || null;
     const preferred = resolvePreferredGain(
-      entry,
+      currentChannelEntry,
       ch.kind,
       defaultAutoApplyForKind(ch.kind),
       lastLufs.integrated,
@@ -345,6 +390,7 @@
     if (event.source !== window) return;
     const data = event.data;
     if (!data || data.type !== MSG_IN) return;
+    if (!isContextValid()) return;
 
     switch (data.event) {
       case 'loaded':
@@ -352,6 +398,7 @@
         // startup IIFE handles init/attach unconditionally; this case only
         // matters for hot-reloads where the bridge restarts mid-session.
         injectWorklet();
+        resetMeasurementForCurrentChannel();
         break;
       case 'init-done':
         initResolve && initResolve();
@@ -359,6 +406,8 @@
       case 'attached':
         break;
       case 'lufs':
+        if (measurementResetPending) break;
+        if (Number.isFinite(data.epoch) && data.epoch < measurementEpoch) break;
         lastLufs = {
           momentary: Number.isFinite(data.momentary) ? data.momentary : -Infinity,
           shortTerm: Number.isFinite(data.shortTerm) ? data.shortTerm : -Infinity,
@@ -428,10 +477,10 @@
     currentAutoApplyLoudness = false;
     lastLufs = { momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity };
     lastSavedAt = 0;
-    sendCmd({ cmd: 'resetMeasurement' });
+    sendResetMeasurement();
     sendCmd({ cmd: 'attach' });
     await resolveChannel();
-    await reapplyForCurrentChannel();
+    if (await reapplyForCurrentChannel()) resetMeasurementForCurrentChannel();
   }
 
   const origPush = history.pushState;
@@ -494,6 +543,9 @@
         sendResponse({
           channel: currentChannel,
           lufs: lastLufs,
+          hasSavedMeasurement: Number.isFinite(
+            currentChannelEntry?.lastLufs?.[currentChannel.kind]
+          ),
           gain: currentGain,
           adActive,
           targetLufs,
@@ -595,6 +647,48 @@
         });
         return true;
       }
+      case 'resetMeasurement': {
+        const kind = ['live', 'vod', 'clip'].includes(req.kind) ? req.kind : '';
+        if (!currentChannel.id || req.channelId !== currentChannel.id || kind !== currentChannel.kind) {
+          sendResponse({ ok: false, reason: 'channel mismatch' });
+          return;
+        }
+        if (measurementResetPending) {
+          sendResponse({ ok: false, reason: 'measurement reset pending' });
+          return;
+        }
+        const channelId = currentChannel.id;
+        measurementResetPending = true;
+        clearSavedMeasurement(channelId, kind).then(() => {
+          if (currentChannel.id === channelId && currentChannel.kind === kind) {
+            lastLufs = {
+              momentary: -Infinity,
+              shortTerm: -Infinity,
+              integrated: -Infinity
+            };
+            lastSavedAt = 0;
+            if (currentChannelEntry) {
+              const entry = { ...currentChannelEntry };
+              const savedLufs = { ...(entry.lastLufs || {}) };
+              delete savedLufs[kind];
+              if (Object.keys(savedLufs).length) entry.lastLufs = savedLufs;
+              else {
+                delete entry.lastLufs;
+                delete entry.lastMeasuredAt;
+              }
+              currentChannelEntry = entry;
+            }
+            sendResetMeasurement();
+          }
+          sendResponse({ ok: true });
+        }).catch((error) => {
+          console.warn('[TCV] failed to reset measurement', error);
+          sendResponse({ ok: false, reason: 'storage update failed' });
+        }).finally(() => {
+          measurementResetPending = false;
+        });
+        return true;
+      }
       case 'resume':
         sendCmd({ cmd: 'resume' });
         sendResponse({ ok: true });
@@ -621,7 +715,7 @@
     injectWorklet();
     await loadSettings();
     await resolveChannel();
-    await reapplyForCurrentChannel();
+    if (await reapplyForCurrentChannel()) resetMeasurementForCurrentChannel();
     // Wait for the worklet to be ready before attaching so the measurement
     // chain is wired up on first attach. Fall back after a timeout.
     await Promise.race([

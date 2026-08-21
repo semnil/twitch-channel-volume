@@ -13,7 +13,8 @@ page-bridge.js (MAIN world content script, document_start)
 ├── AudioWorklet (k-mean-square) で 100ms ブロックごとの MS を集計
 │   ├── Momentary: 直近 4 ブロック (400ms) の MS 平均 → LUFS
 │   ├── Short-term: 直近 30 ブロック (3s) の MS 平均 → LUFS
-│   └── Integrated: 絶対ゲート (-70 LUFS) + 相対ゲート (-10 LU) の BS.1770 規格
+│   └── Integrated: 保存済みの種別別 LUFS を初期値とし、1 時間リングバッファ + 平衡木で絶対ゲート (-70 LUFS) と相対ゲート (-10 LU) を O(log n) 更新
+├── 計測世代 (measurement epoch): resetMeasurement で受け取った番号を保持し、以降の lufs 通知へ付与
 ├── attach loop (scheduleAttach): video 出現を 1s 間隔でリトライ + DOM detach 検出で再 attach
 ├── buildMeasurementChain: worklet ロードが attach より遅れた場合は後付けで接続
 ├── Fetch hook:
@@ -35,10 +36,12 @@ content.js (ISOLATED world content script, document_idle)
 ├── LUFS 自動追従: チャンネル × Live/VOD/Clip 別の Auto 設定が ON の間、
 │   Integrated LUFS 更新ごとに Target LUFS との差から baseline gain を再計算
 ├── Gain overlay: `.volume-slider__slider-container` の **次の兄弟** として span を挿入。 mute wrapper と slider container はプレイヤーコントロール内の flex 行に並ぶ sibling 構造のため、 slider container の右隣に span が並ぶ。 表示/非表示は親 `[data-a-target="player-controls"][data-a-visible]` の切り替えに自動追従する (= プレイヤーコントロール内に埋め込んでいるため)。 gain ≠ 1.0 時のみ、表示は `%` 固定 / displayUnit に依存しない
+├── 保存済み LUFS による計測の初期化は、起動時・SPA 遷移時に加えて owner ID 解決後にも行う。再初期化の要否は alias 解決後のチャンネル ID と種別で判定する
+├── 計測リセットは世代番号を進めて送り、それより古い世代の lufs 通知は破棄する
 ├── DOM ad detection fallback (`[data-a-target="video-ad-countdown"]`)
 ├── SPA navigation: history.pushState/replaceState hook + popstate + MutationObserver
 ├── channelVolumes の更新は Service Worker の単一キューへ委譲し、onChanged でクロスタブ同期
-├── popup/options からの chrome.tabs.sendMessage を `getState` / `setGain` / `setAutoApplyLoudness` / `resume` / `deleteChannel` で処理
+├── popup/options からの chrome.tabs.sendMessage を `getState` / `setGain` / `setAutoApplyLoudness` / `resetMeasurement` / `resume` / `deleteChannel` で処理
 └── Storage
     ├── autoLoudnessSettings: { targetLufs, adGainDb, displayUnit, showGainOverlay,
     │     autoApplyLoudnessLiveDefault, autoApplyLoudnessVodDefault, autoApplyLoudnessClipDefault }
@@ -55,6 +58,7 @@ audio-worklet.js (page context, loaded by page-bridge.js)
 channel-store.js (service worker helper)
 ├── channelVolumes の全 read-modify-write を単一キューで直列化
 ├── gain / Auto / LUFS / delete / clear mutation を検証して適用
+├── 測定値リセットは対象種別の lastLufs だけを削除し、更新番号付きの削除状態として ID 統合後も維持
 ├── 仮 ID → 数値 owner ID の alias を永続化し、全 mutation で正準 ID を解決
 │   (alias 転送時は仮 ID 側の name / login / url を適用しない)
 ├── 同じ login の Live 行と数値 owner 行を統合し、URL をチャンネル URL へ正規化
@@ -80,6 +84,8 @@ utils.js (shared, popup/options + page-bridge + content.js + test.js)
 
 popup.html / popup.js
 ├── Channel name + kind badge (Live/VOD/Clip) + CM 検出 badge
+├── チャンネル行のアイコンボタン (36×36) で現在種別の保存済み LUFS と実行中の計測を初期化。ラベルは視覚的に隠して読み上げ名に使い、title で hover 表示する
+├── チャンネル名は行幅に合わせて切り詰めるため、全文を title に持たせる
 ├── 3 カード 1 行グリッド: Integrated LUFS / Suggested gain / Current gain (姉妹拡張と共通レイアウト)
 │   ├── Suggested gain は target との差分から算出 (integrated 優先 / short-term フォールバック)
 │   ├── Suggested / Current の表示は displayUnit (% / dB) に追従
@@ -112,9 +118,10 @@ options.html / options.js
 
 1. 配信または VOD を開く → ポップアップで現在種別の「LUFS 自動追従」を ON
 2. Integrated LUFS の測定値が更新されるたび、Target LUFS に対応するゲインへ自動追従
-3. Auto が OFF の種別では「チャンネルに適用」または Manual Volume で従来どおり保存
-4. CM 区間は CM Gain (default -6 dB) が追加で適用される
-5. Manual Volume スライダーで任意のゲインに変更も可
+3. 「測定値をリセット」は現在種別の保存済み LUFS を削除して実行中の計測をゼロから再開する。再開後の計測値は従来どおり保存される
+4. Auto が OFF の種別では「チャンネルに適用」または Manual Volume で従来どおり保存
+5. CM 区間は CM Gain (default -6 dB) が追加で適用される
+6. Manual Volume スライダーで任意のゲインに変更も可
 
 ## File overview
 
@@ -136,6 +143,7 @@ options.html / options.js
 | `gen_screenshots.py` | ストア審査用スクリーンショット生成 (PIL 直接描画, 640×400 ja/en) |
 | `pack.py` | Chrome Web Store 用 zip 生成 |
 | `PRIVACY_POLICY.md` / `PRIVACY_POLICY_JA.md` | プライバシーポリシー (審査・README リンク用, EN/JA) |
+| `docs/security-audit.md` | セキュリティ監査レポート |
 | `test.js` | ユニットテスト (`node test.js`) — utils 全般 |
 
 ## Key design decisions
@@ -143,7 +151,7 @@ options.html / options.js
 - **自前 LUFS 計測**: Twitch は loudness API を提供しないため、Web Audio API で BS.1770-4 K-weighting + ゲーテッド integrated LUFS を計測。yt-channel-volume の loudnessDb 受動取得と対称な能動計測モデル
 - **AudioWorklet (not ScriptProcessor)**: ScriptProcessor は deprecated。100ms 単位の L²+R² 累積を Worklet スレッドで実行し、main thread で window 形成
 - **K-weighting フィルタ係数**: BS.1770-4 規格の 48kHz 係数をベースに、AudioContext.sampleRate が 48k 以外の場合は bilinear 逆変換 → 再 bilinear で再設計 (redesignBiquad)
-- **Integrated LUFS gating**: 絶対ゲート -70 LUFS + 相対ゲート -10 LU の 2 段ゲーティングを `gatedIntegratedLufs` で実装。CM 区間中は integrated 統計に含めない (本編の代表値が CM で汚染されないため)
+- **Integrated LUFS の索引更新**: 現在のチャンネルと種別に保存された LUFS を 1 件の初期サンプルとして復元する。直近 1 時間のブロックをリングバッファに保持し、絶対ゲート通過値を部分木の合計・件数付き平衡木へ格納する。絶対ゲート後の平均から相対ゲート -10 LU を毎回求め、しきい値以上の合計・件数を O(log n) で取得するため、入力順序に依存せず二段ゲートを維持する。CM 区間中は Integrated 統計に含めない (本編の代表値が CM で汚染されないため)
 - **GainNode, not HTMLMediaElement.volume**: volume は 1.0 でクリップする。GainNode で 0.0–6.0 (0–600%) を提供
 - **MAIN world + ISOLATED world 分離**: Twitch の CSP は inline script を禁止するため、AudioContext と fetch hook は page-bridge.js (MAIN world, document_start) で実行
 - **Channel ID 戦略**: 
@@ -161,6 +169,7 @@ options.html / options.js
 - **attach のリトライ**: video 要素は document_start 時点では存在しないため、`scheduleAttach()` で 1s 間隔のループ。`clearStaleAttachment()` が DOM から消えた video を検出して再 attach を許可 (Twitch SPA で video が入れ替わるケース対応)。SPA navigation 時にも content.js が `attach` を再送
 - **measurement chain の後付け**: `audioWorklet.addModule()` が attach より遅れた場合に備え、`buildMeasurementChain()` を分離。worklet ロード完了時に既に attached なら計測経路を後から接続
 - **SPA navigation**: history.pushState/replaceState フック + popstate + MutationObserver の 3 段構え。URL 変更で resetMeasurement + 種別判定再実行 + attach 再送
+- **計測リセットの世代番号**: content.js は resetMeasurement を送るたびに世代番号を進め、page-bridge はその番号を以降の lufs 通知へ付与する。content.js は現在の世代より古い通知を破棄するため、リセット送信前に page-bridge が算出したブロックが保存済み LUFS を復活させない
 - **Live/VOD/Clip 別ゲイン**: 配信は時間帯で音作りが変わるため種別ごとに別管理。同チャンネルの過去 VOD のゲインを現 Live にコピーしない
 - **Twitch reserved paths**: `/directory`, `/settings`, `/videos`, `/p`, `/jobs` 等は live channel として誤検出しないよう TWITCH_RESERVED_PATHS で除外
 - **CSP 対応**: AudioWorklet モジュールは web_accessible_resources で公開し、content.js が chrome.runtime.getURL で解決して page-bridge に渡す
