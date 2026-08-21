@@ -468,6 +468,11 @@
     );
     const detected = !!node;
     if (detected !== adActive) {
+      const video = document.querySelector('video');
+      console.info('[TCV] ad detected in DOM', {
+        detected,
+        videoTime: video ? Number(video.currentTime.toFixed(3)) : null
+      });
       sendCmd({ cmd: 'setAdActive', active: detected });
     }
   }

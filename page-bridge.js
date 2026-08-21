@@ -79,7 +79,15 @@
   const BLOCK_SEC = 0.1;
   const MOMENTARY_BLOCKS = 4;
   const SHORT_BLOCKS = 30;
+  // BS.1770-4 gates 400ms blocks overlapping by 75%: one gating window per
+  // 100ms sub-block, formed from the most recent GATE_BLOCKS sub-blocks.
+  const GATE_BLOCKS = 4;
   const MAX_INTEGRATED_BLOCKS = 60 * 60 * 10;
+  // A gating window that spans the end of an ad carries ad audio. Windows stay
+  // out of Integrated until they are clear of the boundary.
+  const BOUNDARY_SKIP_BLOCKS = GATE_BLOCKS;
+  let boundarySkipBlocks = 0;
+  let boundarySkipReason = '';
   const ABSOLUTE_GATE_MEAN_SQUARE = Math.pow(10, (-70 + 0.691) / 10);
   const RELATIVE_GATE_FACTOR = Math.pow(10, -10 / 10);
   const integratedBlocks = new Array(MAX_INTEGRATED_BLOCKS);
@@ -242,6 +250,13 @@
       event: 'owner',
       ...info
     }, '*');
+  }
+
+  function blocksMeanSquare(list, count) {
+    if (list.length < count) return null;
+    let sum = 0;
+    for (let i = list.length - count; i < list.length; i++) sum += list[i];
+    return sum / count;
   }
 
   function blocksToLufs(list, count) {
@@ -433,8 +448,35 @@
     }
     const mom = blocksToLufs(blocks, MOMENTARY_BLOCKS);
     const st = blocksToLufs(blocks, SHORT_BLOCKS);
-    const intg = adActive ? integratedLufs() : updateIntegratedLufs(ms);
+    const gateWindow = blocksMeanSquare(blocks, GATE_BLOCKS);
+    // Credit is spent on windows, so a reset that empties the sub-block buffer
+    // does not consume it before a window exists.
+    const skipBoundary = boundarySkipBlocks > 0 && gateWindow !== null;
+    if (skipBoundary && !adActive) {
+      boundarySkipBlocks--;
+      console.info('[TCV] gate window dropped', {
+        reason: boundarySkipReason,
+        remaining: boundarySkipBlocks,
+        windowLufs: Number(msToLufs(gateWindow).toFixed(2))
+      });
+    }
+    const intg = (adActive || skipBoundary || gateWindow === null)
+      ? integratedLufs()
+      : updateIntegratedLufs(gateWindow);
     postLufs(mom, st, intg);
+  }
+
+  function armBoundarySkip(reason) {
+    boundarySkipBlocks = BOUNDARY_SKIP_BLOCKS;
+    boundarySkipReason = reason;
+    console.info('[TCV] gate boundary', {
+      reason,
+      blocks: BOUNDARY_SKIP_BLOCKS,
+      adActive,
+      volume: attachedVideo ? attachedVideo.volume : null,
+      muted: attachedVideo ? attachedVideo.muted : null,
+      videoTime: attachedVideo ? Number(attachedVideo.currentTime.toFixed(3)) : null
+    });
   }
 
   function setGain(value) {
@@ -456,6 +498,7 @@
   function setAdActive(active, range) {
     if (adActive === !!active) return;
     adActive = !!active;
+    if (!adActive) armBoundarySkip('ad-end');
     applyEffectiveGain();
     postAd(adActive, range);
   }

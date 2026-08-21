@@ -285,6 +285,27 @@ function createContentHarness({
   };
 }
 
+// BS.1770-4 gates 400ms blocks overlapping by 75%: one window per 100ms
+// sub-block, formed from the four most recent sub-blocks.
+function gatingWindows(subBlocks) {
+  const windows = [];
+  for (let i = 3; i < subBlocks.length; i++) {
+    windows.push((subBlocks[i - 3] + subBlocks[i - 2] + subBlocks[i - 1] + subBlocks[i]) / 4);
+  }
+  return windows;
+}
+
+function assertLufsClose(actual, expected) {
+  if (expected === -Infinity) assert.equal(actual, -Infinity);
+  else assert.ok(Math.abs(actual - expected) < 1e-12);
+}
+
+function expectedIntegrated(subBlocks, seedMeanSquare) {
+  const values = gatingWindows(subBlocks);
+  if (seedMeanSquare !== undefined) values.unshift(seedMeanSquare);
+  return u.gatedIntegratedLufs(values);
+}
+
 function createPageBridgeHarness() {
   const messages = [];
   const listeners = {};
@@ -294,7 +315,8 @@ function createPageBridgeHarness() {
     readyState: 4,
     clientWidth: 1920,
     clientHeight: 1080,
-    isConnected: true
+    isConnected: true,
+    currentTime: 0
   };
   let measurementPort;
   let resolveFetch;
@@ -2444,7 +2466,7 @@ test('gatedIntegratedLufs: constant signal close to single-block LUFS', () => {
   assert.ok(Math.abs(result - (-0.691)) < 1e-6);
 });
 
-test('page bridge Integrated LUFS is invariant to block input order', async () => {
+test('page bridge Integrated LUFS is invariant to gating window order', async () => {
   async function measure(blocks) {
     const harness = createPageBridgeHarness();
     await harness.startMeasurement();
@@ -2453,9 +2475,17 @@ test('page bridge Integrated LUFS is invariant to block input order', async () =
     return harness.messages.at(-1).integrated;
   }
 
-  const forward = await measure([1.0, 0.09]);
-  const reverse = await measure([0.09, 1.0]);
-  const expected = u.gatedIntegratedLufs([1.0, 0.09]);
+  // Spaced far enough apart that no window holds both loud sub-blocks, so
+  // swapping them reorders the windows without changing the set.
+  const quiet = 0.02;
+  const forwardBlocks = [quiet, quiet, quiet, 1.0, quiet, quiet, quiet, 0.09, quiet, quiet, quiet];
+  const reverseBlocks = [quiet, quiet, quiet, 0.09, quiet, quiet, quiet, 1.0, quiet, quiet, quiet];
+  const sorted = (list) => gatingWindows(list).slice().sort((a, b) => a - b);
+  assert.deepEqual(sorted(forwardBlocks), sorted(reverseBlocks));
+
+  const forward = await measure(forwardBlocks);
+  const reverse = await measure(reverseBlocks);
+  const expected = expectedIntegrated(forwardBlocks);
 
   assert.ok(Math.abs(forward - expected) < 1e-12);
   assert.ok(Math.abs(reverse - expected) < 1e-12);
@@ -2467,16 +2497,15 @@ test('page bridge maintains the two-stage Integrated LUFS gate incrementally', a
   await harness.startMeasurement();
   harness.messages.length = 0;
 
-  const blocks = [0.01, 1.0, 0.001];
+  const blocks = [0.01, 1.0, 0.001, 0.02, 0.5, 0.03];
   for (const ms of blocks) harness.emitMeasurementBlock(ms);
 
   const measurements = harness.messages.filter((message) => message.event === 'lufs');
-  assert.equal(measurements.length, 3);
+  assert.equal(measurements.length, blocks.length);
   for (let i = 0; i < blocks.length; i++) {
-    const expected = u.gatedIntegratedLufs(blocks.slice(0, i + 1));
-    assert.ok(Math.abs(measurements[i].integrated - expected) < 1e-12);
+    assertLufsClose(measurements[i].integrated, expectedIntegrated(blocks.slice(0, i + 1)));
   }
-  const expected = u.gatedIntegratedLufs(blocks);
+  const expected = expectedIntegrated(blocks);
 
   await harness.dispatchCommand('setAdActive', { active: true });
   harness.emitMeasurementBlock(1.0);
@@ -2484,8 +2513,41 @@ test('page bridge maintains the two-stage Integrated LUFS gate incrementally', a
 
   await harness.dispatchCommand('setAdActive', { active: false });
   await harness.dispatchCommand('resetMeasurement');
+  // Windows spanning the end of the ad stay out even across a reset: the
+  // first three sub-blocks form no window, then four windows are dropped.
+  for (let i = 0; i < 7; i++) harness.emitMeasurementBlock(0.25);
+  assert.equal(harness.messages.at(-1).integrated, -Infinity);
   harness.emitMeasurementBlock(0.25);
   assert.equal(harness.messages.at(-1).integrated, u.meanSquareToLufs(0.25));
+});
+
+test('page bridge drops exactly the windows that span the end of an ad', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.messages.length = 0;
+
+  const content = [0.01, 0.012, 0.011, 0.013, 0.0125];
+  for (const ms of content) harness.emitMeasurementBlock(ms);
+  const beforeAd = expectedIntegrated(content);
+  assert.ok(Number.isFinite(beforeAd));
+
+  await harness.dispatchCommand('setAdActive', { active: true });
+  harness.emitMeasurementBlock(1.0);
+  assert.ok(Math.abs(harness.messages.at(-1).integrated - beforeAd) < 1e-12);
+
+  // The ad ends part-way through the next sub-block, so every window still
+  // holding pre-boundary audio stays out.
+  await harness.dispatchCommand('setAdActive', { active: false });
+  for (let i = 0; i < 4; i++) {
+    harness.emitMeasurementBlock(1.0);
+    assert.ok(Math.abs(harness.messages.at(-1).integrated - beforeAd) < 1e-12);
+  }
+
+  // The fifth window is clear of the boundary and counts again.
+  harness.emitMeasurementBlock(1.0);
+  const expected = u.gatedIntegratedLufs([...gatingWindows(content), 1.0]);
+  assert.ok(Math.abs(expected - beforeAd) > 0.1);
+  assert.ok(Math.abs(harness.messages.at(-1).integrated - expected) < 1e-12);
 });
 
 test('page bridge applies the Integrated absolute boundary and re-evaluates the relative gate', async () => {
@@ -2494,25 +2556,34 @@ test('page bridge applies the Integrated absolute boundary and re-evaluates the 
   harness.messages.length = 0;
   const absoluteGateMeanSquare = Math.pow(10, (-70 + 0.691) / 10);
 
+  // A window one ULP below the absolute gate is excluded; NaN never reaches it.
   harness.emitMeasurementBlock(NaN);
-  harness.emitMeasurementBlock(absoluteGateMeanSquare * (1 - 1e-6));
-  harness.emitMeasurementBlock(absoluteGateMeanSquare);
-
+  for (let i = 0; i < 4; i++) {
+    harness.emitMeasurementBlock(absoluteGateMeanSquare * (1 - 1e-6));
+  }
   let measurements = harness.messages.filter((message) => message.event === 'lufs');
-  assert.equal(measurements.length, 2);
-  assert.equal(measurements[0].integrated, -Infinity);
-  assert.ok(Math.abs(measurements[1].integrated - (-70)) < 1e-12);
+  assert.equal(measurements.length, 4);
+  assert.equal(measurements.at(-1).integrated, -Infinity);
+
+  // A window exactly at the gate is kept.
+  await harness.dispatchCommand('resetMeasurement');
+  harness.messages.length = 0;
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(absoluteGateMeanSquare);
+  assert.ok(Math.abs(harness.messages.at(-1).integrated - (-70)) < 1e-12);
 
   await harness.dispatchCommand('resetMeasurement');
   harness.messages.length = 0;
-  const relativeBlocks = [1.0, 0.1, 0.055 * (1 - 1e-6)];
+  const relativeBlocks = [1.0, 1.0, 1.0, 1.0, 0.1, 0.1, 0.1, 0.1, 0.055, 0.055, 0.055, 0.055];
   for (const ms of relativeBlocks) harness.emitMeasurementBlock(ms);
 
   measurements = harness.messages.filter((message) => message.event === 'lufs');
   for (let i = 0; i < relativeBlocks.length; i++) {
-    const expected = u.gatedIntegratedLufs(relativeBlocks.slice(0, i + 1));
-    assert.ok(Math.abs(measurements[i].integrated - expected) < 1e-12);
+    assertLufsClose(measurements[i].integrated, expectedIntegrated(relativeBlocks.slice(0, i + 1)));
   }
+  // The relative gate moved as the quiet windows arrived: the last window sits
+  // below it and is excluded from the reported value.
+  const windows = gatingWindows(relativeBlocks);
+  assert.ok(u.gatedIntegratedLufs(windows) > u.meanSquareToLufs(windows.at(-1)));
 });
 
 test('page bridge indexed gate matches the array oracle across varied blocks', async () => {
@@ -2529,7 +2600,7 @@ test('page bridge indexed gate matches the array oracle across varied blocks', a
     blocks.push(ms);
     harness.emitMeasurementBlock(ms);
     const actual = harness.messages.at(-1).integrated;
-    const expected = u.gatedIntegratedLufs(blocks);
+    const expected = expectedIntegrated(blocks);
     if (expected === -Infinity) assert.equal(actual, -Infinity);
     else assert.ok(Math.abs(actual - expected) < 1e-10);
   }
@@ -2539,23 +2610,25 @@ test('page bridge indexed gate evicts the oldest block at the retained-window li
   const harness = createPageBridgeHarness();
   await harness.startMeasurement();
   harness.messages.length = 0;
-  const maximumBlocks = 60 * 60 * 10;
-  const retainedBlocks = [];
+  const maximumWindows = 60 * 60 * 10;
+  const emitted = [];
   let randomState = 0x87654321;
 
   for (let i = 0; i < 128; i++) {
     randomState = (Math.imul(randomState, 1103515245) + 12345) >>> 0;
-    harness.emitMeasurementBlock(0.01 + randomState / 0xffffffff);
+    const ms = 0.01 + randomState / 0xffffffff;
+    emitted.push(ms);
+    harness.emitMeasurementBlock(ms);
   }
-  for (let i = 0; i < maximumBlocks; i++) {
-    const ms = 0.01 + i / maximumBlocks;
-    retainedBlocks.push(ms);
+  for (let i = 0; i < maximumWindows; i++) {
+    const ms = 0.01 + i / maximumWindows;
+    emitted.push(ms);
     harness.emitMeasurementBlock(ms);
     if (harness.messages.length > 1000) harness.messages.length = 0;
   }
 
   const actual = harness.messages.at(-1).integrated;
-  const expected = u.gatedIntegratedLufs(retainedBlocks);
+  const expected = u.gatedIntegratedLufs(gatingWindows(emitted).slice(-maximumWindows));
   assert.ok(Math.abs(actual - expected) < 1e-10);
 });
 
@@ -2569,7 +2642,7 @@ test('page bridge uses saved LUFS as the initial Integrated mean', async () => {
   await harness.dispatchCommand('resetMeasurement', {
     initialIntegratedLufs: savedLufs
   });
-  harness.emitMeasurementBlock(nextMeanSquare);
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(nextMeanSquare);
 
   const savedMeanSquare = Math.pow(10, (savedLufs + 0.691) / 10);
   const expected = u.meanSquareToLufs((savedMeanSquare + nextMeanSquare) / 2);
@@ -2600,7 +2673,7 @@ test('page bridge ignores invalid saved LUFS initial values', async () => {
     await harness.startMeasurement();
     harness.messages.length = 0;
     await harness.dispatchCommand('resetMeasurement', { initialIntegratedLufs });
-    harness.emitMeasurementBlock(0.25);
+    for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(0.25);
     assert.equal(harness.messages.at(-1).integrated, u.meanSquareToLufs(0.25));
   }
 
@@ -2608,7 +2681,7 @@ test('page bridge ignores invalid saved LUFS initial values', async () => {
   await boundaryHarness.startMeasurement();
   boundaryHarness.messages.length = 0;
   await boundaryHarness.dispatchCommand('resetMeasurement', { initialIntegratedLufs: -70 });
-  boundaryHarness.emitMeasurementBlock(0);
+  for (let i = 0; i < 4; i++) boundaryHarness.emitMeasurementBlock(0);
   assert.ok(Math.abs(boundaryHarness.messages.at(-1).integrated - (-70)) < 1e-12);
 });
 
