@@ -445,6 +445,12 @@ function createPageBridgeHarness() {
     setMuted(value) {
       video.muted = value;
       for (const fn of videoListeners.volumechange || []) fn();
+    },
+    async replaceVideo() {
+      video.isConnected = false;
+      await dispatchCommand('attach');
+      video.isConnected = true;
+      await dispatchCommand('attach');
     }
   };
 }
@@ -2717,6 +2723,23 @@ test('page bridge removes the windows appended before an ad was detected', async
   await seeded.dispatchCommand('setAdActive', { active: true });
   seeded.emitMeasurementBlock(1.0);
   assert.ok(Math.abs(seeded.messages.at(-1).integrated - (-20)) < 1e-12);
+});
+
+test('page bridge starts a fresh gating window after the video is replaced', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.messages.length = 0;
+
+  // Three sub-blocks of the old element: not a window yet.
+  for (let i = 0; i < 3; i++) harness.emitMeasurementBlock(1.0);
+  assert.equal(harness.messages.at(-1).integrated, -Infinity);
+
+  await harness.replaceVideo();
+  for (let i = 0; i < 3; i++) harness.emitMeasurementBlock(0.01);
+  assert.equal(harness.messages.at(-1).integrated, -Infinity);
+
+  harness.emitMeasurementBlock(0.01);
+  assert.ok(Math.abs(harness.messages.at(-1).integrated - u.meanSquareToLufs(0.01)) < 1e-12);
 });
 
 test('page bridge references the measurement to player volume 1.0', async () => {

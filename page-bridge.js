@@ -457,6 +457,8 @@
     }
     sourceNode.connect(gain);
     attachedVideo = video;
+    // A gating window must not span two media elements.
+    blocks.length = 0;
     lastVolumeState = volumeState(video);
     video.addEventListener('volumechange', onVolumeChange);
     console.info('[TCV] attached to video', { sampleRate: c.sampleRate, state: c.state });
