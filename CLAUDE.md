@@ -216,7 +216,6 @@ python3 pack.py
 - 拡張機能の再ロードで chrome.runtime が無効化された場合、popup は `reloadPageNeeded` を表示して F5 を促す
 - 計測パイプラインの診断: DevTools Console で `[TCV]` ログを確認。`waiting for <video>` → `attached to video` → `measurement chain ready` → `first measurement block received` の順に出る。`createMediaElementSource failed` で止まる場合は他拡張競合 (技術的限界)
 - CM 境界・音量変更の診断: `[TCV] ad detected in DOM` (DOM 検出と `video.currentTime`)、`[TCV] gate boundary` / `[TCV] gate resumed` (境界の理由・volume・muted・再生位置と、除外した窓数・直近 4 窓の LUFS)、`[TCV] ad start rollback` (取り消した窓数と各窓の LUFS) を Console で追う。別の理由で打ち切られた skip はその時点までの除外数を次の `gate boundary` の `superseded` / `droppedBefore` に載せる
-- CM マーカーの遅れが検出遅れか CM 先頭の無音かの判別: `[TCV] attached to video` と `[TCV] first audible block` の `videoTime` を `ad detected in DOM` の `videoTime` と突き合わせる。`first audible block` が attach 直後なら遅れは検出側、CM マーカーに近ければ先頭が無音
 
 ## Existing extensions (reference)
 

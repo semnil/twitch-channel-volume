@@ -99,7 +99,6 @@
   const AD_START_ROLLBACK_BLOCKS = 50;
   const ROLLBACK_LOG_SAMPLES = 8;
   let windowsSinceReset = 0;
-  let loggedFirstAudibleBlock = false;
   const ABSOLUTE_GATE_MEAN_SQUARE = Math.pow(10, (-70 + 0.691) / 10);
   const RELATIVE_GATE_FACTOR = Math.pow(10, -10 / 10);
   const integratedBlocks = new Array(MAX_INTEGRATED_BLOCKS);
@@ -323,7 +322,6 @@
     integratedBlockLength = 0;
     absoluteGatedRoot = null;
     windowsSinceReset = 0;
-    loggedFirstAudibleBlock = false;
     if (!Number.isFinite(initialIntegratedLufs)) return;
     const initialMeanSquare = Math.pow(10, (initialIntegratedLufs + 0.691) / 10);
     if (!Number.isFinite(initialMeanSquare)) return;
@@ -464,7 +462,6 @@
     attachedVideo = video;
     // A gating window must not span two media elements.
     blocks.length = 0;
-    loggedFirstAudibleBlock = false;
     lastVolumeState = volumeState(video);
     video.addEventListener('volumechange', onVolumeChange);
     console.info('[TCV] attached to video', {
@@ -500,16 +497,6 @@
       console.info('[TCV] first measurement block received');
     }
     const ms = normalizeForVolume(raw);
-    // Where the audio starts within the media, against which the ad marker's
-    // video time is read.
-    if (!loggedFirstAudibleBlock && ms >= ABSOLUTE_GATE_MEAN_SQUARE) {
-      loggedFirstAudibleBlock = true;
-      console.info('[TCV] first audible block', {
-        videoTime: attachedVideo ? Number(attachedVideo.currentTime.toFixed(3)) : null,
-        lufs: Number(msToLufs(ms).toFixed(2)),
-        volume: attachedVideo ? attachedVideo.volume : null
-      });
-    }
     blocks.push(ms);
     if (blocks.length > Math.max(MOMENTARY_BLOCKS, SHORT_BLOCKS) * 4) {
       blocks.splice(0, blocks.length - SHORT_BLOCKS * 4);
@@ -551,7 +538,6 @@
       boundarySkipLufs = [];
       console.info('[TCV] gate boundary', {
         reason,
-        blocks: BOUNDARY_SKIP_BLOCKS,
         adActive,
         volume: attachedVideo ? attachedVideo.volume : null,
         muted: attachedVideo ? attachedVideo.muted : null,

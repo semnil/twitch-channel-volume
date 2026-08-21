@@ -2746,29 +2746,6 @@ test('page bridge removes the windows appended before an ad was detected', async
   assert.ok(Math.abs(seeded.messages.at(-1).integrated - (-20)) < 1e-12);
 });
 
-test('page bridge reports where audible audio starts in the media', async () => {
-  const harness = createPageBridgeHarness();
-  await harness.startMeasurement();
-  const audible = () => harness.logs.filter((entry) => entry[0] === '[TCV] first audible block');
-  harness.logs.length = 0;
-
-  const belowGate = Math.pow(10, (-70 + 0.691) / 10) * (1 - 1e-6);
-  harness.emitMeasurementBlock(belowGate);
-  assert.equal(audible().length, 0);
-
-  harness.emitMeasurementBlock(0.01);
-  assert.equal(audible().length, 1);
-  assert.ok(Math.abs(audible()[0][1].lufs - Number(u.meanSquareToLufs(0.01).toFixed(2))) < 1e-9);
-
-  harness.emitMeasurementBlock(0.02);
-  assert.equal(audible().length, 1);
-
-  // A new measurement reports it again.
-  await harness.dispatchCommand('resetMeasurement');
-  harness.emitMeasurementBlock(0.01);
-  assert.equal(audible().length, 2);
-});
-
 test('page bridge starts a fresh gating window after the video is replaced', async () => {
   const harness = createPageBridgeHarness();
   await harness.startMeasurement();
