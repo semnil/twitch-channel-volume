@@ -3,6 +3,7 @@
 PIL 直接描画。popup / settings / overlay の 3 シーンを ja/en で出力する。
 配色・UI 文字列は popup.html / options.html / _locales の実値に一致させる。
 """
+import math
 import os
 from PIL import Image, ImageDraw, ImageFont
 
@@ -60,6 +61,29 @@ FONT_VAL = _font(17, bold=True)
 FONT_XL = _font(20, bold=True)
 FONT_XS = _font(9)
 FONT_PRESET = _font(11, bold=True)
+
+
+def draw_gear(draw, center, color, radius=6):
+    """歯車を描く。PIL の既定フォントに U+2699 のグリフが無く豆腐になるため。"""
+    cx, cy = center
+    for step in range(8):
+        angle = math.pi * step / 4
+        inner = (cx + math.cos(angle) * radius, cy + math.sin(angle) * radius)
+        outer = (cx + math.cos(angle) * (radius + 3), cy + math.sin(angle) * (radius + 3))
+        draw.line([inner, outer], fill=color, width=2)
+    draw.ellipse([cx - radius, cy - radius, cx + radius, cy + radius], outline=color, width=2)
+    draw.ellipse([cx - 2, cy - 2, cx + 2, cy + 2], fill=color)
+
+
+def draw_fullscreen(draw, center, color, size=12):
+    """全画面アイコンを描く。U+26F6 も同じ理由で豆腐になる。"""
+    cx, cy = center
+    half, arm = size / 2, size / 3
+    for sx in (-1, 1):
+        for sy in (-1, 1):
+            x, y = cx + half * sx, cy + half * sy
+            draw.line([(x, y), (x - arm * sx, y)], fill=color, width=2)
+            draw.line([(x, y), (x, y - arm * sy)], fill=color, width=2)
 
 
 def rr(draw, box, radius, fill):
@@ -169,7 +193,7 @@ def screenshot_popup(lang):
 
     # Header
     draw.text((px + 16, py + 12), 'Twitch Channel Volume', fill=TEAL, font=FONT_TITLE)
-    draw.text((px + pw - 28, py + 11), '⚙', fill=HINT, font=FONT_LG)
+    draw_gear(draw, (px + pw - 19, py + 20), HINT)
     draw.line([(px, py + 39), (px + pw, py + 39)], fill=BORDER)
 
     # Info section
@@ -406,7 +430,8 @@ def screenshot_overlay(lang):
     draw.text((gx - 6, cy - 48), s['overlay_note'], fill=TEAL, font=FONT_BOLD)
 
     # right controls
-    draw.text((W - 70, cy - 8), '⚙  ⛶', fill=WHITE, font=FONT)
+    draw_gear(draw, (W - 62, cy), WHITE, radius=5)
+    draw_fullscreen(draw, (W - 34, cy), WHITE)
 
     img.save(f'screenshots/overlay_{lang}.png')
     print(f'Generated screenshots/overlay_{lang}.png')
