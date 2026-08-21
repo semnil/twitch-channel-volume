@@ -132,14 +132,18 @@ function createContentHarness({
       commands.push(structuredClone(message));
     }
   };
+  let adNodePresent = false;
+  const observerCallbacks = [];
   const document = {
     documentElement: {},
-    querySelector() { return null; },
+    querySelector(selector) {
+      return adNodePresent && String(selector).includes('video-ad-countdown') ? {} : null;
+    },
     addEventListener() {},
     contains() { return false; }
   };
   class MutationObserver {
-    constructor(callback) { this.callback = callback; }
+    constructor(callback) { observerCallbacks.push(callback); }
     observe() {}
   }
   class HarnessDate extends Date {
@@ -232,6 +236,8 @@ function createContentHarness({
   );
 
   return {
+    setAdNodePresent(present) { adNodePresent = present; },
+    mutate() { for (const callback of observerCallbacks) callback([]); },
     commands,
     stored,
     warnings,
@@ -430,6 +436,10 @@ function createPageBridgeHarness() {
     },
     setVolume(value) {
       video.volume = value;
+      for (const fn of videoListeners.volumechange || []) fn();
+    },
+    setMuted(value) {
+      video.muted = value;
       for (const fn of videoListeners.volumechange || []) fn();
     }
   };
@@ -927,6 +937,31 @@ test('content seeds measurement with the saved LUFS for the current media kind',
   assert.ok(resetIndex < attachIndex);
   const state = await harness.dispatchRuntime({ cmd: 'getState' });
   assert.equal(state.hasSavedMeasurement, true);
+});
+
+test('content requests one ad state change per transition', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  harness.commands.length = 0;
+
+  // The bridge echo has not arrived yet, and chat keeps the observer firing.
+  harness.setAdNodePresent(true);
+  harness.mutate();
+  harness.mutate();
+  harness.mutate();
+  let requests = harness.commands.filter((command) => command.cmd === 'setAdActive');
+  assert.deepEqual(requests, [{ type: '__twitch_channel_volume_cmd__', cmd: 'setAdActive', active: true }]);
+
+  await harness.dispatchMessage({ type: '__twitch_channel_volume__', event: 'ad', active: true });
+  harness.mutate();
+  assert.equal(harness.commands.filter((command) => command.cmd === 'setAdActive').length, 1);
+
+  harness.commands.length = 0;
+  harness.setAdNodePresent(false);
+  harness.mutate();
+  harness.mutate();
+  requests = harness.commands.filter((command) => command.cmd === 'setAdActive');
+  assert.deepEqual(requests, [{ type: '__twitch_channel_volume_cmd__', cmd: 'setAdActive', active: false }]);
 });
 
 test('content does not seed from a measurement taken at an unknown volume', async () => {
@@ -2688,6 +2723,32 @@ test('page bridge reports a boundary once, not once per volume step', async () =
   const adArms = harness.logs.filter((entry) => entry[0] === '[TCV] gate boundary');
   assert.equal(adArms.length, 1);
   assert.equal(adArms[0][1].reason, 'ad-end');
+});
+
+test('page bridge ignores a volumechange that repeats the current value', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(0.01);
+  harness.logs.length = 0;
+
+  const armCount = () => harness.logs.filter((e) => e[0] === '[TCV] gate boundary').length;
+
+  harness.setVolume(0.5);
+  assert.equal(armCount(), 1);
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(0.01);
+  assert.equal(harness.logs.filter((e) => e[0] === '[TCV] gate resumed').length, 1);
+  harness.logs.length = 0;
+
+  // The player rewriting the value it already had leaves the signal alone.
+  harness.setVolume(0.5);
+  harness.setVolume(0.5);
+  assert.equal(armCount(), 0);
+  harness.emitMeasurementBlock(0.01);
+  assert.equal(harness.logs.filter((e) => e[0] === '[TCV] gate resumed').length, 0);
+
+  // Muting changes the tapped signal without changing the volume value.
+  harness.setMuted(true);
+  assert.equal(armCount(), 1);
 });
 
 test('page bridge drops the windows that span a volume change', async () => {

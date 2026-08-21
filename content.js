@@ -25,6 +25,7 @@
   let currentAutoApplyLoudness = false;
   let lastLufs = { momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity };
   let adActive = false;
+  let requestedAdActive = false;
   let pendingAdRanges = [];
   let preferenceRevision = 0;
   let channelMutationQueue = Promise.resolve();
@@ -472,7 +473,10 @@
       '[data-a-target="video-ad-countdown"], [data-test-selector="ad-banner-default-text"]'
     );
     const detected = !!node;
-    if (detected !== adActive) {
+    // adActive only catches up when the bridge echoes the change back, so the
+    // request is what this compares against.
+    if (detected !== requestedAdActive) {
+      requestedAdActive = detected;
       const video = document.querySelector('video');
       console.info('[TCV] ad detected in DOM', {
         detected,

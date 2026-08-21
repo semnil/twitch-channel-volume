@@ -91,6 +91,7 @@
   let boundarySkipReason = '';
   let boundarySkipDropped = 0;
   let boundarySkipLufs = [];
+  let lastVolumeState = '';
   const ABSOLUTE_GATE_MEAN_SQUARE = Math.pow(10, (-70 + 0.691) / 10);
   const RELATIVE_GATE_FACTOR = Math.pow(10, -10 / 10);
   const integratedBlocks = new Array(MAX_INTEGRATED_BLOCKS);
@@ -255,6 +256,10 @@
     }, '*');
   }
 
+  function volumeState(video) {
+    return video ? `${video.volume}|${video.muted}` : '';
+  }
+
   function blocksMeanSquare(list, count) {
     if (list.length < count) return null;
     let sum = 0;
@@ -375,6 +380,7 @@
       try { workletNode?.disconnect(); } catch (_) {}
       attachedVideo.removeEventListener('volumechange', onVolumeChange);
       attachedVideo = null;
+      lastVolumeState = '';
       sourceNode = null;
       workletNode = null;
     }
@@ -427,6 +433,7 @@
     }
     sourceNode.connect(gain);
     attachedVideo = video;
+    lastVolumeState = volumeState(video);
     video.addEventListener('volumechange', onVolumeChange);
     console.info('[TCV] attached to video', { sampleRate: c.sampleRate, state: c.state });
 
@@ -504,7 +511,12 @@
     boundarySkipReason = reason;
   }
 
+  // volumechange also fires when the player rewrites the value it already had.
+  // Only an actual change alters the tapped signal.
   function onVolumeChange() {
+    const state = volumeState(attachedVideo);
+    if (state === lastVolumeState) return;
+    lastVolumeState = state;
     armBoundarySkip('volume');
   }
 
