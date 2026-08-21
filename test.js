@@ -2088,6 +2088,23 @@ test('popup keeps Auto gain displays synchronized and labels apply in the displa
   assert.equal(en.applyToChannelWithValue.message, 'Apply $VALUE$ to channel');
 });
 
+test('popup keeps the apply label on one line and owns the Current card once', () => {
+  const html = fs.readFileSync(path.join(__dirname, 'popup.html'), 'utf8');
+  // The hint caps the row width, so a wrapping label grows the section instead
+  // of the button taking room from the hint.
+  assert.match(html, /\.apply-btn\s*\{[^}]*white-space:\s*nowrap;/s);
+
+  const source = fs.readFileSync(path.join(__dirname, 'popup.js'), 'utf8');
+  const start = source.indexOf('const actualGain =');
+  const body = source.slice(start, source.indexOf('syncInteractionDisabledState();', start));
+  assert.ok(start > -1 && body.length > 0);
+  // Exactly one of the two paths writes the card: syncSlider, or the else arm.
+  assert.match(body, /syncSlider\(actualGain\);/);
+  assert.match(body, /\} else \{[\s\S]*setCardValue\(\$\('current'\)/);
+  assert.equal((body.match(/setCardValue\(\$\('current'\)/g) || []).length, 1);
+  assert.match(source, /function syncSlider\(gain\) \{[\s\S]*?setCardValue\(\$\('current'\)/);
+});
+
 test('popup exposes the selected channel-row measurement reset control', () => {
   const html = fs.readFileSync(path.join(__dirname, 'popup.html'), 'utf8');
   assert.match(
