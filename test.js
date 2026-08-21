@@ -2093,6 +2093,35 @@ test('popup keeps the apply label on one line and owns the Current card once', (
   // The hint caps the row width, so a wrapping label grows the section instead
   // of the button taking room from the hint.
   assert.match(html, /\.apply-btn\s*\{[^}]*white-space:\s*nowrap;/s);
+  // A wider hint pushes its own text to a third line, which moves the section
+  // height; 9px keeps it at two lines next to the one-line label.
+  assert.match(html, /\.apply-hint\s*\{[^}]*font-size:\s*9px;/s);
+
+  // WCAG 2.1 SC 1.4.3: muted text against the panel it sits on.
+  const PANELS = { page: [0x1a, 0x1a, 0x2e], info: [0x16, 0x21, 0x3e] };
+  const MUTED = [
+    ['.settings-link', 'page'],
+    ['.channel-name.empty', 'info'],
+    ['.reset-measurement-btn:disabled', 'info'],
+    ['.apply-hint', 'page']
+  ];
+  const luminance = (rgb) => rgb
+    .map((v) => (v / 255 <= 0.03928 ? v / 255 / 12.92 : Math.pow((v / 255 + 0.055) / 1.055, 2.4)))
+    .reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
+  for (const [selector, panel] of MUTED) {
+    const escaped = selector.replace(/[.:]/g, (c) => '\\' + c);
+    const rule = html.match(new RegExp(escaped + '\\s*\\{([^}]*)\\}', 's'));
+    assert.ok(rule, `${selector} rule is still declared`);
+    // `border-color` also ends in "color:", so require a non-hyphen before it.
+    const hex = rule[1].match(/(?:^|[^-])color:\s*#([0-9a-f]{3,6})/i);
+    assert.ok(hex, `${selector} still declares a text color`);
+    const full = hex[1].length === 3 ? hex[1].split('').map((c) => c + c).join('') : hex[1];
+    const fg = [0, 2, 4].map((i) => parseInt(full.slice(i, i + 2), 16));
+    const bg = PANELS[panel];
+    const ratio = (Math.max(luminance(fg), luminance(bg)) + 0.05) /
+      (Math.min(luminance(fg), luminance(bg)) + 0.05);
+    assert.ok(ratio >= 4.5, `${selector} contrast ${ratio.toFixed(2)} < 4.5`);
+  }
 
   const source = fs.readFileSync(path.join(__dirname, 'popup.js'), 'utf8');
   const start = source.indexOf('const actualGain =');
