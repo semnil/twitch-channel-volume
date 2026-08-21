@@ -21,6 +21,7 @@ LIGHT = (225, 225, 225)   # #e1e1e1
 CC = (204, 204, 204)      # #cccccc
 GRAY = (136, 136, 136)    # #888
 DIM = (102, 102, 102)     # #666
+HINT = (153, 153, 153)    # #999 popup の淡色テキスト
 DIM2 = (85, 85, 85)       # #555
 DIM3 = (68, 68, 68)       # #444
 BORDER = (42, 42, 74)     # #2a2a4a
@@ -231,7 +232,7 @@ def screenshot_popup(lang):
     rr(draw, [px + 16, ay, px + 172, ay + 32], 6, BORDER)
     tw = draw.textlength(s['apply'], font=FONT_BOLD)
     draw.text((px + 16 + (156 - tw) / 2, ay + 8), s['apply'], fill=DIM2, font=FONT_BOLD)
-    draw.multiline_text((px + 182, ay + 4), s['auto_hint'], fill=DIM, font=FONT_XS, spacing=1)
+    draw.multiline_text((px + 182, ay + 4), s['auto_hint'], fill=HINT, font=FONT_XS, spacing=1)
     draw.line([(px, ay + 44), (px + pw, ay + 44)], fill=BORDER)
 
     # Manual volume
