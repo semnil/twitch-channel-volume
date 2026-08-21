@@ -169,7 +169,7 @@ def screenshot_popup(lang):
 
     # Header
     draw.text((px + 16, py + 12), 'Twitch Channel Volume', fill=TEAL, font=FONT_TITLE)
-    draw.text((px + pw - 28, py + 11), '⚙', fill=GRAY, font=FONT_LG)
+    draw.text((px + pw - 28, py + 11), '⚙', fill=HINT, font=FONT_LG)
     draw.line([(px, py + 39), (px + pw, py + 39)], fill=BORDER)
 
     # Info section

@@ -2245,6 +2245,7 @@ test('store screenshot generator mirrors the stylesheet muted colors', () => {
   assert.deepEqual(constant('HINT'), cssColor(options, '.setting-row .setting-desc', 'color'));
   assert.deepEqual(constant('HINT'), cssColor(options, '.toggle-group button', 'color'));
   assert.deepEqual(constant('GRAY'), cssColor(popup, '.loudness-card .label', 'color'));
+  assert.deepEqual(constant('HINT'), cssColor(popup, '.settings-link', 'color'));
 
   // Every muted site the mock draws uses that colour.
   for (const call of [
@@ -2258,6 +2259,12 @@ test('store screenshot generator mirrors the stylesheet muted colors', () => {
   ]) {
     assert.match(source, call);
   }
+  // The header gear is drawn as a glyph today and as strokes once #5 lands.
+  assert.ok(
+    /'⚙', fill=HINT/.test(source) ||
+      /draw_gear\(draw, \(px \+ pw - 19, py \+ 20\), HINT\)/.test(source),
+    'the popup header gear uses the stylesheet muted colour'
+  );
 });
 
 test('store popup screenshot generator matches the Auto-follow state', () => {
