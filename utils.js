@@ -8,6 +8,10 @@ const CHANNEL_SEQUENCE_KEY = 'channelVolumeSequence';
 const DEFAULT_TARGET_LUFS = -18;
 const DEFAULT_AD_GAIN_DB = -6;
 const DEFAULT_AUTO_APPLY_LOUDNESS = false;
+// Saved LUFS carrying this reference was measured with the player volume
+// divided out, so it is comparable across volume settings.
+const LUFS_REFERENCE_VOLUME_1 = 'volume1';
+
 const ABSOLUTE_GATE_LUFS = -70;
 const RELATIVE_GATE_LU = -10;
 const MOMENTARY_WINDOW_SEC = 0.4;
@@ -96,12 +100,19 @@ function resolveAutoApplySetting(entry, kind, defaultValue) {
   return !!defaultValue;
 }
 
+// A saved Auto gain was computed from a measurement. Without the reference the
+// player volume behind that measurement is unknown, so it is not applied.
+function referencedAutoGainForKind(entry, kind) {
+  if (entry?.lastLufsRef?.[kind] !== LUFS_REFERENCE_VOLUME_1) return null;
+  return extractAutoGainForKind(entry, kind);
+}
+
 function resolvePreferredGain(entry, kind, defaultAuto, measuredLufs, targetLufs) {
   const autoApply = resolveAutoApplySetting(entry, kind, defaultAuto);
   const manualGain = extractGainForKind(entry, kind);
   const gain = autoApply && Number.isFinite(measuredLufs)
     ? calcGain(measuredLufs, targetLufs)
-    : (autoApply ? extractAutoGainForKind(entry, kind) : null) ?? manualGain ?? 1.0;
+    : (autoApply ? referencedAutoGainForKind(entry, kind) : null) ?? manualGain ?? 1.0;
   return { autoApply, gain };
 }
 
@@ -334,7 +345,7 @@ if (typeof module !== 'undefined' && module.exports) {
     SETTINGS_KEY, SETTINGS_MUTATION_MESSAGE,
     CHANNEL_VOLUMES_KEY, CHANNEL_ALIASES_KEY, CHANNEL_SEQUENCE_KEY,
     DEFAULT_TARGET_LUFS, DEFAULT_AD_GAIN_DB, DEFAULT_AUTO_APPLY_LOUDNESS,
-    ABSOLUTE_GATE_LUFS, RELATIVE_GATE_LU,
+    ABSOLUTE_GATE_LUFS, RELATIVE_GATE_LU, LUFS_REFERENCE_VOLUME_1,
     MOMENTARY_WINDOW_SEC, SHORT_TERM_WINDOW_SEC, DISPLAY_UPDATE_INTERVAL_MS,
     MIN_GAIN, MAX_GAIN,
     gainToPercent, percentToGain, gainToDb, dbToGain,

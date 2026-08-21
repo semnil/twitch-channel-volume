@@ -11,10 +11,11 @@ page-bridge.js (MAIN world content script, document_start)
 ├── AudioContext / MediaElementSource / GainNode を所有
 ├── K-weighting IIRFilter (pre-filter high-shelf + RLB high-pass, BS.1770-4)
 ├── AudioWorklet (k-mean-square) で 100ms ブロックごとの MS を集計
+│   ├── ブロックは受信時に video.volume の 2 乗で割り、音量 1.0 基準へ揃える
 │   ├── Momentary: 直近 4 ブロック (400ms) の MS 平均 → LUFS
 │   ├── Short-term: 直近 30 ブロック (3s) の MS 平均 → LUFS
 │   └── Integrated: 直近 4 ブロック (400ms) の MS 平均を 100ms ごとに 1 件のゲーティング窓として投入し、保存済みの種別別 LUFS を初期値に、1 時間リングバッファ + 平衡木で絶対ゲート (-70 LUFS) と相対ゲート (-10 LU) を O(log n) 更新
-├── 境界スキップ: CM 終了のあと、ゲーティング窓が境界を離れるまでの 4 窓を Integrated から除外
+├── 境界スキップ: CM 終了・音量変更のあと、ゲーティング窓が境界を離れるまでの 4 窓を Integrated から除外
 ├── 計測世代 (measurement epoch): resetMeasurement で受け取った番号を保持し、以降の lufs 通知へ付与
 ├── attach loop (scheduleAttach): video 出現を 1s 間隔でリトライ + DOM detach 検出で再 attach
 ├── buildMeasurementChain: worklet ロードが attach より遅れた場合は後付けで接続
@@ -59,7 +60,7 @@ audio-worklet.js (page context, loaded by page-bridge.js)
 channel-store.js (service worker helper)
 ├── channelVolumes の全 read-modify-write を単一キューで直列化
 ├── gain / Auto / LUFS / delete / clear mutation を検証して適用
-├── 測定値リセットは対象種別の lastLufs だけを削除し、更新番号付きの削除状態として ID 統合後も維持
+├── 測定値リセットは対象種別の lastLufs と lastLufsRef だけを削除し、更新番号付きの削除状態として ID 統合後も維持
 ├── 仮 ID → 数値 owner ID の alias を永続化し、全 mutation で正準 ID を解決
 │   (alias 転送時は仮 ID 側の name / login / url を適用しない)
 ├── 同じ login の Live 行と数値 owner 行を統合し、URL をチャンネル URL へ正規化
@@ -69,11 +70,12 @@ settings-store.js (service worker helper)
 ├── autoLoudnessSettings のフィールド単位 mutation を検証
 └── 全 read-modify-write を単一キューで直列化し、設定タブ間の上書きを防止
 
-utils.js (shared, popup/options + page-bridge + content.js + test.js)
+utils.js (shared, popup/options + content.js + test.js。page-bridge.js は MAIN world で読み込まれないため自前の定数を持つ)
 ├── Constants: SETTINGS_KEY, CHANNEL_VOLUMES_KEY, CHANNEL_ALIASES_KEY,
 │              CHANNEL_SEQUENCE_KEY, DEFAULT_TARGET_LUFS, DEFAULT_AD_GAIN_DB,
-│              DEFAULT_AUTO_APPLY_LOUDNESS,
-│              ABSOLUTE_GATE_LUFS, RELATIVE_GATE_LU, DISPLAY_UPDATE_INTERVAL_MS,
+│              DEFAULT_AUTO_APPLY_LOUDNESS, LUFS_REFERENCE_VOLUME_1,
+│              ABSOLUTE_GATE_LUFS, RELATIVE_GATE_LU,
+│              MOMENTARY_WINDOW_SEC, SHORT_TERM_WINDOW_SEC, DISPLAY_UPDATE_INTERVAL_MS,
 │              MIN_GAIN, MAX_GAIN
 ├── Gain utilities: gainToPercent, percentToGain, gainToDb, dbToGain, formatGain, calcGain,
 │                  resolveAutoApplySetting, resolvePreferredGain
@@ -168,6 +170,8 @@ options.html / options.js
 - **CM 区間検出 (HLS 経路)**: usher.ttvnw.net / *.m3u8 を fetch hook で傍受し `EXT-X-DATERANGE CLASS="twitch-stitched-ad"` をパース。Streamlink の Twitch plugin と同等の判定ロジック
 - **CM 区間検出 (DOM 経路)**: `[data-a-target="video-ad-countdown"]` の存在で判定するフォールバック。HLS 取得が間に合わない preroll で有効
 - **CM 中の挙動**: GainNode に baseline × adGainOffset (dB → gain) を適用。Integrated 計測は CM 中スキップして本編の値を保持。CM 終了時点のブロックは CM 音声を含みうるため、CM 明けはゲーティング窓が CM を離れるまでの 4 窓も Integrated から除外する
+- **プレイヤー音量の相殺**: 計測タップは `sourceNode` 直後で、Twitch のプレイヤー音量 (`video.volume`) はその上流に掛かる。ブロックの MS を volume² で割り、Integrated LUFS を常に音量 1.0 基準にする。視聴者がスライダーを下げても算出ゲインは上がらない。音量変更を跨ぐゲーティング窓は CM 境界と同じ仕組みで除外する
+- **保存済み LUFS の基準**: 音量 1.0 基準で測った値だけが `lastLufsRef` に基準名を持つ。基準の無い値 (拡張更新前の保存) は計測の初期サンプルに使わず、その種別の保存済み Auto gain も起動時に適用しない。手動ゲインは視聴者自身の設定なので従来どおり適用する
 - **createMediaElementSource**: `<video>` に対し 1 回のみ呼び出し可能。他拡張 (FrankerFaceZ Compressor 等) が先に取ると失敗する。失敗した video は `WeakSet` で除外し、他の video にフォールバック。`attach-failed` イベントを post して content 側で診断可能
 - **attach のリトライ**: video 要素は document_start 時点では存在しないため、`scheduleAttach()` で 1s 間隔のループ。`clearStaleAttachment()` が DOM から消えた video を検出して再 attach を許可 (Twitch SPA で video が入れ替わるケース対応)。SPA navigation 時にも content.js が `attach` を再送
 - **measurement chain の後付け**: `audioWorklet.addModule()` が attach より遅れた場合に備え、`buildMeasurementChain()` を分離。worklet ロード完了時に既に attached なら計測経路を後から接続
@@ -204,13 +208,13 @@ python3 pack.py
 - AudioContext may be `suspended` until first user interaction (Chrome autoplay policy) — content.js sends `resume` on first click capture
 - BS.1770 reference is 48 kHz. Chrome の AudioContext は通常 48000 だが、サンプルレート変動には redesignBiquad で対応
 - Storage keys: `autoLoudnessSettings` (target LUFS, ad gain, display unit, kind 別 Auto 既定値), `channelVolumes` (per-channel saved gains + kind 別 Auto + lastLufs cache), `channelVolumeAliases` (仮 ID → 正準 ID), `channelVolumeSequence` (永続更新番号)
-- Storage format: `channelVolumes.{id}` = `{ name, gainLive, gainVod, gainClip, autoApplyLoudnessLive, autoApplyLoudnessVod, autoApplyLoudnessClip, url, lastLufs: { live, vod, clip }, lastMeasuredAt, __fieldVersions }`
+- Storage format: `channelVolumes.{id}` = `{ name, gainLive, gainVod, gainClip, autoApplyLoudnessLive, autoApplyLoudnessVod, autoApplyLoudnessClip, url, lastLufs: { live, vod, clip }, lastLufsRef: { live, vod, clip }, lastMeasuredAt, __fieldVersions }`
 - 旧形式 `{ gain }` 単一ゲインは extractGainForKind で自動マイグレーション
 - HLS 経路の CM 検出は Streamlink twitch.py の判定 (`CLASS="twitch-stitched-ad"` または `ID` が `stitched-ad-` で始まる) と同等
 - popup は `DISPLAY_UPDATE_INTERVAL_MS` ごとに getState をポーリングし LUFS / Suggested / Current カードを更新。Auto gain も同じ周期を上限として更新する。Manual slider は Auto ON の間だけ適用中 gain へ同期し、Auto OFF の通常ポーリングでは更新しない。Auto OFF では初回表示・「チャンネルに適用」・Auto 切替・表示単位変更・ユーザー操作時だけ同期する。計測自体は popup の開閉に依存せず、Twitch ページが開いている限り常時走る
 - 拡張機能の再ロードで chrome.runtime が無効化された場合、popup は `reloadPageNeeded` を表示して F5 を促す
 - 計測パイプラインの診断: DevTools Console で `[TCV]` ログを確認。`waiting for <video>` → `attached to video` → `measurement chain ready` → `first measurement block received` の順に出る。`createMediaElementSource failed` で止まる場合は他拡張競合 (技術的限界)
-- CM 境界の診断: `[TCV] ad detected in DOM` (DOM 検出と `video.currentTime`)、`[TCV] gate boundary` (境界の理由・再生位置)、`[TCV] gate window dropped` (除外した窓の LUFS と残り窓数) を Console で追う。実ブラウザで CM を再生させたときの検出遅れは、この 3 種の時刻を突き合わせて読む
+- CM 境界・音量変更の診断: `[TCV] ad detected in DOM` (DOM 検出と `video.currentTime`)、`[TCV] gate boundary` (境界の理由・volume・muted・再生位置)、`[TCV] gate window dropped` (除外した窓の LUFS と残り窓数) を Console で追う。実ブラウザで CM を再生させたときの検出遅れは、この 3 種の時刻を突き合わせて読む
 
 ## Existing extensions (reference)
 

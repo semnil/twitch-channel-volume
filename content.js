@@ -143,6 +143,7 @@
       channelId,
       kind,
       lufs,
+      reference: LUFS_REFERENCE_VOLUME_1,
       ...(Number.isFinite(autoGain) ? { autoGain } : {}),
       channel: channelMetadata(snapshot)
     });
@@ -203,8 +204,12 @@
     });
   }
 
+  // Saved values without the reference marker were measured at an unknown
+  // player volume, so they do not seed a new measurement.
   function savedIntegratedLufsForCurrentChannel() {
-    const saved = currentChannelEntry?.lastLufs?.[currentChannel.kind];
+    const kind = currentChannel.kind;
+    if (currentChannelEntry?.lastLufsRef?.[kind] !== LUFS_REFERENCE_VOLUME_1) return undefined;
+    const saved = currentChannelEntry?.lastLufs?.[kind];
     return Number.isFinite(saved) ? saved : undefined;
   }
 

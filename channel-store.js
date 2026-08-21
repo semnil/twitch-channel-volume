@@ -77,6 +77,7 @@ function expandLegacyAuto(entry) {
 function cloneEntry(entry, fallbackName) {
   const cloned = { ...(entry || { name: fallbackName }) };
   if (entry?.lastLufs) cloned.lastLufs = { ...entry.lastLufs };
+  if (entry?.lastLufsRef) cloned.lastLufsRef = { ...entry.lastLufsRef };
   if (entry?.[FIELD_VERSIONS_FIELD] && typeof entry[FIELD_VERSIONS_FIELD] === 'object') {
     cloned[FIELD_VERSIONS_FIELD] = { ...entry[FIELD_VERSIONS_FIELD] };
   }
@@ -137,7 +138,7 @@ function copyNewerField(merged, mergedVersions, source, target, field) {
   else delete mergedVersions[field];
 }
 
-function copyNewerLufs(mergedLufs, mergedVersions, source, target, kind) {
+function copyNewerLufs(mergedLufs, mergedRef, mergedVersions, source, target, kind) {
   const sourceLufs = source.lastLufs || {};
   const targetLufs = target.lastLufs || {};
   const versionField = `lastLufs.${kind}`;
@@ -153,8 +154,12 @@ function copyNewerLufs(mergedLufs, mergedVersions, source, target, kind) {
   const winnerHasValue = sourceWins ? sourceHas : targetHas;
   const winnerValue = sourceWins ? sourceLufs[kind] : targetLufs[kind];
   const winnerVersion = sourceWins ? sourceVersion : targetVersion;
+  const winnerRef = (sourceWins ? source.lastLufsRef : target.lastLufsRef) || {};
   if (winnerHasValue) mergedLufs[kind] = winnerValue;
   else delete mergedLufs[kind];
+  // The reference travels with the value it describes.
+  if (winnerHasValue && winnerRef[kind] !== undefined) mergedRef[kind] = winnerRef[kind];
+  else delete mergedRef[kind];
   if (winnerVersion) mergedVersions[versionField] = winnerVersion;
   else delete mergedVersions[versionField];
 }
@@ -186,11 +191,14 @@ function mergeProvisionalEntry(all, mutation) {
   const sourceLufs = source.lastLufs || {};
   const targetLufs = target.lastLufs || {};
   const mergedLufs = { ...sourceLufs, ...targetLufs };
+  const mergedRef = { ...(source.lastLufsRef || {}), ...(target.lastLufsRef || {}) };
   for (const mergeKind of CHANNEL_MUTATION_KINDS) {
-    copyNewerLufs(mergedLufs, mergedVersions, source, target, mergeKind);
+    copyNewerLufs(mergedLufs, mergedRef, mergedVersions, source, target, mergeKind);
   }
   if (Object.keys(mergedLufs).length) merged.lastLufs = mergedLufs;
   else delete merged.lastLufs;
+  if (Object.keys(mergedRef).length) merged.lastLufsRef = mergedRef;
+  else delete merged.lastLufsRef;
   if (Object.keys(mergedVersions).length) merged[FIELD_VERSIONS_FIELD] = mergedVersions;
   else delete merged[FIELD_VERSIONS_FIELD];
   if (Object.keys(mergedLufs).length &&
@@ -279,7 +287,16 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
       if (!Number.isFinite(mutation.lufs)) throw new TypeError('lufs must be finite');
       const entry = cloneEntry(all[mutation.channelId], mutation.channel?.name || mutation.channelId);
       copyMetadata(entry, mutation.channel);
+      if (mutation.reference !== undefined &&
+          (typeof mutation.reference !== 'string' || mutation.reference.length > 32)) {
+        throw new TypeError('reference must be a short string');
+      }
       entry.lastLufs = { ...(entry.lastLufs || {}), [mutation.kind]: mutation.lufs };
+      const savedRef = { ...(entry.lastLufsRef || {}) };
+      if (mutation.reference === undefined) delete savedRef[mutation.kind];
+      else savedRef[mutation.kind] = mutation.reference;
+      if (Object.keys(savedRef).length) entry.lastLufsRef = savedRef;
+      else delete entry.lastLufsRef;
       entry.lastMeasuredAt = now;
       setFieldVersion(entry, `lastLufs.${mutation.kind}`, mutation.sequence);
       if (mutation.autoGain !== undefined) {
@@ -298,6 +315,10 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
       const entry = cloneEntry(all[mutation.channelId], mutation.channelId);
       const lastLufs = { ...(entry.lastLufs || {}) };
       delete lastLufs[mutation.kind];
+      const clearedRef = { ...(entry.lastLufsRef || {}) };
+      delete clearedRef[mutation.kind];
+      if (Object.keys(clearedRef).length) entry.lastLufsRef = clearedRef;
+      else delete entry.lastLufsRef;
       if (Object.keys(lastLufs).length) entry.lastLufs = lastLufs;
       else {
         delete entry.lastLufs;

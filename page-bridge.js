@@ -83,8 +83,9 @@
   // 100ms sub-block, formed from the most recent GATE_BLOCKS sub-blocks.
   const GATE_BLOCKS = 4;
   const MAX_INTEGRATED_BLOCKS = 60 * 60 * 10;
-  // A gating window that spans the end of an ad carries ad audio. Windows stay
-  // out of Integrated until they are clear of the boundary.
+  // A gating window that spans the end of an ad or a volume change carries
+  // audio it cannot represent. Windows stay out of Integrated until they are
+  // clear of the boundary.
   const BOUNDARY_SKIP_BLOCKS = GATE_BLOCKS;
   let boundarySkipBlocks = 0;
   let boundarySkipReason = '';
@@ -370,6 +371,7 @@
       console.info('[TCV] previous video detached from DOM; resetting attachment');
       try { sourceNode?.disconnect(); } catch (_) {}
       try { workletNode?.disconnect(); } catch (_) {}
+      attachedVideo.removeEventListener('volumechange', onVolumeChange);
       attachedVideo = null;
       sourceNode = null;
       workletNode = null;
@@ -423,6 +425,7 @@
     }
     sourceNode.connect(gain);
     attachedVideo = video;
+    video.addEventListener('volumechange', onVolumeChange);
     console.info('[TCV] attached to video', { sampleRate: c.sampleRate, state: c.state });
 
     if (workletReady) {
@@ -435,13 +438,22 @@
 
   let receivedFirstBlock = false;
 
+  // The measurement taps the element ahead of the player's own volume, so the
+  // viewer's volume setting scales it. Measurements are referenced to volume 1.
+  function normalizeForVolume(ms) {
+    const volume = attachedVideo?.volume;
+    if (!Number.isFinite(volume) || volume <= 0 || volume >= 1) return ms;
+    return ms / (volume * volume);
+  }
+
   function onBlockMs(ev) {
-    const ms = ev.data?.ms;
-    if (!Number.isFinite(ms)) return;
+    const raw = ev.data?.ms;
+    if (!Number.isFinite(raw)) return;
     if (!receivedFirstBlock) {
       receivedFirstBlock = true;
       console.info('[TCV] first measurement block received');
     }
+    const ms = normalizeForVolume(raw);
     blocks.push(ms);
     if (blocks.length > Math.max(MOMENTARY_BLOCKS, SHORT_BLOCKS) * 4) {
       blocks.splice(0, blocks.length - SHORT_BLOCKS * 4);
@@ -477,6 +489,10 @@
       muted: attachedVideo ? attachedVideo.muted : null,
       videoTime: attachedVideo ? Number(attachedVideo.currentTime.toFixed(3)) : null
     });
+  }
+
+  function onVolumeChange() {
+    armBoundarySkip('volume');
   }
 
   function setGain(value) {
