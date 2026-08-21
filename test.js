@@ -320,6 +320,7 @@ function measured(lastLufs) {
 
 function createPageBridgeHarness() {
   const messages = [];
+  const logs = [];
   const listeners = {};
   const location = { href: 'https://www.twitch.tv/videos/100' };
   const videoListeners = {};
@@ -384,7 +385,7 @@ function createPageBridgeHarness() {
   const context = vm.createContext({
     AudioWorkletNode,
     clearInterval() {},
-    console: { warn() {}, error() {}, info() {} },
+    console: { warn() {}, error() {}, info(...args) { logs.push(args); } },
     document: {
       querySelectorAll(selector) { return selector === 'video' ? [video] : []; }
     },
@@ -413,6 +414,7 @@ function createPageBridgeHarness() {
   return {
     location,
     messages,
+    logs,
     fetch: (...args) => window.fetch(...args),
     resolveFetch(response) { resolveFetch(response); },
     async startMeasurement() {
@@ -2656,6 +2658,36 @@ test('page bridge references the measurement to player volume 1.0', async () => 
   // reported value is the same as at volume 1.0.
   assert.ok(Math.abs(harness.messages.at(-1).integrated - u.meanSquareToLufs(ms / 0.25)) < 1e-12);
   assert.ok(Math.abs(harness.messages.at(-1).momentary - u.meanSquareToLufs(ms / 0.25)) < 1e-12);
+});
+
+test('page bridge reports a boundary once, not once per volume step', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(0.01);
+  harness.logs.length = 0;
+
+  // A drag down the slider fires volumechange per step.
+  for (let step = 100; step >= 90; step--) harness.setVolume(step / 100);
+  const arms = harness.logs.filter((entry) => entry[0] === '[TCV] gate boundary');
+  assert.equal(arms.length, 1);
+  assert.equal(arms[0][1].reason, 'volume');
+
+  for (let i = 0; i < 3; i++) harness.emitMeasurementBlock(0.01);
+  assert.equal(harness.logs.filter((e) => e[0] === '[TCV] gate resumed').length, 0);
+  harness.emitMeasurementBlock(0.01);
+  const resumed = harness.logs.filter((entry) => entry[0] === '[TCV] gate resumed');
+  assert.equal(resumed.length, 1);
+  assert.equal(resumed[0][1].dropped, 4);
+  assert.equal(resumed[0][1].windowLufs.length, 4);
+
+  // A different boundary is still reported while a skip is armed.
+  harness.setVolume(0.5);
+  harness.logs.length = 0;
+  await harness.dispatchCommand('setAdActive', { active: true });
+  await harness.dispatchCommand('setAdActive', { active: false });
+  const adArms = harness.logs.filter((entry) => entry[0] === '[TCV] gate boundary');
+  assert.equal(adArms.length, 1);
+  assert.equal(adArms[0][1].reason, 'ad-end');
 });
 
 test('page bridge drops the windows that span a volume change', async () => {

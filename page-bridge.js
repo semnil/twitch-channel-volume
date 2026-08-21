@@ -89,6 +89,8 @@
   const BOUNDARY_SKIP_BLOCKS = GATE_BLOCKS;
   let boundarySkipBlocks = 0;
   let boundarySkipReason = '';
+  let boundarySkipDropped = 0;
+  let boundarySkipLufs = [];
   const ABSOLUTE_GATE_MEAN_SQUARE = Math.pow(10, (-70 + 0.691) / 10);
   const RELATIVE_GATE_FACTOR = Math.pow(10, -10 / 10);
   const integratedBlocks = new Array(MAX_INTEGRATED_BLOCKS);
@@ -466,11 +468,16 @@
     const skipBoundary = boundarySkipBlocks > 0 && gateWindow !== null;
     if (skipBoundary && !adActive) {
       boundarySkipBlocks--;
-      console.info('[TCV] gate window dropped', {
-        reason: boundarySkipReason,
-        remaining: boundarySkipBlocks,
-        windowLufs: Number(msToLufs(gateWindow).toFixed(2))
-      });
+      boundarySkipDropped++;
+      boundarySkipLufs.push(Number(msToLufs(gateWindow).toFixed(2)));
+      if (boundarySkipLufs.length > BOUNDARY_SKIP_BLOCKS) boundarySkipLufs.shift();
+      if (boundarySkipBlocks === 0) {
+        console.info('[TCV] gate resumed', {
+          reason: boundarySkipReason,
+          dropped: boundarySkipDropped,
+          windowLufs: boundarySkipLufs
+        });
+      }
     }
     const intg = (adActive || skipBoundary || gateWindow === null)
       ? integratedLufs()
@@ -478,17 +485,23 @@
     postLufs(mom, st, intg);
   }
 
+  // A slider drag fires volumechange per step. Report the start of a skip and
+  // its end, not every step and every window.
   function armBoundarySkip(reason) {
+    if (boundarySkipBlocks === 0 || boundarySkipReason !== reason) {
+      boundarySkipDropped = 0;
+      boundarySkipLufs = [];
+      console.info('[TCV] gate boundary', {
+        reason,
+        blocks: BOUNDARY_SKIP_BLOCKS,
+        adActive,
+        volume: attachedVideo ? attachedVideo.volume : null,
+        muted: attachedVideo ? attachedVideo.muted : null,
+        videoTime: attachedVideo ? Number(attachedVideo.currentTime.toFixed(3)) : null
+      });
+    }
     boundarySkipBlocks = BOUNDARY_SKIP_BLOCKS;
     boundarySkipReason = reason;
-    console.info('[TCV] gate boundary', {
-      reason,
-      blocks: BOUNDARY_SKIP_BLOCKS,
-      adActive,
-      volume: attachedVideo ? attachedVideo.volume : null,
-      muted: attachedVideo ? attachedVideo.muted : null,
-      videoTime: attachedVideo ? Number(attachedVideo.currentTime.toFixed(3)) : null
-    });
   }
 
   function onVolumeChange() {
