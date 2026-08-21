@@ -2710,9 +2710,22 @@ test('page bridge removes the windows appended before an ad was detected', async
   for (let i = 0; i < AD_START_ROLLBACK; i++) harness.emitMeasurementBlock(1.0);
   assert.ok(harness.messages.at(-1).integrated > beforeAd + 1);
 
+  harness.logs.length = 0;
   await harness.dispatchCommand('setAdActive', { active: true });
   harness.emitMeasurementBlock(1.0);
   assert.ok(Math.abs(harness.messages.at(-1).integrated - beforeAd) < 1e-12);
+
+  // The removed windows are reported so their level can be read.
+  const rollback = harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback');
+  assert.equal(rollback.length, 1);
+  assert.equal(rollback[0][1].removed, AD_START_ROLLBACK);
+  // Oldest first, and the values are the windows that were actually removed.
+  const emitted = [...Array(7).fill(quiet), ...Array(AD_START_ROLLBACK).fill(1.0)];
+  const expectedRemoved = gatingWindows(emitted)
+    .slice(-AD_START_ROLLBACK)
+    .map((window) => Number(u.meanSquareToLufs(window).toFixed(2)));
+  // The log object comes from the script's realm, so copy before comparing.
+  assert.deepEqual(Array.from(rollback[0][1].windowLufs), expectedRemoved);
 
   // Nothing is removed twice, and the seeded sample is never removed.
   const seeded = createPageBridgeHarness();
@@ -2799,14 +2812,18 @@ test('page bridge reports a boundary once, not once per volume step', async () =
   assert.equal(resumed[0][1].dropped, 4);
   assert.equal(resumed[0][1].windowLufs.length, 4);
 
-  // A different boundary is still reported while a skip is armed.
+  // A different boundary is still reported while a skip is armed, and carries
+  // what the skip it replaced had dropped so far.
   harness.setVolume(0.5);
+  harness.emitMeasurementBlock(0.01);
   harness.logs.length = 0;
   await harness.dispatchCommand('setAdActive', { active: true });
   await harness.dispatchCommand('setAdActive', { active: false });
   const adArms = harness.logs.filter((entry) => entry[0] === '[TCV] gate boundary');
   assert.equal(adArms.length, 1);
   assert.equal(adArms[0][1].reason, 'ad-end');
+  assert.equal(adArms[0][1].superseded, 'volume');
+  assert.equal(adArms[0][1].droppedBefore, 1);
 });
 
 test('page bridge ignores a volumechange that repeats the current value', async () => {

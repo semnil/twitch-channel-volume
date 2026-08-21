@@ -298,8 +298,8 @@
   // Only windows appended since the last reset are removable, and only while
   // the ring buffer has not started evicting: an evicted value cannot return.
   function removeRecentIntegratedBlocks(count) {
-    let removed = 0;
-    while (removed < count && windowsSinceReset > 0 &&
+    const removed = [];
+    while (removed.length < count && windowsSinceReset > 0 &&
            integratedBlockLength > 0 && integratedBlockLength < MAX_INTEGRATED_BLOCKS) {
       const index = (integratedBlockStart + integratedBlockLength - 1) % MAX_INTEGRATED_BLOCKS;
       const ms = integratedBlocks[index];
@@ -308,9 +308,9 @@
       }
       integratedBlockLength--;
       windowsSinceReset--;
-      removed++;
+      removed.push(Number(msToLufs(ms).toFixed(2)));
     }
-    return removed;
+    return removed.reverse();
   }
 
   function resetMeasurement(initialIntegratedLufs, epoch) {
@@ -540,6 +540,10 @@
   // its end, not every step and every window.
   function armBoundarySkip(reason) {
     if (boundarySkipBlocks === 0 || boundarySkipReason !== reason) {
+      // A skip cut short by a different boundary never reports its own total.
+      const superseded = boundarySkipBlocks > 0
+        ? { superseded: boundarySkipReason, droppedBefore: boundarySkipDropped }
+        : null;
       boundarySkipDropped = 0;
       boundarySkipLufs = [];
       console.info('[TCV] gate boundary', {
@@ -548,7 +552,8 @@
         adActive,
         volume: attachedVideo ? attachedVideo.volume : null,
         muted: attachedVideo ? attachedVideo.muted : null,
-        videoTime: attachedVideo ? Number(attachedVideo.currentTime.toFixed(3)) : null
+        videoTime: attachedVideo ? Number(attachedVideo.currentTime.toFixed(3)) : null,
+        ...(superseded || {})
       });
     }
     boundarySkipBlocks = BOUNDARY_SKIP_BLOCKS;
@@ -585,7 +590,12 @@
     adActive = !!active;
     if (adActive) {
       const removed = removeRecentIntegratedBlocks(AD_START_ROLLBACK_BLOCKS);
-      if (removed) console.info('[TCV] ad start rollback', { removed });
+      if (removed.length) {
+        console.info('[TCV] ad start rollback', {
+          removed: removed.length,
+          windowLufs: removed
+        });
+      }
     } else armBoundarySkip('ad-end');
     applyEffectiveGain();
     postAd(adActive, range);
