@@ -124,6 +124,13 @@ function calcGain(measuredLufs, targetLufs) {
   return Math.max(MIN_GAIN, Math.min(MAX_GAIN, gain));
 }
 
+// Without a gated measurement there is nothing that justifies a boost, so the
+// suggestion stays at unity.
+function suggestedGain(integratedLufs, targetLufs) {
+  if (!Number.isFinite(integratedLufs) || !Number.isFinite(targetLufs)) return 1.0;
+  return calcGain(integratedLufs, targetLufs);
+}
+
 function esc(s) {
   const d = document.createElement('div');
   d.textContent = s;
@@ -349,7 +356,7 @@ if (typeof module !== 'undefined' && module.exports) {
     MOMENTARY_WINDOW_SEC, SHORT_TERM_WINDOW_SEC, DISPLAY_UPDATE_INTERVAL_MS,
     MIN_GAIN, MAX_GAIN,
     gainToPercent, percentToGain, gainToDb, dbToGain,
-    formatGain, formatAutoGain, calcGain,
+    formatGain, formatAutoGain, calcGain, suggestedGain,
     gainFieldForKind, extractGainForKind,
     autoGainFieldForKind, extractAutoGainForKind, extractAutoDisplayGain,
     autoApplyFieldForKind, autoApplyDefaultFieldForKind,

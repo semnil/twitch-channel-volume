@@ -465,6 +465,14 @@ test('resolvePreferredGain ignores an Auto gain measured at an unknown volume', 
   assert.equal(u.resolvePreferredGain(manual, 'live', false, -Infinity, -18).gain, 2.0);
 });
 
+test('suggestedGain stays at unity until a gated measurement exists', () => {
+  assert.equal(u.suggestedGain(-Infinity, -18), 1.0);
+  assert.equal(u.suggestedGain(NaN, -18), 1.0);
+  assert.equal(u.suggestedGain(undefined, -18), 1.0);
+  assert.equal(u.suggestedGain(-23, undefined), 1.0);
+  assert.ok(Math.abs(u.suggestedGain(-23, -18) - u.calcGain(-23, -18)) < 1e-12);
+});
+
 test('gainToDb / dbToGain are inverses (within 1-decimal rounding)', () => {
   const g = 1.5;
   const db = Number(u.gainToDb(g));

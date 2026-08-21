@@ -78,7 +78,7 @@ utils.js (shared, popup/options + content.js + test.js。page-bridge.js は MAIN
 │              MOMENTARY_WINDOW_SEC, SHORT_TERM_WINDOW_SEC, DISPLAY_UPDATE_INTERVAL_MS,
 │              MIN_GAIN, MAX_GAIN
 ├── Gain utilities: gainToPercent, percentToGain, gainToDb, dbToGain, formatGain, calcGain,
-│                  resolveAutoApplySetting, resolvePreferredGain
+│                  suggestedGain, resolveAutoApplySetting, resolvePreferredGain
 ├── URL classification: classifyTwitchUrl (TWITCH_RESERVED_PATHS 除外)
 ├── HLS parsing: parseDateRange, isAdDateRange, parseAdRangesFromManifest
 ├── BS.1770: K_PRE_48K / K_RLB_48K 係数 + redesignBiquad (任意 sample rate 対応)
@@ -91,7 +91,7 @@ popup.html / popup.js
 ├── チャンネル行のアイコンボタン (36×36) で現在種別の保存済み LUFS と実行中の計測を初期化。ラベルは視覚的に隠して読み上げ名に使い、title で hover 表示する
 ├── チャンネル名は行幅に合わせて切り詰めるため、全文を title に持たせる
 ├── 3 カード 1 行グリッド: Integrated LUFS / Suggested gain / Current gain (姉妹拡張と共通レイアウト)
-│   ├── Suggested gain は target との差分から算出 (integrated 優先 / short-term フォールバック)
+│   ├── Suggested gain は target との差分から算出 (ゲート通過値が無い間は 100%)
 │   ├── Suggested / Current の表示は displayUnit (% / dB) に追従
 │   └── 単位 (LUFS / dB / %) は setCardValue で <span class="unit"> に分離して灰色小文字表示
 ├── Auto OFF 時の適用ボタンは Suggested gain を displayUnit で表示し、Auto ON 時は Current と Manual Volume を適用中 gain へ同期
@@ -172,6 +172,7 @@ options.html / options.js
 - **CM 中の挙動**: GainNode に baseline × adGainOffset (dB → gain) を適用。Integrated 計測は CM 中スキップして本編の値を保持。CM 終了時点のブロックは CM 音声を含みうるため、CM 明けはゲーティング窓が CM を離れるまでの 4 窓も Integrated から除外する
 - **プレイヤー音量の相殺**: 計測タップは `sourceNode` 直後で、Twitch のプレイヤー音量 (`video.volume`) はその上流に掛かる。ブロックの MS を volume² で割り、Integrated LUFS を常に音量 1.0 基準にする。視聴者がスライダーを下げても算出ゲインは上がらない。音量変更を跨ぐゲーティング窓は CM 境界と同じ仕組みで除外する
 - **保存済み LUFS の基準**: 音量 1.0 基準で測った値だけが `lastLufsRef` に基準名を持つ。基準の無い値 (拡張更新前の保存) は計測の初期サンプルに使わず、その種別の保存済み Auto gain も起動時に適用しない。手動ゲインは視聴者自身の設定なので従来どおり適用する
+- **計測値が無い間の Suggested gain**: ゲート通過値が 1 つも無い間は `suggestedGain` が 1.0 を返し、ゲインを上げる提案をしない
 - **createMediaElementSource**: `<video>` に対し 1 回のみ呼び出し可能。他拡張 (FrankerFaceZ Compressor 等) が先に取ると失敗する。失敗した video は `WeakSet` で除外し、他の video にフォールバック。`attach-failed` イベントを post して content 側で診断可能
 - **attach のリトライ**: video 要素は document_start 時点では存在しないため、`scheduleAttach()` で 1s 間隔のループ。`clearStaleAttachment()` が DOM から消えた video を検出して再 attach を許可 (Twitch SPA で video が入れ替わるケース対応)。SPA navigation 時にも content.js が `attach` を再送
 - **measurement chain の後付け**: `audioWorklet.addModule()` が attach より遅れた場合に備え、`buildMeasurementChain()` を分離。worklet ロード完了時に既に attached なら計測経路を後から接続
