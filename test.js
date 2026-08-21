@@ -1452,6 +1452,30 @@ test('a newer canonical measurement tombstone removes an older provisional value
   assert.equal(state[confirmedId].__fieldVersions['lastLufs.vod'], 8);
 });
 
+test('clearing a measurement without a stored row still blocks a later merge', () => {
+  // Another tab may hold the provisional row while this one, already on the
+  // canonical ID, has nothing stored yet. The clear has to leave a tombstone or
+  // the provisional value comes back when the rows merge.
+  let state = channelStore.applyChannelVolumesMutation({
+    'vod-owner:100': { lastLufs: { vod: -20 }, __fieldVersions: { 'lastLufs.vod': 3 } }
+  }, {
+    operation: 'clearMeasurement',
+    channelId: '777',
+    kind: 'vod',
+    sequence: 8
+  });
+  assert.equal(state['777'].lastLufs, undefined);
+  assert.equal(state['777'].__fieldVersions['lastLufs.vod'], 8);
+
+  state = channelStore.applyChannelVolumesMutation(state, {
+    operation: 'mergeChannelIds',
+    fromId: 'vod-owner:100',
+    toId: '777',
+    kind: 'vod'
+  });
+  assert.equal(state['777'].lastLufs, undefined);
+});
+
 test('provisional channel migration keeps a later confirmed field update', () => {
   const provisionalId = 'vod-owner:2770346335';
   const confirmedId = '123456';
