@@ -287,8 +287,10 @@
       });
       if (!res?.ok) throw new Error(res?.reason || 'Measurement reset failed');
       hasResettableMeasurement = false;
+      measurementResetPending = false;
       await refresh();
     } catch (_) {
+      measurementResetPending = false;
       $('resetMeasurementError').textContent = msg('resetMeasurementFailed');
       $('resetMeasurementError').classList.remove('hidden');
       const latestState = await requestState({ showConnectionError: false });

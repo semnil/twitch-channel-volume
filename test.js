@@ -2027,6 +2027,23 @@ test('popup exposes the selected channel-row measurement reset control', () => {
   assert.equal(en.resetMeasurement.message, 'Reset measurement');
 });
 
+test('popup re-enables its controls in the render that reports the reset result', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'popup.js'), 'utf8');
+  const body = source.slice(
+    source.indexOf('async function resetMeasurement()'),
+    source.indexOf('async function refresh()')
+  );
+  const success = body.indexOf('await refresh();');
+  const failure = body.indexOf('renderState(latestState)');
+  const clearedOnSuccess = body.indexOf('measurementResetPending = false;');
+  const clearedOnFailure = body.indexOf('measurementResetPending = false;', clearedOnSuccess + 1);
+  assert.ok(success > -1 && failure > -1 && clearedOnSuccess > -1 && clearedOnFailure > -1);
+  // syncInteractionDisabledState only disables, so a render that still sees the
+  // pending flag leaves the Apply button stuck until the next poll.
+  assert.ok(clearedOnSuccess < success, 'pending flag clears before the success render');
+  assert.ok(clearedOnFailure < failure, 'pending flag clears before the failure render');
+});
+
 test('store popup screenshot generator includes the measurement reset row', () => {
   const source = fs.readFileSync(path.join(__dirname, 'gen_screenshots.py'), 'utf8');
   assert.match(source, /RESET_BUTTON_HEIGHT\s*=\s*36/);
