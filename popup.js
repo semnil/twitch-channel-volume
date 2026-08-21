@@ -190,11 +190,13 @@
     }
 
     const actualGain = Number.isFinite(state.gain) ? state.gain : 1.0;
-    const currentFormatted = formatGain(actualGain, displayUnit);
-    setCardValue($('current'), currentFormatted.text, currentFormatted.unit, 'current');
     if (currentAutoApplyLoudness || !sliderSynced) {
+      // syncSlider owns the Current card whenever it runs.
       syncSlider(actualGain);
       sliderSynced = true;
+    } else {
+      const currentFormatted = formatGain(actualGain, displayUnit);
+      setCardValue($('current'), currentFormatted.text, currentFormatted.unit, 'current');
     }
 
     syncInteractionDisabledState();
