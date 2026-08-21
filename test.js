@@ -2349,6 +2349,39 @@ test('content reads and observes the persisted channel alias key', () => {
   );
 });
 
+test('store screenshot generator draws icons the bundled font lacks', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'gen_screenshots.py'), 'utf8');
+  // U+2699 and U+26F6 have no glyph in the fonts gen_screenshots.py loads, so
+  // drawing them as text produces a tofu box in the store images.
+  for (const glyph of ['\u2699', '\u26F6']) {
+    assert.ok(!source.includes(glyph), `gen_screenshots.py still draws U+${glyph.codePointAt(0).toString(16).toUpperCase()} as text`);
+  }
+  assert.match(source, /def draw_gear\(/);
+  assert.match(source, /def draw_fullscreen\(/);
+  // The colour is the stylesheet's business; this test only asserts it is drawn.
+  assert.match(source, /draw_gear\(draw, \(px \+ pw - 19, py \+ 20\), \w+\)/);
+  assert.match(source, /draw_gear\(draw, \(W - 62, cy\), WHITE, radius=PLAYER_GEAR_RADIUS\)/);
+  assert.match(source, /draw_fullscreen\(draw, \(W - 34, cy\), WHITE\)/);
+  // The self-check has to run at the sizes production draws at, so both read
+  // the same constants.
+  for (const name of ['HEADER_GEAR_RADIUS', 'PLAYER_GEAR_RADIUS', 'FULLSCREEN_SIZE']) {
+    assert.match(source, new RegExp(`^${name} = \\d+`, 'm'));
+    assert.ok(
+      new RegExp(`(?:radius|size)=${name}\\b`).test(source),
+      `${name} is used as a drawing default or argument`
+    );
+  }
+
+  // Source strings cannot tell an empty helper from a drawing one, so the
+  // generator checks its own output; keep that check wired into every run.
+  assert.match(source, /def verify_icons\(\):/);
+  // ... and at those constants, not a size of its own choosing.
+  const check = source.slice(source.indexOf('def verify_icons():'), source.indexOf('def main():'));
+  assert.match(check, /for radius in \(HEADER_GEAR_RADIUS, PLAYER_GEAR_RADIUS\):/);
+  assert.match(check, /size=FULLSCREEN_SIZE/);
+  assert.match(source, /def main\(\):\n    verify_icons\(\)/);
+});
+
 test('parseDateRange: extracts attributes', () => {
   const line = '#EXT-X-DATERANGE:ID="stitched-ad-1234",CLASS="twitch-stitched-ad",START-DATE="2026-05-13T12:00:00.000Z",DURATION=30.0,X-TV-TWITCH-AD-COMMERCIAL-ID="abc",X-TV-TWITCH-AD-ROLL-TYPE="MIDROLL"';
   const a = u.parseDateRange(line);

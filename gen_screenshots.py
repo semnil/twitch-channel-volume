@@ -3,6 +3,7 @@
 PIL 直接描画。popup / settings / overlay の 3 シーンを ja/en で出力する。
 配色・UI 文字列は popup.html / options.html / _locales の実値に一致させる。
 """
+import math
 import os
 from PIL import Image, ImageDraw, ImageFont
 
@@ -31,6 +32,9 @@ SWITCH_ON = (27, 58, 75)  # #1b3a4b
 RESET_BORDER = (50, 119, 129)  # rgba(78, 205, 196, 0.5) on INFO_BG
 RESET_BG = (25, 43, 70)        # rgba(78, 205, 196, 0.06) on INFO_BG
 RESET_BUTTON_HEIGHT = 36
+HEADER_GEAR_RADIUS = 6      # popup ヘッダーの設定アイコン
+PLAYER_GEAR_RADIUS = 5      # プレイヤー操作列の設定アイコン
+FULLSCREEN_SIZE = 12        # プレイヤー操作列の全画面アイコン
 
 
 def _font(size, bold=False):
@@ -60,6 +64,29 @@ FONT_VAL = _font(17, bold=True)
 FONT_XL = _font(20, bold=True)
 FONT_XS = _font(9)
 FONT_PRESET = _font(11, bold=True)
+
+
+def draw_gear(draw, center, color, radius=HEADER_GEAR_RADIUS):
+    """歯車を描く。PIL の既定フォントに U+2699 のグリフが無く豆腐になるため。"""
+    cx, cy = center
+    for step in range(8):
+        angle = math.pi * step / 4
+        inner = (cx + math.cos(angle) * radius, cy + math.sin(angle) * radius)
+        outer = (cx + math.cos(angle) * (radius + 3), cy + math.sin(angle) * (radius + 3))
+        draw.line([inner, outer], fill=color, width=2)
+    draw.ellipse([cx - radius, cy - radius, cx + radius, cy + radius], outline=color, width=2)
+    draw.ellipse([cx - 2, cy - 2, cx + 2, cy + 2], fill=color)
+
+
+def draw_fullscreen(draw, center, color, size=FULLSCREEN_SIZE):
+    """全画面アイコンを描く。U+26F6 も同じ理由で豆腐になる。"""
+    cx, cy = center
+    half, arm = size / 2, size / 3
+    for sx in (-1, 1):
+        for sy in (-1, 1):
+            x, y = cx + half * sx, cy + half * sy
+            draw.line([(x, y), (x - arm * sx, y)], fill=color, width=2)
+            draw.line([(x, y), (x, y - arm * sy)], fill=color, width=2)
 
 
 def rr(draw, box, radius, fill):
@@ -169,7 +196,7 @@ def screenshot_popup(lang):
 
     # Header
     draw.text((px + 16, py + 12), 'Twitch Channel Volume', fill=TEAL, font=FONT_TITLE)
-    draw.text((px + pw - 28, py + 11), '⚙', fill=HINT, font=FONT_LG)
+    draw_gear(draw, (px + pw - 19, py + 20), HINT)
     draw.line([(px, py + 39), (px + pw, py + 39)], fill=BORDER)
 
     # Info section
@@ -406,13 +433,63 @@ def screenshot_overlay(lang):
     draw.text((gx - 6, cy - 48), s['overlay_note'], fill=TEAL, font=FONT_BOLD)
 
     # right controls
-    draw.text((W - 70, cy - 8), '⚙  ⛶', fill=WHITE, font=FONT)
+    draw_gear(draw, (W - 62, cy), WHITE, radius=PLAYER_GEAR_RADIUS)
+    draw_fullscreen(draw, (W - 34, cy), WHITE)
 
     img.save(f'screenshots/overlay_{lang}.png')
     print(f'Generated screenshots/overlay_{lang}.png')
 
 
+def verify_icons():
+    """描画ヘルパーが実際に線を置いていることを、production と同じ寸法で確かめる。
+
+    ソース文字列だけの検査では本体が空になっても気付けないため、生成の
+    たびに小さな canvas へ描いて形の契約を確かめる。座標そのものではなく
+    歯・外周円・四隅のアームが在ることだけを見る。寸法は production と同じ
+    定数を使う (別の寸法で確かめると、実寸だけ描かれない変更を見逃す)。
+    """
+    bg, fg, box = (0, 0, 0), (255, 255, 255), 40
+    center = box / 2
+
+    def canvas():
+        img = Image.new('RGB', (box, box), bg)
+        return img, ImageDraw.Draw(img)
+
+    def ray(px, angle, radii):
+        return any(px[int(center + math.cos(angle) * r),
+                      int(center + math.sin(angle) * r)] != bg for r in radii)
+
+    for radius in (HEADER_GEAR_RADIUS, PLAYER_GEAR_RADIUS):
+        img, draw = canvas()
+        draw_gear(draw, (center, center), fg, radius=radius)
+        px = img.load()
+        for step in range(8):
+            angle = math.pi * step / 4
+            # 歯先だけを見る帯。輪はここまで届かない。
+            assert ray(px, angle, (radius + 2, radius + 3)), \
+                f'draw_gear(radius={radius}): {step} 番目の歯が描かれていない'
+            # 歯の間を見る帯。歯は届かないので外周円だけが残る。
+            assert ray(px, angle + math.pi / 8, (radius - 1, radius)), \
+                f'draw_gear(radius={radius}): 外周円が {step} 番目の歯の隣で欠けている'
+        assert px[int(center), int(center)] != bg, \
+            f'draw_gear(radius={radius}): 軸が描かれていない'
+
+    img, draw = canvas()
+    draw_fullscreen(draw, (center, center), fg, size=FULLSCREEN_SIZE)
+    px = img.load()
+    half = FULLSCREEN_SIZE // 2
+    for sx in (-1, 1):
+        for sy in (-1, 1):
+            x, y = int(center + half * sx), int(center + half * sy)
+            # 角の共有点を避け、水平と垂直のアームを別々に見る。
+            assert any(px[x - k * sx, y] != bg for k in (2, 3)), \
+                f'draw_fullscreen: 角 ({sx}, {sy}) の水平アームが描かれていない'
+            assert any(px[x, y - k * sy] != bg for k in (2, 3)), \
+                f'draw_fullscreen: 角 ({sx}, {sy}) の垂直アームが描かれていない'
+
+
 def main():
+    verify_icons()
     os.makedirs('screenshots', exist_ok=True)
     for lang in ('ja', 'en'):
         screenshot_popup(lang)
