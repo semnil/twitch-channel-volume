@@ -44,6 +44,42 @@ async function flushTasks(turns = 4) {
   }
 }
 
+function cssRule(css, selector) {
+  const escaped = selector.replace(/[.:]/g, (c) => '\\' + c);
+  const rule = css.match(new RegExp(escaped + '\\s*\\{([^}]*)\\}', 's'));
+  assert.ok(rule, `${selector} rule is still declared`);
+  return rule[1];
+}
+
+function cssColor(css, selector, property) {
+  // `border-color` also ends in "color:", so require a non-hyphen before it.
+  const pattern = property === 'color'
+    ? /(?:^|[^-])color:\s*#([0-9a-f]{3,6})/i
+    : /background(?:-color)?:\s*#([0-9a-f]{3,6})/i;
+  const hex = cssRule(css, selector).match(pattern);
+  assert.ok(hex, `${selector} still declares ${property}`);
+  const full = hex[1].length === 3 ? hex[1].split('').map((c) => c + c).join('') : hex[1];
+  return [0, 2, 4].map((i) => parseInt(full.slice(i, i + 2), 16));
+}
+
+function contrastRatio(fg, bg) {
+  const luminance = (rgb) => rgb
+    .map((v) => (v / 255 <= 0.03928 ? v / 255 / 12.92 : Math.pow((v / 255 + 0.055) / 1.055, 2.4)))
+    .reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
+  return (Math.max(luminance(fg), luminance(bg)) + 0.05) /
+    (Math.min(luminance(fg), luminance(bg)) + 0.05);
+}
+
+function assertContrastFloor(css, pairs, floor) {
+  for (const [selector, panel] of pairs) {
+    const ratio = contrastRatio(
+      cssColor(css, selector, 'color'),
+      cssColor(css, panel, 'background')
+    );
+    assert.ok(ratio >= floor, `${selector} on ${panel} contrast ${ratio.toFixed(2)} < ${floor}`);
+  }
+}
+
 function createContentHarness({
   autoApply = false,
   autoGain,
@@ -2097,33 +2133,17 @@ test('popup keeps the apply label on one line and owns the Current card once', (
   // height; 9px keeps it at two lines next to the one-line label.
   assert.match(html, /\.apply-hint\s*\{[^}]*font-size:\s*9px;/s);
 
-  // WCAG 2.1 SC 1.4.3: muted text against the panel it sits on.
-  const PANELS = { page: [0x1a, 0x1a, 0x2e], info: [0x16, 0x21, 0x3e] };
+  // WCAG 2.1 SC 1.4.3: muted text against the panel it sits on. Both sides are
+  // read from the stylesheet so a background change cannot pass unnoticed.
   const MUTED = [
-    ['.settings-link', 'page'],
-    ['.channel-name.empty', 'info'],
-    ['.reset-measurement-btn:disabled', 'info'],
-    ['.apply-hint', 'page'],
-    ['.loudness-card .value.unknown', 'page'],
-    ['.status-msg', 'page']
+    ['.settings-link', 'body'],
+    ['.channel-name.empty', '.info-section'],
+    ['.reset-measurement-btn:disabled', '.info-section'],
+    ['.apply-hint', 'body'],
+    ['.loudness-card .value.unknown', '.loudness-card'],
+    ['.status-msg', 'body']
   ];
-  const luminance = (rgb) => rgb
-    .map((v) => (v / 255 <= 0.03928 ? v / 255 / 12.92 : Math.pow((v / 255 + 0.055) / 1.055, 2.4)))
-    .reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
-  for (const [selector, panel] of MUTED) {
-    const escaped = selector.replace(/[.:]/g, (c) => '\\' + c);
-    const rule = html.match(new RegExp(escaped + '\\s*\\{([^}]*)\\}', 's'));
-    assert.ok(rule, `${selector} rule is still declared`);
-    // `border-color` also ends in "color:", so require a non-hyphen before it.
-    const hex = rule[1].match(/(?:^|[^-])color:\s*#([0-9a-f]{3,6})/i);
-    assert.ok(hex, `${selector} still declares a text color`);
-    const full = hex[1].length === 3 ? hex[1].split('').map((c) => c + c).join('') : hex[1];
-    const fg = [0, 2, 4].map((i) => parseInt(full.slice(i, i + 2), 16));
-    const bg = PANELS[panel];
-    const ratio = (Math.max(luminance(fg), luminance(bg)) + 0.05) /
-      (Math.min(luminance(fg), luminance(bg)) + 0.05);
-    assert.ok(ratio >= 4.5, `${selector} contrast ${ratio.toFixed(2)} < 4.5`);
-  }
+  assertContrastFloor(html, MUTED, 4.5);
 
   const source = fs.readFileSync(path.join(__dirname, 'popup.js'), 'utf8');
   const start = source.indexOf('const actualGain =');
@@ -2138,31 +2158,14 @@ test('popup keeps the apply label on one line and owns the Current card once', (
 
 test('options keeps muted text above the AA contrast floor', () => {
   const html = fs.readFileSync(path.join(__dirname, 'options.html'), 'utf8');
-  const PANELS = { page: [0x1a, 0x1a, 0x2e], card: [0x16, 0x21, 0x3e] };
-  const MUTED = [
-    ['.setting-row .setting-desc', 'page'],
-    ['.channel-table th', 'page'],
-    ['.empty-msg', 'page'],
-    ['.ch-del', 'page'],
-    ['.ch-vol.empty', 'page'],
-    ['.toggle-group button', 'card']
-  ];
-  const luminance = (rgb) => rgb
-    .map((v) => (v / 255 <= 0.03928 ? v / 255 / 12.92 : Math.pow((v / 255 + 0.055) / 1.055, 2.4)))
-    .reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
-  for (const [selector, panel] of MUTED) {
-    const escaped = selector.replace(/[.:]/g, (c) => '\\' + c);
-    const rule = html.match(new RegExp(escaped + '\\s*\\{([^}]*)\\}', 's'));
-    assert.ok(rule, `${selector} rule is still declared`);
-    const hex = rule[1].match(/(?:^|[^-])color:\s*#([0-9a-f]{3,6})/i);
-    assert.ok(hex, `${selector} still declares a text color`);
-    const full = hex[1].length === 3 ? hex[1].split('').map((c) => c + c).join('') : hex[1];
-    const fg = [0, 2, 4].map((i) => parseInt(full.slice(i, i + 2), 16));
-    const bg = PANELS[panel];
-    const ratio = (Math.max(luminance(fg), luminance(bg)) + 0.05) /
-      (Math.min(luminance(fg), luminance(bg)) + 0.05);
-    assert.ok(ratio >= 4.5, `${selector} contrast ${ratio.toFixed(2)} < 4.5`);
-  }
+  assertContrastFloor(html, [
+    ['.setting-row .setting-desc', '.section'],
+    ['.channel-table th', '.section'],
+    ['.empty-msg', '.section'],
+    ['.ch-del', '.section'],
+    ['.ch-vol.empty', '.section'],
+    ['.toggle-group button', '.toggle-group button']
+  ], 4.5);
 });
 
 test('popup exposes the selected channel-row measurement reset control', () => {
@@ -2225,6 +2228,36 @@ test('popup re-enables its controls in the render that reports the reset result'
   // pending flag leaves the Apply button stuck until the next poll.
   assert.ok(clearedOnSuccess < success, 'pending flag clears before the success render');
   assert.ok(clearedOnFailure < failure, 'pending flag clears before the failure render');
+});
+
+test('store screenshot generator mirrors the stylesheet muted colors', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'gen_screenshots.py'), 'utf8');
+  const popup = fs.readFileSync(path.join(__dirname, 'popup.html'), 'utf8');
+  const options = fs.readFileSync(path.join(__dirname, 'options.html'), 'utf8');
+  const constant = (name) => {
+    const match = source.match(new RegExp(`^${name} = \\((\\d+), (\\d+), (\\d+)\\)`, 'm'));
+    assert.ok(match, `${name} is still declared`);
+    return match.slice(1, 4).map(Number);
+  };
+
+  // The mock stands in for the real UI, so its fills track the stylesheets.
+  assert.deepEqual(constant('HINT'), cssColor(popup, '.apply-hint', 'color'));
+  assert.deepEqual(constant('HINT'), cssColor(options, '.setting-row .setting-desc', 'color'));
+  assert.deepEqual(constant('HINT'), cssColor(options, '.toggle-group button', 'color'));
+  assert.deepEqual(constant('GRAY'), cssColor(popup, '.loudness-card .label', 'color'));
+
+  // Every muted site the mock draws uses that colour.
+  for (const call of [
+    /s\['auto_hint'\], fill=HINT/,
+    /draw\.text\(\(sx \+ 20, y \+ 18\), desc, fill=HINT/,
+    /s\['col_channel'\], fill=HINT/,
+    /draw\.text\(\(cxh, hy\), t, fill=HINT/,
+    /v != '—' else HINT\)/,
+    /'×', fill=HINT/,
+    /'dB', fill=HINT/
+  ]) {
+    assert.match(source, call);
+  }
 });
 
 test('store popup screenshot generator matches the Auto-follow state', () => {
