@@ -1,9 +1,8 @@
 // page-bridge.js — Runs in MAIN world on Twitch pages.
 // Owns the AudioContext, GainNode and K-weighted LUFS measurement pipeline.
 // Twitch publishes no loudness metadata, so the bridge measures the playing
-// <video> directly via Web Audio. It also hooks fetch to capture HLS
-// manifests (EXT-X-DATERANGE CLASS="twitch-stitched-ad") for ad detection
-// and Twitch's GraphQL responses to learn the authoritative user_id/login.
+// <video> directly via Web Audio. It also hooks fetch to read Twitch's GraphQL
+// responses for the authoritative user_id/login.
 
 (() => {
   'use strict';
@@ -620,43 +619,13 @@
     let url = '';
     try { url = (typeof args[0] === 'string') ? args[0] : (args[0]?.url || ''); } catch (_) {}
 
-    if (url.includes('usher.ttvnw.net') || url.endsWith('.m3u8')) {
-      result.then((resp) => resp.clone().text()).then((text) => {
-        parseManifestForAds(text);
-      }).catch(() => {});
-    } else if (url.includes('gql.twitch.tv')) {
+    if (url.includes('gql.twitch.tv')) {
       result.then((resp) => resp.clone().json()).then((data) => {
         extractOwnerFromGraphQL(data, requestIdentity);
       }).catch(() => {});
     }
     return result;
   };
-
-  function parseManifestForAds(text) {
-    if (typeof text !== 'string') return;
-    const ranges = [];
-    const lines = text.split(/\r?\n/);
-    for (const line of lines) {
-      if (!line.startsWith('#EXT-X-DATERANGE:')) continue;
-      const attrs = {};
-      const body = line.slice('#EXT-X-DATERANGE:'.length);
-      const re = /([A-Z0-9-]+)=("([^"]*)"|[^,]*)/g;
-      let m;
-      while ((m = re.exec(body)) !== null) {
-        attrs[m[1]] = m[3] !== undefined ? m[3] : m[2];
-      }
-      const isAd = attrs.CLASS === 'twitch-stitched-ad'
-        || (typeof attrs.ID === 'string' && attrs.ID.startsWith('stitched-ad-'));
-      if (isAd) ranges.push(attrs);
-    }
-    if (ranges.length > 0) {
-      window.postMessage({
-        type: MSG_OUT,
-        event: 'manifest-ad',
-        ranges
-      }, '*');
-    }
-  }
 
   function extractOwnerFromGraphQL(payload, requestIdentity) {
     const items = Array.isArray(payload) ? payload : [payload];

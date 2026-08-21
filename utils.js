@@ -219,49 +219,6 @@ function twitchChannelUrlForEntry(channelId, entry) {
   return /^[a-z0-9_]+$/.test(login) ? `https://www.twitch.tv/${login}` : '';
 }
 
-// HLS EXT-X-DATERANGE parsing ------------------------------------------
-
-function parseDateRange(line) {
-  if (!line.startsWith('#EXT-X-DATERANGE:')) return null;
-  const body = line.slice('#EXT-X-DATERANGE:'.length);
-  const attrs = {};
-  // Attribute list: KEY=VALUE pairs; values may be quoted strings.
-  const re = /([A-Z0-9-]+)=("([^"]*)"|[^,]*)/g;
-  let m;
-  while ((m = re.exec(body)) !== null) {
-    attrs[m[1]] = m[3] !== undefined ? m[3] : m[2];
-  }
-  return attrs;
-}
-
-function isAdDateRange(attrs) {
-  if (!attrs) return false;
-  if (attrs.CLASS === 'twitch-stitched-ad') return true;
-  if (typeof attrs.ID === 'string' && attrs.ID.startsWith('stitched-ad-')) return true;
-  return false;
-}
-
-function parseAdRangesFromManifest(text) {
-  const ranges = [];
-  if (typeof text !== 'string') return ranges;
-  const lines = text.split(/\r?\n/);
-  for (const line of lines) {
-    if (!line.startsWith('#EXT-X-DATERANGE:')) continue;
-    const a = parseDateRange(line);
-    if (!isAdDateRange(a)) continue;
-    const start = a['START-DATE'] ? Date.parse(a['START-DATE']) : NaN;
-    const dur = a.DURATION ? Number(a.DURATION) : NaN;
-    ranges.push({
-      id: a.ID || '',
-      commercialId: a['X-TV-TWITCH-AD-COMMERCIAL-ID'] || '',
-      rollType: a['X-TV-TWITCH-AD-ROLL-TYPE'] || '',
-      startMs: Number.isFinite(start) ? start : null,
-      durationSec: Number.isFinite(dur) ? dur : null
-    });
-  }
-  return ranges;
-}
-
 // K-weighting IIR coefficients (BS.1770-4, normalized for 48 kHz) -----
 
 const K_PRE_48K = {
@@ -361,7 +318,6 @@ if (typeof module !== 'undefined' && module.exports) {
     resolveAutoApplySetting, resolvePreferredGain,
     classifyTwitchUrl, ownerMatchesTwitchContent, provisionalChannelIdForContent,
     resolveChannelIdAlias, twitchChannelUrlForEntry,
-    parseDateRange, isAdDateRange, parseAdRangesFromManifest,
     kWeightingForSampleRate, redesignBiquad,
     K_PRE_48K, K_RLB_48K,
     meanSquareToLufs, gatedIntegratedLufs

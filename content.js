@@ -26,7 +26,6 @@
   let lastLufs = { momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity };
   let adActive = false;
   let requestedAdActive = false;
-  let pendingAdRanges = [];
   let preferenceRevision = 0;
   let channelMutationQueue = Promise.resolve();
   let migratingChannelId = '';
@@ -435,9 +434,6 @@
           }
           throttledSaveIntegrated();
         }
-        break;
-      case 'manifest-ad':
-        if (Array.isArray(data.ranges)) pendingAdRanges = data.ranges;
         break;
       case 'owner':
         await acceptOwner(data);

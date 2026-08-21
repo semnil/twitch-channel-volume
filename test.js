@@ -2546,46 +2546,6 @@ test('store screenshot generator draws icons the bundled font lacks', () => {
   assert.match(source, /def main\(\):\n    verify_icons\(\)/);
 });
 
-test('parseDateRange: extracts attributes', () => {
-  const line = '#EXT-X-DATERANGE:ID="stitched-ad-1234",CLASS="twitch-stitched-ad",START-DATE="2026-05-13T12:00:00.000Z",DURATION=30.0,X-TV-TWITCH-AD-COMMERCIAL-ID="abc",X-TV-TWITCH-AD-ROLL-TYPE="MIDROLL"';
-  const a = u.parseDateRange(line);
-  assert.equal(a.ID, 'stitched-ad-1234');
-  assert.equal(a.CLASS, 'twitch-stitched-ad');
-  assert.equal(a['START-DATE'], '2026-05-13T12:00:00.000Z');
-  assert.equal(a.DURATION, '30.0');
-  assert.equal(a['X-TV-TWITCH-AD-ROLL-TYPE'], 'MIDROLL');
-});
-
-test('isAdDateRange: by CLASS', () => {
-  assert.equal(u.isAdDateRange({ CLASS: 'twitch-stitched-ad' }), true);
-  assert.equal(u.isAdDateRange({ CLASS: 'timestamp' }), false);
-});
-
-test('isAdDateRange: by ID prefix', () => {
-  assert.equal(u.isAdDateRange({ ID: 'stitched-ad-99' }), true);
-  assert.equal(u.isAdDateRange({ ID: 'something-else' }), false);
-});
-
-test('parseAdRangesFromManifest: mixed manifest', () => {
-  const m = `#EXTM3U
-#EXT-X-VERSION:3
-#EXT-X-DATERANGE:ID="timestamp-1",CLASS="timestamp",START-DATE="2026-05-13T12:00:00.000Z"
-#EXT-X-DATERANGE:ID="stitched-ad-1",CLASS="twitch-stitched-ad",START-DATE="2026-05-13T12:01:00.000Z",DURATION=30.0,X-TV-TWITCH-AD-ROLL-TYPE="MIDROLL"
-#EXTINF:2.0,
-seg1.ts
-`;
-  const ranges = u.parseAdRangesFromManifest(m);
-  assert.equal(ranges.length, 1);
-  assert.equal(ranges[0].id, 'stitched-ad-1');
-  assert.equal(ranges[0].rollType, 'MIDROLL');
-  assert.equal(ranges[0].durationSec, 30.0);
-});
-
-test('parseAdRangesFromManifest: empty input', () => {
-  assert.deepEqual(u.parseAdRangesFromManifest(''), []);
-  assert.deepEqual(u.parseAdRangesFromManifest(null), []);
-});
-
 test('meanSquareToLufs: known reference', () => {
   // -0.691 + 10 log10(1.0) = -0.691
   assert.ok(Math.abs(u.meanSquareToLufs(1.0) - (-0.691)) < 1e-6);

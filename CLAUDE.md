@@ -2,7 +2,7 @@
 
 Twitch チャンネルごとの音量を BS.1770 LUFS リアルタイム計測に基づき自動調整する Chrome 拡張機能 (MV3)。
 Twitch には YouTube の `loudnessDb` のような API が存在しないため、再生中の `<video>` 要素を Web Audio API で実測する。
-CM 区間は HLS マニフェストの `EXT-X-DATERANGE CLASS="twitch-stitched-ad"` で検出し、本編とは別ゲインを適用する。
+CM 区間はプレイヤーの DOM に現れる CM 表示で検出し、本編とは別ゲインを適用する。
 
 ## Architecture
 
@@ -20,8 +20,7 @@ page-bridge.js (MAIN world content script, document_start)
 ├── 計測世代 (measurement epoch): resetMeasurement で受け取った番号を保持し、以降の lufs 通知へ付与
 ├── attach loop (scheduleAttach): video 出現を 1s 間隔でリトライ + DOM detach 検出で再 attach
 ├── buildMeasurementChain: worklet ロードが attach より遅れた場合は後付けで接続
-├── Fetch hook:
-│   ├── usher.ttvnw.net / *.m3u8 → EXT-X-DATERANGE をパースし CM 区間検出
+├── Fetch hook (GraphQL のみ):
 │   └── gql.twitch.tv → user.id / video.owner.id / clip.broadcaster.id と
 │       リクエスト時点の content kind/id を抽出
 ├── GainNode は ad active 時に baseline * adGainOffset (dB → gain) を適用
@@ -80,7 +79,6 @@ utils.js (shared, popup/options + content.js + test.js。page-bridge.js は MAIN
 ├── Gain utilities: gainToPercent, percentToGain, gainToDb, dbToGain, formatGain, calcGain,
 │                  suggestedGain, resolveAutoApplySetting, resolvePreferredGain
 ├── URL classification: classifyTwitchUrl (TWITCH_RESERVED_PATHS 除外)
-├── HLS parsing: parseDateRange, isAdDateRange, parseAdRangesFromManifest
 ├── BS.1770: K_PRE_48K / K_RLB_48K 係数 + redesignBiquad (任意 sample rate 対応)
 ├── LUFS: meanSquareToLufs, gatedIntegratedLufs (absolute + relative gating)
 ├── i18n: msg()
@@ -133,7 +131,7 @@ options.html / options.js
 | File | Role |
 |------|------|
 | `manifest.json` | MV3 manifest. permissions: storage. host: twitch.tv, ttvnw.net |
-| `page-bridge.js` | MAIN world. AudioContext + LUFS + fetch hook (HLS / GraphQL) |
+| `page-bridge.js` | MAIN world. AudioContext + LUFS + fetch hook (GraphQL) |
 | `audio-worklet.js` | K-weighted MS 累積 (100ms ブロック) |
 | `content.js` | ISOLATED world. ゲイン管理、Channel resolution、Storage |
 | `utils.js` | 共通定数・ユーティリティ (popup/options/test 共有) |
@@ -167,8 +165,7 @@ options.html / options.js
 - **Saved Channels のチャンネル不変条件**: 数値 owner ID と login が対応する場合は 1 行へ統合し、保存・表示するリンクは常に `https://www.twitch.tv/<login>` とする。既存の Live/VOD 重複行は拡張更新時の正規化 mutation で移行する
 - **channelVolumes 単一ライター**: aggregate key の read-modify-write は background.js → channel-store.js のキューだけが実行。content scripts と options は mutation message を送り、複数タブの LUFS キャッシュ保存と Auto/手動設定保存が古い全体オブジェクトで互いを上書きしないようにする
 - **設定のフィールド単位保存**: options は初期ロード完了後に操作を有効化し、変更した設定フィールドだけを background.js → settings-store.js の単一キューへ送る。複数の設定タブが異なる項目を古い表示状態から変更しても、`autoLoudnessSettings` 全体を置換せず最新値へマージする
-- **CM 区間検出 (HLS 経路)**: usher.ttvnw.net / *.m3u8 を fetch hook で傍受し `EXT-X-DATERANGE CLASS="twitch-stitched-ad"` をパース。Streamlink の Twitch plugin と同等の判定ロジック
-- **CM 区間検出 (DOM 経路)**: `[data-a-target="video-ad-countdown"]` の存在で判定するフォールバック。HLS 取得が間に合わない preroll で有効
+- **CM 区間検出**: `[data-a-target="video-ad-countdown"]` / `[data-test-selector="ad-banner-default-text"]` の有無で判定する。Twitch のプレイヤーは HLS マニフェストを blob URL の専用 Worker から取得しており、MAIN world の fetch フックからは到達できない。メディアプレイリストの URL も `.m3u8` で終わらない (`*.playlist.ttvnw.net/v1/playlist/<token>`)
 - **CM 中の挙動**: GainNode に baseline × adGainOffset (dB → gain) を適用。Integrated 計測は CM 中スキップして本編の値を保持。CM 終了時点のブロックは CM 音声を含みうるため、CM 明けはゲーティング窓が CM を離れるまでの 4 窓も Integrated から除外する。CM 開始側は DOM マーカーが CM の最初の音声より遅れて現れるため、検出時点で直近 50 窓 (5 秒) を取り消す。本編の窓を余分に消しても Integrated の平均は動かないため、遅れの実測値より広く取ってある
 - **プレイヤー音量の相殺**: 計測タップは `sourceNode` 直後で、Twitch のプレイヤー音量 (`video.volume`) はその上流に掛かる。ブロックの MS を volume² で割り、Integrated LUFS を常に音量 1.0 基準にする。視聴者がスライダーを下げても算出ゲインは上がらない。音量変更を跨ぐゲーティング窓は CM 境界と同じ仕組みで除外する
 - **保存済み LUFS の基準**: 音量 1.0 基準で測った値だけが `lastLufsRef` に基準名を持つ。基準の無い値 (拡張更新前の保存) は計測の初期サンプルに使わず、その種別の保存済み Auto gain も起動時に適用しない。手動ゲインは視聴者自身の設定なので従来どおり適用する
@@ -211,7 +208,6 @@ python3 pack.py
 - Storage keys: `autoLoudnessSettings` (target LUFS, ad gain, display unit, kind 別 Auto 既定値), `channelVolumes` (per-channel saved gains + kind 別 Auto + lastLufs cache), `channelVolumeAliases` (仮 ID → 正準 ID), `channelVolumeSequence` (永続更新番号)
 - Storage format: `channelVolumes.{id}` = `{ name, gainLive, gainVod, gainClip, autoApplyLoudnessLive, autoApplyLoudnessVod, autoApplyLoudnessClip, url, lastLufs: { live, vod, clip }, lastLufsRef: { live, vod, clip }, lastMeasuredAt, __fieldVersions }`
 - 旧形式 `{ gain }` 単一ゲインは extractGainForKind で自動マイグレーション
-- HLS 経路の CM 検出は Streamlink twitch.py の判定 (`CLASS="twitch-stitched-ad"` または `ID` が `stitched-ad-` で始まる) と同等
 - popup は `DISPLAY_UPDATE_INTERVAL_MS` ごとに getState をポーリングし LUFS / Suggested / Current カードを更新。Auto gain も同じ周期を上限として更新する。Manual slider は Auto ON の間だけ適用中 gain へ同期し、Auto OFF の通常ポーリングでは更新しない。Auto OFF では初回表示・「チャンネルに適用」・Auto 切替・表示単位変更・ユーザー操作時だけ同期する。計測自体は popup の開閉に依存せず、Twitch ページが開いている限り常時走る
 - 拡張機能の再ロードで chrome.runtime が無効化された場合、popup は `reloadPageNeeded` を表示して F5 を促す
 - 計測パイプラインの診断: DevTools Console で `[TCV]` ログを確認。`waiting for <video>` → `attached to video` → `measurement chain ready` → `first measurement block received` の順に出る。`createMediaElementSource failed` で止まる場合は他拡張競合 (技術的限界)
@@ -226,4 +222,4 @@ python3 pack.py
 | FrankerFaceZ Compressor | グローバル DynamicsCompressor | グローバル | per-channel ではない |
 | Hearably Twitch Volume Booster | MSE intercept + multiband compressor | タブ単位 | クローズドソース |
 
-本プロジェクトは「Twitch 公式 API に頼らず自前 LUFS 計測 + 種別別永続化 + HLS-DATERANGE ベース CM 検知」を組み合わせ、既存実装が触れていない領域を狙う。
+本プロジェクトは「Twitch 公式 API に頼らず自前 LUFS 計測 + 種別別永続化 + CM 区間の別ゲイン」を組み合わせ、既存実装が触れていない領域を狙う。

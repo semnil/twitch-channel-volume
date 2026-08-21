@@ -6,8 +6,7 @@
   "default_locale": "ja",
   "permissions": ["storage"],
   "host_permissions": [
-    "*://*.twitch.tv/*",
-    "*://*.ttvnw.net/*"
+    "*://*.twitch.tv/*"
   ],
   "content_scripts": [
     {
