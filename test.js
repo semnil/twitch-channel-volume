@@ -2103,7 +2103,9 @@ test('popup keeps the apply label on one line and owns the Current card once', (
     ['.settings-link', 'page'],
     ['.channel-name.empty', 'info'],
     ['.reset-measurement-btn:disabled', 'info'],
-    ['.apply-hint', 'page']
+    ['.apply-hint', 'page'],
+    ['.loudness-card .value.unknown', 'page'],
+    ['.status-msg', 'page']
   ];
   const luminance = (rgb) => rgb
     .map((v) => (v / 255 <= 0.03928 ? v / 255 / 12.92 : Math.pow((v / 255 + 0.055) / 1.055, 2.4)))
@@ -2132,6 +2134,35 @@ test('popup keeps the apply label on one line and owns the Current card once', (
   assert.match(body, /\} else \{[\s\S]*setCardValue\(\$\('current'\)/);
   assert.equal((body.match(/setCardValue\(\$\('current'\)/g) || []).length, 1);
   assert.match(source, /function syncSlider\(gain\) \{[\s\S]*?setCardValue\(\$\('current'\)/);
+});
+
+test('options keeps muted text above the AA contrast floor', () => {
+  const html = fs.readFileSync(path.join(__dirname, 'options.html'), 'utf8');
+  const PANELS = { page: [0x1a, 0x1a, 0x2e], card: [0x16, 0x21, 0x3e] };
+  const MUTED = [
+    ['.setting-row .setting-desc', 'page'],
+    ['.channel-table th', 'page'],
+    ['.empty-msg', 'page'],
+    ['.ch-del', 'page'],
+    ['.ch-vol.empty', 'page'],
+    ['.toggle-group button', 'card']
+  ];
+  const luminance = (rgb) => rgb
+    .map((v) => (v / 255 <= 0.03928 ? v / 255 / 12.92 : Math.pow((v / 255 + 0.055) / 1.055, 2.4)))
+    .reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
+  for (const [selector, panel] of MUTED) {
+    const escaped = selector.replace(/[.:]/g, (c) => '\\' + c);
+    const rule = html.match(new RegExp(escaped + '\\s*\\{([^}]*)\\}', 's'));
+    assert.ok(rule, `${selector} rule is still declared`);
+    const hex = rule[1].match(/(?:^|[^-])color:\s*#([0-9a-f]{3,6})/i);
+    assert.ok(hex, `${selector} still declares a text color`);
+    const full = hex[1].length === 3 ? hex[1].split('').map((c) => c + c).join('') : hex[1];
+    const fg = [0, 2, 4].map((i) => parseInt(full.slice(i, i + 2), 16));
+    const bg = PANELS[panel];
+    const ratio = (Math.max(luminance(fg), luminance(bg)) + 0.05) /
+      (Math.min(luminance(fg), luminance(bg)) + 0.05);
+    assert.ok(ratio >= 4.5, `${selector} contrast ${ratio.toFixed(2)} < 4.5`);
+  }
 });
 
 test('popup exposes the selected channel-row measurement reset control', () => {
