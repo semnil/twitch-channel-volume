@@ -25,7 +25,7 @@
   let currentAutoApplyLoudness = false;
   let lastLufs = { momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity };
   let adActive = false;
-  let pendingAdRanges = [];
+  let requestedAdActive = false;
   let preferenceRevision = 0;
   let channelMutationQueue = Promise.resolve();
   let migratingChannelId = '';
@@ -128,7 +128,7 @@
       channelId,
       kind,
       enabled: !!enabled,
-      ...(Number.isFinite(autoGain) ? { autoGain } : {}),
+      ...(Number.isFinite(autoGain) ? { autoGain, reference: LUFS_REFERENCE_VOLUME_1 } : {}),
       channel: { name: name || channelId, url: url || '' }
     });
   }
@@ -143,6 +143,7 @@
       channelId,
       kind,
       lufs,
+      reference: LUFS_REFERENCE_VOLUME_1,
       ...(Number.isFinite(autoGain) ? { autoGain } : {}),
       channel: channelMetadata(snapshot)
     });
@@ -158,6 +159,7 @@
       channelId,
       kind,
       autoGain,
+      reference: LUFS_REFERENCE_VOLUME_1,
       channel: channelMetadata(snapshot)
     });
   }
@@ -203,8 +205,12 @@
     });
   }
 
+  // Saved values without the reference marker were measured at an unknown
+  // player volume, so they do not seed a new measurement.
   function savedIntegratedLufsForCurrentChannel() {
-    const saved = currentChannelEntry?.lastLufs?.[currentChannel.kind];
+    const kind = currentChannel.kind;
+    if (currentChannelEntry?.lastLufsRef?.[kind] !== LUFS_REFERENCE_VOLUME_1) return undefined;
+    const saved = currentChannelEntry?.lastLufs?.[kind];
     return Number.isFinite(saved) ? saved : undefined;
   }
 
@@ -430,9 +436,6 @@
           throttledSaveIntegrated();
         }
         break;
-      case 'manifest-ad':
-        if (Array.isArray(data.ranges)) pendingAdRanges = data.ranges;
-        break;
       case 'owner':
         await acceptOwner(data);
         break;
@@ -467,7 +470,15 @@
       '[data-a-target="video-ad-countdown"], [data-test-selector="ad-banner-default-text"]'
     );
     const detected = !!node;
-    if (detected !== adActive) {
+    // adActive only catches up when the bridge echoes the change back, so the
+    // request is what this compares against.
+    if (detected !== requestedAdActive) {
+      requestedAdActive = detected;
+      const video = document.querySelector('video');
+      console.info('[TCV] ad detected in DOM', {
+        detected,
+        videoTime: video ? Number(video.currentTime.toFixed(3)) : null
+      });
       sendCmd({ cmd: 'setAdActive', active: detected });
     }
   }
@@ -629,7 +640,13 @@
                 ...(currentChannelEntry || {}),
                 [autoApplyFieldForKind(kind)]: !!req.enabled,
                 ...(Number.isFinite(autoGain)
-                  ? { [autoGainFieldForKind(kind)]: autoGain }
+                  ? {
+                    [autoGainFieldForKind(kind)]: autoGain,
+                    autoGainRef: {
+                      ...(currentChannelEntry?.autoGainRef || {}),
+                      [kind]: LUFS_REFERENCE_VOLUME_1
+                    }
+                  }
                   : {})
               };
               const preferred = resolvePreferredGain(

@@ -117,7 +117,9 @@ function createContentHarness({
         name: '100',
         gainVod: 0.5,
         autoApplyLoudnessVod: autoApply,
-        ...(Number.isFinite(autoGain) ? { autoGainVod: autoGain } : {})
+        ...(Number.isFinite(autoGain)
+          ? { autoGainVod: autoGain, autoGainRef: { vod: u.LUFS_REFERENCE_VOLUME_1 } }
+          : {})
       }
     },
     [u.CHANNEL_ALIASES_KEY]: {}
@@ -130,14 +132,18 @@ function createContentHarness({
       commands.push(structuredClone(message));
     }
   };
+  let adNodePresent = false;
+  const observerCallbacks = [];
   const document = {
     documentElement: {},
-    querySelector() { return null; },
+    querySelector(selector) {
+      return adNodePresent && String(selector).includes('video-ad-countdown') ? {} : null;
+    },
     addEventListener() {},
     contains() { return false; }
   };
   class MutationObserver {
-    constructor(callback) { this.callback = callback; }
+    constructor(callback) { observerCallbacks.push(callback); }
     observe() {}
   }
   class HarnessDate extends Date {
@@ -230,6 +236,8 @@ function createContentHarness({
   );
 
   return {
+    setAdNodePresent(present) { adNodePresent = present; },
+    mutate() { for (const callback of observerCallbacks) callback([]); },
     commands,
     stored,
     warnings,
@@ -285,16 +293,61 @@ function createContentHarness({
   };
 }
 
+// BS.1770-4 gates 400ms blocks overlapping by 75%: one window per 100ms
+// sub-block, formed from the four most recent sub-blocks.
+function gatingWindows(subBlocks) {
+  const windows = [];
+  for (let i = 3; i < subBlocks.length; i++) {
+    windows.push((subBlocks[i - 3] + subBlocks[i - 2] + subBlocks[i - 1] + subBlocks[i]) / 4);
+  }
+  return windows;
+}
+
+// Entering an ad removes up to this many of the most recent windows: the DOM
+// marker appears after the ad's first audio.
+const AD_START_ROLLBACK = 5;
+const ROLLBACK_LOG_SAMPLES = 8;
+
+function assertLufsClose(actual, expected) {
+  if (expected === -Infinity) assert.equal(actual, -Infinity);
+  else assert.ok(Math.abs(actual - expected) < 1e-12);
+}
+
+function expectedIntegrated(subBlocks, seedMeanSquare) {
+  const values = gatingWindows(subBlocks);
+  if (seedMeanSquare !== undefined) values.unshift(seedMeanSquare);
+  return u.gatedIntegratedLufs(values);
+}
+
+// Saved measurements carry the reference they were taken at.
+function measured(lastLufs) {
+  return {
+    lastLufs,
+    lastLufsRef: Object.fromEntries(
+      Object.keys(lastLufs).map((kind) => [kind, u.LUFS_REFERENCE_VOLUME_1])
+    )
+  };
+}
+
 function createPageBridgeHarness() {
   const messages = [];
+  const logs = [];
   const listeners = {};
   const location = { href: 'https://www.twitch.tv/videos/100' };
+  const videoListeners = {};
   const video = {
     src: 'https://example.test/video',
     readyState: 4,
     clientWidth: 1920,
     clientHeight: 1080,
-    isConnected: true
+    isConnected: true,
+    volume: 1,
+    muted: false,
+    currentTime: 0,
+    addEventListener(type, fn) { (videoListeners[type] ||= []).push(fn); },
+    removeEventListener(type, fn) {
+      videoListeners[type] = (videoListeners[type] || []).filter((f) => f !== fn);
+    }
   };
   let measurementPort;
   let resolveFetch;
@@ -343,7 +396,7 @@ function createPageBridgeHarness() {
   const context = vm.createContext({
     AudioWorkletNode,
     clearInterval() {},
-    console: { warn() {}, error() {}, info() {} },
+    console: { warn() {}, error() {}, info(...args) { logs.push(args); } },
     document: {
       querySelectorAll(selector) { return selector === 'video' ? [video] : []; }
     },
@@ -372,6 +425,7 @@ function createPageBridgeHarness() {
   return {
     location,
     messages,
+    logs,
     fetch: (...args) => window.fetch(...args),
     resolveFetch(response) { resolveFetch(response); },
     async startMeasurement() {
@@ -384,6 +438,20 @@ function createPageBridgeHarness() {
     dispatchCommand,
     emitMeasurementBlock(ms) {
       measurementPort.onmessage({ data: { ms } });
+    },
+    setVolume(value) {
+      video.volume = value;
+      for (const fn of videoListeners.volumechange || []) fn();
+    },
+    setMuted(value) {
+      video.muted = value;
+      for (const fn of videoListeners.volumechange || []) fn();
+    },
+    async replaceVideo() {
+      video.isConnected = false;
+      await dispatchCommand('attach');
+      video.isConnected = true;
+      await dispatchCommand('attach');
     }
   };
 }
@@ -402,6 +470,47 @@ test('calcGain: clamps to [0, 6]', () => {
   assert.equal(u.calcGain(0, -18), Math.pow(10, -18 / 20));
   assert.equal(u.calcGain(-Infinity, -18), 1.0);
   assert.equal(u.calcGain(NaN, -18), 1.0);
+});
+
+test('resolvePreferredGain ignores an Auto gain measured at an unknown volume', () => {
+  const entry = { autoApplyLoudnessLive: true, autoGainLive: 2.5 };
+  assert.equal(u.resolvePreferredGain(entry, 'live', false, -Infinity, -18).gain, 1.0);
+
+  const referenced = { ...entry, autoGainRef: { live: u.LUFS_REFERENCE_VOLUME_1 } };
+  assert.equal(u.resolvePreferredGain(referenced, 'live', false, -Infinity, -18).gain, 2.5);
+
+  // A running measurement always wins over the saved value.
+  const live = u.resolvePreferredGain(referenced, 'live', false, -23, -18).gain;
+  assert.ok(Math.abs(live - u.calcGain(-23, -18)) < 1e-12);
+
+  // The viewer's own manual gain is still honoured when no Auto gain applies.
+  const manual = { ...entry, gainLive: 2.0 };
+  assert.equal(u.resolvePreferredGain(manual, 'live', false, -Infinity, -18).gain, 2.0);
+});
+
+test('privacy policies list exactly the manifest permissions', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, 'manifest.json'), 'utf8'));
+  // The audit report cites this test for what the extension asks for.
+  assert.deepEqual(manifest.permissions, ['storage']);
+  assert.deepEqual(manifest.host_permissions, ['*://*.twitch.tv/*']);
+  const hosts = new Set(
+    manifest.host_permissions.map((pattern) => pattern.replace(/^\*:\/\/\*?\.?/, '').replace(/\/\*$/, ''))
+  );
+  for (const file of ['PRIVACY_POLICY.md', 'PRIVACY_POLICY_JA.md']) {
+    const text = fs.readFileSync(path.join(__dirname, file), 'utf8');
+    const declared = new Set(
+      [...text.matchAll(/\*\*host_permissions\*\* \(`([^`]+)`\)/g)].map((m) => m[1])
+    );
+    assert.deepEqual([...declared].sort(), [...hosts].sort(), `${file} host rows`);
+  }
+});
+
+test('suggestedGain stays at unity until a gated measurement exists', () => {
+  assert.equal(u.suggestedGain(-Infinity, -18), 1.0);
+  assert.equal(u.suggestedGain(NaN, -18), 1.0);
+  assert.equal(u.suggestedGain(undefined, -18), 1.0);
+  assert.equal(u.suggestedGain(-23, undefined), 1.0);
+  assert.ok(Math.abs(u.suggestedGain(-23, -18) - u.calcGain(-23, -18)) < 1e-12);
 });
 
 test('gainToDb / dbToGain are inverses (within 1-decimal rounding)', () => {
@@ -435,13 +544,24 @@ test('auto-apply fields are independent for Live, VOD, and Clip', () => {
   assert.equal(u.autoGainFieldForKind('clip'), 'autoGainClip');
 });
 
-test('Saved Channels prefers the last Auto gain without overwriting the manual fallback', () => {
-  const entry = { gainVod: 0.5, autoGainVod: 0.8 };
-  assert.equal(u.extractGainForKind(entry, 'vod'), 0.5);
-  assert.equal(u.extractAutoGainForKind(entry, 'vod'), 0.8);
-  assert.equal(u.extractAutoDisplayGain(entry, 'vod'), 0.8);
+test('Saved Channels shows the gain that would be applied', () => {
+  const referenced = {
+    gainVod: 0.5, autoGainVod: 0.8, autoGainRef: { vod: u.LUFS_REFERENCE_VOLUME_1 }
+  };
+  assert.equal(u.extractGainForKind(referenced, 'vod'), 0.5);
+  assert.equal(u.extractAutoGainForKind(referenced, 'vod'), 0.8);
+  assert.equal(u.extractAutoDisplayGain(referenced, 'vod'), 0.8);
   assert.equal(u.extractAutoDisplayGain({ gainVod: 0.5 }, 'vod'), 0.5);
-  assert.equal(u.formatAutoGain(u.extractAutoDisplayGain(entry, 'vod'), 'dB'), 'Auto (-1.9 dB)');
+
+  // An Auto gain measured at an unknown volume is not applied, so the table
+  // must not offer it: display and resolvePreferredGain answer the same.
+  const unreferenced = { autoApplyLoudnessVod: true, gainVod: 0.5, autoGainVod: 0.8 };
+  assert.equal(u.extractAutoDisplayGain(unreferenced, 'vod'), 0.5);
+  assert.equal(
+    u.resolvePreferredGain(unreferenced, 'vod', false, -Infinity, -18).gain,
+    u.extractAutoDisplayGain(unreferenced, 'vod')
+  );
+  assert.equal(u.formatAutoGain(u.extractAutoDisplayGain(referenced, 'vod'), 'dB'), 'Auto (-1.9 dB)');
   const optionsSource = fs.readFileSync(path.join(__dirname, 'options.js'), 'utf8');
   assert.match(optionsSource, /formatAutoGain\(\s*extractAutoDisplayGain\(entry, kind\)/s);
 });
@@ -473,7 +593,12 @@ test('resolvePreferredGain follows current LUFS only when Auto is enabled', () =
   assert.ok(Math.abs(auto.gain - Math.pow(10, 5 / 20)) < 1e-9);
 
   const waiting = u.resolvePreferredGain(
-    { autoApplyLoudnessVod: true, gainVod: 0.5, autoGainVod: 0.8 },
+    {
+      autoApplyLoudnessVod: true,
+      gainVod: 0.5,
+      autoGainVod: 0.8,
+      autoGainRef: { vod: u.LUFS_REFERENCE_VOLUME_1 }
+    },
     'vod',
     false,
     -Infinity,
@@ -837,7 +962,7 @@ test('content seeds measurement with the saved LUFS for the current media kind',
       'vod-owner:100': {
         name: '100',
         gainVod: 0.5,
-        lastLufs: { live: -17, vod: -21, clip: -19 }
+        ...measured({ live: -17, vod: -21, clip: -19 })
       }
     }
   });
@@ -853,10 +978,314 @@ test('content seeds measurement with the saved LUFS for the current media kind',
   assert.equal(state.hasSavedMeasurement, true);
 });
 
+test('content requests one ad state change per transition', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  harness.commands.length = 0;
+
+  // The bridge echo has not arrived yet, and chat keeps the observer firing.
+  harness.setAdNodePresent(true);
+  harness.mutate();
+  harness.mutate();
+  harness.mutate();
+  let requests = harness.commands.filter((command) => command.cmd === 'setAdActive');
+  assert.deepEqual(requests, [{ type: '__twitch_channel_volume_cmd__', cmd: 'setAdActive', active: true }]);
+
+  await harness.dispatchMessage({ type: '__twitch_channel_volume__', event: 'ad', active: true });
+  harness.mutate();
+  assert.equal(harness.commands.filter((command) => command.cmd === 'setAdActive').length, 1);
+
+  harness.commands.length = 0;
+  harness.setAdNodePresent(false);
+  harness.mutate();
+  harness.mutate();
+  requests = harness.commands.filter((command) => command.cmd === 'setAdActive');
+  assert.deepEqual(requests, [{ type: '__twitch_channel_volume_cmd__', cmd: 'setAdActive', active: false }]);
+});
+
+test('content stores a measurement the next session can seed from', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    momentary: -21,
+    shortTerm: -21,
+    integrated: -21
+  });
+  await flushTasks();
+  const saved = harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'];
+  assert.equal(saved.lastLufs.vod, -21);
+  assert.equal(saved.lastLufsRef.vod, u.LUFS_REFERENCE_VOLUME_1);
+
+  // What was written is what the next session reads back as a seed.
+  const next = createContentHarness({ channelVolumes: structuredClone(harness.stored[u.CHANNEL_VOLUMES_KEY]) });
+  await flushTasks();
+  const resets = next.commands.filter((command) => command.cmd === 'resetMeasurement');
+  assert.equal(resets.at(-1).initialIntegratedLufs, -21);
+});
+
+test('content does not seed from a measurement taken at an unknown volume', async () => {
+  const harness = createContentHarness({
+    channelVolumes: {
+      // Saved before measurements were referenced to volume 1.0.
+      'vod-owner:100': { name: '100', lastLufs: { vod: -21 } }
+    }
+  });
+  await flushTasks();
+
+  const resetCommands = harness.commands.filter((command) => command.cmd === 'resetMeasurement');
+  assert.equal(resetCommands.length, 1);
+  assert.equal(resetCommands[0].initialIntegratedLufs, undefined);
+  // The value is still there to reset.
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.hasSavedMeasurement, true);
+});
+
+test('channel store records what an Auto gain was measured against', async () => {
+  for (const kind of ['live', 'vod', 'clip']) {
+    let stored = { channelVolumes: {} };
+    const storage = {
+      async get(keys) { return readStoredKeys(stored, keys); },
+      async set(update) { stored = { ...stored, ...structuredClone(update) }; }
+    };
+    const write = channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 100);
+    await write({
+      operation: 'saveAutoGain', channelId: 'login:test', kind, autoGain: 2.5,
+      reference: u.LUFS_REFERENCE_VOLUME_1
+    });
+    const entry = stored.channelVolumes['login:test'];
+    assert.equal(entry.autoGainRef[kind], u.LUFS_REFERENCE_VOLUME_1);
+    assert.equal(u.resolvePreferredGain(entry, kind, true, -Infinity, -18).gain, 2.5);
+
+    let fresh = { channelVolumes: {} };
+    const freshStorage = {
+      async get(keys) { return readStoredKeys(fresh, keys); },
+      async set(update) { fresh = { ...fresh, ...structuredClone(update) }; }
+    };
+    const writeFresh = channelStore.createChannelVolumesWriter(freshStorage, 'channelVolumes', () => 100);
+    await writeFresh({
+      operation: 'saveAuto', channelId: 'login:test', kind, enabled: true, autoGain: 1.5,
+      reference: u.LUFS_REFERENCE_VOLUME_1
+    });
+    const enabled = fresh.channelVolumes['login:test'];
+    assert.equal(enabled.autoGainRef[kind], u.LUFS_REFERENCE_VOLUME_1);
+    assert.equal(u.resolvePreferredGain(enabled, kind, false, -Infinity, -18).gain, 1.5);
+
+    await write({ operation: 'clearMeasurement', channelId: 'login:test', kind });
+    assert.equal(stored.channelVolumes['login:test'].autoGainRef[kind], u.LUFS_REFERENCE_VOLUME_1);
+  }
+});
+
+test('channel store rejects a reference it cannot store', async () => {
+  let stored = { channelVolumes: {} };
+  const storage = {
+    async get(keys) { return readStoredKeys(stored, keys); },
+    async set(update) { stored = { ...stored, ...structuredClone(update) }; }
+  };
+  const write = channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 100);
+  for (const reference of [42, {}, 'x'.repeat(33)]) {
+    await assert.rejects(() => write({
+      operation: 'saveMeasurement', channelId: 'login:test', kind: 'live', lufs: -19, reference
+    }));
+  }
+  assert.equal(stored.channelVolumes['login:test'], undefined);
+});
+
+test('channel store merges an Auto gain and its reference together', async () => {
+  // A login row normalizes into the numeric one on the next write, so this uses
+  // a VOD provisional id to reach the merge itself.
+  const merge = async (seed, writes) => {
+    let stored = { channelVolumes: structuredClone(seed) };
+    const storage = {
+      async get(keys) { return readStoredKeys(stored, keys); },
+      async set(update) { stored = { ...stored, ...structuredClone(update) }; }
+    };
+    const write = channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 100);
+    for (const mutation of writes) await write(mutation);
+    await write({
+      operation: 'mergeChannelIds', fromId: 'vod-owner:100', toId: '777', kind: 'vod',
+      channel: { name: 'X' }
+    });
+    return stored.channelVolumes['777'];
+  };
+  const seed = { 777: { name: 'X' }, 'vod-owner:100': { name: 'X' } };
+
+  // A measurement written on the other row cannot vouch for a gain that was
+  // saved before references existed.
+  const borrowed = await merge(
+    { 777: { name: 'X', autoGainVod: 1.5 }, 'vod-owner:100': { name: 'X' } },
+    [{
+      operation: 'saveMeasurement', channelId: 'vod-owner:100', kind: 'vod', lufs: -18,
+      reference: u.LUFS_REFERENCE_VOLUME_1
+    }]
+  );
+  assert.equal(borrowed.autoGainVod, 1.5);
+  assert.equal(borrowed.autoGainRef, undefined);
+  assert.equal(u.resolvePreferredGain(borrowed, 'vod', true, -Infinity, -18).gain, 1.0);
+
+  // Nor can an unreferenced measurement strip a gain that has its own.
+  const kept = await merge(seed, [
+    {
+      operation: 'saveAutoGain', channelId: '777', kind: 'vod', autoGain: 2.5,
+      reference: u.LUFS_REFERENCE_VOLUME_1
+    },
+    { operation: 'saveMeasurement', channelId: 'vod-owner:100', kind: 'vod', lufs: -21 }
+  ]);
+  assert.equal(kept.autoGainVod, 2.5);
+  assert.equal(kept.autoGainRef.vod, u.LUFS_REFERENCE_VOLUME_1);
+  assert.equal(u.resolvePreferredGain(kept, 'vod', true, -Infinity, -18).gain, 2.5);
+
+  // When the newer gain is the unreferenced one, the reference goes with the
+  // value it described rather than staying on the row.
+  const replaced = await merge(seed, [
+    {
+      operation: 'saveAutoGain', channelId: '777', kind: 'vod', autoGain: 2.5,
+      reference: u.LUFS_REFERENCE_VOLUME_1
+    },
+    { operation: 'saveAutoGain', channelId: 'vod-owner:100', kind: 'vod', autoGain: 1.5 }
+  ]);
+  assert.equal(replaced.autoGainVod, 1.5);
+  assert.equal(replaced.autoGainRef, undefined);
+  assert.equal(u.resolvePreferredGain(replaced, 'vod', true, -Infinity, -18).gain, 1.0);
+});
+
+test('channel store references an Auto gain saved with its measurement', async () => {
+  for (const kind of ['live', 'vod', 'clip']) {
+    let stored = { channelVolumes: {} };
+    const storage = {
+      async get(keys) { return readStoredKeys(stored, keys); },
+      async set(update) { stored = { ...stored, ...structuredClone(update) }; }
+    };
+    const write = channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 100);
+    // Auto writes the gain alongside the measurement that produced it.
+    await write({
+      operation: 'saveMeasurement', channelId: 'login:test', kind, lufs: -23, autoGain: 1.778,
+      reference: u.LUFS_REFERENCE_VOLUME_1
+    });
+    const entry = stored.channelVolumes['login:test'];
+    assert.equal(entry.lastLufsRef[kind], u.LUFS_REFERENCE_VOLUME_1);
+    assert.equal(entry.autoGainRef[kind], u.LUFS_REFERENCE_VOLUME_1);
+    assert.equal(u.resolvePreferredGain(entry, kind, true, -Infinity, -18).gain, 1.778);
+  }
+});
+
+test('channel store carries the reference onto the surviving row either way', async () => {
+  const build = async (lastId, lastReferenced) => {
+    let stored = { channelVolumes: { 'login:test': { name: 'Test' }, 777: { name: 'Test' } } };
+    const storage = {
+      async get(keys) { return readStoredKeys(stored, keys); },
+      async set(update) { stored = { ...stored, ...structuredClone(update) }; }
+    };
+    const write = channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 100);
+    const firstId = lastId === '777' ? 'login:test' : '777';
+    await write({
+      operation: 'saveMeasurement', channelId: firstId, kind: 'live', lufs: -19,
+      ...(lastReferenced ? {} : { reference: u.LUFS_REFERENCE_VOLUME_1 })
+    });
+    await write({
+      operation: 'saveMeasurement', channelId: lastId, kind: 'live', lufs: -23,
+      ...(lastReferenced ? { reference: u.LUFS_REFERENCE_VOLUME_1 } : {})
+    });
+    await write({
+      operation: 'mergeChannelIds', fromId: 'login:test', toId: '777', kind: 'live',
+      channel: { name: 'Test', login: 'test' }
+    });
+    return stored.channelVolumes['777'];
+  };
+
+  // A reference that outlived its value still travels with the winning row.
+  {
+    let stored = { channelVolumes: { 'login:test': { name: 'Test' } } };
+    const storage = {
+      async get(keys) { return readStoredKeys(stored, keys); },
+      async set(update) { stored = { ...stored, ...structuredClone(update) }; }
+    };
+    const write = channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 100);
+    await write({
+      operation: 'saveMeasurement', channelId: 'login:test', kind: 'live', lufs: -19,
+      reference: u.LUFS_REFERENCE_VOLUME_1
+    });
+    await write({
+      operation: 'saveAutoGain', channelId: 'login:test', kind: 'live', autoGain: 2.5,
+      reference: u.LUFS_REFERENCE_VOLUME_1
+    });
+    await write({ operation: 'clearMeasurement', channelId: 'login:test', kind: 'live' });
+    await write({
+      operation: 'mergeChannelIds', fromId: 'login:test', toId: '777', kind: 'live',
+      channel: { name: 'Test', login: 'test' }
+    });
+    const merged = stored.channelVolumes['777'];
+    assert.equal(merged.lastLufs, undefined);
+    assert.equal(merged.autoGainRef.live, u.LUFS_REFERENCE_VOLUME_1);
+    assert.equal(u.resolvePreferredGain(merged, 'live', true, -Infinity, -18).gain, 2.5);
+  }
+
+  // The later write wins the merge; its reference, or its lack of one, wins too.
+  for (const lastId of ['login:test', '777']) {
+    const referenced = await build(lastId, true);
+    assert.equal(referenced.lastLufs.live, -23);
+    assert.equal(referenced.lastLufsRef.live, u.LUFS_REFERENCE_VOLUME_1);
+
+    const unreferenced = await build(lastId, false);
+    assert.equal(unreferenced.lastLufs.live, -23);
+    assert.equal(unreferenced.lastLufsRef, undefined);
+  }
+});
+
+test('channel store keeps the measurement reference with the value it describes', async () => {
+  let stored = { channelVolumes: {} };
+  const storage = {
+    async get(keys) { return readStoredKeys(stored, keys); },
+    async set(update) { stored = { ...stored, ...structuredClone(update) }; }
+  };
+  const write = channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 100);
+  await write({
+    operation: 'saveMeasurement', channelId: 'login:test', kind: 'live', lufs: -19,
+    reference: u.LUFS_REFERENCE_VOLUME_1, channel: { name: 'Test' }
+  });
+  assert.equal(stored.channelVolumes['login:test'].lastLufsRef.live, u.LUFS_REFERENCE_VOLUME_1);
+
+  await write({
+    operation: 'mergeChannelIds', fromId: 'login:test', toId: '777', kind: 'live',
+    channel: { name: 'Test', login: 'test' }
+  });
+  assert.equal(stored.channelVolumes['777'].lastLufs.live, -19);
+  assert.equal(stored.channelVolumes['777'].lastLufsRef.live, u.LUFS_REFERENCE_VOLUME_1);
+
+  // A reset drops the measurement and keeps the reference: the Auto gain it
+  // vouches for is still on file and still applied.
+  await write({
+    operation: 'saveAutoGain', channelId: '777', kind: 'live', autoGain: 2.5,
+    reference: u.LUFS_REFERENCE_VOLUME_1
+  });
+  await write({ operation: 'clearMeasurement', channelId: '777', kind: 'live' });
+  const afterReset = stored.channelVolumes['777'];
+  assert.equal(afterReset.lastLufs, undefined);
+  assert.equal(afterReset.lastLufsRef, undefined);
+  assert.equal(afterReset.autoGainRef.live, u.LUFS_REFERENCE_VOLUME_1);
+  assert.equal(afterReset.autoGainLive, 2.5);
+  assert.equal(u.resolvePreferredGain(afterReset, 'live', true, -Infinity, -18).gain, 2.5);
+
+  // A writer that names no reference drops the measurement's, so the value it
+  // wrote is not taken for a volume-referenced one. The Auto gain keeps its own.
+  await write({
+    operation: 'saveMeasurement', channelId: '777', kind: 'live', lufs: -21
+  });
+  const unreferencedMeasurement = stored.channelVolumes['777'];
+  assert.equal(unreferencedMeasurement.lastLufs.live, -21);
+  assert.equal(unreferencedMeasurement.lastLufsRef, undefined);
+  assert.equal(unreferencedMeasurement.autoGainRef.live, u.LUFS_REFERENCE_VOLUME_1);
+  assert.equal(
+    u.resolvePreferredGain(unreferencedMeasurement, 'live', true, -Infinity, -18).gain,
+    2.5
+  );
+});
+
 test('content seeds the measurement once the owner ID resolves', async () => {
   const harness = createContentHarness({
     href: 'https://www.twitch.tv/videos/100',
-    channelVolumes: { '777': { name: 'Streamer', lastLufs: { vod: -16 } } }
+    channelVolumes: { '777': { name: 'Streamer', ...measured({ vod: -16 }) } }
   });
   await flushTasks();
 
@@ -888,7 +1317,7 @@ test('content seeds the measurement once the owner ID resolves', async () => {
 test('content keeps the running measurement when the owner resolves the same channel', async () => {
   const harness = createContentHarness({
     href: 'https://www.twitch.tv/streamer',
-    channelVolumes: { '777': { name: 'Streamer', lastLufs: { live: -16 } } }
+    channelVolumes: { '777': { name: 'Streamer', ...measured({ live: -16 }) } }
   });
   harness.stored[u.CHANNEL_ALIASES_KEY] = { 'login:streamer': '777' };
   await flushTasks();
@@ -1174,8 +1603,8 @@ test('content accepts a measurement stamped with the current reset epoch', async
 
 test('content reseeds from the new media entry only after SPA navigation', async () => {
   const channelVolumes = {
-    'vod-owner:100': { name: '100', lastLufs: { vod: -21 } },
-    'vod-owner:200': { name: '200', lastLufs: { vod: -19 } }
+    'vod-owner:100': { name: '100', ...measured({ vod: -21 }) },
+    'vod-owner:200': { name: '200', ...measured({ vod: -19 }) }
   };
   const harness = createContentHarness({ channelVolumes });
   await flushTasks();
@@ -1198,7 +1627,7 @@ test('content reseeds from the new media entry only after SPA navigation', async
 
 test('content reseeds on a kind change when SPA navigation lost the reapply race', async () => {
   const channelVolumes = {
-    '777': { name: 'Streamer', lastLufs: { live: -16, vod: -23 } }
+    '777': { name: 'Streamer', ...measured({ live: -16, vod: -23 }) }
   };
   const harness = createContentHarness({
     href: 'https://www.twitch.tv/streamer',
@@ -2213,6 +2642,18 @@ test('popup exposes the selected channel-row measurement reset control', () => {
   assert.equal(en.resetMeasurement.message, 'Reset measurement');
 });
 
+test('popup offers Apply only once a measurement exists', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'popup.js'), 'utf8');
+  // The suggestion is unity without a measurement, so its finiteness cannot be
+  // what enables the button: applying it would overwrite a saved manual gain.
+  assert.match(source, /\} else if \(hasIntegrated && ch\.id\) \{\s*applyButton\.disabled = false;/s);
+  assert.doesNotMatch(source, /Number\.isFinite\(lastSuggestedGain\) && ch\.id/);
+  assert.match(
+    source,
+    /applyButton\.disabled = currentAutoApplyLoudness \|\| !hasIntegrated \|\| !ch\.id;/
+  );
+});
+
 test('popup re-enables its controls in the render that reports the reset result', () => {
   const source = fs.readFileSync(path.join(__dirname, 'popup.js'), 'utf8');
   const body = source.slice(
@@ -2382,46 +2823,6 @@ test('store screenshot generator draws icons the bundled font lacks', () => {
   assert.match(source, /def main\(\):\n    verify_icons\(\)/);
 });
 
-test('parseDateRange: extracts attributes', () => {
-  const line = '#EXT-X-DATERANGE:ID="stitched-ad-1234",CLASS="twitch-stitched-ad",START-DATE="2026-05-13T12:00:00.000Z",DURATION=30.0,X-TV-TWITCH-AD-COMMERCIAL-ID="abc",X-TV-TWITCH-AD-ROLL-TYPE="MIDROLL"';
-  const a = u.parseDateRange(line);
-  assert.equal(a.ID, 'stitched-ad-1234');
-  assert.equal(a.CLASS, 'twitch-stitched-ad');
-  assert.equal(a['START-DATE'], '2026-05-13T12:00:00.000Z');
-  assert.equal(a.DURATION, '30.0');
-  assert.equal(a['X-TV-TWITCH-AD-ROLL-TYPE'], 'MIDROLL');
-});
-
-test('isAdDateRange: by CLASS', () => {
-  assert.equal(u.isAdDateRange({ CLASS: 'twitch-stitched-ad' }), true);
-  assert.equal(u.isAdDateRange({ CLASS: 'timestamp' }), false);
-});
-
-test('isAdDateRange: by ID prefix', () => {
-  assert.equal(u.isAdDateRange({ ID: 'stitched-ad-99' }), true);
-  assert.equal(u.isAdDateRange({ ID: 'something-else' }), false);
-});
-
-test('parseAdRangesFromManifest: mixed manifest', () => {
-  const m = `#EXTM3U
-#EXT-X-VERSION:3
-#EXT-X-DATERANGE:ID="timestamp-1",CLASS="timestamp",START-DATE="2026-05-13T12:00:00.000Z"
-#EXT-X-DATERANGE:ID="stitched-ad-1",CLASS="twitch-stitched-ad",START-DATE="2026-05-13T12:01:00.000Z",DURATION=30.0,X-TV-TWITCH-AD-ROLL-TYPE="MIDROLL"
-#EXTINF:2.0,
-seg1.ts
-`;
-  const ranges = u.parseAdRangesFromManifest(m);
-  assert.equal(ranges.length, 1);
-  assert.equal(ranges[0].id, 'stitched-ad-1');
-  assert.equal(ranges[0].rollType, 'MIDROLL');
-  assert.equal(ranges[0].durationSec, 30.0);
-});
-
-test('parseAdRangesFromManifest: empty input', () => {
-  assert.deepEqual(u.parseAdRangesFromManifest(''), []);
-  assert.deepEqual(u.parseAdRangesFromManifest(null), []);
-});
-
 test('meanSquareToLufs: known reference', () => {
   // -0.691 + 10 log10(1.0) = -0.691
   assert.ok(Math.abs(u.meanSquareToLufs(1.0) - (-0.691)) < 1e-6);
@@ -2444,7 +2845,7 @@ test('gatedIntegratedLufs: constant signal close to single-block LUFS', () => {
   assert.ok(Math.abs(result - (-0.691)) < 1e-6);
 });
 
-test('page bridge Integrated LUFS is invariant to block input order', async () => {
+test('page bridge Integrated LUFS is invariant to gating window order', async () => {
   async function measure(blocks) {
     const harness = createPageBridgeHarness();
     await harness.startMeasurement();
@@ -2453,9 +2854,17 @@ test('page bridge Integrated LUFS is invariant to block input order', async () =
     return harness.messages.at(-1).integrated;
   }
 
-  const forward = await measure([1.0, 0.09]);
-  const reverse = await measure([0.09, 1.0]);
-  const expected = u.gatedIntegratedLufs([1.0, 0.09]);
+  // Spaced far enough apart that no window holds both loud sub-blocks, so
+  // swapping them reorders the windows without changing the set.
+  const quiet = 0.02;
+  const forwardBlocks = [quiet, quiet, quiet, 1.0, quiet, quiet, quiet, 0.09, quiet, quiet, quiet];
+  const reverseBlocks = [quiet, quiet, quiet, 0.09, quiet, quiet, quiet, 1.0, quiet, quiet, quiet];
+  const sorted = (list) => gatingWindows(list).slice().sort((a, b) => a - b);
+  assert.deepEqual(sorted(forwardBlocks), sorted(reverseBlocks));
+
+  const forward = await measure(forwardBlocks);
+  const reverse = await measure(reverseBlocks);
+  const expected = expectedIntegrated(forwardBlocks);
 
   assert.ok(Math.abs(forward - expected) < 1e-12);
   assert.ok(Math.abs(reverse - expected) < 1e-12);
@@ -2467,25 +2876,343 @@ test('page bridge maintains the two-stage Integrated LUFS gate incrementally', a
   await harness.startMeasurement();
   harness.messages.length = 0;
 
-  const blocks = [0.01, 1.0, 0.001];
+  const blocks = [0.01, 1.0, 0.001, 0.02, 0.5, 0.03, 0.04, 0.02, 0.05, 0.03, 0.02, 0.06];
   for (const ms of blocks) harness.emitMeasurementBlock(ms);
 
   const measurements = harness.messages.filter((message) => message.event === 'lufs');
-  assert.equal(measurements.length, 3);
+  assert.equal(measurements.length, blocks.length);
   for (let i = 0; i < blocks.length; i++) {
-    const expected = u.gatedIntegratedLufs(blocks.slice(0, i + 1));
-    assert.ok(Math.abs(measurements[i].integrated - expected) < 1e-12);
+    assertLufsClose(measurements[i].integrated, expectedIntegrated(blocks.slice(0, i + 1)));
   }
-  const expected = u.gatedIntegratedLufs(blocks);
-
+  // Entering an ad rolls back the windows appended just before the marker.
   await harness.dispatchCommand('setAdActive', { active: true });
   harness.emitMeasurementBlock(1.0);
-  assert.equal(harness.messages.at(-1).integrated, expected);
+  const kept = gatingWindows(blocks).slice(0, -AD_START_ROLLBACK);
+  const expected = u.gatedIntegratedLufs(kept);
+  assertLufsClose(harness.messages.at(-1).integrated, expected);
 
   await harness.dispatchCommand('setAdActive', { active: false });
   await harness.dispatchCommand('resetMeasurement');
+  // Windows spanning the end of the ad stay out even across a reset: the
+  // first three sub-blocks form no window, then four windows are dropped.
+  for (let i = 0; i < 7; i++) harness.emitMeasurementBlock(0.25);
+  assert.equal(harness.messages.at(-1).integrated, -Infinity);
   harness.emitMeasurementBlock(0.25);
   assert.equal(harness.messages.at(-1).integrated, u.meanSquareToLufs(0.25));
+});
+
+test('page bridge drops exactly the windows that span the end of an ad', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.messages.length = 0;
+
+  // Long enough that the ad-start rollback cannot take every window.
+  const content = Array.from({ length: 60 }, (_, i) => 0.01 + i * 0.0005);
+  for (const ms of content) harness.emitMeasurementBlock(ms);
+  assert.ok(Number.isFinite(expectedIntegrated(content)));
+
+  await harness.dispatchCommand('setAdActive', { active: true });
+  const kept = gatingWindows(content).slice(0, -AD_START_ROLLBACK);
+  assert.ok(kept.length > 0);
+  const beforeAd = u.gatedIntegratedLufs(kept);
+  harness.emitMeasurementBlock(1.0);
+  assert.ok(Math.abs(harness.messages.at(-1).integrated - beforeAd) < 1e-12);
+
+  // The ad ends part-way through the next sub-block, so every window still
+  // holding pre-boundary audio stays out.
+  await harness.dispatchCommand('setAdActive', { active: false });
+  for (let i = 0; i < 4; i++) {
+    harness.emitMeasurementBlock(1.0);
+    assert.ok(Math.abs(harness.messages.at(-1).integrated - beforeAd) < 1e-12);
+  }
+
+  // The fifth window is clear of the boundary and counts again.
+  harness.emitMeasurementBlock(1.0);
+  const expected = u.gatedIntegratedLufs([...kept, 1.0]);
+  assert.ok(Math.abs(expected - beforeAd) > 0.1);
+  assert.ok(Math.abs(harness.messages.at(-1).integrated - expected) < 1e-12);
+});
+
+test('page bridge removes the windows appended before an ad was detected', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.messages.length = 0;
+
+  const quietBlocks = 60;
+  const adBlocks = 5;
+  // A ramp, so removing a different number of windows lands somewhere else.
+  const content = Array.from({ length: quietBlocks }, (_, i) => 0.01 + i * 0.0004);
+  for (const ms of content) harness.emitMeasurementBlock(ms);
+  const beforeAd = harness.messages.at(-1).integrated;
+
+  // The ad's first audio reaches the gate before its DOM marker appears.
+  for (let i = 0; i < adBlocks; i++) harness.emitMeasurementBlock(1.0);
+  assert.ok(harness.messages.at(-1).integrated > beforeAd + 1);
+
+  harness.logs.length = 0;
+  await harness.dispatchCommand('setAdActive', { active: true });
+  harness.emitMeasurementBlock(1.0);
+  // The cap leaves the oldest windows, which never saw the ad.
+  const emittedAll = [...content, ...Array(adBlocks).fill(1.0)];
+  const kept = gatingWindows(emittedAll).slice(0, -AD_START_ROLLBACK);
+  assert.equal(kept.length, gatingWindows(emittedAll).length - AD_START_ROLLBACK);
+  assertLufsClose(harness.messages.at(-1).integrated, u.gatedIntegratedLufs(kept));
+
+  // The removed windows are reported so their level can be read.
+  const rollback = harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback');
+  assert.equal(rollback.length, 1);
+  assert.equal(rollback[0][1].removed, AD_START_ROLLBACK);
+  assert.equal(rollback[0][1].exhausted, true);
+  // Oldest first, and the values are the windows that were actually removed.
+  const removedWindows = gatingWindows(emittedAll)
+    .slice(-AD_START_ROLLBACK)
+    .map((window) => Number(u.meanSquareToLufs(window).toFixed(2)));
+  // The log object comes from the script's realm, so copy before comparing.
+  assert.deepEqual(Array.from(rollback[0][1].windowLufs), removedWindows);
+
+  // Nothing is removed twice, and the seeded sample is never removed.
+  const seeded = createPageBridgeHarness();
+  await seeded.startMeasurement();
+  await seeded.dispatchCommand('resetMeasurement', { initialIntegratedLufs: -20 });
+  seeded.messages.length = 0;
+  for (let i = 0; i < 4; i++) seeded.emitMeasurementBlock(1.0);
+  await seeded.dispatchCommand('setAdActive', { active: true });
+  seeded.emitMeasurementBlock(1.0);
+  assert.ok(Math.abs(seeded.messages.at(-1).integrated - (-20)) < 1e-12);
+});
+
+test('page bridge starts a fresh gating window after the video is replaced', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.messages.length = 0;
+
+  // Three sub-blocks of the old element: not a window yet.
+  for (let i = 0; i < 3; i++) harness.emitMeasurementBlock(1.0);
+  assert.equal(harness.messages.at(-1).integrated, -Infinity);
+
+  await harness.replaceVideo();
+  for (let i = 0; i < 3; i++) harness.emitMeasurementBlock(0.01);
+  assert.equal(harness.messages.at(-1).integrated, -Infinity);
+
+  harness.emitMeasurementBlock(0.01);
+  assert.ok(Math.abs(harness.messages.at(-1).integrated - u.meanSquareToLufs(0.01)) < 1e-12);
+});
+
+test('page bridge does not take the recent content level out with the ad', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  const ms = (lufs) => Math.pow(10, (lufs + 0.691) / 10);
+  const emitted = [
+    ...Array(60).fill(ms(-30)),
+    ...Array(50).fill(ms(-15)),
+    ...Array(AD_START_ROLLBACK).fill(ms(-10))
+  ];
+  for (const value of emitted) harness.emitMeasurementBlock(value);
+
+  await harness.dispatchCommand('setAdActive', { active: true });
+  harness.emitMeasurementBlock(ms(-10));
+
+  // Only the windows holding ad audio go. Reaching further back would take the
+  // content that set the gate's population with them.
+  const expected = u.gatedIntegratedLufs(gatingWindows(emitted).slice(0, -AD_START_ROLLBACK));
+  assert.ok(expected > -20, 'the recent loud content drives the result');
+  assertLufsClose(harness.messages.at(-1).integrated, expected);
+});
+
+test('page bridge rolls back after the ring buffer has started evicting', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  const quiet = 0.01;
+  const ringWindows = 60 * 60 * 10;
+  for (let i = 0; i < ringWindows + 3; i++) harness.emitMeasurementBlock(quiet);
+  harness.messages.length = 0;
+
+  for (let i = 0; i < AD_START_ROLLBACK; i++) harness.emitMeasurementBlock(1.0);
+  const contaminated = harness.messages.at(-1).integrated;
+  assert.ok(contaminated > u.meanSquareToLufs(quiet) + 0.03);
+
+  await harness.dispatchCommand('setAdActive', { active: true });
+  harness.emitMeasurementBlock(1.0);
+  assert.ok(Math.abs(harness.messages.at(-1).integrated - u.meanSquareToLufs(quiet)) < 1e-12);
+});
+
+test('page bridge counts rollback budget from the last reset only', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  for (let i = 0; i < 20; i++) harness.emitMeasurementBlock(0.5);
+
+  await harness.dispatchCommand('resetMeasurement', { initialIntegratedLufs: -20 });
+  harness.messages.length = 0;
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(1.0);
+
+  await harness.dispatchCommand('setAdActive', { active: true });
+  harness.emitMeasurementBlock(1.0);
+  // One window existed since the reset; the seeded sample is not one of them.
+  assert.ok(Math.abs(harness.messages.at(-1).integrated - (-20)) < 1e-12);
+});
+
+test('page bridge rolls back once per ad, not once per detection', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  for (let i = 0; i < 20; i++) harness.emitMeasurementBlock(0.01);
+  harness.messages.length = 0;
+  harness.logs.length = 0;
+
+  await harness.dispatchCommand('setAdActive', { active: true });
+  await harness.dispatchCommand('setAdActive', { active: true });
+  harness.emitMeasurementBlock(1.0);
+  const rollbacks = harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback');
+  assert.equal(rollbacks.length, 1);
+});
+
+test('page bridge removes a window sitting exactly on the absolute gate', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  const atGate = Math.pow(10, (-70 + 0.691) / 10);
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(atGate);
+  assert.ok(Math.abs(harness.messages.at(-1).integrated - (-70)) < 1e-12);
+
+  await harness.dispatchCommand('setAdActive', { active: true });
+  harness.emitMeasurementBlock(atGate);
+  // Removed from the index as well as the ring, or it haunts the gate forever.
+  assert.equal(harness.messages.at(-1).integrated, -Infinity);
+});
+
+test('page bridge keeps a zero player volume out of the measurement', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.setVolume(0);
+  for (let i = 0; i < 8; i++) harness.emitMeasurementBlock(0.01);
+
+  // Dividing by a zero volume would put Infinity in the index, where it stays:
+  // every later value reads back as -Infinity.
+  harness.setVolume(1);
+  for (let i = 0; i < 8; i++) harness.emitMeasurementBlock(0.01);
+  assert.ok(Math.abs(harness.messages.at(-1).integrated - u.meanSquareToLufs(0.01)) < 1e-9);
+});
+
+test('page bridge holds the boundary skip open across an ad', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(0.01);
+  harness.setVolume(0.5);
+  harness.logs.length = 0;
+
+  await harness.dispatchCommand('setAdActive', { active: true });
+  for (let i = 0; i < 6; i++) harness.emitMeasurementBlock(0.01);
+  assert.equal(harness.logs.filter((e) => e[0] === '[TCV] gate resumed').length, 0);
+});
+
+test('page bridge restarts the skip count when a boundary re-arms', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(0.01);
+  harness.setVolume(0.5);
+  harness.logs.length = 0;
+
+  harness.emitMeasurementBlock(0.01);
+  harness.emitMeasurementBlock(0.01);
+  harness.setVolume(0.4);
+  for (let i = 0; i < 3; i++) harness.emitMeasurementBlock(0.01);
+  assert.equal(harness.logs.filter((e) => e[0] === '[TCV] gate resumed').length, 0);
+  harness.emitMeasurementBlock(0.01);
+  const resumed = harness.logs.filter((e) => e[0] === '[TCV] gate resumed');
+  assert.equal(resumed.length, 1);
+  assert.equal(resumed[0][1].dropped, 6);
+});
+
+test('page bridge references the measurement to player volume 1.0', async () => {
+  const harness = createPageBridgeHarness();
+  harness.setVolume(0.5);
+  await harness.startMeasurement();
+  harness.messages.length = 0;
+
+  const ms = 0.01;
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(ms);
+  // Halving the player volume quarters the tapped mean square, so the
+  // reported value is the same as at volume 1.0.
+  assert.ok(Math.abs(harness.messages.at(-1).integrated - u.meanSquareToLufs(ms / 0.25)) < 1e-12);
+  assert.ok(Math.abs(harness.messages.at(-1).momentary - u.meanSquareToLufs(ms / 0.25)) < 1e-12);
+});
+
+test('page bridge reports a boundary once, not once per volume step', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(0.01);
+  harness.logs.length = 0;
+
+  // A drag down the slider fires volumechange per step.
+  for (let step = 100; step >= 90; step--) harness.setVolume(step / 100);
+  const arms = harness.logs.filter((entry) => entry[0] === '[TCV] gate boundary');
+  assert.equal(arms.length, 1);
+  assert.equal(arms[0][1].reason, 'volume');
+
+  for (let i = 0; i < 3; i++) harness.emitMeasurementBlock(0.01);
+  assert.equal(harness.logs.filter((e) => e[0] === '[TCV] gate resumed').length, 0);
+  harness.emitMeasurementBlock(0.01);
+  const resumed = harness.logs.filter((entry) => entry[0] === '[TCV] gate resumed');
+  assert.equal(resumed.length, 1);
+  assert.equal(resumed[0][1].dropped, 4);
+  assert.equal(resumed[0][1].windowLufs.length, 4);
+
+  // A different boundary is still reported while a skip is armed, and carries
+  // what the skip it replaced had dropped so far.
+  harness.setVolume(0.5);
+  harness.emitMeasurementBlock(0.01);
+  harness.logs.length = 0;
+  await harness.dispatchCommand('setAdActive', { active: true });
+  await harness.dispatchCommand('setAdActive', { active: false });
+  const adArms = harness.logs.filter((entry) => entry[0] === '[TCV] gate boundary');
+  assert.equal(adArms.length, 1);
+  assert.equal(adArms[0][1].reason, 'ad-end');
+  assert.equal(adArms[0][1].superseded, 'volume');
+  assert.equal(adArms[0][1].droppedBefore, 1);
+});
+
+test('page bridge ignores a volumechange that repeats the current value', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(0.01);
+  harness.logs.length = 0;
+
+  const armCount = () => harness.logs.filter((e) => e[0] === '[TCV] gate boundary').length;
+
+  harness.setVolume(0.5);
+  assert.equal(armCount(), 1);
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(0.01);
+  assert.equal(harness.logs.filter((e) => e[0] === '[TCV] gate resumed').length, 1);
+  harness.logs.length = 0;
+
+  // The player rewriting the value it already had leaves the signal alone.
+  harness.setVolume(0.5);
+  harness.setVolume(0.5);
+  assert.equal(armCount(), 0);
+  harness.emitMeasurementBlock(0.01);
+  assert.equal(harness.logs.filter((e) => e[0] === '[TCV] gate resumed').length, 0);
+
+  // Muting changes the tapped signal without changing the volume value.
+  harness.setMuted(true);
+  assert.equal(armCount(), 1);
+});
+
+test('page bridge drops the windows that span a volume change', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.messages.length = 0;
+
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(0.01);
+  const beforeChange = harness.messages.at(-1).integrated;
+  assert.ok(Math.abs(beforeChange - u.meanSquareToLufs(0.01)) < 1e-12);
+
+  harness.setVolume(0.5);
+  for (let i = 0; i < 4; i++) {
+    harness.emitMeasurementBlock(0.01);
+    assert.ok(Math.abs(harness.messages.at(-1).integrated - beforeChange) < 1e-12);
+  }
+
+  harness.emitMeasurementBlock(0.01);
+  const expected = u.gatedIntegratedLufs([0.01, 0.04]);
+  assert.ok(Math.abs(harness.messages.at(-1).integrated - expected) < 1e-12);
 });
 
 test('page bridge applies the Integrated absolute boundary and re-evaluates the relative gate', async () => {
@@ -2494,25 +3221,34 @@ test('page bridge applies the Integrated absolute boundary and re-evaluates the 
   harness.messages.length = 0;
   const absoluteGateMeanSquare = Math.pow(10, (-70 + 0.691) / 10);
 
+  // A window one ULP below the absolute gate is excluded; NaN never reaches it.
   harness.emitMeasurementBlock(NaN);
-  harness.emitMeasurementBlock(absoluteGateMeanSquare * (1 - 1e-6));
-  harness.emitMeasurementBlock(absoluteGateMeanSquare);
-
+  for (let i = 0; i < 4; i++) {
+    harness.emitMeasurementBlock(absoluteGateMeanSquare * (1 - 1e-6));
+  }
   let measurements = harness.messages.filter((message) => message.event === 'lufs');
-  assert.equal(measurements.length, 2);
-  assert.equal(measurements[0].integrated, -Infinity);
-  assert.ok(Math.abs(measurements[1].integrated - (-70)) < 1e-12);
+  assert.equal(measurements.length, 4);
+  assert.equal(measurements.at(-1).integrated, -Infinity);
+
+  // A window exactly at the gate is kept.
+  await harness.dispatchCommand('resetMeasurement');
+  harness.messages.length = 0;
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(absoluteGateMeanSquare);
+  assert.ok(Math.abs(harness.messages.at(-1).integrated - (-70)) < 1e-12);
 
   await harness.dispatchCommand('resetMeasurement');
   harness.messages.length = 0;
-  const relativeBlocks = [1.0, 0.1, 0.055 * (1 - 1e-6)];
+  const relativeBlocks = [1.0, 1.0, 1.0, 1.0, 0.1, 0.1, 0.1, 0.1, 0.055, 0.055, 0.055, 0.055];
   for (const ms of relativeBlocks) harness.emitMeasurementBlock(ms);
 
   measurements = harness.messages.filter((message) => message.event === 'lufs');
   for (let i = 0; i < relativeBlocks.length; i++) {
-    const expected = u.gatedIntegratedLufs(relativeBlocks.slice(0, i + 1));
-    assert.ok(Math.abs(measurements[i].integrated - expected) < 1e-12);
+    assertLufsClose(measurements[i].integrated, expectedIntegrated(relativeBlocks.slice(0, i + 1)));
   }
+  // The relative gate moved as the quiet windows arrived: the last window sits
+  // below it and is excluded from the reported value.
+  const windows = gatingWindows(relativeBlocks);
+  assert.ok(u.gatedIntegratedLufs(windows) > u.meanSquareToLufs(windows.at(-1)));
 });
 
 test('page bridge indexed gate matches the array oracle across varied blocks', async () => {
@@ -2529,7 +3265,7 @@ test('page bridge indexed gate matches the array oracle across varied blocks', a
     blocks.push(ms);
     harness.emitMeasurementBlock(ms);
     const actual = harness.messages.at(-1).integrated;
-    const expected = u.gatedIntegratedLufs(blocks);
+    const expected = expectedIntegrated(blocks);
     if (expected === -Infinity) assert.equal(actual, -Infinity);
     else assert.ok(Math.abs(actual - expected) < 1e-10);
   }
@@ -2539,23 +3275,25 @@ test('page bridge indexed gate evicts the oldest block at the retained-window li
   const harness = createPageBridgeHarness();
   await harness.startMeasurement();
   harness.messages.length = 0;
-  const maximumBlocks = 60 * 60 * 10;
-  const retainedBlocks = [];
+  const maximumWindows = 60 * 60 * 10;
+  const emitted = [];
   let randomState = 0x87654321;
 
   for (let i = 0; i < 128; i++) {
     randomState = (Math.imul(randomState, 1103515245) + 12345) >>> 0;
-    harness.emitMeasurementBlock(0.01 + randomState / 0xffffffff);
+    const ms = 0.01 + randomState / 0xffffffff;
+    emitted.push(ms);
+    harness.emitMeasurementBlock(ms);
   }
-  for (let i = 0; i < maximumBlocks; i++) {
-    const ms = 0.01 + i / maximumBlocks;
-    retainedBlocks.push(ms);
+  for (let i = 0; i < maximumWindows; i++) {
+    const ms = 0.01 + i / maximumWindows;
+    emitted.push(ms);
     harness.emitMeasurementBlock(ms);
     if (harness.messages.length > 1000) harness.messages.length = 0;
   }
 
   const actual = harness.messages.at(-1).integrated;
-  const expected = u.gatedIntegratedLufs(retainedBlocks);
+  const expected = u.gatedIntegratedLufs(gatingWindows(emitted).slice(-maximumWindows));
   assert.ok(Math.abs(actual - expected) < 1e-10);
 });
 
@@ -2569,7 +3307,7 @@ test('page bridge uses saved LUFS as the initial Integrated mean', async () => {
   await harness.dispatchCommand('resetMeasurement', {
     initialIntegratedLufs: savedLufs
   });
-  harness.emitMeasurementBlock(nextMeanSquare);
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(nextMeanSquare);
 
   const savedMeanSquare = Math.pow(10, (savedLufs + 0.691) / 10);
   const expected = u.meanSquareToLufs((savedMeanSquare + nextMeanSquare) / 2);
@@ -2600,7 +3338,7 @@ test('page bridge ignores invalid saved LUFS initial values', async () => {
     await harness.startMeasurement();
     harness.messages.length = 0;
     await harness.dispatchCommand('resetMeasurement', { initialIntegratedLufs });
-    harness.emitMeasurementBlock(0.25);
+    for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(0.25);
     assert.equal(harness.messages.at(-1).integrated, u.meanSquareToLufs(0.25));
   }
 
@@ -2608,7 +3346,7 @@ test('page bridge ignores invalid saved LUFS initial values', async () => {
   await boundaryHarness.startMeasurement();
   boundaryHarness.messages.length = 0;
   await boundaryHarness.dispatchCommand('resetMeasurement', { initialIntegratedLufs: -70 });
-  boundaryHarness.emitMeasurementBlock(0);
+  for (let i = 0; i < 4; i++) boundaryHarness.emitMeasurementBlock(0);
   assert.ok(Math.abs(boundaryHarness.messages.at(-1).integrated - (-70)) < 1e-12);
 });
 

@@ -1,9 +1,8 @@
 // page-bridge.js — Runs in MAIN world on Twitch pages.
 // Owns the AudioContext, GainNode and K-weighted LUFS measurement pipeline.
 // Twitch publishes no loudness metadata, so the bridge measures the playing
-// <video> directly via Web Audio. It also hooks fetch to capture HLS
-// manifests (EXT-X-DATERANGE CLASS="twitch-stitched-ad") for ad detection
-// and Twitch's GraphQL responses to learn the authoritative user_id/login.
+// <video> directly via Web Audio. It also hooks fetch to read Twitch's GraphQL
+// responses for the authoritative user_id/login.
 
 (() => {
   'use strict';
@@ -79,7 +78,26 @@
   const BLOCK_SEC = 0.1;
   const MOMENTARY_BLOCKS = 4;
   const SHORT_BLOCKS = 30;
+  // BS.1770-4 gates 400ms blocks overlapping by 75%: one gating window per
+  // 100ms sub-block, formed from the most recent GATE_BLOCKS sub-blocks.
+  const GATE_BLOCKS = 4;
   const MAX_INTEGRATED_BLOCKS = 60 * 60 * 10;
+  // A gating window that spans the end of an ad or a volume change carries
+  // audio it cannot represent. Windows stay out of Integrated until they are
+  // clear of the boundary.
+  const BOUNDARY_SKIP_BLOCKS = GATE_BLOCKS;
+  let boundarySkipBlocks = 0;
+  let boundarySkipReason = '';
+  let boundarySkipDropped = 0;
+  let boundarySkipLufs = [];
+  let lastVolumeState = '';
+  // The ad marker appears in the DOM after the ad's first audio, so the windows
+  // appended just before it are removed again. The count covers the observed
+  // marker delay and no more: content windows removed beyond it take their own
+  // level out of the gate's population, which moves the result.
+  const AD_START_ROLLBACK_BLOCKS = 5;
+  const ROLLBACK_LOG_SAMPLES = 8;
+  let windowsSinceReset = 0;
   const ABSOLUTE_GATE_MEAN_SQUARE = Math.pow(10, (-70 + 0.691) / 10);
   const RELATIVE_GATE_FACTOR = Math.pow(10, -10 / 10);
   const integratedBlocks = new Array(MAX_INTEGRATED_BLOCKS);
@@ -244,6 +262,17 @@
     }, '*');
   }
 
+  function volumeState(video) {
+    return video ? `${video.volume}|${video.muted}` : '';
+  }
+
+  function blocksMeanSquare(list, count) {
+    if (list.length < count) return null;
+    let sum = 0;
+    for (let i = list.length - count; i < list.length; i++) sum += list[i];
+    return sum / count;
+  }
+
   function blocksToLufs(list, count) {
     if (list.length === 0) return -Infinity;
     const n = Math.min(count, list.length);
@@ -263,7 +292,26 @@
 
   function updateIntegratedLufs(ms) {
     appendIntegratedBlock(ms);
+    windowsSinceReset++;
     return integratedLufs();
+  }
+
+  // Only windows appended since the last reset are removable. Removing the
+  // newest entry frees the slot the next append reuses, so a full ring is no
+  // different; what the eviction took stays gone either way.
+  function removeRecentIntegratedBlocks(count) {
+    const removed = [];
+    while (removed.length < count && windowsSinceReset > 0 && integratedBlockLength > 0) {
+      const index = (integratedBlockStart + integratedBlockLength - 1) % MAX_INTEGRATED_BLOCKS;
+      const ms = integratedBlocks[index];
+      if (ms >= ABSOLUTE_GATE_MEAN_SQUARE) {
+        absoluteGatedRoot = removeTreeValue(absoluteGatedRoot, ms);
+      }
+      integratedBlockLength--;
+      windowsSinceReset--;
+      removed.push(Number(msToLufs(ms).toFixed(2)));
+    }
+    return removed.reverse();
   }
 
   function resetMeasurement(initialIntegratedLufs, epoch) {
@@ -272,6 +320,7 @@
     integratedBlockStart = 0;
     integratedBlockLength = 0;
     absoluteGatedRoot = null;
+    windowsSinceReset = 0;
     if (!Number.isFinite(initialIntegratedLufs)) return;
     const initialMeanSquare = Math.pow(10, (initialIntegratedLufs + 0.691) / 10);
     if (!Number.isFinite(initialMeanSquare)) return;
@@ -355,7 +404,9 @@
       console.info('[TCV] previous video detached from DOM; resetting attachment');
       try { sourceNode?.disconnect(); } catch (_) {}
       try { workletNode?.disconnect(); } catch (_) {}
+      attachedVideo.removeEventListener('volumechange', onVolumeChange);
       attachedVideo = null;
+      lastVolumeState = '';
       sourceNode = null;
       workletNode = null;
     }
@@ -408,7 +459,16 @@
     }
     sourceNode.connect(gain);
     attachedVideo = video;
-    console.info('[TCV] attached to video', { sampleRate: c.sampleRate, state: c.state });
+    // A gating window must not span two media elements.
+    blocks.length = 0;
+    lastVolumeState = volumeState(video);
+    video.addEventListener('volumechange', onVolumeChange);
+    console.info('[TCV] attached to video', {
+      sampleRate: c.sampleRate,
+      state: c.state,
+      videoTime: Number(video.currentTime.toFixed(3)),
+      volume: video.volume
+    });
 
     if (workletReady) {
       buildMeasurementChain(c);
@@ -420,21 +480,81 @@
 
   let receivedFirstBlock = false;
 
+  // The measurement taps the element ahead of the player's own volume, so the
+  // viewer's volume setting scales it. Measurements are referenced to volume 1.
+  function normalizeForVolume(ms) {
+    const volume = attachedVideo?.volume;
+    if (!Number.isFinite(volume) || volume <= 0 || volume >= 1) return ms;
+    return ms / (volume * volume);
+  }
+
   function onBlockMs(ev) {
-    const ms = ev.data?.ms;
-    if (!Number.isFinite(ms)) return;
+    const raw = ev.data?.ms;
+    if (!Number.isFinite(raw)) return;
     if (!receivedFirstBlock) {
       receivedFirstBlock = true;
       console.info('[TCV] first measurement block received');
     }
+    const ms = normalizeForVolume(raw);
     blocks.push(ms);
     if (blocks.length > Math.max(MOMENTARY_BLOCKS, SHORT_BLOCKS) * 4) {
       blocks.splice(0, blocks.length - SHORT_BLOCKS * 4);
     }
     const mom = blocksToLufs(blocks, MOMENTARY_BLOCKS);
     const st = blocksToLufs(blocks, SHORT_BLOCKS);
-    const intg = adActive ? integratedLufs() : updateIntegratedLufs(ms);
+    const gateWindow = blocksMeanSquare(blocks, GATE_BLOCKS);
+    // Credit is spent on windows, so a reset that empties the sub-block buffer
+    // does not consume it before a window exists.
+    const skipBoundary = boundarySkipBlocks > 0 && gateWindow !== null;
+    if (skipBoundary && !adActive) {
+      boundarySkipBlocks--;
+      boundarySkipDropped++;
+      boundarySkipLufs.push(Number(msToLufs(gateWindow).toFixed(2)));
+      if (boundarySkipLufs.length > BOUNDARY_SKIP_BLOCKS) boundarySkipLufs.shift();
+      if (boundarySkipBlocks === 0) {
+        console.info('[TCV] gate resumed', {
+          reason: boundarySkipReason,
+          dropped: boundarySkipDropped,
+          windowLufs: boundarySkipLufs
+        });
+      }
+    }
+    const intg = (adActive || skipBoundary || gateWindow === null)
+      ? integratedLufs()
+      : updateIntegratedLufs(gateWindow);
     postLufs(mom, st, intg);
+  }
+
+  // A slider drag fires volumechange per step. Report the start of a skip and
+  // its end, not every step and every window.
+  function armBoundarySkip(reason) {
+    if (boundarySkipBlocks === 0 || boundarySkipReason !== reason) {
+      // A skip cut short by a different boundary never reports its own total.
+      const superseded = boundarySkipBlocks > 0
+        ? { superseded: boundarySkipReason, droppedBefore: boundarySkipDropped }
+        : null;
+      boundarySkipDropped = 0;
+      boundarySkipLufs = [];
+      console.info('[TCV] gate boundary', {
+        reason,
+        adActive,
+        volume: attachedVideo ? attachedVideo.volume : null,
+        muted: attachedVideo ? attachedVideo.muted : null,
+        videoTime: attachedVideo ? Number(attachedVideo.currentTime.toFixed(3)) : null,
+        ...(superseded || {})
+      });
+    }
+    boundarySkipBlocks = BOUNDARY_SKIP_BLOCKS;
+    boundarySkipReason = reason;
+  }
+
+  // volumechange also fires when the player rewrites the value it already had.
+  // Only an actual change alters the tapped signal.
+  function onVolumeChange() {
+    const state = volumeState(attachedVideo);
+    if (state === lastVolumeState) return;
+    lastVolumeState = state;
+    armBoundarySkip('volume');
   }
 
   function setGain(value) {
@@ -456,11 +576,27 @@
   function setAdActive(active, range) {
     if (adActive === !!active) return;
     adActive = !!active;
+    if (adActive) {
+      const removed = removeRecentIntegratedBlocks(AD_START_ROLLBACK_BLOCKS);
+      const half = ROLLBACK_LOG_SAMPLES / 2;
+      const truncated = removed.length > ROLLBACK_LOG_SAMPLES;
+      console.info('[TCV] ad start rollback', {
+        removed: removed.length,
+        requested: AD_START_ROLLBACK_BLOCKS,
+        // At the budget the removal stopped short of the ad's own start.
+        exhausted: removed.length === AD_START_ROLLBACK_BLOCKS,
+        windowsSinceReset,
+        windowLufs: truncated
+          ? [...removed.slice(0, half), ...removed.slice(-half)]
+          : removed,
+        ...(truncated ? { truncated: true } : {})
+      });
+    } else armBoundarySkip('ad-end');
     applyEffectiveGain();
     postAd(adActive, range);
   }
 
-  // ── Fetch hook: HLS manifests + GraphQL ─────────────────────────────
+  // ── Fetch hook: GraphQL ─────────────────────────────────────────────
 
   function currentContentIdentity() {
     try {
@@ -485,43 +621,13 @@
     let url = '';
     try { url = (typeof args[0] === 'string') ? args[0] : (args[0]?.url || ''); } catch (_) {}
 
-    if (url.includes('usher.ttvnw.net') || url.endsWith('.m3u8')) {
-      result.then((resp) => resp.clone().text()).then((text) => {
-        parseManifestForAds(text);
-      }).catch(() => {});
-    } else if (url.includes('gql.twitch.tv')) {
+    if (url.includes('gql.twitch.tv')) {
       result.then((resp) => resp.clone().json()).then((data) => {
         extractOwnerFromGraphQL(data, requestIdentity);
       }).catch(() => {});
     }
     return result;
   };
-
-  function parseManifestForAds(text) {
-    if (typeof text !== 'string') return;
-    const ranges = [];
-    const lines = text.split(/\r?\n/);
-    for (const line of lines) {
-      if (!line.startsWith('#EXT-X-DATERANGE:')) continue;
-      const attrs = {};
-      const body = line.slice('#EXT-X-DATERANGE:'.length);
-      const re = /([A-Z0-9-]+)=("([^"]*)"|[^,]*)/g;
-      let m;
-      while ((m = re.exec(body)) !== null) {
-        attrs[m[1]] = m[3] !== undefined ? m[3] : m[2];
-      }
-      const isAd = attrs.CLASS === 'twitch-stitched-ad'
-        || (typeof attrs.ID === 'string' && attrs.ID.startsWith('stitched-ad-'));
-      if (isAd) ranges.push(attrs);
-    }
-    if (ranges.length > 0) {
-      window.postMessage({
-        type: MSG_OUT,
-        event: 'manifest-ad',
-        ranges
-      }, '*');
-    }
-  }
 
   function extractOwnerFromGraphQL(payload, requestIdentity) {
     const items = Array.isArray(payload) ? payload : [payload];

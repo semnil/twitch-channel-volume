@@ -11,7 +11,7 @@ Twitch does not publish any loudness metadata (no `loudnessDb`-equivalent API, n
 - **Measurement reset**: Discards the current media kind's measurement history and restarts it from zero. The stored value tracks the restarted measurement from its first block onward; saved gains are unchanged
 - **Per-channel manual gain**: Save gain per Live / VOD / Clip kind; applied automatically on revisit and used while Auto is waiting for measurement
 - **Global Auto defaults**: Independent Live / VOD / Clip defaults apply only when a channel kind has neither an explicit Auto choice nor a manual gain
-- **Ad-break handling**: Detects `EXT-X-DATERANGE CLASS="twitch-stitched-ad"` in HLS manifests and `[data-a-target="video-ad-countdown"]` in the DOM; applies a separate gain offset during ads
+- **Ad-break handling**: Detects the player's ad indicator in the DOM and applies a separate gain offset during ads
 - **0–600 % gain range** via Web Audio `GainNode` (HTML5 `video.volume` would cap at 1.0)
 - **No external dependencies** — pure JavaScript, no bundler
 

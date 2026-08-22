@@ -8,10 +8,12 @@ const CHANNEL_SEQUENCE_KEY = 'channelVolumeSequence';
 const DEFAULT_TARGET_LUFS = -18;
 const DEFAULT_AD_GAIN_DB = -6;
 const DEFAULT_AUTO_APPLY_LOUDNESS = false;
+// Saved LUFS carrying this reference was measured with the player volume
+// divided out, so it is comparable across volume settings.
+const LUFS_REFERENCE_VOLUME_1 = 'volume1';
+
 const ABSOLUTE_GATE_LUFS = -70;
 const RELATIVE_GATE_LU = -10;
-const MOMENTARY_WINDOW_SEC = 0.4;
-const SHORT_TERM_WINDOW_SEC = 3.0;
 const DISPLAY_UPDATE_INTERVAL_MS = 1000;
 const MIN_GAIN = 0;
 const MAX_GAIN = 6;
@@ -67,7 +69,7 @@ function extractAutoGainForKind(entry, kind) {
 }
 
 function extractAutoDisplayGain(entry, kind) {
-  return extractAutoGainForKind(entry, kind) ?? extractGainForKind(entry, kind);
+  return referencedAutoGainForKind(entry, kind) ?? extractGainForKind(entry, kind);
 }
 
 function autoApplyFieldForKind(kind) {
@@ -96,12 +98,19 @@ function resolveAutoApplySetting(entry, kind, defaultValue) {
   return !!defaultValue;
 }
 
+// A saved Auto gain was computed from a measurement. Without the reference the
+// player volume behind that measurement is unknown, so it is not applied.
+function referencedAutoGainForKind(entry, kind) {
+  if (entry?.autoGainRef?.[kind] !== LUFS_REFERENCE_VOLUME_1) return null;
+  return extractAutoGainForKind(entry, kind);
+}
+
 function resolvePreferredGain(entry, kind, defaultAuto, measuredLufs, targetLufs) {
   const autoApply = resolveAutoApplySetting(entry, kind, defaultAuto);
   const manualGain = extractGainForKind(entry, kind);
   const gain = autoApply && Number.isFinite(measuredLufs)
     ? calcGain(measuredLufs, targetLufs)
-    : (autoApply ? extractAutoGainForKind(entry, kind) : null) ?? manualGain ?? 1.0;
+    : (autoApply ? referencedAutoGainForKind(entry, kind) : null) ?? manualGain ?? 1.0;
   return { autoApply, gain };
 }
 
@@ -111,6 +120,13 @@ function calcGain(measuredLufs, targetLufs) {
   const gain = Math.pow(10, compensationDb / 20);
   if (!Number.isFinite(gain)) return 1.0;
   return Math.max(MIN_GAIN, Math.min(MAX_GAIN, gain));
+}
+
+// Without a gated measurement there is nothing that justifies a boost, so the
+// suggestion stays at unity.
+function suggestedGain(integratedLufs, targetLufs) {
+  if (!Number.isFinite(integratedLufs) || !Number.isFinite(targetLufs)) return 1.0;
+  return calcGain(integratedLufs, targetLufs);
 }
 
 function esc(s) {
@@ -203,49 +219,6 @@ function twitchChannelUrlForEntry(channelId, entry) {
   return /^[a-z0-9_]+$/.test(login) ? `https://www.twitch.tv/${login}` : '';
 }
 
-// HLS EXT-X-DATERANGE parsing ------------------------------------------
-
-function parseDateRange(line) {
-  if (!line.startsWith('#EXT-X-DATERANGE:')) return null;
-  const body = line.slice('#EXT-X-DATERANGE:'.length);
-  const attrs = {};
-  // Attribute list: KEY=VALUE pairs; values may be quoted strings.
-  const re = /([A-Z0-9-]+)=("([^"]*)"|[^,]*)/g;
-  let m;
-  while ((m = re.exec(body)) !== null) {
-    attrs[m[1]] = m[3] !== undefined ? m[3] : m[2];
-  }
-  return attrs;
-}
-
-function isAdDateRange(attrs) {
-  if (!attrs) return false;
-  if (attrs.CLASS === 'twitch-stitched-ad') return true;
-  if (typeof attrs.ID === 'string' && attrs.ID.startsWith('stitched-ad-')) return true;
-  return false;
-}
-
-function parseAdRangesFromManifest(text) {
-  const ranges = [];
-  if (typeof text !== 'string') return ranges;
-  const lines = text.split(/\r?\n/);
-  for (const line of lines) {
-    if (!line.startsWith('#EXT-X-DATERANGE:')) continue;
-    const a = parseDateRange(line);
-    if (!isAdDateRange(a)) continue;
-    const start = a['START-DATE'] ? Date.parse(a['START-DATE']) : NaN;
-    const dur = a.DURATION ? Number(a.DURATION) : NaN;
-    ranges.push({
-      id: a.ID || '',
-      commercialId: a['X-TV-TWITCH-AD-COMMERCIAL-ID'] || '',
-      rollType: a['X-TV-TWITCH-AD-ROLL-TYPE'] || '',
-      startMs: Number.isFinite(start) ? start : null,
-      durationSec: Number.isFinite(dur) ? dur : null
-    });
-  }
-  return ranges;
-}
-
 // K-weighting IIR coefficients (BS.1770-4, normalized for 48 kHz) -----
 
 const K_PRE_48K = {
@@ -334,18 +307,17 @@ if (typeof module !== 'undefined' && module.exports) {
     SETTINGS_KEY, SETTINGS_MUTATION_MESSAGE,
     CHANNEL_VOLUMES_KEY, CHANNEL_ALIASES_KEY, CHANNEL_SEQUENCE_KEY,
     DEFAULT_TARGET_LUFS, DEFAULT_AD_GAIN_DB, DEFAULT_AUTO_APPLY_LOUDNESS,
-    ABSOLUTE_GATE_LUFS, RELATIVE_GATE_LU,
-    MOMENTARY_WINDOW_SEC, SHORT_TERM_WINDOW_SEC, DISPLAY_UPDATE_INTERVAL_MS,
+    ABSOLUTE_GATE_LUFS, RELATIVE_GATE_LU, LUFS_REFERENCE_VOLUME_1,
+    DISPLAY_UPDATE_INTERVAL_MS,
     MIN_GAIN, MAX_GAIN,
     gainToPercent, percentToGain, gainToDb, dbToGain,
-    formatGain, formatAutoGain, calcGain,
+    formatGain, formatAutoGain, calcGain, suggestedGain,
     gainFieldForKind, extractGainForKind,
     autoGainFieldForKind, extractAutoGainForKind, extractAutoDisplayGain,
     autoApplyFieldForKind, autoApplyDefaultFieldForKind,
     resolveAutoApplySetting, resolvePreferredGain,
     classifyTwitchUrl, ownerMatchesTwitchContent, provisionalChannelIdForContent,
     resolveChannelIdAlias, twitchChannelUrlForEntry,
-    parseDateRange, isAdDateRange, parseAdRangesFromManifest,
     kWeightingForSampleRate, redesignBiquad,
     K_PRE_48K, K_RLB_48K,
     meanSquareToLufs, gatedIntegratedLufs

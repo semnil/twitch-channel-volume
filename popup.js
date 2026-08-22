@@ -143,7 +143,6 @@
 
     const lufs = state.lufs || {};
     setLufsCell('integrated', lufs.integrated);
-    const measured = Number.isFinite(lufs.integrated) ? lufs.integrated : lufs.shortTerm;
     const hasIntegrated = Number.isFinite(lufs.integrated);
     hasResettableMeasurement = hasIntegrated || !!state.hasSavedMeasurement;
 
@@ -155,18 +154,12 @@
     );
 
     const suggestedEl = $('suggested');
-    if (Number.isFinite(measured) && Number.isFinite(state.targetLufs)) {
-      const g = calcGain(measured, state.targetLufs);
-      lastSuggestedGain = g;
-      const fs = formatGain(g, displayUnit);
-      setCardValue(suggestedEl, fs.text, fs.unit, 'suggested');
-    } else {
-      lastSuggestedGain = null;
-      setCardValue(suggestedEl, '---', null, 'suggested unknown');
-    }
+    lastSuggestedGain = suggestedGain(lufs.integrated, state.targetLufs);
+    const fs = formatGain(lastSuggestedGain, displayUnit);
+    setCardValue(suggestedEl, fs.text, fs.unit, hasIntegrated ? 'suggested' : 'suggested unknown');
 
     const applyButton = $('applyBtn');
-    if (!currentAutoApplyLoudness && Number.isFinite(lastSuggestedGain) && ch.id) {
+    if (!currentAutoApplyLoudness && hasIntegrated && ch.id) {
       applyButton.textContent =
         msg('applyToChannelWithValue', [formatGainText(lastSuggestedGain)]);
     } else {
@@ -175,13 +168,12 @@
 
     $('applyHint').classList.toggle('error', gainSaveError);
     if (gainSaveError) {
-      applyButton.disabled = currentAutoApplyLoudness ||
-        !Number.isFinite(lastSuggestedGain) || !ch.id;
+      applyButton.disabled = currentAutoApplyLoudness || !hasIntegrated || !ch.id;
       $('applyHint').textContent = msg('gainSaveFailed');
     } else if (currentAutoApplyLoudness && ch.id) {
       applyButton.disabled = true;
       $('applyHint').textContent = msg('hintAutoApplyEnabled');
-    } else if (Number.isFinite(lastSuggestedGain) && ch.id) {
+    } else if (hasIntegrated && ch.id) {
       applyButton.disabled = false;
       $('applyHint').textContent = '';
     } else {
