@@ -4876,6 +4876,46 @@ test('page bridge measures on when the Worker constructor cannot be wrapped', as
   assert.equal(harness.messages.filter((message) => message.event === 'ad').at(-1).active, true);
 });
 
+test('page bridge keeps the break the player cued across a measurement reset', async () => {
+  const harness = createPageBridgeHarness();
+  const adState = () => harness.messages.filter((message) => message.event === 'ad').at(-1);
+  await harness.startMeasurement();
+  harness.setPlayhead(100);
+  harness.emitPlayerCue({ rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2 });
+  assert.equal(adState().active, true);
+
+  // The popup can reset the measurement, and an owner id can resolve, in the
+  // middle of a break on the same media.
+  await harness.dispatchCommand('resetMeasurement');
+  assert.equal(adState().active, true);
+  harness.emitMeasurementBlock(1.0);
+  assert.equal(adState().active, true);
+
+  harness.setPlayhead(115.3);
+  harness.emitMeasurementBlock(1.0);
+  assert.equal(adState().active, false);
+});
+
+test('page bridge drops the cued break when the media changes', async () => {
+  const harness = createPageBridgeHarness();
+  const adState = () => harness.messages.filter((message) => message.event === 'ad').at(-1);
+  await harness.startMeasurement();
+  harness.setPlayhead(100);
+  harness.emitPlayerCue({ rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2 });
+  assert.equal(adState().active, true);
+
+  await harness.dispatchCommand('mediaChanged');
+  assert.equal(adState().active, false);
+
+  // The next media may be a VOD, whose ads are cued nowhere, so the indicator
+  // is the only signal again and it carries its own delay.
+  for (let i = 0; i < 60; i++) harness.emitMeasurementBlock(0.01 + i * 0.0004);
+  harness.logs.length = 0;
+  await harness.dispatchCommand('setAdActive', { active: true });
+  const rollback = harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback');
+  assert.equal(rollback[0][1].requested, AD_START_ROLLBACK);
+});
+
 test('page bridge does not open the break before the cue says it starts', async () => {
   const harness = createPageBridgeHarness();
   const adState = () => harness.messages.filter((message) => message.event === 'ad').at(-1);
@@ -4936,27 +4976,3 @@ test('page bridge keeps the start of the break the first cue gave', async () => 
   harness.emitMeasurementBlock(1.0);
   assert.equal(adState().active, true);
 });
-
-test('page bridge stops trusting cues after a reset', async () => {
-  const harness = createPageBridgeHarness();
-  const adState = () => harness.messages.filter((message) => message.event === 'ad').at(-1);
-  await harness.startMeasurement();
-  harness.setPlayhead(100);
-  harness.emitPlayerCue({ rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2 });
-  assert.equal(adState().active, true);
-
-  // The reset drops the break along with the history it belonged to.
-  await harness.dispatchCommand('resetMeasurement');
-  assert.equal(adState().active, false);
-
-  // The next media may be a VOD, whose ads are cued nowhere, so the indicator
-  // is the only signal again and it carries its own delay.
-  for (let i = 0; i < 60; i++) harness.emitMeasurementBlock(0.01 + i * 0.0004);
-  harness.logs.length = 0;
-  await harness.dispatchCommand('setAdActive', { active: true });
-  const rollback = harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback');
-  assert.equal(rollback.length, 1);
-  assert.equal(rollback[0][1].requested, AD_START_ROLLBACK);
-  assert.equal(adState().active, true);
-});
-

@@ -534,6 +534,8 @@
     currentAutoApplyLoudness = false;
     lastLufs = { momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity };
     lastSavedAt = 0;
+    // New media: the break the player cued for the old one no longer applies.
+    sendCmd({ cmd: 'mediaChanged' });
     sendResetMeasurement();
     sendCmd({ cmd: 'attach' });
     await resolveChannel();

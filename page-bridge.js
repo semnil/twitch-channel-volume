@@ -341,11 +341,6 @@
     integratedBlockLength = 0;
     absoluteGatedRoot = null;
     windowsSinceReset = 0;
-    // New media has its own cues, and a media time from the old one means
-    // nothing against it.
-    adCueSeen = false;
-    forgetCuedBreak();
-    updateAdState();
     if (!Number.isFinite(initialIntegratedLufs)) return;
     const initialMeanSquare = Math.pow(10, (initialIntegratedLufs + 0.691) / 10);
     if (!Number.isFinite(initialMeanSquare)) return;
@@ -972,6 +967,13 @@
         break;
       case 'resetMeasurement':
         resetMeasurement(data.initialIntegratedLufs, data.epoch);
+        break;
+      case 'mediaChanged':
+        // New media has its own cues, and the times the old ones gave mean
+        // nothing against its timeline.
+        adCueSeen = false;
+        forgetCuedBreak();
+        updateAdState();
         break;
       case 'resume':
         try {
