@@ -50,7 +50,7 @@ content.js (ISOLATED world content script, document_idle)
     ├── channelVolumes: { [channelId]: { name, gainLive, gainVod, gainClip,
           autoGainLive, autoGainVod, autoGainClip,
           autoApplyLoudnessLive, autoApplyLoudnessVod, autoApplyLoudnessClip,
-          url, lastLufs, lastMeasuredAt, __fieldVersions } }
+          url, lastLufs, lastLufsRef, autoGainRef, lastMeasuredAt, __fieldVersions } }
     ├── channelVolumeAliases: { [loginOrContentProvisionalId]: canonicalOwnerId }
     └── channelVolumeSequence: フィールド更新順序の永続カウンタ
 
@@ -60,7 +60,7 @@ audio-worklet.js (page context, loaded by page-bridge.js)
 channel-store.js (service worker helper)
 ├── channelVolumes の全 read-modify-write を単一キューで直列化
 ├── gain / Auto / LUFS / delete / clear mutation を検証して適用
-├── 測定値リセットは対象種別の lastLufs と lastLufsRef だけを削除し、更新番号付きの削除状態として ID 統合後も維持
+├── 測定値リセットは対象種別の lastLufs と lastLufsRef だけを削除し (autoGainRef は残る)、更新番号付きの削除状態として ID 統合後も維持
 ├── 仮 ID → 数値 owner ID の alias を永続化し、全 mutation で正準 ID を解決
 │   (alias 転送時は仮 ID 側の name / login / url を適用しない)
 ├── 同じ login の Live 行と数値 owner 行を統合し、URL をチャンネル URL へ正規化
@@ -168,7 +168,7 @@ options.html / options.js
 - **CM 区間検出**: `[data-a-target="video-ad-countdown"]` / `[data-test-selector="ad-banner-default-text"]` の有無で判定する。Twitch のプレイヤーは HLS マニフェストを blob URL の専用 Worker から取得しており、MAIN world の fetch フックからは到達できない。メディアプレイリストの URL も `.m3u8` で終わらない (`*.playlist.ttvnw.net/v1/playlist/<token>`)
 - **CM 中の挙動**: GainNode に baseline × adGainOffset (dB → gain) を適用。Integrated 計測は CM 中スキップして本編の値を保持。CM 終了時点のブロックは CM 音声を含みうるため、CM 明けはゲーティング窓が CM を離れるまでの 4 窓も Integrated から除外する。CM 開始側は DOM マーカーが CM の最初の音声より遅れて現れるため、検出時点で直近 5 窓 (0.5 秒) を取り消す。取り消す窓数は観測できたマーカーの遅れに合わせる — 本編の窓まで消すと、その水準がゲートの母集団から抜けて Integrated が動く
 - **プレイヤー音量の相殺**: 計測タップは `sourceNode` 直後で、Twitch のプレイヤー音量 (`video.volume`) はその上流に掛かる。ブロックの MS を volume² で割り、Integrated LUFS を常に音量 1.0 基準にする。視聴者がスライダーを下げても算出ゲインは上がらない。音量変更を跨ぐゲーティング窓は CM 境界と同じ仕組みで除外する
-- **保存済み LUFS の基準**: 音量 1.0 基準で測った値だけが `lastLufsRef` に基準名を持つ。基準の無い値 (拡張更新前の保存) は計測の初期サンプルに使わず、その種別の保存済み Auto gain も起動時に適用しない。手動ゲインは視聴者自身の設定なので従来どおり適用する
+- **保存済み値の基準**: 音量 1.0 基準で測った値だけが基準名を持つ。保存済み LUFS は `lastLufsRef`、保存済み Auto gain は `autoGainRef` と、それぞれ自分のフィールドの更新番号でマージされる (共用すると ID 統合で値と基準の組が入れ替わる)。基準の無い値 (拡張更新前の保存) は計測の初期サンプルに使わず、基準の無い Auto gain も起動時に適用しない。手動ゲインは視聴者自身の設定なので従来どおり適用する
 - **計測値が無い間の Suggested gain**: ゲート通過値が 1 つも無い間は `suggestedGain` が 1.0 を返し、ゲインを上げる提案をしない
 - **createMediaElementSource**: `<video>` に対し 1 回のみ呼び出し可能。他拡張 (FrankerFaceZ Compressor 等) が先に取ると失敗する。失敗した video は `WeakSet` で除外し、他の video にフォールバック。`attach-failed` イベントを post して content 側で診断可能
 - **attach のリトライ**: video 要素は document_start 時点では存在しないため、`scheduleAttach()` で 1s 間隔のループ。`clearStaleAttachment()` が DOM から消えた video を検出して再 attach を許可 (Twitch SPA で video が入れ替わるケース対応)。SPA navigation 時にも content.js が `attach` を再送
@@ -206,7 +206,7 @@ python3 pack.py
 - AudioContext may be `suspended` until first user interaction (Chrome autoplay policy) — content.js sends `resume` on first click capture
 - BS.1770 reference is 48 kHz. Chrome の AudioContext は通常 48000 だが、サンプルレート変動には redesignBiquad で対応
 - Storage keys: `autoLoudnessSettings` (target LUFS, ad gain, display unit, kind 別 Auto 既定値), `channelVolumes` (per-channel saved gains + kind 別 Auto + lastLufs cache), `channelVolumeAliases` (仮 ID → 正準 ID), `channelVolumeSequence` (永続更新番号)
-- Storage format: `channelVolumes.{id}` = `{ name, gainLive, gainVod, gainClip, autoApplyLoudnessLive, autoApplyLoudnessVod, autoApplyLoudnessClip, url, lastLufs: { live, vod, clip }, lastLufsRef: { live, vod, clip }, lastMeasuredAt, __fieldVersions }`
+- Storage format: `channelVolumes.{id}` = `{ name, gainLive, gainVod, gainClip, autoApplyLoudnessLive, autoApplyLoudnessVod, autoApplyLoudnessClip, url, lastLufs: { live, vod, clip }, lastLufsRef: { live, vod, clip }, autoGainRef: { live, vod, clip }, lastMeasuredAt, __fieldVersions }`
 - 旧形式 `{ gain }` 単一ゲインは extractGainForKind で自動マイグレーション
 - popup は `DISPLAY_UPDATE_INTERVAL_MS` ごとに getState をポーリングし LUFS / Suggested / Current カードを更新。Auto gain も同じ周期を上限として更新する。Manual slider は Auto ON の間だけ適用中 gain へ同期し、Auto OFF の通常ポーリングでは更新しない。Auto OFF では初回表示・「チャンネルに適用」・Auto 切替・表示単位変更・ユーザー操作時だけ同期する。計測自体は popup の開閉に依存せず、Twitch ページが開いている限り常時走る
 - 拡張機能の再ロードで chrome.runtime が無効化された場合、popup は `reloadPageNeeded` を表示して F5 を促す

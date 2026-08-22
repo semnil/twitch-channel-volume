@@ -118,7 +118,7 @@ function createContentHarness({
         gainVod: 0.5,
         autoApplyLoudnessVod: autoApply,
         ...(Number.isFinite(autoGain)
-          ? { autoGainVod: autoGain, lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 } }
+          ? { autoGainVod: autoGain, autoGainRef: { vod: u.LUFS_REFERENCE_VOLUME_1 } }
           : {})
       }
     },
@@ -476,7 +476,7 @@ test('resolvePreferredGain ignores an Auto gain measured at an unknown volume', 
   const entry = { autoApplyLoudnessLive: true, autoGainLive: 2.5 };
   assert.equal(u.resolvePreferredGain(entry, 'live', false, -Infinity, -18).gain, 1.0);
 
-  const referenced = { ...entry, lastLufsRef: { live: u.LUFS_REFERENCE_VOLUME_1 } };
+  const referenced = { ...entry, autoGainRef: { live: u.LUFS_REFERENCE_VOLUME_1 } };
   assert.equal(u.resolvePreferredGain(referenced, 'live', false, -Infinity, -18).gain, 2.5);
 
   // A running measurement always wins over the saved value.
@@ -546,7 +546,7 @@ test('auto-apply fields are independent for Live, VOD, and Clip', () => {
 
 test('Saved Channels shows the gain that would be applied', () => {
   const referenced = {
-    gainVod: 0.5, autoGainVod: 0.8, lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 }
+    gainVod: 0.5, autoGainVod: 0.8, autoGainRef: { vod: u.LUFS_REFERENCE_VOLUME_1 }
   };
   assert.equal(u.extractGainForKind(referenced, 'vod'), 0.5);
   assert.equal(u.extractAutoGainForKind(referenced, 'vod'), 0.8);
@@ -597,7 +597,7 @@ test('resolvePreferredGain follows current LUFS only when Auto is enabled', () =
       autoApplyLoudnessVod: true,
       gainVod: 0.5,
       autoGainVod: 0.8,
-      lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 }
+      autoGainRef: { vod: u.LUFS_REFERENCE_VOLUME_1 }
     },
     'vod',
     false,
@@ -1055,7 +1055,7 @@ test('channel store records what an Auto gain was measured against', async () =>
       reference: u.LUFS_REFERENCE_VOLUME_1
     });
     const entry = stored.channelVolumes['login:test'];
-    assert.equal(entry.lastLufsRef[kind], u.LUFS_REFERENCE_VOLUME_1);
+    assert.equal(entry.autoGainRef[kind], u.LUFS_REFERENCE_VOLUME_1);
     assert.equal(u.resolvePreferredGain(entry, kind, true, -Infinity, -18).gain, 2.5);
 
     let fresh = { channelVolumes: {} };
@@ -1069,11 +1069,11 @@ test('channel store records what an Auto gain was measured against', async () =>
       reference: u.LUFS_REFERENCE_VOLUME_1
     });
     const enabled = fresh.channelVolumes['login:test'];
-    assert.equal(enabled.lastLufsRef[kind], u.LUFS_REFERENCE_VOLUME_1);
+    assert.equal(enabled.autoGainRef[kind], u.LUFS_REFERENCE_VOLUME_1);
     assert.equal(u.resolvePreferredGain(enabled, kind, false, -Infinity, -18).gain, 1.5);
 
     await write({ operation: 'clearMeasurement', channelId: 'login:test', kind });
-    assert.equal(stored.channelVolumes['login:test'].lastLufsRef[kind], u.LUFS_REFERENCE_VOLUME_1);
+    assert.equal(stored.channelVolumes['login:test'].autoGainRef[kind], u.LUFS_REFERENCE_VOLUME_1);
   }
 });
 
@@ -1090,6 +1090,71 @@ test('channel store rejects a reference it cannot store', async () => {
     }));
   }
   assert.equal(stored.channelVolumes['login:test'], undefined);
+});
+
+test('channel store merges an Auto gain and its reference together', async () => {
+  const merge = async (seed, writes) => {
+    let stored = { channelVolumes: structuredClone(seed) };
+    const storage = {
+      async get(keys) { return readStoredKeys(stored, keys); },
+      async set(update) { stored = { ...stored, ...structuredClone(update) }; }
+    };
+    const write = channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 100);
+    for (const mutation of writes) await write(mutation);
+    await write({
+      operation: 'mergeChannelIds', fromId: 'login:x', toId: '777', kind: 'live',
+      channel: { name: 'X', login: 'x' }
+    });
+    return stored.channelVolumes['777'];
+  };
+
+  // A measurement written on the other row cannot vouch for a gain that was
+  // saved before references existed.
+  const borrowed = await merge(
+    { 777: { name: 'X', autoGainLive: 1.5 }, 'login:x': { name: 'X' } },
+    [{
+      operation: 'saveMeasurement', channelId: 'login:x', kind: 'live', lufs: -18,
+      reference: u.LUFS_REFERENCE_VOLUME_1
+    }]
+  );
+  assert.equal(borrowed.autoGainLive, 1.5);
+  assert.equal(borrowed.autoGainRef, undefined);
+  assert.equal(u.resolvePreferredGain(borrowed, 'live', true, -Infinity, -18).gain, 1.0);
+
+  // Nor can an unreferenced measurement strip a gain that has its own.
+  const kept = await merge(
+    { 777: { name: 'X' }, 'login:x': { name: 'X' } },
+    [
+      {
+        operation: 'saveMeasurement', channelId: '777', kind: 'live', lufs: -20,
+        reference: u.LUFS_REFERENCE_VOLUME_1
+      },
+      {
+        operation: 'saveAutoGain', channelId: '777', kind: 'live', autoGain: 2.5,
+        reference: u.LUFS_REFERENCE_VOLUME_1
+      },
+      { operation: 'saveMeasurement', channelId: 'login:x', kind: 'live', lufs: -21 }
+    ]
+  );
+  assert.equal(kept.autoGainLive, 2.5);
+  assert.equal(kept.autoGainRef.live, u.LUFS_REFERENCE_VOLUME_1);
+  assert.equal(u.resolvePreferredGain(kept, 'live', true, -Infinity, -18).gain, 2.5);
+
+  // When the newer gain is the unreferenced one, the reference goes with the
+  // value it described rather than staying on the row.
+  const replaced = await merge(
+    { 777: { name: 'X' }, 'login:x': { name: 'X' } },
+    [
+      {
+        operation: 'saveAutoGain', channelId: '777', kind: 'live', autoGain: 2.5,
+        reference: u.LUFS_REFERENCE_VOLUME_1
+      },
+      { operation: 'saveAutoGain', channelId: 'login:x', kind: 'live', autoGain: 1.5 }
+    ]
+  );
+  assert.equal(replaced.autoGainLive, 1.5);
+  assert.equal(replaced.autoGainRef, undefined);
+  assert.equal(u.resolvePreferredGain(replaced, 'live', true, -Infinity, -18).gain, 1.0);
 });
 
 test('channel store carries the reference onto the surviving row either way', async () => {
@@ -1139,7 +1204,7 @@ test('channel store carries the reference onto the surviving row either way', as
     });
     const merged = stored.channelVolumes['777'];
     assert.equal(merged.lastLufs, undefined);
-    assert.equal(merged.lastLufsRef.live, u.LUFS_REFERENCE_VOLUME_1);
+    assert.equal(merged.autoGainRef.live, u.LUFS_REFERENCE_VOLUME_1);
     assert.equal(u.resolvePreferredGain(merged, 'live', true, -Infinity, -18).gain, 2.5);
   }
 
@@ -1184,19 +1249,23 @@ test('channel store keeps the measurement reference with the value it describes'
   await write({ operation: 'clearMeasurement', channelId: '777', kind: 'live' });
   const afterReset = stored.channelVolumes['777'];
   assert.equal(afterReset.lastLufs, undefined);
-  assert.equal(afterReset.lastLufsRef.live, u.LUFS_REFERENCE_VOLUME_1);
+  assert.equal(afterReset.lastLufsRef, undefined);
+  assert.equal(afterReset.autoGainRef.live, u.LUFS_REFERENCE_VOLUME_1);
   assert.equal(afterReset.autoGainLive, 2.5);
   assert.equal(u.resolvePreferredGain(afterReset, 'live', true, -Infinity, -18).gain, 2.5);
 
-  // A writer that names no reference drops it, so the value it wrote is not
-  // taken for a volume-referenced one.
+  // A writer that names no reference drops the measurement's, so the value it
+  // wrote is not taken for a volume-referenced one. The Auto gain keeps its own.
   await write({
     operation: 'saveMeasurement', channelId: '777', kind: 'live', lufs: -21
   });
-  assert.equal(stored.channelVolumes['777'].lastLufsRef, undefined);
+  const unreferencedMeasurement = stored.channelVolumes['777'];
+  assert.equal(unreferencedMeasurement.lastLufs.live, -21);
+  assert.equal(unreferencedMeasurement.lastLufsRef, undefined);
+  assert.equal(unreferencedMeasurement.autoGainRef.live, u.LUFS_REFERENCE_VOLUME_1);
   assert.equal(
-    u.resolvePreferredGain(stored.channelVolumes['777'], 'live', true, -Infinity, -18).gain,
-    1.0
+    u.resolvePreferredGain(unreferencedMeasurement, 'live', true, -Infinity, -18).gain,
+    2.5
   );
 });
 

@@ -101,7 +101,7 @@ function resolveAutoApplySetting(entry, kind, defaultValue) {
 // A saved Auto gain was computed from a measurement. Without the reference the
 // player volume behind that measurement is unknown, so it is not applied.
 function referencedAutoGainForKind(entry, kind) {
-  if (entry?.lastLufsRef?.[kind] !== LUFS_REFERENCE_VOLUME_1) return null;
+  if (entry?.autoGainRef?.[kind] !== LUFS_REFERENCE_VOLUME_1) return null;
   return extractAutoGainForKind(entry, kind);
 }
 

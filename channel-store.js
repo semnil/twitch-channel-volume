@@ -78,6 +78,7 @@ function cloneEntry(entry, fallbackName) {
   const cloned = { ...(entry || { name: fallbackName }) };
   if (entry?.lastLufs) cloned.lastLufs = { ...entry.lastLufs };
   if (entry?.lastLufsRef) cloned.lastLufsRef = { ...entry.lastLufsRef };
+  if (entry?.autoGainRef) cloned.autoGainRef = { ...entry.autoGainRef };
   if (entry?.[FIELD_VERSIONS_FIELD] && typeof entry[FIELD_VERSIONS_FIELD] === 'object') {
     cloned[FIELD_VERSIONS_FIELD] = { ...entry[FIELD_VERSIONS_FIELD] };
   }
@@ -127,15 +128,31 @@ function fieldVersion(entry, field) {
 }
 
 function copyNewerField(merged, mergedVersions, source, target, field) {
+  return copyNewerFieldInner(merged, mergedVersions, source, target, field);
+}
+
+function copyNewerFieldInner(merged, mergedVersions, source, target, field) {
   const sourceHas = Object.prototype.hasOwnProperty.call(source, field);
   const targetHas = Object.prototype.hasOwnProperty.call(target, field);
   if (!sourceHas || (targetHas && fieldVersion(source, field) <= fieldVersion(target, field))) {
-    return;
+    return false;
   }
   merged[field] = source[field];
   const version = fieldVersion(source, field);
   if (version) mergedVersions[field] = version;
   else delete mergedVersions[field];
+  return true;
+}
+
+// The reference belongs to the field it describes, so it moves with whichever
+// side won that field rather than with the measurement's.
+function copyNewerAutoGain(merged, mergedRef, mergedVersions, source, target, kind) {
+  const field = storeAutoGainFieldForKind(kind);
+  const sourceWon = copyNewerField(merged, mergedVersions, source, target, field) === true;
+  const winnerRef = (sourceWon ? source.autoGainRef : target.autoGainRef) || {};
+  if (Object.prototype.hasOwnProperty.call(merged, field) && winnerRef[kind] !== undefined) {
+    mergedRef[kind] = winnerRef[kind];
+  } else delete mergedRef[kind];
 }
 
 function copyNewerLufs(mergedLufs, mergedRef, mergedVersions, source, target, kind) {
@@ -157,9 +174,8 @@ function copyNewerLufs(mergedLufs, mergedRef, mergedVersions, source, target, ki
   const winnerRef = (sourceWins ? source.lastLufsRef : target.lastLufsRef) || {};
   if (winnerHasValue) mergedLufs[kind] = winnerValue;
   else delete mergedLufs[kind];
-  // The reference describes the kind's stored numbers, which outlive the
-  // measurement itself: a reset drops the value and keeps the Auto gain.
-  if (winnerRef[kind] !== undefined) mergedRef[kind] = winnerRef[kind];
+  // The reference describes this value, so it goes wherever the value goes.
+  if (winnerHasValue && winnerRef[kind] !== undefined) mergedRef[kind] = winnerRef[kind];
   else delete mergedRef[kind];
   if (winnerVersion) mergedVersions[versionField] = winnerVersion;
   else delete mergedVersions[versionField];
@@ -167,16 +183,16 @@ function copyNewerLufs(mergedLufs, mergedRef, mergedVersions, source, target, ki
 
 // A writer that names no reference drops the one on file: the numbers it just
 // wrote were produced without it.
-function applyMeasurementReference(entry, mutation) {
+function applyMeasurementReference(entry, mutation, field) {
   if (mutation.reference !== undefined &&
       (typeof mutation.reference !== 'string' || mutation.reference.length > 32)) {
     throw new TypeError('reference must be a short string');
   }
-  const refs = { ...(entry.lastLufsRef || {}) };
+  const refs = { ...(entry[field] || {}) };
   if (mutation.reference === undefined) delete refs[mutation.kind];
   else refs[mutation.kind] = mutation.reference;
-  if (Object.keys(refs).length) entry.lastLufsRef = refs;
-  else delete entry.lastLufsRef;
+  if (Object.keys(refs).length) entry[field] = refs;
+  else delete entry[field];
 }
 
 function mergeProvisionalEntry(all, mutation) {
@@ -197,11 +213,14 @@ function mergeProvisionalEntry(all, mutation) {
   // Legacy conflicts (no version) keep the confirmed-ID value. Once the
   // single writer has assigned versions, the later field update wins no
   // matter which tab issued it.
+  const mergedAutoRef = { ...(source.autoGainRef || {}), ...(target.autoGainRef || {}) };
   for (const mergeKind of CHANNEL_MUTATION_KINDS) {
     copyNewerField(merged, mergedVersions, source, target, storeGainFieldForKind(mergeKind));
     copyNewerField(merged, mergedVersions, source, target, storeAutoFieldForKind(mergeKind));
     copyNewerField(merged, mergedVersions, source, target, storeAutoGainFieldForKind(mergeKind));
   }
+  if (Object.keys(mergedAutoRef).length) merged.autoGainRef = mergedAutoRef;
+  else delete merged.autoGainRef;
 
   const sourceLufs = source.lastLufs || {};
   const targetLufs = target.lastLufs || {};
@@ -292,7 +311,7 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
         }
         entry[storeAutoGainFieldForKind(mutation.kind)] = mutation.autoGain;
         setFieldVersion(entry, storeAutoGainFieldForKind(mutation.kind), mutation.sequence);
-        applyMeasurementReference(entry, mutation);
+        applyMeasurementReference(entry, mutation, 'autoGainRef');
       }
       all[mutation.channelId] = entry;
       break;
@@ -304,7 +323,7 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
       const entry = cloneEntry(all[mutation.channelId], mutation.channel?.name || mutation.channelId);
       copyMetadata(entry, mutation.channel);
       entry.lastLufs = { ...(entry.lastLufs || {}), [mutation.kind]: mutation.lufs };
-      applyMeasurementReference(entry, mutation);
+      applyMeasurementReference(entry, mutation, 'lastLufsRef');
       entry.lastMeasuredAt = now;
       setFieldVersion(entry, `lastLufs.${mutation.kind}`, mutation.sequence);
       if (mutation.autoGain !== undefined) {
@@ -323,7 +342,11 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
       const entry = cloneEntry(all[mutation.channelId], mutation.channelId);
       const lastLufs = { ...(entry.lastLufs || {}) };
       delete lastLufs[mutation.kind];
-      // The reference stays: the saved Auto gain it vouches for is untouched.
+      // The measurement's own reference goes with it; the Auto gain keeps its.
+      const clearedRef = { ...(entry.lastLufsRef || {}) };
+      delete clearedRef[mutation.kind];
+      if (Object.keys(clearedRef).length) entry.lastLufsRef = clearedRef;
+      else delete entry.lastLufsRef;
       if (Object.keys(lastLufs).length) entry.lastLufs = lastLufs;
       else {
         delete entry.lastLufs;
@@ -343,7 +366,7 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
       copyMetadata(entry, mutation.channel);
       entry[storeAutoGainFieldForKind(mutation.kind)] = mutation.autoGain;
       setFieldVersion(entry, storeAutoGainFieldForKind(mutation.kind), mutation.sequence);
-      applyMeasurementReference(entry, mutation);
+      applyMeasurementReference(entry, mutation, 'autoGainRef');
       all[mutation.channelId] = entry;
       break;
     }

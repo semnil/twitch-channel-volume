@@ -640,7 +640,13 @@
                 ...(currentChannelEntry || {}),
                 [autoApplyFieldForKind(kind)]: !!req.enabled,
                 ...(Number.isFinite(autoGain)
-                  ? { [autoGainFieldForKind(kind)]: autoGain }
+                  ? {
+                    [autoGainFieldForKind(kind)]: autoGain,
+                    autoGainRef: {
+                      ...(currentChannelEntry?.autoGainRef || {}),
+                      [kind]: LUFS_REFERENCE_VOLUME_1
+                    }
+                  }
                   : {})
               };
               const preferred = resolvePreferredGain(
