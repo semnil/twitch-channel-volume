@@ -4387,6 +4387,27 @@ test('a channel change that lands during the read is what the page shows', async
   assert.ok(!harness.el('channelsBody').textContent.includes('stalechannel'));
 });
 
+test('a channel change that arrived before the read failed stays on the page', async () => {
+  const harness = createOptionsHarness({ deferStorage: true, failStorage: true });
+  await flushTasks(8);
+  harness.fireStorageChanged({
+    [u.CHANNEL_VOLUMES_KEY]: {
+      newValue: { 456: { name: 'freshchannel', login: 'freshchannel', gainLive: 2 } }
+    }
+  });
+  await flushTasks(4);
+  harness.releaseStorage();
+  await flushTasks(8);
+  // The change carried the list itself, so the page has read it. What failed is
+  // the settings read, and it does not take the list back off the screen.
+  assert.ok(harness.el('channelsBody').textContent.includes('freshchannel'));
+  assert.equal(harness.el('select:.channel-table').style.display, '');
+  assert.equal(harness.el('emptyMsg').style.display, 'none');
+  assert.equal(harness.el('settingsError').textContent, harness.message('settingsLoadFailed'));
+  // It is still a page asking to be reloaded, so it offers nothing destructive.
+  assert.equal(harness.el('clearAllBtn').disabled, true);
+});
+
 test('a page that could not read keeps what another tab writes off its screen', async () => {
   const harness = createOptionsHarness({ failStorage: true });
   await flushTasks(8);
