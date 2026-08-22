@@ -4737,10 +4737,19 @@ test('page bridge counts rollback budget from the last reset only', async () => 
   harness.messages.length = 0;
   for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(1.0);
 
+  harness.logs.length = 0;
   await harness.dispatchCommand('setAdActive', { active: true });
   harness.emitMeasurementBlock(1.0);
   // One window existed since the reset; the seeded sample is not one of them.
   assert.ok(Math.abs(harness.messages.at(-1).integrated - (-20)) < 1e-12);
+
+  // The span stops at the first window there is, so it never reaches as far
+  // back as the budget asked for.
+  const rollback = harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback');
+  assert.equal(rollback.length, 1);
+  assert.equal(rollback[0][1].requested, AD_START_ROLLBACK);
+  assert.equal(rollback[0][1].removed, 1);
+  assert.equal(rollback[0][1].exhausted, false);
 });
 
 test('page bridge rolls back once per ad, not once per detection', async () => {
@@ -5367,6 +5376,53 @@ test('page bridge counts only the skipped windows the rollback reaches', async (
   const adLeftIn = u.gatedIntegratedLufs([...windows, 1.0]);
   assert.ok(adLeftIn - kept > 3, `${kept} vs ${adLeftIn}`);
   assertLufsClose(harness.messages.at(-1).integrated, kept);
+});
+
+// A slider drag re-arms the boundary skip on every block, so every window over
+// the drag is dropped rather than appended, and the cue that follows names a
+// break that started where the drag did.
+async function draggedThroughAdStart(dragged) {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  const content = [0.000001, 0.000001, 0.000001, 0.000001, 1, 1, 1, 1];
+  for (const ms of content) harness.emitMeasurementBlock(ms);
+  for (let i = 0; i < dragged; i++) {
+    // A repeat of the value it already had does not re-arm the skip.
+    harness.setVolume(1 - (i % 8 + 1) / 100);
+    harness.emitMeasurementBlock(1.0);
+  }
+
+  harness.setPlayhead(100 + dragged * 0.1 + 0.01);
+  harness.logs.length = 0;
+  harness.emitPlayerCue({
+    rollType: 'midroll', startTime: 100, endTime: 200, duration: 100,
+    podPosition: 0, podCount: 1
+  });
+  harness.emitMeasurementBlock(1.0);
+  return { harness, windows: gatingWindows(content) };
+}
+
+test('page bridge counts every window a long drag kept out of the ring', async () => {
+  // However long the drag, the rollback takes only the window the ad's own
+  // audio reached. The two lengths straddle the size a bounded record of the
+  // dropped windows holds, where the oldest of them is the one that goes
+  // missing and a content window is taken in its place.
+  for (const dragged of [64, 65]) {
+    const where = `over ${dragged} windows`;
+    const { harness, windows } = await draggedThroughAdStart(dragged);
+    const rollback = harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback');
+    assert.equal(rollback.length, 1, where);
+    assert.equal(rollback[0][1].requested, dragged + 1, where);
+    assert.equal(rollback[0][1].skipped, dragged, where);
+    assert.equal(rollback[0][1].removed, 1, where);
+
+    // Only the window the ad's own audio reached goes; the one before it is
+    // the level the gate's population rests on.
+    const kept = u.gatedIntegratedLufs(windows.slice(0, -1));
+    const overRemoved = u.gatedIntegratedLufs(windows.slice(0, -2));
+    assert.ok(kept - overRemoved > 1, `${kept} vs ${overRemoved}`);
+    assertLufsClose(harness.messages.at(-1).integrated, kept);
+  }
 });
 
 test('page bridge extends a break when the next creative is cued', async () => {
