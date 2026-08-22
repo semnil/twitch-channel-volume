@@ -30,9 +30,9 @@ Twitch Channel Volume is a Chrome extension that remembers and auto-applies volu
 
 ### Twitch Page Data (read-only)
 
-- **What**: HLS manifests issued by Twitch itself (to detect `EXT-X-DATERANGE` ad ranges) and GraphQL responses (to obtain a channel's owner ID / broadcaster ID).
-- **Purpose**: Detect ad breaks and obtain a persistent channel identifier.
-- **Storage**: Manifest bodies and GraphQL responses are not stored. Only the required values (ad-range info and channel IDs) are extracted and used.
+- **What**: GraphQL responses issued by Twitch itself (to obtain a channel's owner ID / broadcaster ID), and the presence of the player's ad indicator in the page.
+- **Purpose**: Obtain a persistent channel identifier and detect ad breaks.
+- **Storage**: GraphQL responses are not stored. Only the required values (channel IDs) are extracted and used.
 
 ## Data NOT Collected
 
@@ -44,7 +44,7 @@ Twitch Channel Volume is a Chrome extension that remembers and auto-applies volu
 
 ## Where Data Is Sent
 
-Nowhere. This extension makes **no external network requests**. HLS manifests and GraphQL responses are only read from the traffic that the Twitch page itself issues; the extension does not initiate any new outbound transmission. All data remains on your device.
+Nowhere. This extension makes **no external network requests**. GraphQL responses are only read from the traffic that the Twitch page itself issues; the extension does not initiate any new outbound transmission. All data remains on your device.
 
 ## Data Storage and Security
 
@@ -58,7 +58,6 @@ Nowhere. This extension makes **no external network requests**. HLS manifests an
 |---|---|
 | **storage** | Save channel volume settings and user preferences locally |
 | **host_permissions** (`twitch.tv`) | Inject content scripts on Twitch pages to measure the playing audio and control volume via the Web Audio API |
-| **host_permissions** (`ttvnw.net`) | Read Twitch HLS manifests to detect ad breaks |
 
 ## Remote Code
 

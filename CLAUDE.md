@@ -27,7 +27,7 @@ page-bridge.js (MAIN world content script, document_start)
 └── postMessage (`__twitch_channel_volume__`) → content.js
 
 content.js (ISOLATED world content script, document_idle)
-├── postMessage listener: page-bridge.js から LUFS / owner / manifest-ad を受信
+├── postMessage listener: page-bridge.js から LUFS / owner / CM 状態を受信
 ├── URL 分類 (classifyTwitchUrl): live / vod / clip / none
 ├── Channel resolution:
 │   ├── live: URL の login 名 (`login:<name>`) / GraphQL user.id 解決後は数値 ID
@@ -130,7 +130,7 @@ options.html / options.js
 
 | File | Role |
 |------|------|
-| `manifest.json` | MV3 manifest. permissions: storage. host: twitch.tv, ttvnw.net |
+| `manifest.json` | MV3 manifest. permissions: storage. host: twitch.tv |
 | `page-bridge.js` | MAIN world. AudioContext + LUFS + fetch hook (GraphQL) |
 | `audio-worklet.js` | K-weighted MS 累積 (100ms ブロック) |
 | `content.js` | ISOLATED world. ゲイン管理、Channel resolution、Storage |

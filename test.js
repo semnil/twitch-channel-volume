@@ -488,6 +488,20 @@ test('resolvePreferredGain ignores an Auto gain measured at an unknown volume', 
   assert.equal(u.resolvePreferredGain(manual, 'live', false, -Infinity, -18).gain, 2.0);
 });
 
+test('privacy policies list exactly the manifest host permissions', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, 'manifest.json'), 'utf8'));
+  const hosts = new Set(
+    manifest.host_permissions.map((pattern) => pattern.replace(/^\*:\/\/\*?\.?/, '').replace(/\/\*$/, ''))
+  );
+  for (const file of ['PRIVACY_POLICY.md', 'PRIVACY_POLICY_JA.md']) {
+    const text = fs.readFileSync(path.join(__dirname, file), 'utf8');
+    const declared = new Set(
+      [...text.matchAll(/\*\*host_permissions\*\* \(`([^`]+)`\)/g)].map((m) => m[1])
+    );
+    assert.deepEqual([...declared].sort(), [...hosts].sort(), `${file} host rows`);
+  }
+});
+
 test('suggestedGain stays at unity until a gated measurement exists', () => {
   assert.equal(u.suggestedGain(-Infinity, -18), 1.0);
   assert.equal(u.suggestedGain(NaN, -18), 1.0);
