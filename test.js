@@ -5113,20 +5113,6 @@ test('page bridge does not wait forever for a creative that is never cued', asyn
   assert.equal(adState().active, false);
 });
 
-test('content does not carry the ad state of the old media into the new one', async () => {
-  const harness = createContentHarness();
-  await flushTasks();
-  harness.setAdNodePresent(true);
-  harness.mutate();
-  assert.equal(harness.commands.filter((command) => command.cmd === 'setAdActive').length, 1);
-
-  // The route changes while the player of the media that is ending is still in
-  // the page.
-  harness.commands.length = 0;
-  await harness.navigate('https://www.twitch.tv/videos/200');
-  assert.deepEqual(harness.commands.filter((command) => command.cmd === 'setAdActive'), []);
-});
-
 test('page bridge holds the break across a gap when the cue names no pod', async () => {
   const harness = createPageBridgeHarness();
   const adState = () => harness.messages.filter((message) => message.event === 'ad').at(-1);
@@ -5146,21 +5132,27 @@ test('page bridge holds the break across a gap when the cue names no pod', async
   assert.equal(adState().active, true);
 });
 
-test('content reports the first ad of the new media', async () => {
+test('content ignores the indicator of the old media until it clears', async () => {
   const harness = createContentHarness();
+  const sent = () => harness.commands.filter((command) => command.cmd === 'setAdActive');
   await flushTasks();
   harness.setAdNodePresent(true);
   harness.mutate();
-  await harness.navigate('https://www.twitch.tv/videos/200');
-  harness.commands.length = 0;
+  assert.deepEqual(sent().map((command) => command.active), [true]);
 
-  // The player of the media that ended is taken out of the page, and the new
-  // one brings its own ad; the bridge was told to forget the old state, so only
-  // the new ad is reported.
+  harness.commands.length = 0;
+  await harness.navigate('https://www.twitch.tv/videos/200');
+  assert.deepEqual(sent(), []);
+
+  // The player being left is still in the page, and something else in the page
+  // changes before it goes.
+  harness.mutate();
+  assert.deepEqual(sent(), []);
+
+  // It goes with that player, and the new media's own ad is what gets reported.
   harness.setAdNodePresent(false);
   harness.mutate();
   harness.setAdNodePresent(true);
   harness.mutate();
-  const sent = harness.commands.filter((command) => command.cmd === 'setAdActive');
-  assert.deepEqual(sent.map((command) => command.active), [true]);
+  assert.deepEqual(sent().map((command) => command.active), [true]);
 });

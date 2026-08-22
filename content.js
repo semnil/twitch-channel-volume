@@ -26,6 +26,9 @@
   let lastLufs = { momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity };
   let adActive = false;
   let requestedAdActive = false;
+  // Set on a route change: an indicator left over from the media that ended is
+  // not the new one's.
+  let staleAdIndicator = false;
   let audioUnavailable = false;
   let audioUnavailableCause = '';
   let measurementUnavailable = false;
@@ -506,6 +509,13 @@
       '[data-a-target="video-ad-countdown"], [data-test-selector="ad-banner-default-text"]'
     );
     const detected = !!node;
+    // Right after a route change the player being left is still in the page, so
+    // an indicator it put there says nothing about the new media. Wait for the
+    // page to be without one before believing the next.
+    if (staleAdIndicator) {
+      if (detected) return;
+      staleAdIndicator = false;
+    }
     // adActive only catches up when the bridge echoes the change back, so the
     // request is what this compares against.
     if (detected !== requestedAdActive) {
@@ -539,6 +549,7 @@
     // it again and the observer reports the new media's own transitions.
     sendCmd({ cmd: 'mediaChanged' });
     requestedAdActive = false;
+    staleAdIndicator = true;
     sendResetMeasurement();
     sendCmd({ cmd: 'attach' });
     await resolveChannel();
