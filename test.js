@@ -4249,8 +4249,8 @@ test('the options page offers no destructive action over a list it has not read'
 });
 
 test('the options markup ships the defaults the extension installs', () => {
-  // A failed load tells the viewer the values on screen are the defaults, and
-  // leaves the markup on screen to be them.
+  // Until the load writes to them, the controls hold what the markup gives
+  // them, and a load that fails leaves them there for good.
   const html = fs.readFileSync(path.join(__dirname, 'options.html'), 'utf8');
   const background = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
   const start = background.indexOf("operation: 'initializeSettings'");
@@ -4340,6 +4340,24 @@ test('options show the page even when the load that fills it fails', async () =>
   assert.equal(harness.el('clearAllBtn').disabled, true);
   assert.equal(harness.el('emptyMsg').style.display, 'none');
   assert.equal(harness.el('select:.channel-table').style.display, 'none');
+});
+
+test('the failed-read message describes the read, not the values on screen', async () => {
+  // A change that lands while the read is still out is rendered before the read
+  // fails, so the screen can hold a stored value under the failure message.
+  const harness = createOptionsHarness({ deferStorage: true, failStorage: true });
+  await flushTasks(8);
+  harness.fireStorageChanged({ [u.SETTINGS_KEY]: { newValue: { targetLufs: -24 } } });
+  await flushTasks(4);
+  harness.releaseStorage();
+  await flushTasks(8);
+  assert.equal(harness.el('targetLufsValue').textContent, '-24 LUFS');
+  assert.equal(harness.el('settingsError').textContent, harness.message('settingsLoadFailed'));
+
+  const ja = JSON.parse(fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json')));
+  const en = JSON.parse(fs.readFileSync(path.join(__dirname, '_locales/en/messages.json')));
+  assert.equal(ja.settingsLoadFailed.message, '保存済みの設定を読み込めませんでした。ページを再読み込みしてください');
+  assert.equal(en.settingsLoadFailed.message, 'Could not load the saved settings. Please reload the page.');
 });
 
 test('a page that could not read keeps what another tab writes off its screen', async () => {
