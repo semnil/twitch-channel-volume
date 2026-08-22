@@ -228,7 +228,7 @@ options.html / options.js
 - **計測リセットの世代番号**: content.js は resetMeasurement を送るたびに世代番号を進め、page-bridge はその番号を以降の lufs 通知へ付与する。content.js は現在の世代より古い通知を破棄するため、リセット送信前に page-bridge が算出したブロックが保存済み LUFS を復活させない
 - **Live/VOD/Clip 別ゲイン**: 配信は時間帯で音作りが変わるため種別ごとに別管理。同チャンネルの過去 VOD のゲインを現 Live にコピーしない
 - **Twitch reserved paths**: `/directory`, `/settings`, `/videos`, `/p`, `/jobs` 等は live channel として誤検出しないよう TWITCH_RESERVED_PATHS で除外
-- **予約名の扱い**: Chrome が「パッケージ化されていない拡張機能を読み込む」で拒否するのはルート直下の `_` 始まりの名前だけで、下位ディレクトリの `_metadata` 等は読み込めてしまう (`_locales` はルートでも許される)。`test.js` の走査はそれより厳しく、同梱ツリー内であれば深さに関わらず報告する。ルート直下の `work/` と `.claude/` はスクラッチとして走査から外す
+- **予約名の扱い**: Chrome が「パッケージ化されていない拡張機能を読み込む」で拒否するのはルート直下の `_` 始まりの名前だけで、下位ディレクトリの `_metadata` 等は読み込めてしまう (`_locales` はルートでも許される)。`test.js` の走査はそれより厳しく、パッケージを組む元のツリー (リポジトリから `.git` / `node_modules` とルート直下の `work/` / `.claude/` を除いた範囲) であれば深さに関わらず報告する。zip に入らない `docs/` 等も対象に含む
 - **パッケージの選択は参照グラフ**: `pack.py` は manifest から辿れるもの (content_scripts の js と css / web_accessible_resources / service_worker / options_page と options_ui.page / action.default_popup / icons と action.default_icon) と、その HTML の `<script src>` と `<link href>` の css・worker の `importScripts`、および `_locales/<locale>/messages.json` だけを選ぶ。参照されないファイルは拡張子に関わらず入らない。パスは 1 箇所の resolver を通し、絶対パス・`..`・途中のディレクトリを含むシンボリックリンクで実体がパッケージ外へ出るものは失敗させる (壊れた zip も、外部ファイルを同梱した zip も黙って作らない)
 - **CSP 対応**: AudioWorklet モジュールは web_accessible_resources で公開する。page-bridge は MAIN world でページ自身のスクリプトと window を共有し、init も含む全コマンドをページが送れるため、モジュール URL を受け取らず自分のスタックフレームから拡張 origin を取り、`<origin>/audio-worklet.js` を読み込む。origin を取れないときはモジュールを読み込まない
 - **NaN/Infinity ガード**: 計測値が無限大・NaN の場合は gain 1.0 にフォールバック
