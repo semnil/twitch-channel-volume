@@ -29,6 +29,7 @@
   // Filled on a route change with the indicator elements the media that ended
   // left in the page.
   let staleAdIndicators = new Set();
+  let lastSeenAdIndicators = new Set();
   let audioUnavailable = false;
   let audioUnavailableCause = '';
   let measurementUnavailable = false;
@@ -508,14 +509,17 @@
   // to this where no cue arrives.
 
   // Right after a route change the player being left is still in the page, and
-  // the elements it put there say nothing about the new media. They are held by
-  // identity, so an indicator that replaces one of them - in the same observer
-  // callback, without the page ever being seen without one - still counts.
+  // the elements it put there say nothing about the new media. What the page
+  // held the last time it was read is what belongs to the old media, and every
+  // read happens before the route change is handled - so which elements to
+  // ignore is decided by element, not by when the page is read, and an
+  // indicator that is not one of them counts however it got there.
   function adIndicatorPresent() {
     for (const node of staleAdIndicators) {
       if (!node.isConnected) staleAdIndicators.delete(node);
     }
-    for (const node of document.querySelectorAll(AD_INDICATOR_SELECTOR)) {
+    lastSeenAdIndicators = new Set(document.querySelectorAll(AD_INDICATOR_SELECTOR));
+    for (const node of lastSeenAdIndicators) {
       if (!staleAdIndicators.has(node)) return true;
     }
     return false;
@@ -536,9 +540,6 @@
     }
   }
 
-  const adObserver = new MutationObserver(() => checkAdDom());
-  adObserver.observe(document.documentElement, { subtree: true, childList: true });
-
   // ── SPA navigation ─────────────────────────────────────────────────
 
   let lastHref = location.href;
@@ -556,29 +557,42 @@
     // it again and the observer reports the new media's own transitions.
     sendCmd({ cmd: 'mediaChanged' });
     requestedAdActive = false;
-    // Whatever is up right now belongs to the media being left; anything that
-    // appears after this is the new media's own.
-    staleAdIndicators = new Set(document.querySelectorAll(AD_INDICATOR_SELECTOR));
+    // These were the media being left; the new one has to put its own indicator
+    // in the page to be heard.
+    for (const node of lastSeenAdIndicators) staleAdIndicators.add(node);
+    // The batch that carried the route change can have carried the new media's
+    // indicator with it, and nothing more needs to happen in the page for it to
+    // count.
+    checkAdDom();
     sendResetMeasurement();
     sendCmd({ cmd: 'attach' });
     await resolveChannel();
     if (await reapplyForCurrentChannel()) resetMeasurementForCurrentChannel();
   }
 
+  // Read the page before the URL moves: an indicator that is up at that point
+  // belongs to the media being left, even if nothing has observed it yet.
   const origPush = history.pushState;
   history.pushState = function (...args) {
+    checkAdDom();
     const r = origPush.apply(this, args);
     queueMicrotask(onNavigate);
     return r;
   };
   const origReplace = history.replaceState;
   history.replaceState = function (...args) {
+    checkAdDom();
     const r = origReplace.apply(this, args);
     queueMicrotask(onNavigate);
     return r;
   };
   window.addEventListener('popstate', onNavigate);
+  // Ahead of the ad observer, so a batch that carries a route change is read
+  // against the media that arrived rather than the one that left.
   new MutationObserver(onNavigate).observe(document, { subtree: true, childList: true });
+
+  const adObserver = new MutationObserver(() => checkAdDom());
+  adObserver.observe(document.documentElement, { subtree: true, childList: true });
 
   // ── Storage onChanged → cross-tab sync ────────────────────────────
 

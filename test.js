@@ -427,6 +427,8 @@ function createContentHarness({
   // page is leaving from the one that replaces it.
   let adNodes = [];
   let lastRemovedAdNode = null;
+  let pushStateEffect = null;
+  const makeAdNode = () => ({ isConnected: true });
   const observerCallbacks = [];
   // The player's volume row: the gain badge is inserted next to the slider.
   const volumeRow = {
@@ -473,6 +475,11 @@ function createContentHarness({
   const history = {
     pushState(_state, _unused, url) {
       if (url) location.href = new URL(url, location.href).href;
+      // What the page can do in the same task as the route change, before the
+      // extension's microtask gets its turn.
+      const effect = pushStateEffect;
+      pushStateEffect = null;
+      if (effect) effect();
     },
     replaceState(_state, _unused, url) {
       if (url) location.href = new URL(url, location.href).href;
@@ -560,13 +567,17 @@ function createContentHarness({
     setAdNodePresent(present) {
       for (const node of adNodes) node.isConnected = false;
       if (adNodes.length) lastRemovedAdNode = adNodes[0];
-      adNodes = present ? [{ isConnected: true }] : [];
+      adNodes = present ? [makeAdNode()] : [];
     },
     replaceAdNode() {
       // What one observer callback can carry: the old element out, a new one in.
       for (const node of adNodes) node.isConnected = false;
       if (adNodes.length) lastRemovedAdNode = adNodes[0];
-      adNodes = [{ isConnected: true }];
+      adNodes = [makeAdNode()];
+    },
+    // The player shows a countdown and a banner at once part-way through an ad.
+    addAdNode() {
+      adNodes.push(makeAdNode());
     },
     reuseAdNode() {
       // A framework can put the element it took out back, rather than build one.
@@ -590,8 +601,25 @@ function createContentHarness({
       for (const listener of storageListeners) listener(changes);
       await flushTasks();
     },
-    async navigate(href) {
+    async navigate(href, duringPushState) {
+      pushStateEffect = duringPushState || null;
       history.pushState({}, '', href);
+      await flushTasks(8);
+    },
+    // A route change the extension does not hook, so only the observer sees it.
+    setHref(href) {
+      location.href = new URL(href, location.href).href;
+    },
+    async replaceState(href) {
+      history.replaceState({}, '', href);
+      await flushTasks(8);
+    },
+    // A back or forward step. `beforeListener` stands for a listener of the
+    // page's own, registered ahead of the extension's.
+    async popstate(href, beforeListener) {
+      location.href = new URL(href, location.href).href;
+      if (beforeListener) beforeListener();
+      for (const listener of listeners.popstate || []) listener();
       await flushTasks(8);
     },
     failNextStorageGet() {
@@ -5154,6 +5182,17 @@ test('page bridge holds the break across a gap when the cue names no pod', async
   assert.equal(adState().active, true);
 });
 
+// Ad state asked for after the bridge was told the media changed - the part
+// that speaks about the media now playing.
+function afterMediaChanged(harness) {
+  const start = harness.commands.findIndex((command) => command.cmd === 'mediaChanged');
+  assert.ok(start >= 0, 'the media was never declared changed');
+  return harness.commands
+    .slice(start)
+    .filter((command) => command.cmd === 'setAdActive')
+    .map((command) => command.active);
+}
+
 test('content ignores the indicator of the old media until it clears', async () => {
   const harness = createContentHarness();
   const sent = () => harness.commands.filter((command) => command.cmd === 'setAdActive');
@@ -5212,6 +5251,80 @@ test('content takes an indicator that replaced the old one in the same batch', a
   harness.replaceAdNode();
   harness.mutate();
   assert.deepEqual(sent().map((command) => command.active), [true]);
+});
+
+test('content takes an ad the page swaps in while the route is changing', async () => {
+  const harness = createContentHarness();
+  const sent = () => harness.commands.filter((command) => command.cmd === 'setAdActive');
+  await flushTasks();
+  harness.setAdNodePresent(true);
+  harness.mutate();
+  assert.deepEqual(sent().map((command) => command.active), [true]);
+
+  harness.commands.length = 0;
+  // The page tears the old player down and builds the new one in the same task
+  // as the route change, so the swap lands before the extension's microtask.
+  await harness.navigate('https://www.twitch.tv/videos/200', () => harness.replaceAdNode());
+  harness.mutate();
+  assert.deepEqual(sent().map((command) => command.active), [true]);
+});
+
+test('content does not hand the ad of the media that ended to the new one', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+
+  harness.commands.length = 0;
+  // The ad goes up and the route changes in the same task, so no observer
+  // callback has run in between.
+  harness.setAdNodePresent(true);
+  await harness.navigate('https://www.twitch.tv/videos/200');
+  assert.deepEqual(afterMediaChanged(harness), []);
+  harness.mutate();
+  assert.deepEqual(afterMediaChanged(harness), []);
+});
+
+test('content ignores every indicator the old media had, not just the first', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  harness.setAdNodePresent(true);
+  harness.mutate();
+  // A second indicator joins the first part-way through the ad.
+  harness.addAdNode();
+  harness.mutate();
+
+  harness.commands.length = 0;
+  await harness.navigate('https://www.twitch.tv/videos/200');
+  harness.mutate();
+  assert.deepEqual(afterMediaChanged(harness), []);
+});
+
+test('content takes an ad a step back put in the page before it was told', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  harness.setAdNodePresent(true);
+  harness.mutate();
+
+  harness.commands.length = 0;
+  // A listener of the page's own runs first and has the new player up by the
+  // time the extension hears about the step.
+  await harness.popstate('https://www.twitch.tv/videos/200', () => harness.replaceAdNode());
+  assert.deepEqual(afterMediaChanged(harness), [true]);
+});
+
+test('content takes an ad that arrives with a route change it did not hook', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  harness.setAdNodePresent(true);
+  harness.mutate();
+
+  // The route changes without pushState, and the swap reaches the observer in
+  // the batch that carries it. Nothing else has to happen in the page.
+  harness.commands.length = 0;
+  harness.setHref('https://www.twitch.tv/videos/200');
+  harness.replaceAdNode();
+  harness.mutate();
+  await flushTasks(8);
+  assert.deepEqual(afterMediaChanged(harness), [true]);
 });
 
 test('content takes an indicator the page puts back after taking it out', async () => {
