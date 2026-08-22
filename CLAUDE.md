@@ -63,8 +63,8 @@ content.js (ISOLATED world content script, document_idle)
 ├── 保存済み LUFS による計測の初期化は、起動時・SPA 遷移時に加えて owner ID 解決後にも行う。再初期化の要否は alias 解決後のチャンネル ID と種別で判定する
 ├── 計測リセットは世代番号を進めて送り、それより古い世代の lufs 通知は破棄する
 ├── SPA 遷移では `mediaChanged` を先に送り、`requestedAdActive` を落として bridge 側と
-│   揃える。その時点で CM 指標が出ていたら旧プレイヤーのものなので、1 度消えるまでは
-│   立っている指標を新 media のものとして扱わない (出ていなければそのまま受け取る)
+│   揃える。その時点で出ている CM 指標の要素を控えておき、その要素そのものは新 media の
+│   指標として扱わない (別の要素が出たらそれは新 media のもの。要素が DOM を離れたら控えを外す)
 │   (計測リセットは同一 media でも起きるため、cue の破棄はこちらだけが行う)
 ├── DOM ad detection (`[data-a-target="video-ad-countdown"]`) は ad gain を駆動する
 ├── SPA navigation: history.pushState/replaceState hook + popstate + MutationObserver
@@ -200,7 +200,7 @@ options.html / options.js
   - プレイヤーの cue: メディアエンジンは worker で動き、再生する CM ごとに cue をページへ post する。`Worker` コンストラクタを包んで message リスナーを足し、`rollType` と `startTime` / `endTime` を持つ cue を読む。この 2 つは attach している要素の media 時刻で、CM の終わりと一致する。CM 中はプレイヤーがもう 1 つ動いて自分の CM を別の時間軸で cue するため、再生位置がその区間に入っている cue だけを受け取る。**受理の範囲と CM 判定は別**で、受理は開始 1 秒前から、CM 中の判定は開始以降 — 早く届いた cue が本編に CM Gain を掛けない。CM を通り過ぎたら区間を捨てるので、再生位置が戻っても同じ CM は開かない
   - cue の保持期間: cue は media と要素に属する。計測リセット (popup の操作や owner ID 確定でも走る) では捨てず、次の 2 つでだけ捨てる。**どちらも「その事象が無効にするものを全部」捨てる** — 片側だけ消すと、cue も DOM 指標も効かない状態や、前の media の指標が新しい media の CM として残る状態になる
     - 要素の差し替え: cue の時刻と「この media は cue されるか」(`adCueSeen`) の両方
-    - `mediaChanged` (SPA 遷移): 上に加えて DOM 指標の状態。content.js 側も `requestedAdActive` を落として bridge と揃え、さらに **遷移の時点で CM 指標が出ていた場合に限り、それがページから 1 度消えるまで立っている指標を新 media のものとして扱わない**。遷移の瞬間はまだ旧プレイヤーがページにあり、その間に別の DOM 変化が起きると observer が旧指標を新 media の CM として報告してしまうため。出ていなければ待たない — 待つと新 media の最初の CM を落とす
+    - `mediaChanged` (SPA 遷移): 上に加えて DOM 指標の状態。content.js 側も `requestedAdActive` を落として bridge と揃え、さらに **遷移の時点で出ている CM 指標の要素を控え、その要素そのものは新 media の指標として扱わない**。遷移の瞬間はまだ旧プレイヤーがページにあり、その間に別の DOM 変化が起きると observer が旧指標を新 media の CM として報告してしまうため。真偽値ではなく要素で持つのは、MutationObserver が旧要素の除去と新要素の追加を 1 回の callback にまとめることがあり、その場合「指標が消えた瞬間」を観測できないため。控えた要素が DOM を離れたら外す (同じ要素が置き直されたら新 media のものとして受け取る)
   - pod の途切れ: 1 回の CM に複数の creative が入ると、前の creative の終わりと次の cue の間に再生位置が進む。cue が pod の最後の creative だと言っている (`podPosition` >= `podCount` - 1) ときだけ終わりで閉じ、それ以外 (途中を示す、または値が読めない) は次の cue を 0.4 秒だけ待つ。来なければそこで閉じる
   - DOM: `[data-a-target="video-ad-countdown"]` / `[data-test-selector="ad-banner-default-text"]` の有無
 - **2 つの指標の使い分け**: cue は CM の最初の音声とほぼ同時に届き、CM の終わりも正確に示す。DOM 指標は CM の最初の音声より遅れて現れ、CM 後も DOM に残ることがある。したがって cue を 1 つでも受け取った media では cue だけで開閉し、cue の来ない media (VOD のクライアント側挿入の CM) では DOM 指標へ戻る
