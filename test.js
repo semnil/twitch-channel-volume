@@ -596,7 +596,8 @@ function createPageBridgeHarness({
   mediaElementSourceTaken = false,
   extraFreeVideo = false,
   audioContextThrows = false,
-  workletLoadFails = false
+  workletLoadFails = false,
+  deferWorkletLoad = false
 } = {}) {
   const messages = [];
   // Real ids: a loop that was cancelled has to stop running here too, or a
@@ -640,6 +641,9 @@ function createPageBridgeHarness({
   const videos = extraFreeVideo ? [video, freeVideo] : [video];
   let measurementPort;
   let resolveFetch;
+  let resolveWorkletLoad;
+  let mediaSourceCalls = 0;
+  let gainNode;
   const audioNode = () => ({
     connect() {},
     disconnect() {}
@@ -661,18 +665,30 @@ function createPageBridgeHarness({
       this.destination = {};
       this.audioWorklet = {
         addModule: async () => {
+          if (deferWorkletLoad) await new Promise((resolve) => { resolveWorkletLoad = resolve; });
           if (workletLoadFails) throw new Error('worklet module blocked');
         }
       };
     }
     createGain() {
-      return {
+      const node = {
         ...audioNode(),
-        gain: { value: 1, setTargetAtTime() {} }
+        gain: {
+          value: 1,
+          setTargetAtTime(value) { node.gain.value = value; }
+        }
       };
+      // The first gain of a context is the output gain; the measurement chain
+      // builds a silent one after it.
+      if (!this.outputGain) {
+        this.outputGain = node;
+        gainNode = node;
+      }
+      return node;
     }
     createIIRFilter() { return audioNode(); }
     createMediaElementSource(element) {
+      mediaSourceCalls += 1;
       // What Chrome throws once another AudioContext holds the element.
       if (mediaElementSourceTaken && element === video) {
         throw new DOMException('HTMLMediaElement already connected', 'InvalidStateError');
@@ -747,6 +763,14 @@ function createPageBridgeHarness({
     },
     disconnectTakenVideo() { video.isConnected = false; },
     allowAudioContext() { contextThrows = false; },
+    mediaSourceCalls() { return mediaSourceCalls; },
+    gainValue() { return gainNode ? gainNode.gain.value : null; },
+    async releaseWorkletLoad() {
+      assert.ok(resolveWorkletLoad, 'the worklet load is not pending');
+      resolveWorkletLoad();
+      resolveWorkletLoad = null;
+      await flushTasks(8);
+    },
     emitMeasurementBlock(ms) {
       measurementPort.onmessage({ data: { ms } });
     },
@@ -1403,6 +1427,32 @@ test('content reports a measurement chain that never came up', async () => {
   state = await harness.dispatchRuntime({ cmd: 'getState' });
   assert.equal(state.measurementUnavailable, false);
   assert.equal(harness.gainBadgeCount(), 1);
+});
+
+test('content drops the stalled-measurement notice when the audio path goes', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  const attachedWithoutMeasurement = {
+    type: '__twitch_channel_volume__',
+    event: 'attached',
+    measuring: false,
+    takenElsewhere: false
+  };
+
+  await harness.dispatchMessage(attachedWithoutMeasurement);
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).measurementUnavailable, true);
+
+  await harness.dispatchMessage(ATTACH_FAILED);
+  let state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.audioUnavailable, true);
+  // One notice at a time: the audio path is the reason the measurement stopped.
+  assert.equal(state.measurementUnavailable, false);
+
+  await harness.dispatchMessage(attachedWithoutMeasurement);
+  await harness.dispatchMessage({ type: '__twitch_channel_volume__', event: 'loaded' });
+  await flushTasks(8);
+  state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.measurementUnavailable, false);
 });
 
 test('content refuses gain and Auto writes while the player audio is unavailable', async () => {
@@ -3161,6 +3211,27 @@ test('popup states unavailable player audio and locks what would not reach it', 
   assert.equal(harness.el('applyBtn').textContent, harness.message('applyToChannel'));
 });
 
+test('popup sends nothing from the controls it locked', async () => {
+  const harness = createPopupHarness({
+    state: {
+      audioUnavailable: true,
+      hasSavedMeasurement: true,
+      lufs: { momentary: -21, shortTerm: -21, integrated: -21 }
+    }
+  });
+  await flushTasks(8);
+  harness.sent.length = 0;
+
+  // The DOM attribute is one poll behind the state, so each handler is driven
+  // directly here.
+  await harness.fire('applyBtn', 'click');
+  await harness.firePreset(3, 'click');
+  await harness.fire('manualSlider', 'change');
+  await harness.fire('resetMeasurementBtn', 'click');
+
+  assert.deepEqual(harness.sent.filter((request) => request.cmd !== 'getState'), []);
+});
+
 test('popup restores its controls when the bridge attaches', async () => {
   const harness = createPopupHarness({
     state: { audioUnavailable: true, hasSavedMeasurement: true }
@@ -4024,6 +4095,63 @@ test('page bridge reports a context it could not create and builds a new one aft
   const attached = harness.messages.filter((message) => message.event === 'attached');
   assert.equal(attached.length, 1);
   assert.equal(attached[0].measuring, true);
+});
+
+test('page bridge takes the element once when two attach ticks overlap', async () => {
+  const harness = createPageBridgeHarness({ deferWorkletLoad: true });
+  const init = harness.dispatchCommand('init', { workletUrl: 'chrome-extension://test/audio-worklet.js' });
+  await harness.dispatchCommand('attach');
+  // A second tick enters while the first is still waiting for the context.
+  // Both are parked inside attach(), so neither call can be awaited yet.
+  const secondTick = harness.runTimers();
+  await flushTasks(4);
+  assert.equal(harness.messages.some((message) => message.event === 'attached'), false);
+
+  await harness.releaseWorkletLoad();
+  await Promise.all([init, secondTick]);
+
+  // Taking the same element twice throws, and the throw is the extension's own
+  // doing: reporting it would lock the popup for the rest of the session.
+  assert.equal(harness.mediaSourceCalls(), 1);
+  assert.equal(harness.messages.filter((message) => message.event === 'attached').length, 1);
+  assert.deepEqual(harness.messages.filter((message) => message.event === 'attach-failed'), []);
+});
+
+test('page bridge withdraws the held-element report once that element is gone', async () => {
+  const harness = createPageBridgeHarness({ mediaElementSourceTaken: true, extraFreeVideo: true });
+  await harness.dispatchCommand('init', { workletUrl: 'chrome-extension://test/audio-worklet.js' });
+  await harness.dispatchCommand('attach');
+  await harness.runTimers();
+  let attached = harness.messages.filter((message) => message.event === 'attached');
+  assert.equal(attached.length, 1);
+  assert.equal(attached[0].takenElsewhere, true);
+
+  // The page drops the held element; nothing stands between the gain node and
+  // the player any more.
+  harness.disconnectTakenVideo();
+  await harness.runTimers();
+
+  attached = harness.messages.filter((message) => message.event === 'attached');
+  assert.equal(attached.length, 2);
+  assert.equal(attached[1].takenElsewhere, false);
+  // Level-triggered, not a per-sweep repost.
+  await harness.runTimers();
+  assert.equal(harness.messages.filter((message) => message.event === 'attached').length, 2);
+});
+
+test('page bridge builds a retried context at the gain the ad calls for', async () => {
+  const harness = createPageBridgeHarness({ audioContextThrows: true });
+  await harness.dispatchCommand('init', { workletUrl: 'chrome-extension://test/audio-worklet.js' });
+  await harness.dispatchCommand('attach');
+  assert.equal(harness.gainValue(), null);
+
+  await harness.dispatchCommand('setGain', { value: 0.5 });
+  await harness.dispatchCommand('setAdGain', { value: 0.5 });
+  await harness.dispatchCommand('setAdActive', { active: true });
+
+  harness.allowAudioContext();
+  await harness.runTimers();
+  assert.equal(harness.gainValue(), 0.25);
 });
 
 test('page bridge reports a taken media element once and stays silent after', async () => {

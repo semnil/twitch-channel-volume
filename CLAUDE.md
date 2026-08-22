@@ -21,7 +21,7 @@ page-bridge.js (MAIN world content script, document_start)
 ├── attach loop (scheduleAttach): video 出現を 1s 間隔でリトライ。DOM から消えた video を
 │   検出したら経路を切って自分でループを再開する
 ├── attach できなかった要素を保持し、ページに残っている間は attached に takenElsewhere を載せる
-├── buildMeasurementChain: worklet ロードが attach より遅れた場合は後付けで接続
+├── buildMeasurementChain: attach 時に接続する (attach は worklet ロードの結果が出てから走る)
 ├── Fetch hook (GraphQL のみ):
 │   └── gql.twitch.tv → user.id / video.owner.id / clip.broadcaster.id と
 │       リクエスト時点の content kind/id を抽出
@@ -185,7 +185,7 @@ options.html / options.js
 - **AudioContext を作れない場合**: 生成が失敗した試行はキャッシュせず、次の attach で作り直す。失敗の通知は状態が変わったときだけ 1 回送る (リトライごとには送らない)
 - **計測経路だけ落ちた場合**: worklet の読込・接続に失敗しても GainNode は経路内にあるため、`attached` の `measuring: false` で計測のみ不可と伝え、音量調整が効く旨を含む別の文言を出す
 - **attach のリトライ**: video 要素は document_start 時点では存在しないため、`scheduleAttach()` で 1s 間隔のループ。`clearStaleAttachment()` が DOM から消えた video を検出して再 attach を許可 (Twitch SPA で video が入れ替わるケース対応)。SPA navigation 時にも content.js が `attach` を再送
-- **measurement chain の後付け**: `audioWorklet.addModule()` が attach より遅れた場合に備え、`buildMeasurementChain()` を分離。worklet ロード完了時に既に attached なら計測経路を後から接続
+- **measurement chain の接続点**: `attach()` は `ensureContext()` を await し、その await が `audioWorklet.addModule()` の解決まで含むため、attach 時点で worklet の可否は確定している。読込に失敗した attach は `measuring: false` を報告し、以降その attachment に計測経路は付かない
 - **SPA navigation**: history.pushState/replaceState フック + popstate + MutationObserver の 3 段構え。URL 変更で resetMeasurement + 種別判定再実行 + attach 再送
 - **計測リセットの世代番号**: content.js は resetMeasurement を送るたびに世代番号を進め、page-bridge はその番号を以降の lufs 通知へ付与する。content.js は現在の世代より古い通知を破棄するため、リセット送信前に page-bridge が算出したブロックが保存済み LUFS を復活させない
 - **Live/VOD/Clip 別ゲイン**: 配信は時間帯で音作りが変わるため種別ごとに別管理。同チャンネルの過去 VOD のゲインを現 Live にコピーしない

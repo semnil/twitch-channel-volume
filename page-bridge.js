@@ -76,6 +76,7 @@
   // audio path even after a different element attaches.
   const takenVideos = [];
   let contextFailureReported = false;
+  let reportedTakenElsewhere = false;
   let attachAttempts = 0;
 
   const blocks = [];
@@ -354,6 +355,8 @@
       gain = ctx.createGain();
       gain.gain.value = baselineGain;
       gain.connect(ctx.destination);
+      // The retry can land mid-ad, and baselineGain alone is the content level.
+      applyEffectiveGain();
     } catch (err) {
       console.warn('[TCV] audio context unavailable', err);
       ctx = null;
@@ -365,15 +368,8 @@
         await ctx.audioWorklet.addModule(workletUrl);
         workletReady = true;
         console.info('[TCV] worklet module loaded');
-        // If we already attached before the worklet finished loading, wire
-        // up the measurement chain retroactively.
-        if (attachedVideo && sourceNode && !workletNode) {
-          buildMeasurementChain(ctx);
-          postAttached();
-        }
       } catch (err) {
         console.warn('[TCV] worklet load failed', err);
-        if (attachedVideo) postAttached();
       }
     }
     return ctx;
@@ -430,10 +426,11 @@
   }
 
   function postAttached() {
+    reportedTakenElsewhere = takenVideoPresent();
     postReady({
       event: 'attached',
       measuring: !!workletNode,
-      takenElsewhere: takenVideoPresent()
+      takenElsewhere: reportedTakenElsewhere
     });
   }
 
@@ -491,11 +488,20 @@
     }
   }
 
-  setInterval(clearStaleAttachment, 2000);
+  function syncAttachment() {
+    clearStaleAttachment();
+    // A held element can leave the page after the attach that reported it.
+    if (attachedVideo && takenVideoPresent() !== reportedTakenElsewhere) postAttached();
+  }
+
+  setInterval(syncAttachment, 2000);
 
   async function attach(video) {
     if (!video || attachedVideo === video) return;
     const c = await ensureContext();
+    // Another tick can finish this attach while the context is still being
+    // built. The element is ours by then, and taking it again throws.
+    if (attachedVideo) return;
     if (!c) {
       if (!contextFailureReported) {
         contextFailureReported = true;
