@@ -41,6 +41,10 @@ PLAYER_GEAR_RADIUS = 5      # プレイヤー操作列の設定アイコン
 FULLSCREEN_SIZE = 12        # プレイヤー操作列の全画面アイコン
 
 
+# 解決した書体。追跡している画像がどの環境で描かれたかは、これで分かる。
+RESOLVED_FONTS = set()
+
+
 def _font(size, bold=False):
     cands = (
         ['meiryob.ttc', 'C:/Windows/Fonts/meiryob.ttc',
@@ -53,9 +57,12 @@ def _font(size, bold=False):
     )
     for c in cands:
         try:
-            return ImageFont.truetype(c, size)
+            font = ImageFont.truetype(c, size)
         except Exception:
             continue
+        RESOLVED_FONTS.add(c)
+        return font
+    RESOLVED_FONTS.add('(PIL default)')
     return ImageFont.load_default()
 
 
@@ -499,6 +506,7 @@ def verify_icons():
 
 def main():
     verify_icons()
+    print(f'Fonts: {", ".join(sorted(RESOLVED_FONTS))}')
     os.makedirs(OUT_DIR, exist_ok=True)
     for lang in ('ja', 'en'):
         screenshot_popup(lang)
