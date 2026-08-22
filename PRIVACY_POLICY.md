@@ -12,13 +12,13 @@ Twitch Channel Volume is a Chrome extension that remembers and auto-applies volu
 
 ### Channel Volume Settings
 
-- **What**: Twitch channel identifiers (login name for live, owner ID / broadcaster ID for VODs and clips), display names, page URLs, the gain values you set per kind (Live / VOD / Clip), and a cache of the most recent loudness measurement.
+- **What**: Twitch channel identifiers (the numeric owner ID / broadcaster ID once the page has provided it; the login name, video ID or clip slug until then), display names, page URLs, the gain values you set per kind (Live / VOD / Clip), and a cache of the most recent loudness measurement. Alongside these, the extension keeps the mapping from a provisional identifier to the numeric one and a counter that orders field updates.
 - **Purpose**: Used to automatically apply your preferred volume when you open a stream, VOD, or clip from a saved channel.
 - **Storage**: Saved locally in `chrome.storage.local` on your device. Never transmitted to any external server.
 
 ### Extension Preferences
 
-- **What**: Target LUFS level, ad-break gain (dB), display unit (% or dB), gain overlay toggle.
+- **What**: Target LUFS level, ad-break gain (dB), display unit (% or dB), gain overlay toggle, and the auto-follow default for each kind (Live / VOD / Clip).
 - **Purpose**: Customize the extension's behavior according to your preferences.
 - **Storage**: Saved locally in `chrome.storage.local` on your device.
 
@@ -32,7 +32,7 @@ Twitch Channel Volume is a Chrome extension that remembers and auto-applies volu
 
 - **What**: GraphQL responses issued by Twitch itself (to obtain a channel's owner ID / broadcaster ID), the ad cues the player posts to its own page (to learn when an ad break starts and ends), and the presence of the player's ad indicator in the page.
 - **Purpose**: Obtain a persistent channel identifier and detect ad breaks.
-- **Storage**: GraphQL responses and ad cues are not stored. Only the required values are extracted and used: channel IDs, and the start, end, roll type (pre-roll / mid-roll) and position within the pod of an ad break. Ad identifiers, advertiser names and tracking URLs carried by a cue are not read.
+- **Storage**: GraphQL responses and ad cues are not stored. Only the required values are extracted and used: channel IDs, and the start, end, roll type (pre-roll / mid-roll) and the position and count within the pod of an ad break. Ad identifiers, advertiser names and tracking URLs carried by a cue are not read.
 
 ## Data NOT Collected
 
