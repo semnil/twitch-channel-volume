@@ -1151,7 +1151,10 @@ const RAW_TEXT_ELEMENTS = [
   'noembed', 'noframes', 'noscript'
 ];
 // PLAINTEXT has no end tag: everything after it is text, to end of file.
-const PLAINTEXT_OPENS = /<plaintext\b/i;
+// ASCII whitespace, which is what separates the parts of a tag. JavaScript's
+// \s is wider — a no-break space is whitespace to it and text to a browser.
+const HTML_SPACE = '\\t\\n\\f\\r ';
+const IS_HTML_SPACE = /[\t\n\f\r ]/;
 
 function htmlMarkup(source) {
   let markup = source.replace(/<!--[\s\S]*?-->/g, '');
@@ -1160,12 +1163,21 @@ function htmlMarkup(source) {
     // whitespace or a slash as well as on `>`, carrying attributes that are
     // read and thrown away. (HTML parsing spec, tokenizer: end tag open state.)
     markup = markup.replace(
-      new RegExp(`<${name}(?=[\\s/>])[\\s\\S]*?</${name}(?=[\\s/>])[^>]*>`, 'gi'),
+      new RegExp(
+        `<${name}(?=[${HTML_SPACE}/>])[\\s\\S]*?</${name}(?=[${HTML_SPACE}/>])[^>]*>`,
+        'gi'
+      ),
       ''
     );
   }
-  const plaintext = markup.search(PLAINTEXT_OPENS);
-  return plaintext === -1 ? markup : markup.slice(0, plaintext);
+  // An opener with no end tag the browser accepts — a stray one, or one
+  // closed with something that is not ASCII whitespace — turns the rest of the
+  // document into text, exactly as PLAINTEXT does.
+  for (const name of [...RAW_TEXT_ELEMENTS, 'plaintext']) {
+    const opener = markup.search(new RegExp(`<${name}(?=[${HTML_SPACE}/>])`, 'i'));
+    if (opener !== -1) markup = markup.slice(0, opener);
+  }
+  return markup;
 }
 
 function htmlStartTags(markup) {
@@ -1196,19 +1208,21 @@ function htmlStartTags(markup) {
 // attribute spelled inside another one's value then counts as one of its own.
 function tagAttributes(tag) {
   const attributes = [];
+  const seen = new Set();
+  const space = (character) => character !== undefined && IS_HTML_SPACE.test(character);
   let i = 1;
-  while (i < tag.length && !/[\s/>]/.test(tag[i])) i++;
+  while (i < tag.length && !space(tag[i]) && !'/>'.includes(tag[i])) i++;
   while (i < tag.length) {
-    while (i < tag.length && /[\s/]/.test(tag[i])) i++;
+    while (i < tag.length && (space(tag[i]) || tag[i] === '/')) i++;
     const nameStart = i;
-    while (i < tag.length && !/[\s/=>]/.test(tag[i])) i++;
+    while (i < tag.length && !space(tag[i]) && !'/=>'.includes(tag[i])) i++;
     if (i === nameStart) break;
     const name = tag.slice(nameStart, i).toLowerCase();
-    while (i < tag.length && /\s/.test(tag[i])) i++;
+    while (i < tag.length && space(tag[i])) i++;
     let value = '';
     if (tag[i] === '=') {
       i++;
-      while (i < tag.length && /\s/.test(tag[i])) i++;
+      while (i < tag.length && space(tag[i])) i++;
       const quote = tag[i];
       if (quote === '"' || quote === "'") {
         const end = tag.indexOf(quote, i + 1);
@@ -1216,10 +1230,14 @@ function tagAttributes(tag) {
         i = end === -1 ? tag.length : end + 1;
       } else {
         const valueStart = i;
-        while (i < tag.length && !/[\s>]/.test(tag[i])) i++;
+        while (i < tag.length && !space(tag[i]) && tag[i] !== '>') i++;
         value = tag.slice(valueStart, i);
       }
     }
+    // A repeated name is dropped, the way the tokenizer drops it, so the page
+    // and this scan read the same attribute.
+    if (seen.has(name)) continue;
+    seen.add(name);
     attributes.push([name, value]);
   }
   return attributes;
@@ -1303,6 +1321,13 @@ test('the pages stay inside the markup the extractor reads', () => {
     // tags are the two the pages use, and both are read as raw text.
     for (const element of ['textarea', 'iframe', 'xmp', 'noembed', 'noframes', 'noscript', 'plaintext']) {
       assert.doesNotMatch(source, new RegExp(`<${element}\\b`, 'i'), `${name} uses <${element}>`);
+    }
+    // The raw-text elements the pages do use close the plain way. A browser
+    // also closes them on `</title >`, and closes them on nothing at all if
+    // what follows the name is not ASCII whitespace.
+    for (const closing of source.matchAll(/<\/(script|style|title)/gi)) {
+      const after = source[closing.index + closing[0].length];
+      assert.equal(after, '>', `${name} closes <${closing[1]}> with ${JSON.stringify(after)}`);
     }
     // Every mention is the attribute itself, spelled the way the extractor
     // reads it: lower case, quoted, inside a start tag.
