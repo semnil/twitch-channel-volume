@@ -4,6 +4,11 @@ Chrome extension (MV3) that auto-balances per-channel volume on Twitch using rea
 
 Twitch does not publish any loudness metadata (no `loudnessDb`-equivalent API, no HLS audio metadata), so the extension measures the playing `<video>` directly via Web Audio API and persists the resulting gain per channel × media kind (Live / VOD / Clip).
 
+The player runs its media engine in a Web Worker and posts a cue for each ad it is about to play, carrying the break's
+bounds in the element's own timeline. The extension wraps the `Worker` constructor to listen for those cues; the worker
+itself is created from the argument the page passed, untouched. Where no cue arrives — a client-side ad on a VOD — the
+player's ad indicator in the DOM stands in.
+
 ## Features
 
 - **Real-time LUFS metering**: Momentary (400 ms), Short-term (3 s), Integrated (BS.1770 absolute and relative gates with indexed updates)
@@ -11,7 +16,8 @@ Twitch does not publish any loudness metadata (no `loudnessDb`-equivalent API, n
 - **Measurement reset**: Discards the current media kind's measurement history and restarts it from zero. The stored value tracks the restarted measurement from its first block onward; saved gains are unchanged
 - **Per-channel manual gain**: Save gain per Live / VOD / Clip kind; applied automatically on revisit and used while Auto is waiting for measurement
 - **Global Auto defaults**: Independent Live / VOD / Clip defaults apply only when a channel kind has neither an explicit Auto choice nor a manual gain
-- **Ad-break handling**: Detects the player's ad indicator in the DOM and applies a separate gain offset during ads
+- **Ad-break handling**: Reads the ad cues the player's media engine posts, and its ad indicator in the DOM. A
+  client-side ad plays in its own element at its own volume, and the ad gain reaches that element too
 - **Pipeline notices**: Three states get their own message instead of an endless "measuring" hint — another script already holds the player's audio, the audio context would not start, or only the measurement path failed to come up (gain still applies in the last one). The popup states which one happened and what to do about it
 - **0–600 % gain range** via Web Audio `GainNode` (HTML5 `video.volume` would cap at 1.0)
 - **No external dependencies** — pure JavaScript, no bundler
