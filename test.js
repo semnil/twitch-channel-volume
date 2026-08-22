@@ -824,7 +824,8 @@ function createPageBridgeHarness({
   extraFreeVideo = false,
   audioContextThrows = false,
   workletLoadFails = false,
-  deferWorkletLoad = false
+  deferWorkletLoad = false,
+  frozenWorker = false
 } = {}) {
   const messages = [];
   // Real ids: a loop that was cancelled has to stop running here too, or a
@@ -836,37 +837,45 @@ function createPageBridgeHarness({
   const workletModules = [];
   const listeners = {};
   const location = { href: 'https://www.twitch.tv/videos/100' };
-  const videoListeners = {};
-  const video = {
-    src: 'https://example.test/video',
-    readyState: 4,
-    clientWidth: 1920,
-    clientHeight: 1080,
-    isConnected: true,
-    volume: 1,
-    muted: false,
-    currentTime: 0,
-    addEventListener(type, fn) { (videoListeners[type] ||= []).push(fn); },
-    removeEventListener(type, fn) {
-      videoListeners[type] = (videoListeners[type] || []).filter((f) => f !== fn);
-    }
+  const videos = [];
+  const makeVideo = (props = {}) => {
+    const listeners = {};
+    return {
+      src: 'https://example.test/video',
+      readyState: 4,
+      clientWidth: 1920,
+      clientHeight: 1080,
+      isConnected: true,
+      volume: 1,
+      muted: false,
+      paused: false,
+      currentTime: 0,
+      buffered: { length: 0, start() { return 0; }, end() { return 0; } },
+      listeners,
+      addEventListener(type, fn) { (listeners[type] ||= []).push(fn); },
+      removeEventListener(type, fn) {
+        listeners[type] = (listeners[type] || []).filter((f) => f !== fn);
+      },
+      ...props
+    };
   };
-  const freeVideoListeners = {};
-  const freeVideo = {
+  const fire = (element, type) => {
+    for (const fn of element.listeners[type] || []) fn();
+  };
+  let video = makeVideo();
+  videos.push(video);
+  const freeVideo = makeVideo({
     src: 'https://example.test/free-video',
-    readyState: 4,
     clientWidth: 320,
-    clientHeight: 180,
-    isConnected: true,
-    volume: 1,
-    muted: false,
-    currentTime: 0,
-    addEventListener(type, fn) { (freeVideoListeners[type] ||= []).push(fn); },
-    removeEventListener(type, fn) {
-      freeVideoListeners[type] = (freeVideoListeners[type] || []).filter((f) => f !== fn);
-    }
-  };
-  const videos = extraFreeVideo ? [video, freeVideo] : [video];
+    clientHeight: 180
+  });
+  if (extraFreeVideo) videos.push(freeVideo);
+  const workerCalls = [];
+  const workerListeners = [];
+  class TestWorker {
+    constructor(url, options) { workerCalls.push({ url, options }); }
+    addEventListener(type, listener) { workerListeners.push({ type, listener }); }
+  }
   let measurementPort;
   let resolveFetch;
   let resolveWorkletLoad;
@@ -874,8 +883,9 @@ function createPageBridgeHarness({
   let gainNode;
   const audioNode = () => ({
     connect() {},
-    disconnect() {}
+    disconnect() { this.disconnected = true; }
   });
+  const sourcedElements = [];
   class AudioWorkletNode {
     constructor() {
       measurementPort = { onmessage: null };
@@ -922,12 +932,14 @@ function createPageBridgeHarness({
       if (mediaElementSourceTaken && element === video) {
         throw new DOMException('HTMLMediaElement already connected', 'InvalidStateError');
       }
+      sourcedElements.push(element);
       return audioNode();
     }
     async resume() {}
   }
   const window = {
     AudioContext,
+    Worker: TestWorker,
     addEventListener(type, listener) {
       (listeners[type] ||= []).push(listener);
     },
@@ -938,6 +950,9 @@ function createPageBridgeHarness({
       messages.push(structuredClone(message));
     }
   };
+  if (frozenWorker) {
+    Object.defineProperty(window, 'Worker', { value: TestWorker, writable: false, configurable: false });
+  }
   const context = vm.createContext({
     AudioWorkletNode,
     clearInterval(id) { timers.delete(id); },
@@ -1004,16 +1019,34 @@ function createPageBridgeHarness({
     },
     setVolume(value) {
       video.volume = value;
-      for (const fn of videoListeners.volumechange || []) fn();
+      fire(video, 'volumechange');
     },
     setMuted(value) {
       video.muted = value;
-      for (const fn of videoListeners.volumechange || []) fn();
+      fire(video, 'volumechange');
+    },
+    setPlayhead(currentTime) {
+      video.currentTime = currentTime;
+    },
+    createWorker(url, options) { return new context.window.Worker(url, options); },
+    workerCalls,
+    workerListeners,
+    sourcedElements,
+    videos,
+    emitPlayerCue(cue) {
+      // The cue reaches the bridge through the worker the player creates.
+      if (!workerListeners.length) new context.window.Worker('blob:https://www.twitch.tv/player');
+      for (const entry of workerListeners) {
+        if (entry.type === 'message') entry.listener({ data: { arg: cue } });
+      }
     },
     async replaceVideo() {
+      // A replacement is a different element, which is why a source can be made
+      // for it at all.
+      const next = makeVideo({ volume: video.volume, muted: video.muted });
       video.isConnected = false;
-      await dispatchCommand('attach');
-      video.isConnected = true;
+      videos.splice(videos.indexOf(video), 1, next);
+      video = next;
       await dispatchCommand('attach');
     }
   };
@@ -4610,4 +4643,175 @@ test('kWeightingForSampleRate: 44.1k DC gain matches 48k DC gain', () => {
   const rlb441 = dcGain(at441.rlb);
   // RLB is a high-pass, DC gain is near zero for both
   assert.ok(Math.abs(rlb48 - rlb441) < 1e-3);
+});
+
+test('page bridge listens to the workers the page creates', () => {
+  const harness = createPageBridgeHarness();
+  const url = 'blob:https://www.twitch.tv/player';
+  const options = { type: 'classic', name: 'media' };
+  harness.createWorker(url, options);
+  // The worker is created from what the page passed, untouched.
+  assert.deepEqual(harness.workerCalls.at(-1), { url, options });
+  assert.equal(harness.workerListeners.filter((entry) => entry.type === 'message').length, 1);
+});
+
+test('page bridge takes the break from the cue the player posts', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  const content = Array.from({ length: 60 }, (_, i) => 0.01 + i * 0.0004);
+  for (const ms of content) harness.emitMeasurementBlock(ms);
+  harness.setPlayhead(100);
+
+  harness.emitPlayerCue({ rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2 });
+  assert.equal(harness.messages.filter((message) => message.event === 'ad').at(-1).active, true);
+  // The cue arrived with the ad's first audio, so one window held it.
+  const kept = gatingWindows(content).slice(0, -1);
+  const duringAd = u.gatedIntegratedLufs(kept);
+  for (let i = 0; i < 20; i++) harness.emitMeasurementBlock(1.0);
+  assertLufsClose(harness.messages.at(-1).integrated, duringAd);
+
+  // The break runs until the playhead passes the end the cue gave.
+  harness.setPlayhead(115.1);
+  harness.emitMeasurementBlock(1.0);
+  assert.equal(harness.messages.filter((message) => message.event === 'ad').at(-1).active, true);
+
+  harness.logs.length = 0;
+  harness.setPlayhead(115.3);
+  harness.emitMeasurementBlock(1.0);
+  assert.equal(harness.messages.filter((message) => message.event === 'ad').at(-1).active, false);
+  const arms = harness.logs.filter((entry) => entry[0] === '[TCV] gate boundary');
+  assert.equal(arms.length, 1);
+  assert.equal(arms[0][1].reason, 'ad-end');
+});
+
+test('page bridge ignores a cue whose break does not hold the playhead', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.setPlayhead(304.69);
+  harness.messages.length = 0;
+
+  // The page runs a second player during a break and cues its ads on its own
+  // clock; those bounds are nowhere near this element's playhead.
+  harness.emitPlayerCue({ rollType: 'midroll', startTime: 11.966, endTime: 42.201, duration: 30.235 });
+  assert.equal(harness.messages.filter((message) => message.event === 'ad').length, 0);
+
+  // Nothing was accepted, so the indicator is still what decides.
+  await harness.dispatchCommand('setAdActive', { active: true });
+  assert.equal(harness.messages.filter((message) => message.event === 'ad').at(-1).active, true);
+});
+
+test('page bridge removes the windows appended between the ad and its cue', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  const content = Array.from({ length: 60 }, (_, i) => 0.01 + i * 0.0004);
+  for (const ms of content) harness.emitMeasurementBlock(ms);
+
+  // The ad has been playing for 0.35 s when its cue arrives.
+  harness.setPlayhead(100.35);
+  harness.logs.length = 0;
+  harness.emitPlayerCue({ rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2 });
+  const rollback = harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback');
+  assert.equal(rollback.length, 1);
+  assert.equal(rollback[0][1].requested, 4);
+  assert.equal(rollback[0][1].removed, 4);
+  harness.emitMeasurementBlock(1.0);
+  const kept = gatingWindows(content).slice(0, -4);
+  assertLufsClose(harness.messages.at(-1).integrated, u.gatedIntegratedLufs(kept));
+});
+
+test('page bridge extends a break when the next creative is cued', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  for (let i = 0; i < 40; i++) harness.emitMeasurementBlock(0.01);
+  harness.setPlayhead(300);
+  harness.emitPlayerCue({ rollType: 'midroll', startTime: 299.967, endTime: 315.184, duration: 15.217 });
+
+  harness.logs.length = 0;
+  harness.setPlayhead(315.39);
+  harness.emitPlayerCue({ rollType: 'midroll', startTime: 315.238, endTime: 346.47, duration: 31.232 });
+  // The break did not restart, so nothing is rolled back a second time.
+  assert.equal(harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback').length, 0);
+
+  harness.emitMeasurementBlock(1.0);
+  assert.equal(harness.messages.filter((message) => message.event === 'ad').at(-1).active, true);
+  harness.setPlayhead(346.5);
+  harness.emitMeasurementBlock(1.0);
+  assert.equal(harness.messages.filter((message) => message.event === 'ad').at(-1).active, false);
+});
+
+test('page bridge only ever moves the end of a break forward', async () => {
+  const harness = createPageBridgeHarness();
+  const adState = () => harness.messages.filter((message) => message.event === 'ad').at(-1);
+  await harness.startMeasurement();
+  harness.setPlayhead(300);
+
+  // The pod and the creative it starts with are both cued at the same moment.
+  harness.emitPlayerCue({ rollType: 'midroll', startTime: 300, endTime: 346.47, duration: 46.47 });
+  harness.emitPlayerCue({ rollType: 'midroll', startTime: 300, endTime: 315.18, duration: 15.18 });
+
+  harness.setPlayhead(320);
+  harness.emitMeasurementBlock(0.01);
+  assert.equal(adState().active, true);
+});
+
+test('page bridge takes a cue only from a message that names a roll type', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.setPlayhead(100);
+  harness.messages.length = 0;
+
+  // Other player messages carry a start and an end without cueing an ad.
+  harness.emitPlayerCue({ startTime: 90, endTime: 200 });
+  assert.equal(harness.messages.filter((message) => message.event === 'ad').length, 0);
+});
+
+test('page bridge ends the break by the cue even when the indicator stays', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.setPlayhead(100);
+  harness.emitPlayerCue({ rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2 });
+  await harness.dispatchCommand('setAdActive', { active: true });
+  assert.equal(harness.messages.filter((message) => message.event === 'ad').at(-1).active, true);
+
+  // The indicator is never taken out of the page; the cue still ends the break.
+  harness.setPlayhead(115.3);
+  harness.emitMeasurementBlock(1.0);
+  assert.equal(harness.messages.filter((message) => message.event === 'ad').at(-1).active, false);
+});
+
+test('page bridge stops trusting cues after a reset', async () => {
+  const harness = createPageBridgeHarness();
+  const adState = () => harness.messages.filter((message) => message.event === 'ad').at(-1);
+  await harness.startMeasurement();
+  harness.setPlayhead(100);
+  harness.emitPlayerCue({ rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2 });
+  assert.equal(adState().active, true);
+
+  // The reset drops the break along with the history it belonged to.
+  await harness.dispatchCommand('resetMeasurement');
+  assert.equal(adState().active, false);
+
+  // The next media may be a VOD, whose ads are cued nowhere, so the indicator
+  // is the only signal again and it carries its own delay.
+  for (let i = 0; i < 60; i++) harness.emitMeasurementBlock(0.01 + i * 0.0004);
+  harness.logs.length = 0;
+  await harness.dispatchCommand('setAdActive', { active: true });
+  const rollback = harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback');
+  assert.equal(rollback.length, 1);
+  assert.equal(rollback[0][1].requested, AD_START_ROLLBACK);
+  assert.equal(adState().active, true);
+});
+
+test('page bridge measures on when the Worker constructor cannot be wrapped', async () => {
+  const harness = createPageBridgeHarness({ frozenWorker: true });
+  await harness.startMeasurement();
+  harness.createWorker('blob:https://www.twitch.tv/player');
+  assert.equal(harness.workerListeners.length, 0);
+
+  // No cue can arrive, so the indicator is what decides, and the measurement
+  // runs as it always did.
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(0.25);
+  assertLufsClose(harness.messages.at(-1).integrated, u.meanSquareToLufs(0.25));
+  await harness.dispatchCommand('setAdActive', { active: true });
+  assert.equal(harness.messages.filter((message) => message.event === 'ad').at(-1).active, true);
 });

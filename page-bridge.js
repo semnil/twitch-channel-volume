@@ -2,7 +2,8 @@
 // Owns the AudioContext, GainNode and K-weighted LUFS measurement pipeline.
 // Twitch publishes no loudness metadata, so the bridge measures the playing
 // <video> directly via Web Audio. It also hooks fetch to read Twitch's GraphQL
-// responses for the authoritative user_id/login.
+// responses for the authoritative user_id/login, and wraps the Worker
+// constructor to hear the ad cues the player's own media engine posts.
 
 (() => {
   'use strict';
@@ -79,6 +80,11 @@
   let baselineGain = 1.0;
   let adGainOffset = 1.0;
   let adActive = false;
+  let domAdActive = false;
+  // The media time the player's cue gave for the end of the break it is
+  // playing, and whether any cue has been accepted for this media.
+  let adBreakEndMedia = -Infinity;
+  let adCueSeen = false;
   let attachTimer = null;
   const attachFailedFor = new WeakSet();
   // Elements another script holds. They keep the gain node out of the player's
@@ -259,12 +265,11 @@
     }, '*');
   }
 
-  function postAd(active, range) {
+  function postAd(active) {
     window.postMessage({
       type: MSG_OUT,
       event: 'ad',
-      active,
-      range: range || null
+      active
     }, '*');
   }
 
@@ -335,6 +340,11 @@
     integratedBlockLength = 0;
     absoluteGatedRoot = null;
     windowsSinceReset = 0;
+    // New media has its own cues, and a media time from the old one means
+    // nothing against it.
+    adCueSeen = false;
+    adBreakEndMedia = -Infinity;
+    updateAdState();
     if (!Number.isFinite(initialIntegratedLufs)) return;
     const initialMeanSquare = Math.pow(10, (initialIntegratedLufs + 0.691) / 10);
     if (!Number.isFinite(initialMeanSquare)) return;
@@ -451,6 +461,7 @@
       attachedVideo.removeEventListener('volumechange', onVolumeChange);
       attachedVideo = null;
       lastVolumeState = '';
+      adBreakEndMedia = -Infinity;
       sourceNode = null;
       workletNode = null;
       // The element that replaces it needs the loop that first attached.
@@ -582,6 +593,9 @@
     const mom = blocksToLufs(blocks, MOMENTARY_BLOCKS);
     const st = blocksToLufs(blocks, SHORT_BLOCKS);
     const gateWindow = blocksMeanSquare(blocks, GATE_BLOCKS);
+    // The playhead passing the end the cue gave is what ends a break, so the
+    // state is re-read on every block.
+    updateAdState();
     // Credit is spent on windows, so a reset that empties the sub-block buffer
     // does not consume it before a window exists.
     const skipBoundary = boundarySkipBlocks > 0 && gateWindow !== null;
@@ -652,28 +666,106 @@
     gain.gain.setTargetAtTime(effective, ctx.currentTime, 0.02);
   }
 
-  function setAdActive(active, range) {
-    if (adActive === !!active) return;
-    adActive = !!active;
-    if (adActive) {
-      const removed = removeRecentIntegratedBlocks(AD_START_ROLLBACK_BLOCKS);
-      const half = ROLLBACK_LOG_SAMPLES / 2;
-      const truncated = removed.length > ROLLBACK_LOG_SAMPLES;
-      console.info('[TCV] ad start rollback', {
-        removed: removed.length,
-        requested: AD_START_ROLLBACK_BLOCKS,
-        // At the budget the removal stopped short of the ad's own start.
-        exhausted: removed.length === AD_START_ROLLBACK_BLOCKS,
-        windowsSinceReset,
-        windowLufs: truncated
-          ? [...removed.slice(0, half), ...removed.slice(-half)]
-          : removed,
-        ...(truncated ? { truncated: true } : {})
-      });
-    } else armBoundarySkip('ad-end');
-    applyEffectiveGain();
-    postAd(adActive, range);
+  const AD_CUE_LEAD_SEC = 1;
+
+  // The cue names the break in the media timeline of the element that is being
+  // measured, so the break runs until the playhead passes the end it gave.
+  function playerBreakActive() {
+    const position = attachedVideo?.currentTime;
+    return Number.isFinite(position) && position < adBreakEndMedia;
   }
+
+  // The player's cue names the break with its first audio and ends it on time;
+  // the DOM indicator does neither, so it only stands in where no cue arrives,
+  // which is where a VOD's client-side ad lives.
+  function adWanted() {
+    return adCueSeen ? playerBreakActive() : domAdActive;
+  }
+
+  function rollBackAdStart(blocks) {
+    const requested = Math.max(0, blocks);
+    const removed = removeRecentIntegratedBlocks(requested);
+    const half = ROLLBACK_LOG_SAMPLES / 2;
+    const truncated = removed.length > ROLLBACK_LOG_SAMPLES;
+    console.info('[TCV] ad start rollback', {
+      removed: removed.length,
+      requested,
+      // At the budget the removal stopped short of the ad's own start.
+      exhausted: requested > 0 && removed.length === requested,
+      windowsSinceReset,
+      windowLufs: truncated
+        ? [...removed.slice(0, half), ...removed.slice(-half)]
+        : removed,
+      ...(truncated ? { truncated: true } : {})
+    });
+  }
+
+  function updateAdState(rollbackBlocks = AD_START_ROLLBACK_BLOCKS) {
+    const wanted = adWanted();
+    if (wanted === adActive) return;
+    adActive = wanted;
+    if (adActive) rollBackAdStart(rollbackBlocks);
+    else armBoundarySkip('ad-end');
+    applyEffectiveGain();
+    postAd(adActive);
+  }
+
+  function setDomAdActive(active) {
+    if (domAdActive === !!active) return;
+    domAdActive = !!active;
+    // The indicator appears after the ad's first audio, so the windows appended
+    // in between are removed.
+    updateAdState(AD_START_ROLLBACK_BLOCKS);
+  }
+
+  // ── Ad breaks: the player's own cues ────────────────────────────────
+  // The player runs its media engine in a worker and posts a cue for each ad it
+  // is about to play. The Worker constructor is wrapped only to listen; the
+  // worker is created from the argument the page passed, untouched.
+
+  function onPlayerWorkerMessage(event) {
+    const cue = event.data?.arg;
+    if (!cue || typeof cue !== 'object') return;
+    if (typeof cue.rollType !== 'string') return;
+    const { startTime, endTime } = cue;
+    if (!Number.isFinite(startTime) || !Number.isFinite(endTime)) return;
+    if (endTime <= startTime) return;
+    const position = attachedVideo?.currentTime;
+    if (!Number.isFinite(position)) return;
+    // A second player runs during a break and cues its own ads; the cue that
+    // belongs to the element being measured is the one holding its playhead.
+    if (position < startTime - AD_CUE_LEAD_SEC || position >= endTime) return;
+    adCueSeen = true;
+    if (endTime <= adBreakEndMedia) return;
+    adBreakEndMedia = endTime;
+    console.info('[TCV] ad cue from the player', {
+      rollType: cue.rollType,
+      startTime: Number(startTime.toFixed(3)),
+      endTime: Number(endTime.toFixed(3)),
+      videoTime: Number(position.toFixed(3))
+    });
+    // Windows appended between the break's first audio and this cue hold it.
+    updateAdState(1 + Math.floor(Math.max(0, position - startTime) / BLOCK_SEC));
+  }
+
+  function installWorkerHook() {
+    const NativeWorker = window.Worker;
+    if (typeof NativeWorker !== 'function') return;
+    try {
+      window.Worker = class extends NativeWorker {
+        constructor(url, options) {
+          super(url, options);
+          this.addEventListener('message', onPlayerWorkerMessage);
+        }
+      };
+    } catch (err) {
+      // The rest of the bridge runs after this; an unwritable Worker must not
+      // take the measurement down with it.
+      console.warn('[TCV] Worker constructor could not be wrapped; ads are detected from the DOM alone', err);
+    }
+  }
+
+  installWorkerHook();
 
   // ── Fetch hook: GraphQL ─────────────────────────────────────────────
 
@@ -781,7 +873,7 @@
         setAdGainOffset(data.value);
         break;
       case 'setAdActive':
-        setAdActive(data.active, data.range);
+        setDomAdActive(data.active);
         break;
       case 'resetMeasurement':
         resetMeasurement(data.initialIntegratedLufs, data.epoch);

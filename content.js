@@ -496,7 +496,10 @@
     });
   }
 
-  // ── DOM-based ad detection (fallback) ─────────────────────────────
+  // ── DOM-based ad detection ────────────────────────────────────────
+  // The indicator appears after the ad's first audio and can stay in the page
+  // after the break, so the bridge prefers the player's own cue and falls back
+  // to this where no cue arrives.
 
   function checkAdDom() {
     const node = document.querySelector(
