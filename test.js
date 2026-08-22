@@ -5251,6 +5251,27 @@ test('page bridge lets new windows displace a seed at the cap', async () => {
   assert.ok(later.integrated > first, `${later.integrated} vs ${first}`);
 });
 
+// The index keys on the level, so audio holding the level the seed sits at
+// lands on the seed's own key. Which entries are the seed's is a matter of
+// where they came from, not of what they are worth.
+test('page bridge counts audio that holds the level the seed sits at', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.messages.length = 0;
+  const level = Math.pow(10, (-18 + 0.691) / 10);
+  await harness.dispatchCommand('resetMeasurement', {
+    initialIntegratedLufs: -18,
+    initialIntegratedWindows: 100
+  });
+
+  // Sixty seconds of it: 597 windows, each landing on the seed's key.
+  for (let i = 0; i < 600; i++) harness.emitMeasurementBlock(level);
+
+  const posted = harness.messages.at(-1);
+  assert.ok(Math.abs(posted.integrated - u.meanSquareToLufs(level)) < 1e-12);
+  assert.equal(posted.integratedWindows, 100 + 597);
+});
+
 // The ring evicts what it can no longer hold, and silence evicts without
 // putting anything in the index in return. What the value stands on shrinks
 // with it, and a count kept alongside the index rather than read from it does
@@ -5261,9 +5282,11 @@ test('page bridge reports what the index holds after the ring turns over', async
   harness.messages.length = 0;
   const ring = 60 * 60 * 10;
   const loud = Math.pow(10, (-18 + 0.691) / 10);
+  // A claim under the floor again, so what the ring gives back is visible in
+  // the count rather than cancelling against the claim.
   await harness.dispatchCommand('resetMeasurement', {
     initialIntegratedLufs: -18,
-    initialIntegratedWindows: 3 * 60 * 10
+    initialIntegratedWindows: 100
   });
 
   for (let i = 0; i < ring; i++) harness.emitMeasurementBlock(loud);
