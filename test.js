@@ -1021,7 +1021,8 @@ function createPageBridgeHarness({
     addEventListener(type, listener) { workerListeners.push({ type, listener }); }
   }
   let measurementPort;
-  let resolveFetch;
+  const fetchCalls = [];
+  const pendingFetches = [];
   let resolveWorkletLoad;
   let mediaSourceCalls = 0;
   let gainNode;
@@ -1089,8 +1090,9 @@ function createPageBridgeHarness({
     addEventListener(type, listener) {
       (listeners[type] ||= []).push(listener);
     },
-    fetch() {
-      return new Promise((resolve) => { resolveFetch = resolve; });
+    fetch(...args) {
+      fetchCalls.push(args);
+      return new Promise((resolve) => { pendingFetches.push(resolve); });
     },
     postMessage(message) {
       messages.push(structuredClone(message));
@@ -1139,7 +1141,11 @@ function createPageBridgeHarness({
     logs,
     workletModules,
     fetch: (...args) => window.fetch(...args),
-    resolveFetch(response) { resolveFetch(response); },
+    fetchCalls,
+    resolveFetch(response) {
+      assert.ok(pendingFetches.length, 'no request is waiting for a response');
+      for (const resolve of pendingFetches.splice(0)) resolve(response);
+    },
     async startMeasurement() {
       await dispatchCommand('init');
       await dispatchCommand('attach');
@@ -3136,7 +3142,13 @@ test('the fetch hook hands back the response the page asked for', async () => {
   const harness = createPageBridgeHarness();
   harness.messages.length = 0;
   let cloned = 0;
-  const untouched = harness.fetch('https://www.twitch.tv/api/something');
+  const plainInit = { method: 'GET', headers: {} };
+  const untouched = harness.fetch('https://www.twitch.tv/api/something', plainInit);
+  // The page's request goes out once, with the arguments the page gave.
+  assert.equal(harness.fetchCalls.length, 1);
+  assert.equal(harness.fetchCalls[0].length, 2);
+  assert.equal(harness.fetchCalls[0][0], 'https://www.twitch.tv/api/something');
+  assert.equal(harness.fetchCalls[0][1], plainInit);
   const plain = {
     clone() {
       cloned++;
@@ -3150,7 +3162,13 @@ test('the fetch hook hands back the response the page asked for', async () => {
   assert.equal(cloned, 0);
   assert.deepEqual(harness.messages.filter((message) => message.event === 'owner'), []);
 
-  const read = harness.fetch('https://gql.twitch.tv/gql');
+  const gqlInit = { method: 'POST', body: '{"operationName":"StreamMetadata"}' };
+  const read = harness.fetch('https://gql.twitch.tv/gql', gqlInit);
+  // The one it reads goes out once too, and not again to read it.
+  assert.equal(harness.fetchCalls.length, 2);
+  assert.equal(harness.fetchCalls[1].length, 2);
+  assert.equal(harness.fetchCalls[1][0], 'https://gql.twitch.tv/gql');
+  assert.equal(harness.fetchCalls[1][1], gqlInit);
   const answered = {
     clone() {
       return {
@@ -3165,6 +3183,7 @@ test('the fetch hook hands back the response the page asked for', async () => {
   assert.equal(await read, answered);
   await flushTasks();
   assert.equal(harness.messages.filter((message) => message.event === 'owner').length, 1);
+  assert.equal(harness.fetchCalls.length, 2);
 });
 
 test('GraphQL owner fallback keeps the request-time VOD identity across navigation', async () => {
