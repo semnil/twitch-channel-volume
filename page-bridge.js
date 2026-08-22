@@ -105,6 +105,9 @@
   // 100ms sub-block, formed from the most recent GATE_BLOCKS sub-blocks.
   const GATE_BLOCKS = 4;
   const MAX_INTEGRATED_BLOCKS = 60 * 60 * 10;
+  // A saved value seeds the new measurement as at least this many windows,
+  // whatever the count stored with it says.
+  const MIN_SEED_WINDOWS = 300;
   // A gating window that spans the end of an ad or a volume change carries
   // audio it cannot represent. Windows stay out of Integrated until they are
   // clear of the boundary.
@@ -271,7 +274,8 @@
       epoch: measurementEpoch,
       momentary,
       shortTerm,
-      integrated
+      integrated: integrated.lufs,
+      integratedWindows: integrated.windows
     }, '*');
   }
 
@@ -310,13 +314,16 @@
     return msToLufs(sum / n);
   }
 
+  // The value and the number of gated windows behind it, which is what a later
+  // session seeds with.
   function integratedLufs() {
     const absoluteGatedCount = treeCount(absoluteGatedRoot);
-    if (absoluteGatedCount === 0) return -Infinity;
+    if (absoluteGatedCount === 0) return { lufs: -Infinity, windows: 0 };
     const absoluteMeanSquare = treeSum(absoluteGatedRoot) / absoluteGatedCount;
     const relativeGate = absoluteMeanSquare * RELATIVE_GATE_FACTOR;
     const gated = treeValuesAtOrAbove(absoluteGatedRoot, relativeGate);
-    return gated.count === 0 ? -Infinity : msToLufs(gated.sum / gated.count);
+    if (gated.count === 0) return { lufs: -Infinity, windows: 0 };
+    return { lufs: msToLufs(gated.sum / gated.count), windows: gated.count };
   }
 
   function updateIntegratedLufs(ms) {
@@ -343,7 +350,12 @@
     return removed.reverse();
   }
 
-  function resetMeasurement(initialIntegratedLufs, epoch) {
+  function seedWindowCount(savedWindows) {
+    const saved = Number.isSafeInteger(savedWindows) && savedWindows > 0 ? savedWindows : 0;
+    return Math.min(MAX_INTEGRATED_BLOCKS, Math.max(MIN_SEED_WINDOWS, saved));
+  }
+
+  function resetMeasurement(initialIntegratedLufs, epoch, initialIntegratedWindows) {
     if (Number.isFinite(epoch)) measurementEpoch = epoch;
     blocks.length = 0;
     integratedBlockStart = 0;
@@ -354,9 +366,15 @@
     if (!Number.isFinite(initialIntegratedLufs)) return;
     const initialMeanSquare = Math.pow(10, (initialIntegratedLufs + 0.691) / 10);
     if (!Number.isFinite(initialMeanSquare)) return;
+    // The seed enters as the number of windows the saved value was measured
+    // over. Its entries carry a window stamp below every observed window, so a
+    // rollback does not reach them.
     // Values below the absolute gate reach the ring buffer but not the index,
     // so they never contribute to Integrated.
-    appendIntegratedBlock(initialMeanSquare, windowsObserved);
+    const seedWindows = seedWindowCount(initialIntegratedWindows);
+    for (let i = 0; i < seedWindows; i++) {
+      appendIntegratedBlock(initialMeanSquare, windowsObserved);
+    }
   }
 
   let ctxPromise = null;
@@ -1015,7 +1033,7 @@
         setDomAdActive(data.active);
         break;
       case 'resetMeasurement':
-        resetMeasurement(data.initialIntegratedLufs, data.epoch);
+        resetMeasurement(data.initialIntegratedLufs, data.epoch, data.initialIntegratedWindows);
         break;
       case 'mediaChanged':
         // New media answers for itself: the old cues mean nothing against its
