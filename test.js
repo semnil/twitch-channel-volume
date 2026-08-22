@@ -5,6 +5,8 @@ const { test } = require('node:test');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const os = require('node:os');
+const { spawnSync } = require('node:child_process');
 const u = require('./utils.js');
 const channelStore = require('./channel-store.js');
 const settingsStore = require('./settings-store.js');
@@ -20,12 +22,27 @@ function readStoredKeys(stored, keys) {
   return result;
 }
 
-test('unpacked extension tree contains no Chrome-reserved filenames', () => {
+// Repo-root directories that hold session artifacts rather than extension
+// files. pack.py keeps them out of the store package too.
+const SCRATCH_DIRS = new Set(['work', '.claude']);
+
+function withFixtureDir(prefix, body) {
+  const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), prefix));
+  try {
+    body(dir);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  assert.ok(!fs.existsSync(dir), `${dir} was left behind`);
+}
+
+function reservedNamesUnder(root) {
   const forbidden = [];
   function walk(directory, relative = '') {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
       if (entry.name === '.git' || entry.name === 'node_modules') continue;
       const nextRelative = path.join(relative, entry.name);
+      if (SCRATCH_DIRS.has(nextRelative)) continue;
       const allowedLocaleDirectory = nextRelative === '_locales';
       if ((entry.name.startsWith('_') && !allowedLocaleDirectory) || entry.name.endsWith('.pyc')) {
         forbidden.push(nextRelative);
@@ -34,8 +51,265 @@ test('unpacked extension tree contains no Chrome-reserved filenames', () => {
       if (entry.isDirectory()) walk(path.join(directory, entry.name), nextRelative);
     }
   }
-  walk(__dirname);
-  assert.deepEqual(forbidden, []);
+  walk(root);
+  return forbidden;
+}
+
+test('unpacked extension tree contains no Chrome-reserved filenames', () => {
+  assert.deepEqual(reservedNamesUnder(__dirname), []);
+});
+
+test('every packaged path is one the extension loads', () => {
+  const listed = spawnSync('python3', ['-B', 'pack.py', '--list'], {
+    cwd: __dirname,
+    encoding: 'utf8'
+  });
+  assert.equal(listed.status, 0, listed.stderr);
+  const packaged = listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+
+  assert.ok(packaged.includes('manifest.json'));
+  assert.ok(!packaged.includes('test.js'));
+
+  // Read independently of pack.py's own parsing: every packaged script or page
+  // is named by the manifest, by a page the manifest names, or by the worker.
+  const references = ['manifest.json', 'popup.html', 'options.html', 'background.js']
+    .map((name) => fs.readFileSync(path.join(__dirname, name), 'utf8'))
+    .join('\n');
+  for (const arcname of packaged) {
+    const segments = arcname.split(path.sep);
+    if (segments.length === 1) {
+      if (arcname === 'manifest.json') continue;
+      assert.match(arcname, /\.(js|html)$/, `${arcname} is not a script or a page`);
+      assert.ok(references.includes(arcname), `${arcname} is packaged but nothing loads it`);
+      continue;
+    }
+    const shipped =
+      (segments[0] === 'icons' && segments.length === 2 && arcname.endsWith('.png')) ||
+      (segments[0] === '_locales' && segments.length === 3 && segments[2] === 'messages.json');
+    assert.ok(shipped, `${arcname} is not a path the extension loads`);
+  }
+});
+
+test('the reserved-name walk skips the scratch roots and nothing else', () => {
+  // Named here because the fixture below is built from this set: dropping an
+  // entry would otherwise pass by leaving nothing to skip.
+  assert.deepEqual([...SCRATCH_DIRS].sort(), ['.claude', 'work']);
+
+  // The repo tree carries no scratch directory, so the skip is exercised on a
+  // fixture: without one, removing it changes no result here.
+  withFixtureDir('tcv-walk-', (fixture) => {
+    const write = (relative) => {
+      const target = path.join(fixture, relative);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, 'x');
+    };
+    write('manifest.json');
+    write('_locales/ja/messages.json');
+    for (const name of SCRATCH_DIRS) write(path.join(name, 'session', '_metadata', 'note.txt'));
+    write('_stray/file.txt');
+    write('icons/_cache/icon.png');
+    write('__pycache__/pack.cpython-313.pyc');
+    // The skip is by root path, not by name: a directory the extension ships
+    // keeps its contents checked whatever it is called.
+    write(path.join('icons', 'work', '_metadata', 'deep.txt'));
+
+    assert.deepEqual(reservedNamesUnder(fixture).sort(), [
+      '__pycache__',
+      '_stray',
+      path.join('icons', '_cache'),
+      path.join('icons', 'work', '_metadata')
+    ]);
+  });
+});
+
+test('the store package carries only the files the extension loads', () => {
+  // pack.py runs for real here: a declaration read out of its source would
+  // still pass with the selection that uses it deleted.
+  withFixtureDir('tcv-pack-', (fixture) => {
+    const write = (relative, body = 'x') => {
+      const target = path.join(fixture, relative);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, body);
+    };
+    write('manifest.json', JSON.stringify({
+      manifest_version: 3,
+      version: '1.0.0',
+      content_scripts: [{ js: ['utils.js', 'content.js'] }],
+      web_accessible_resources: [{ resources: ['audio-worklet.js'] }],
+      background: { service_worker: 'background.js' },
+      action: { default_popup: 'popup.html', default_icon: { 16: 'icons/icon16.png' } }
+    }));
+    write('utils.js');
+    write('content.js');
+    write('audio-worklet.js');
+    write('background.js', "importScripts('channel-store.js');\n");
+    write('channel-store.js');
+    write('popup.html', '<script src="utils.js"></script>\n<script src="popup.js"></script>\n');
+    write('popup.js');
+    write('icons/icon16.png');
+    write('_locales/ja/messages.json', '{}');
+
+    // Nothing references these, whatever their extension says.
+    write('review-probe.js');
+    write('notes.html', '<p>notes</p>');
+    write('.env', 'TOKEN=secret');
+    write('review-notes.txt');
+    write('README.md');
+    write('gen_icons.py');
+    write('test.js');
+    write('twitch-channel-volume-1.0.0.zip');
+    write('.git', 'gitdir: /elsewhere');
+    write('icons/source.svg');
+    write('_locales/ja/notes.txt');
+    write('docs/security-audit.md');
+    write('node_modules/_cache/index.js');
+    fs.symlinkSync(path.join(fixture, 'content.js'), path.join(fixture, 'linked.js'));
+    for (const name of SCRATCH_DIRS) write(path.join(name, 'session', '_metadata', 'note.txt'));
+    fs.copyFileSync(path.join(__dirname, 'pack.py'), path.join(fixture, 'pack.py'));
+
+    const listed = spawnSync('python3', ['-B', 'pack.py', '--list'], {
+      cwd: fixture,
+      encoding: 'utf8'
+    });
+    assert.equal(listed.status, 0, listed.stderr);
+    const packaged = listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+    assert.deepEqual(packaged.sort(), [
+      '_locales/ja/messages.json',
+      'audio-worklet.js',
+      'background.js',
+      'channel-store.js',
+      'content.js',
+      'icons/icon16.png',
+      'manifest.json',
+      'popup.html',
+      'popup.js',
+      'utils.js'
+    ]);
+  });
+});
+
+test('the store package refuses a reference that leaves it', () => {
+  // A path that resolves outside the package would carry a file nobody
+  // reviewed into the store zip under a name that looks local.
+  const tmpRoot = fs.realpathSync(os.tmpdir());
+  const outside = fs.mkdtempSync(path.join(tmpRoot, 'tcv-outside-'));
+  fs.writeFileSync(path.join(outside, 'secret.js'), 'SECRET');
+  fs.writeFileSync(path.join(outside, 'messages.json'), '{}');
+
+  const run = (build) => {
+    let result;
+    // The package sits one level down: a case that reaches outside it with ..
+    // writes into its own parent, never into the shared temp root.
+    withFixtureDir('tcv-escape-', (parent) => {
+      const fixture = path.join(parent, 'package');
+      fs.mkdirSync(fixture);
+      fs.copyFileSync(path.join(__dirname, 'pack.py'), path.join(fixture, 'pack.py'));
+      build(fixture);
+      result = spawnSync('python3', ['-B', 'pack.py', '--list'], { cwd: fixture, encoding: 'utf8' });
+    });
+    return result;
+  };
+  const manifest = (references) => JSON.stringify({
+    manifest_version: 3,
+    version: '1.0.0',
+    content_scripts: [{ js: references }]
+  });
+
+  try {
+    // A symlinked parent directory: only the last name looks local.
+    const throughParent = run((fixture) => {
+      fs.writeFileSync(path.join(fixture, 'manifest.json'), manifest(['linked/secret.js']));
+      fs.symlinkSync(outside, path.join(fixture, 'linked'));
+    });
+    assert.notEqual(throughParent.status, 0);
+    assert.match(throughParent.stderr, /linked\/secret\.js/);
+
+    const climbing = run((fixture) => {
+      fs.writeFileSync(path.join(fixture, 'manifest.json'), manifest(['../secret.js']));
+      const sibling = path.join(path.dirname(fixture), 'secret.js');
+      // The climb has to land inside this case's own directory.
+      assert.ok(sibling.startsWith(fs.realpathSync(tmpRoot) + path.sep));
+      assert.notEqual(path.dirname(sibling), fs.realpathSync(tmpRoot));
+      fs.writeFileSync(sibling, 'SIBLING');
+    });
+    assert.notEqual(climbing.status, 0);
+
+    // Absolute and pointing at a path with no link anywhere in it: the only
+    // thing standing between it and the zip is the rule against absolute paths.
+    assert.equal(fs.realpathSync(outside), outside);
+    const absolute = run((fixture) => {
+      fs.writeFileSync(
+        path.join(fixture, 'manifest.json'),
+        manifest([path.join(outside, 'secret.js')])
+      );
+    });
+    assert.notEqual(absolute.status, 0);
+    assert.match(absolute.stderr, /secret\.js/);
+
+    // The locale directories are listed rather than referenced, and one of
+    // them can be a link just as easily.
+    const linkedLocaleDir = run((fixture) => {
+      fs.writeFileSync(path.join(fixture, 'manifest.json'), manifest([]));
+      fs.mkdirSync(path.join(fixture, '_locales'));
+      fs.symlinkSync(outside, path.join(fixture, '_locales', 'ja'));
+    });
+    assert.notEqual(linkedLocaleDir.status, 0);
+    assert.match(linkedLocaleDir.stderr, /_locales\/ja\/messages\.json/);
+
+    const linkedLocaleRoot = run((fixture) => {
+      fs.writeFileSync(path.join(fixture, 'manifest.json'), manifest([]));
+      fs.symlinkSync(outside, path.join(fixture, '_locales'));
+    });
+    assert.notEqual(linkedLocaleRoot.status, 0);
+  } finally {
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test('the store package refuses a reference it cannot pack', () => {
+  withFixtureDir('tcv-pack-missing-', (fixture) => {
+    fs.writeFileSync(path.join(fixture, 'manifest.json'), JSON.stringify({
+      manifest_version: 3,
+      version: '1.0.0',
+      content_scripts: [{ js: ['content.js'] }]
+    }));
+    fs.copyFileSync(path.join(__dirname, 'pack.py'), path.join(fixture, 'pack.py'));
+
+    // A zip built around a missing file is a broken extension, not a smaller one.
+    const missing = spawnSync('python3', ['-B', 'pack.py', '--list'], {
+      cwd: fixture,
+      encoding: 'utf8'
+    });
+    assert.notEqual(missing.status, 0);
+    assert.match(missing.stderr, /content\.js/);
+
+    // A referenced symlink resolves outside the package: it is not packed
+    // silently in place of the file it points at.
+    fs.writeFileSync(path.join(fixture, 'elsewhere.js'), '//');
+    fs.symlinkSync(path.join(fixture, 'elsewhere.js'), path.join(fixture, 'content.js'));
+    const linked = spawnSync('python3', ['-B', 'pack.py', '--list'], {
+      cwd: fixture,
+      encoding: 'utf8'
+    });
+    assert.notEqual(linked.status, 0);
+    assert.match(linked.stderr, /content\.js/);
+
+    // The locale files are found rather than referenced, and get the same rule.
+    fs.unlinkSync(path.join(fixture, 'content.js'));
+    fs.writeFileSync(path.join(fixture, 'content.js'), '//');
+    fs.mkdirSync(path.join(fixture, '_locales', 'ja'), { recursive: true });
+    fs.writeFileSync(path.join(fixture, 'messages-elsewhere.json'), '{}');
+    fs.symlinkSync(
+      path.join(fixture, 'messages-elsewhere.json'),
+      path.join(fixture, '_locales', 'ja', 'messages.json')
+    );
+    const linkedLocale = spawnSync('python3', ['-B', 'pack.py', '--list'], {
+      cwd: fixture,
+      encoding: 'utf8'
+    });
+    assert.notEqual(linkedLocale.status, 0);
+    assert.match(linkedLocale.stderr, /messages\.json/);
+  });
 });
 
 async function flushTasks(turns = 4) {
@@ -134,13 +408,37 @@ function createContentHarness({
   };
   let adNodePresent = false;
   const observerCallbacks = [];
+  // The player's volume row: the gain badge is inserted next to the slider.
+  const volumeRow = {
+    children: new Set(),
+    removeChild(node) {
+      volumeRow.children.delete(node);
+      node.parentNode = null;
+      node.previousElementSibling = null;
+    }
+  };
+  const sliderContainer = {
+    parentElement: volumeRow,
+    insertAdjacentElement(position, node) {
+      assert.equal(position, 'afterend');
+      volumeRow.children.add(node);
+      node.parentNode = volumeRow;
+      node.previousElementSibling = sliderContainer;
+    }
+  };
   const document = {
     documentElement: {},
     querySelector(selector) {
-      return adNodePresent && String(selector).includes('video-ad-countdown') ? {} : null;
+      const text = String(selector);
+      if (text.includes('video-ad-countdown')) return adNodePresent ? {} : null;
+      if (text.includes('volume-slider__slider-container')) return sliderContainer;
+      return null;
+    },
+    createElement() {
+      return { style: { cssText: '' }, textContent: '', parentNode: null, previousElementSibling: null };
     },
     addEventListener() {},
-    contains() { return false; }
+    contains(node) { return volumeRow.children.has(node); }
   };
   class MutationObserver {
     constructor(callback) { observerCallbacks.push(callback); }
@@ -237,6 +535,11 @@ function createContentHarness({
 
   return {
     setAdNodePresent(present) { adNodePresent = present; },
+    gainBadgeText() {
+      const [badge] = volumeRow.children;
+      return badge ? badge.textContent : null;
+    },
+    gainBadgeCount() { return volumeRow.children.size; },
     mutate() { for (const callback of observerCallbacks) callback([]); },
     commands,
     stored,
@@ -293,6 +596,173 @@ function createContentHarness({
   };
 }
 
+function createPopupHarness({
+  state = {},
+  displayUnit = '%',
+  deferAutoSave = false,
+  failGainSave = false
+} = {}) {
+  const messages = JSON.parse(
+    fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json'), 'utf8')
+  );
+  const elements = new Map();
+  const presetButtons = [];
+  const sent = [];
+  const intervals = [];
+  let resolveAutoSave;
+  let currentState = {
+    channel: { id: '123', name: 'somechannel', kind: 'live', url: 'https://www.twitch.tv/somechannel' },
+    lufs: { momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity },
+    hasSavedMeasurement: false,
+    gain: 1.5,
+    adActive: false,
+    audioUnavailable: false,
+    measurementUnavailable: false,
+    targetLufs: -18,
+    adGainDb: -6,
+    autoApplyLoudness: false,
+    ...state
+  };
+
+  function stubElement(id) {
+    const classes = new Set();
+    const listeners = {};
+    const element = {
+      id,
+      listeners,
+      disabled: false,
+      checked: false,
+      value: '',
+      title: '',
+      textContent: '',
+      offsetWidth: 0,
+      attributes: {},
+      classList: {
+        add(...names) { names.forEach((name) => classes.add(name)); },
+        remove(...names) { names.forEach((name) => classes.delete(name)); },
+        contains(name) { return classes.has(name); },
+        toggle(name, force) {
+          const on = force === undefined ? !classes.has(name) : !!force;
+          if (on) classes.add(name); else classes.delete(name);
+          return on;
+        }
+      },
+      get className() { return [...classes].join(' '); },
+      set className(value) {
+        classes.clear();
+        String(value).split(/\s+/).filter(Boolean).forEach((name) => classes.add(name));
+      },
+      get innerHTML() { return element.textContent; },
+      set innerHTML(value) { element.textContent = String(value); },
+      appendChild(node) {
+        element.textContent += node.textContent || '';
+        return node;
+      },
+      getAttribute(name) { return name in element.attributes ? element.attributes[name] : null; },
+      setAttribute(name, value) { element.attributes[name] = value; },
+      addEventListener(type, listener) { (listeners[type] ||= []).push(listener); }
+    };
+    return element;
+  }
+
+  function element(id) {
+    if (!elements.has(id)) elements.set(id, stubElement(id));
+    return elements.get(id);
+  }
+
+  for (const percent of [0, 50, 100, 200, 400, 600]) {
+    const button = stubElement(`preset-${percent}`);
+    button.setAttribute('data-gain', String(percent));
+    presetButtons.push(button);
+  }
+
+  const document = {
+    body: stubElement('body'),
+    getElementById: element,
+    createElement: () => stubElement(''),
+    createTextNode: (text) => ({ textContent: text }),
+    querySelectorAll(selector) {
+      return selector === '.presets button' ? presetButtons : [];
+    }
+  };
+
+  const chrome = {
+    tabs: {
+      async query() { return [{ id: 1, url: 'https://www.twitch.tv/somechannel' }]; },
+      async sendMessage(_tabId, request) {
+        sent.push(structuredClone(request));
+        if (request.cmd === 'getState') return structuredClone(currentState);
+        if (request.cmd === 'setGain' && failGainSave) {
+          return { ok: false, reason: 'storage update failed' };
+        }
+        if (request.cmd === 'setAutoApplyLoudness') {
+          if (deferAutoSave) await new Promise((resolve) => { resolveAutoSave = resolve; });
+          currentState = { ...currentState, autoApplyLoudness: !!request.enabled };
+          return { ok: true, autoApplyLoudness: !!request.enabled, gain: currentState.gain };
+        }
+        return { ok: true };
+      }
+    },
+    storage: {
+      local: { async get() { return { [u.SETTINGS_KEY]: { displayUnit } }; } },
+      onChanged: { addListener() {} }
+    },
+    runtime: { openOptionsPage() {} }
+  };
+
+  const context = vm.createContext({
+    ...u,
+    msg: (key, substitutions) => {
+      const text = messages[key] ? messages[key].message : key;
+      return substitutions && substitutions.length
+        ? text.replace('$VALUE$', substitutions[0])
+        : text;
+    },
+    chrome,
+    document,
+    console: { warn() {}, error() {}, info() {} },
+    requestAnimationFrame(callback) { callback(); },
+    setInterval(callback) { return intervals.push(callback); },
+    structuredClone
+  });
+  vm.runInContext(
+    fs.readFileSync(path.join(__dirname, 'popup.js'), 'utf8'),
+    context,
+    { filename: 'popup.js' }
+  );
+
+  return {
+    el: element,
+    presets: presetButtons,
+    sent,
+    message: (key, substitutions) => {
+      const text = messages[key] ? messages[key].message : key;
+      return substitutions && substitutions.length
+        ? text.replace('$VALUE$', substitutions[0])
+        : text;
+    },
+    setState(next) { currentState = { ...currentState, ...next }; },
+    async poll() {
+      for (const callback of intervals) await callback();
+      await flushTasks(8);
+    },
+    async fire(id, type) {
+      for (const listener of element(id).listeners[type] || []) await listener({ target: element(id) });
+      await flushTasks(8);
+    },
+    async firePreset(index, type) {
+      for (const listener of presetButtons[index].listeners[type] || []) await listener({ target: presetButtons[index] });
+      await flushTasks(8);
+    },
+    async releaseAutoSave() {
+      assert.ok(resolveAutoSave, 'auto save is not pending');
+      resolveAutoSave();
+      resolveAutoSave = null;
+      await flushTasks(8);
+    }
+  };
+}
+
 // BS.1770-4 gates 400ms blocks overlapping by 75%: one window per 100ms
 // sub-block, formed from the four most recent sub-blocks.
 function gatingWindows(subBlocks) {
@@ -331,8 +801,20 @@ function measured(lastLufs) {
 
 const BRIDGE_SCRIPT_URL = 'chrome-extension://abcdefghijklmnopabcdefghijklmnop/page-bridge.js';
 
-function createPageBridgeHarness(scriptUrl = BRIDGE_SCRIPT_URL) {
+function createPageBridgeHarness({
+  scriptUrl = BRIDGE_SCRIPT_URL,
+  mediaElementSourceTaken = false,
+  extraFreeVideo = false,
+  audioContextThrows = false,
+  workletLoadFails = false,
+  deferWorkletLoad = false
+} = {}) {
   const messages = [];
+  // Real ids: a loop that was cancelled has to stop running here too, or a
+  // bridge that gave up looks the same as one that keeps trying.
+  const timers = new Map();
+  let nextTimerId = 0;
+  let contextThrows = audioContextThrows;
   const logs = [];
   const workletModules = [];
   const listeners = {};
@@ -352,8 +834,27 @@ function createPageBridgeHarness(scriptUrl = BRIDGE_SCRIPT_URL) {
       videoListeners[type] = (videoListeners[type] || []).filter((f) => f !== fn);
     }
   };
+  const freeVideoListeners = {};
+  const freeVideo = {
+    src: 'https://example.test/free-video',
+    readyState: 4,
+    clientWidth: 320,
+    clientHeight: 180,
+    isConnected: true,
+    volume: 1,
+    muted: false,
+    currentTime: 0,
+    addEventListener(type, fn) { (freeVideoListeners[type] ||= []).push(fn); },
+    removeEventListener(type, fn) {
+      freeVideoListeners[type] = (freeVideoListeners[type] || []).filter((f) => f !== fn);
+    }
+  };
+  const videos = extraFreeVideo ? [video, freeVideo] : [video];
   let measurementPort;
   let resolveFetch;
+  let resolveWorkletLoad;
+  let mediaSourceCalls = 0;
+  let gainNode;
   const audioNode = () => ({
     connect() {},
     disconnect() {}
@@ -368,20 +869,44 @@ function createPageBridgeHarness(scriptUrl = BRIDGE_SCRIPT_URL) {
   }
   class AudioContext {
     constructor() {
+      if (contextThrows) throw new DOMException('too many contexts', 'NotSupportedError');
       this.sampleRate = 48000;
       this.currentTime = 0;
       this.state = 'running';
       this.destination = {};
-      this.audioWorklet = { addModule: async (url) => { workletModules.push(url); } };
-    }
-    createGain() {
-      return {
-        ...audioNode(),
-        gain: { value: 1, setTargetAtTime() {} }
+      this.audioWorklet = {
+        addModule: async (url) => {
+          if (deferWorkletLoad) await new Promise((resolve) => { resolveWorkletLoad = resolve; });
+          if (workletLoadFails) throw new Error('worklet module blocked');
+          workletModules.push(url);
+        }
       };
     }
+    createGain() {
+      const node = {
+        ...audioNode(),
+        gain: {
+          value: 1,
+          setTargetAtTime(value) { node.gain.value = value; }
+        }
+      };
+      // The first gain of a context is the output gain; the measurement chain
+      // builds a silent one after it.
+      if (!this.outputGain) {
+        this.outputGain = node;
+        gainNode = node;
+      }
+      return node;
+    }
     createIIRFilter() { return audioNode(); }
-    createMediaElementSource() { return audioNode(); }
+    createMediaElementSource(element) {
+      mediaSourceCalls += 1;
+      // What Chrome throws once another AudioContext holds the element.
+      if (mediaElementSourceTaken && element === video) {
+        throw new DOMException('HTMLMediaElement already connected', 'InvalidStateError');
+      }
+      return audioNode();
+    }
     async resume() {}
   }
   const window = {
@@ -398,13 +923,18 @@ function createPageBridgeHarness(scriptUrl = BRIDGE_SCRIPT_URL) {
   };
   const context = vm.createContext({
     AudioWorkletNode,
-    clearInterval() {},
+    clearInterval(id) { timers.delete(id); },
     console: { warn() {}, error() {}, info(...args) { logs.push(args); } },
     document: {
-      querySelectorAll(selector) { return selector === 'video' ? [video] : []; }
+      querySelectorAll(selector) { return selector === 'video' ? videos : []; }
     },
+    DOMException,
     location,
-    setInterval() { return 1; },
+    setInterval(callback) {
+      nextTimerId += 1;
+      timers.set(nextTimerId, callback);
+      return nextTimerId;
+    },
     URL,
     window
   });
@@ -438,6 +968,20 @@ function createPageBridgeHarness(scriptUrl = BRIDGE_SCRIPT_URL) {
       assert.equal(typeof measurementPort?.onmessage, 'function');
     },
     dispatchCommand,
+    async runTimers() {
+      for (const callback of [...timers.values()]) await callback();
+      await flushTasks();
+    },
+    disconnectTakenVideo() { video.isConnected = false; },
+    allowAudioContext() { contextThrows = false; },
+    mediaSourceCalls() { return mediaSourceCalls; },
+    gainValue() { return gainNode ? gainNode.gain.value : null; },
+    async releaseWorkletLoad() {
+      assert.ok(resolveWorkletLoad, 'the worklet load is not pending');
+      resolveWorkletLoad();
+      resolveWorkletLoad = null;
+      await flushTasks(8);
+    },
     emitMeasurementBlock(ms) {
       measurementPort.onmessage({ data: { ms } });
     },
@@ -978,6 +1522,276 @@ test('content seeds measurement with the saved LUFS for the current media kind',
   assert.ok(resetIndex < attachIndex);
   const state = await harness.dispatchRuntime({ cmd: 'getState' });
   assert.equal(state.hasSavedMeasurement, true);
+});
+
+test('content reports the player audio the bridge could not attach to', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+
+  let state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.audioUnavailable, false);
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'attach-failed',
+    reason: 'InvalidStateError: HTMLMediaElement already connected'
+  });
+  state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.audioUnavailable, true);
+
+  // The bridge falls back to another video, so a later attach clears it.
+  await harness.dispatchMessage({ type: '__twitch_channel_volume__', event: 'attached' });
+  state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.audioUnavailable, false);
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'attach-failed',
+    reason: 'InvalidStateError: HTMLMediaElement already connected'
+  });
+  // A restarted bridge attaches from scratch and reports its own failure.
+  await harness.dispatchMessage({ type: '__twitch_channel_volume__', event: 'loaded' });
+  state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.audioUnavailable, false);
+});
+
+const ATTACH_FAILED = {
+  type: '__twitch_channel_volume__',
+  event: 'attach-failed',
+  reason: 'InvalidStateError: HTMLMediaElement already connected'
+};
+
+test('content keeps the audio notice through the messages that do not answer it', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  await harness.dispatchMessage(ATTACH_FAILED);
+
+  // A measurement or an ad marker says nothing about the audio path.
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    momentary: -23,
+    shortTerm: -23,
+    integrated: -23
+  });
+  await harness.dispatchMessage({ type: '__twitch_channel_volume__', event: 'ad', active: true });
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).audioUnavailable, true);
+
+  // An SPA navigation that keeps the same <video> gets no second report from
+  // the bridge, so clearing here would drop the notice for good.
+  await harness.navigate('https://www.twitch.tv/videos/200');
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).audioUnavailable, true);
+  assert.equal(harness.gainBadgeText(), null);
+});
+
+test('content asks a restarted bridge to attach before it drops the notice', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  await harness.dispatchMessage(ATTACH_FAILED);
+  harness.commands.length = 0;
+
+  await harness.dispatchMessage({ type: '__twitch_channel_volume__', event: 'loaded' });
+  await flushTasks(8);
+
+  assert.equal(harness.commands.filter((command) => command.cmd === 'attach').length, 1);
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).audioUnavailable, false);
+});
+
+test('content holds the notice when the bridge attaches past a held element', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  await harness.dispatchMessage(ATTACH_FAILED);
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'attached',
+    measuring: true,
+    takenElsewhere: true
+  });
+
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).audioUnavailable, true);
+  assert.equal(harness.gainBadgeText(), null);
+});
+
+test('content reports a measurement chain that never came up', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'attached',
+    measuring: false,
+    takenElsewhere: false
+  });
+  let state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.measurementUnavailable, true);
+  assert.equal(state.audioUnavailable, false);
+  // Gain reaches the player on this path, so the badge stands.
+  assert.equal(harness.gainBadgeText(), '50%');
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'attached',
+    measuring: true,
+    takenElsewhere: false
+  });
+  state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.measurementUnavailable, false);
+  assert.equal(harness.gainBadgeCount(), 1);
+});
+
+test('content drops the stalled-measurement notice when the audio path goes', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  const attachedWithoutMeasurement = {
+    type: '__twitch_channel_volume__',
+    event: 'attached',
+    measuring: false,
+    takenElsewhere: false
+  };
+
+  await harness.dispatchMessage(attachedWithoutMeasurement);
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).measurementUnavailable, true);
+
+  await harness.dispatchMessage(ATTACH_FAILED);
+  let state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.audioUnavailable, true);
+  // One notice at a time: the audio path is the reason the measurement stopped.
+  assert.equal(state.measurementUnavailable, false);
+
+  await harness.dispatchMessage(attachedWithoutMeasurement);
+  await harness.dispatchMessage({ type: '__twitch_channel_volume__', event: 'loaded' });
+  await flushTasks(8);
+  state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.measurementUnavailable, false);
+});
+
+test('content ignores measurements taken while the player audio is out of reach', async () => {
+  const harness = createContentHarness({ autoApply: true, autoGain: 0.8 });
+  await flushTasks();
+  await harness.dispatchMessage(ATTACH_FAILED);
+  harness.commands.length = 0;
+
+  // Whatever element the bridge reached, it is not the one the viewer hears.
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    momentary: -14,
+    shortTerm: -14,
+    integrated: -14
+  });
+  await flushTasks(8);
+
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.lufs.integrated, -Infinity);
+  assert.equal(harness.commands.some((command) => command.cmd === 'setGain'), false);
+  assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].lastLufs, undefined);
+});
+
+test('content restarts the measurement when the audio path comes back', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  await harness.dispatchMessage(ATTACH_FAILED);
+  harness.commands.length = 0;
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'attached',
+    measuring: true,
+    takenElsewhere: false
+  });
+  await flushTasks(8);
+  // The bridge's window still holds blocks from the element it fell back to.
+  assert.equal(harness.commands.filter((command) => command.cmd === 'resetMeasurement').length, 1);
+
+  harness.commands.length = 0;
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'attached',
+    measuring: true,
+    takenElsewhere: false
+  });
+  await flushTasks(8);
+  // Only the recovery restarts it; a repeated report is not a new attachment.
+  assert.equal(harness.commands.filter((command) => command.cmd === 'resetMeasurement').length, 0);
+});
+
+test('content refuses a measurement reset while the player audio is unavailable', async () => {
+  const harness = createContentHarness({
+    channelVolumes: {
+      'vod-owner:100': { name: '100', gainVod: 0.5, ...measured({ vod: -21 }) }
+    }
+  });
+  await flushTasks();
+  const { channel } = await harness.dispatchRuntime({ cmd: 'getState' });
+  await harness.dispatchMessage(ATTACH_FAILED);
+
+  const response = await harness.dispatchRuntime({
+    cmd: 'resetMeasurement',
+    channelId: channel.id,
+    kind: channel.kind
+  });
+  assert.equal(response.ok, false);
+  assert.equal(response.reason, 'audio unavailable');
+  // The saved level survives: nothing could rebuild it from here.
+  assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].lastLufs.vod, -21);
+});
+
+test('content passes on which failure the bridge reported', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+
+  await harness.dispatchMessage(ATTACH_FAILED);
+  assert.equal(
+    (await harness.dispatchRuntime({ cmd: 'getState' })).audioUnavailableCause,
+    'element-taken'
+  );
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'attach-failed',
+    cause: 'audio-context',
+    reason: 'audio context unavailable'
+  });
+  assert.equal(
+    (await harness.dispatchRuntime({ cmd: 'getState' })).audioUnavailableCause,
+    'audio-context'
+  );
+});
+
+test('content refuses gain and Auto writes while the player audio is unavailable', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  const { channel } = await harness.dispatchRuntime({ cmd: 'getState' });
+  await harness.dispatchMessage(ATTACH_FAILED);
+
+  const gainResponse = await harness.dispatchRuntime({ cmd: 'setGain', gain: 4 });
+  assert.equal(gainResponse.ok, false);
+  assert.equal(gainResponse.reason, 'audio unavailable');
+  const autoResponse = await harness.dispatchRuntime({
+    cmd: 'setAutoApplyLoudness',
+    channelId: channel.id,
+    kind: channel.kind,
+    enabled: true
+  });
+  assert.equal(autoResponse.ok, false);
+  assert.equal(autoResponse.reason, 'audio unavailable');
+  const stored = harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'];
+  assert.equal(stored.gainVod, 0.5);
+  assert.equal(stored.autoApplyLoudnessVod, false);
+});
+
+test('content leaves the badge off when the failure precedes the saved gain', async () => {
+  const harness = createContentHarness({ deferInitialStorageGet: true });
+  await harness.dispatchMessage(ATTACH_FAILED);
+  harness.releaseInitialStorageGet();
+  await flushTasks(8);
+
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.audioUnavailable, true);
+  // The saved gain is applied to the node; only its badge is withheld.
+  assert.equal(state.gain, 0.5);
+  assert.equal(harness.gainBadgeText(), null);
 });
 
 test('content requests one ad state change per transition', async () => {
@@ -2524,16 +3338,25 @@ test('options disables settings until load and saves only field mutations', () =
 
 test('popup disables Manual and Apply controls while an Auto update is pending', () => {
   const source = fs.readFileSync(path.join(__dirname, 'popup.js'), 'utf8');
+  // Each condition is asserted on its own: a snapshot of the whole expression
+  // stops holding the moment another condition joins it.
   assert.match(
     source,
-    /const manualDisabled = currentAutoApplyLoudness \|\| autoUpdatePending;/
+    /const manualDisabled = [^;]*\bautoUpdatePending\b[^;]*;/
+  );
+  assert.match(
+    source,
+    /const manualDisabled = [^;]*\bcurrentAutoApplyLoudness\b[^;]*;/
   );
   assert.match(source, /if \(autoUpdatePending\) \$\('applyBtn'\)\.disabled = true;/);
   assert.match(
     source,
     /async function applyMeasured\(\) \{\s*if \(autoUpdatePending \|\|/s
   );
-  assert.match(source, /async function setGain\(percent\) \{\s*if \(autoUpdatePending\) return;/s);
+  assert.match(
+    source,
+    /async function setGain\(percent\) \{\s*if \(autoUpdatePending[^)]*\) return;/s
+  );
   assert.match(
     source,
     /autoUpdatePending = true;\s*syncInteractionDisabledState\(\);/s
@@ -2644,15 +3467,202 @@ test('popup exposes the selected channel-row measurement reset control', () => {
   assert.equal(en.resetMeasurement.message, 'Reset measurement');
 });
 
-test('popup offers Apply only once a measurement exists', () => {
+test('popup declares the player audio notice with its localized text', () => {
+  const html = fs.readFileSync(path.join(__dirname, 'popup.html'), 'utf8');
+  assert.match(
+    html,
+    /<div id="audioError" class="audio-error hidden" role="status" data-i18n="audioUnavailable">[^<]+<\/div>/
+  );
+  // WCAG 2.1 SC 1.4.3: the notice sits on the info panel.
+  assertContrastFloor(html, [['.audio-error', '.info-section']], 4.5);
+
+  const ja = JSON.parse(fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json')));
+  const en = JSON.parse(fs.readFileSync(path.join(__dirname, '_locales/en/messages.json')));
+  for (const [locale, messages] of [['ja', ja], ['en', en]]) {
+    for (const key of ['audioUnavailable', 'audioContextUnavailable', 'measurementUnavailable']) {
+      assert.ok(messages[key]?.message, `${locale} declares ${key}`);
+    }
+  }
+});
+
+test('popup states unavailable player audio and locks what would not reach it', async () => {
+  const harness = createPopupHarness({
+    state: {
+      audioUnavailable: true,
+      hasSavedMeasurement: true,
+      lufs: { momentary: -21, shortTerm: -21, integrated: -21 }
+    }
+  });
+  await flushTasks(8);
+
+  assert.equal(harness.el('audioError').classList.contains('hidden'), false);
+  assert.equal(harness.el('audioError').textContent, harness.message('audioUnavailable'));
+  // The notice carries the reason, so the hint does not repeat it.
+  assert.equal(harness.el('applyHint').textContent, '');
+  assert.equal(harness.el('applyBtn').disabled, true);
+  assert.equal(harness.el('manualSlider').disabled, true);
+  assert.equal(harness.el('manualSection').classList.contains('disabled'), true);
+  assert.deepEqual(harness.presets.map((button) => button.disabled), [true, true, true, true, true, true]);
+  assert.equal(harness.el('autoApplyToggle').disabled, true);
+  // Resetting would drop the saved measurement with nothing able to rebuild it.
+  assert.equal(harness.el('resetMeasurementBtn').disabled, true);
+  // The saved gain is a setting here, not the level the player runs at, and
+  // the measurement stopped where it stopped.
+  assert.ok(harness.el('current').className.includes('unknown'));
+  assert.ok(harness.el('integrated').className.includes('unknown'));
+  assert.ok(harness.el('suggested').className.includes('unknown'));
+  // The label offers a gain the viewer would not hear applied.
+  assert.equal(harness.el('applyBtn').textContent, harness.message('applyToChannel'));
+});
+
+test('popup sends nothing from the controls it locked', async () => {
+  const harness = createPopupHarness({
+    state: {
+      audioUnavailable: true,
+      hasSavedMeasurement: true,
+      lufs: { momentary: -21, shortTerm: -21, integrated: -21 }
+    }
+  });
+  await flushTasks(8);
+  harness.sent.length = 0;
+
+  // The DOM attribute is one poll behind the state, so each handler is driven
+  // directly here.
+  await harness.fire('applyBtn', 'click');
+  await harness.firePreset(3, 'click');
+  await harness.fire('manualSlider', 'change');
+  await harness.fire('resetMeasurementBtn', 'click');
+
+  assert.deepEqual(harness.sent.filter((request) => request.cmd !== 'getState'), []);
+});
+
+test('popup restores its controls when the bridge attaches', async () => {
+  const harness = createPopupHarness({
+    state: { audioUnavailable: true, hasSavedMeasurement: true }
+  });
+  await flushTasks(8);
+  assert.equal(harness.el('manualSlider').disabled, true);
+
+  harness.setState({
+    audioUnavailable: false,
+    lufs: { momentary: -21, shortTerm: -21, integrated: -21 }
+  });
+  await harness.poll();
+
+  assert.equal(harness.el('audioError').classList.contains('hidden'), true);
+  assert.equal(harness.el('manualSlider').disabled, false);
+  assert.equal(harness.el('autoApplyToggle').disabled, false);
+  assert.equal(harness.el('resetMeasurementBtn').disabled, false);
+  assert.equal(harness.el('applyBtn').disabled, false);
+  assert.ok(!harness.el('current').className.includes('unknown'));
+});
+
+test('popup names the failure it was told about', async () => {
+  const harness = createPopupHarness({
+    state: { audioUnavailable: true, audioUnavailableCause: 'audio-context' }
+  });
+  await flushTasks(8);
+  assert.equal(
+    harness.el('audioError').textContent,
+    harness.message('audioContextUnavailable')
+  );
+
+  harness.setState({ audioUnavailableCause: 'element-taken' });
+  await harness.poll();
+  assert.equal(harness.el('audioError').textContent, harness.message('audioUnavailable'));
+});
+
+test('popup separates a stalled measurement from unreachable audio', async () => {
+  const harness = createPopupHarness({ state: { measurementUnavailable: true } });
+  await flushTasks(8);
+
+  assert.equal(harness.el('audioError').classList.contains('hidden'), false);
+  assert.equal(harness.el('audioError').textContent, harness.message('measurementUnavailable'));
+  // The hint would otherwise keep announcing the measurement that stalled.
+  assert.equal(harness.el('applyHint').textContent, '');
+  // Gain still reaches the player on this path, so Manual stays usable.
+  assert.equal(harness.el('manualSlider').disabled, false);
+  assert.equal(harness.el('applyBtn').disabled, true);
+  assert.ok(!harness.el('current').className.includes('unknown'));
+});
+
+test('popup keeps both notices off a page with no channel', async () => {
+  const harness = createPopupHarness({
+    state: { audioUnavailable: true, channel: { id: '', kind: 'none' } }
+  });
+  await flushTasks(8);
+
+  assert.equal(harness.el('audioError').classList.contains('hidden'), true);
+  assert.equal(harness.el('applyHint').textContent, harness.message('channelNotDetected'));
+});
+
+test('popup keeps a failed save visible while the audio notice stands', async () => {
+  const harness = createPopupHarness({
+    failGainSave: true,
+    state: { lufs: { momentary: -21, shortTerm: -21, integrated: -21 } }
+  });
+  await flushTasks(8);
+
+  await harness.firePreset(3, 'click');
+  assert.equal(harness.el('applyHint').textContent, harness.message('gainSaveFailed'));
+
+  harness.setState({ audioUnavailable: true });
+  await harness.poll();
+  // The viewer's own last action still reads back, and Apply stays out of reach.
+  assert.equal(harness.el('applyHint').textContent, harness.message('gainSaveFailed'));
+  assert.equal(harness.el('applyBtn').disabled, true);
+  assert.equal(harness.el('audioError').classList.contains('hidden'), false);
+});
+
+test('popup turns the Auto toggle down while the player audio is unavailable', async () => {
+  const harness = createPopupHarness({ state: { audioUnavailable: true } });
+  await flushTasks(8);
+
+  harness.el('autoApplyToggle').checked = true;
+  await harness.fire('autoApplyToggle', 'change');
+
+  assert.equal(harness.sent.some((request) => request.cmd === 'setAutoApplyLoudness'), false);
+  assert.equal(harness.el('autoApplyToggle').checked, false);
+});
+
+test('popup disables Manual while an Auto save is in flight', async () => {
+  const harness = createPopupHarness({
+    deferAutoSave: true,
+    state: { lufs: { momentary: -21, shortTerm: -21, integrated: -21 } }
+  });
+  await flushTasks(8);
+  assert.equal(harness.el('manualSlider').disabled, false);
+
+  harness.el('autoApplyToggle').checked = true;
+  const pending = harness.fire('autoApplyToggle', 'change');
+  await flushTasks(4);
+  assert.equal(harness.el('manualSlider').disabled, true);
+  assert.equal(harness.el('applyBtn').disabled, true);
+  assert.deepEqual(harness.presets.map((button) => button.disabled), [true, true, true, true, true, true]);
+
+  await harness.releaseAutoSave();
+  await pending;
+  assert.equal(harness.el('manualSlider').disabled, true, 'Auto ON keeps Manual disabled');
+});
+
+test('popup offers Apply only once a measurement exists', async () => {
   const source = fs.readFileSync(path.join(__dirname, 'popup.js'), 'utf8');
   // The suggestion is unity without a measurement, so its finiteness cannot be
   // what enables the button: applying it would overwrite a saved manual gain.
-  assert.match(source, /\} else if \(hasIntegrated && ch\.id\) \{\s*applyButton\.disabled = false;/s);
   assert.doesNotMatch(source, /Number\.isFinite\(lastSuggestedGain\) && ch\.id/);
-  assert.match(
-    source,
-    /applyButton\.disabled = currentAutoApplyLoudness \|\| !hasIntegrated \|\| !ch\.id;/
+
+  const harness = createPopupHarness();
+  await flushTasks(8);
+  assert.equal(harness.el('applyBtn').disabled, true);
+  assert.equal(harness.el('applyHint').textContent, harness.message('hintNoLufs'));
+
+  harness.setState({ lufs: { momentary: -21, shortTerm: -21, integrated: -21 } });
+  await harness.poll();
+  assert.equal(harness.el('applyBtn').disabled, false);
+  const suggested = u.formatGain(u.suggestedGain(-21, -18), '%');
+  assert.ok(
+    harness.el('applyBtn').textContent.includes(suggested.text + suggested.unit),
+    harness.el('applyBtn').textContent
   );
 });
 
@@ -2780,6 +3790,23 @@ test('Auto switches expose hit targets, keyboard focus, and reduced-motion behav
   }
 });
 
+test('content withdraws the gain badge while the player audio is unavailable', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  // The saved VOD gain for the harness channel.
+  assert.equal(harness.gainBadgeText(), '50%');
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'attach-failed',
+    reason: 'InvalidStateError: HTMLMediaElement already connected'
+  });
+  assert.equal(harness.gainBadgeText(), null);
+
+  await harness.dispatchMessage({ type: '__twitch_channel_volume__', event: 'attached' });
+  assert.equal(harness.gainBadgeText(), '50%');
+});
+
 test('content reads and observes the persisted channel alias key', () => {
   const source = fs.readFileSync(path.join(__dirname, 'content.js'), 'utf8');
   assert.match(
@@ -2872,7 +3899,7 @@ test('page bridge loads the worklet module from its own origin', async () => {
 });
 
 test('page bridge loads no module when it cannot name its own origin', async () => {
-  const harness = createPageBridgeHarness('https://www.twitch.tv/inline-script.js');
+  const harness = createPageBridgeHarness({ scriptUrl: 'https://www.twitch.tv/inline-script.js' });
 
   await harness.dispatchCommand('init', {
     workletUrl: 'chrome-extension://abcdefghijklmnopabcdefghijklmnop/audio-worklet.js'
@@ -3348,6 +4375,166 @@ test('page bridge uses saved LUFS as the initial Integrated mean', async () => {
   const savedMeanSquare = Math.pow(10, (savedLufs + 0.691) / 10);
   const expected = u.meanSquareToLufs((savedMeanSquare + nextMeanSquare) / 2);
   assert.ok(Math.abs(harness.messages.at(-1).integrated - expected) < 1e-12);
+});
+
+test('page bridge keeps retrying past a held element and reports it is still there', async () => {
+  const harness = createPageBridgeHarness({ mediaElementSourceTaken: true, extraFreeVideo: true });
+  await harness.dispatchCommand('init');
+  await harness.dispatchCommand('attach');
+  const failures = harness.messages.filter((message) => message.event === 'attach-failed');
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].cause, 'element-taken');
+  assert.equal(harness.messages.some((message) => message.event === 'attached'), false);
+
+  // The retry loop is still armed, so the next tick reaches the free element.
+  await harness.runTimers();
+  const attached = harness.messages.filter((message) => message.event === 'attached');
+  assert.equal(attached.length, 1);
+  // The held element is still on the page and still the one being listened to.
+  assert.equal(attached[0].takenElsewhere, true);
+  assert.equal(attached[0].measuring, true);
+});
+
+test('page bridge stops naming a held element once it leaves the page', async () => {
+  const harness = createPageBridgeHarness({ mediaElementSourceTaken: true, extraFreeVideo: true });
+  await harness.dispatchCommand('init');
+  await harness.dispatchCommand('attach');
+  harness.disconnectTakenVideo();
+
+  await harness.runTimers();
+  const attached = harness.messages.filter((message) => message.event === 'attached');
+  assert.equal(attached.length, 1);
+  assert.equal(attached[0].takenElsewhere, false);
+});
+
+test('page bridge reports an attach whose measurement chain never came up', async () => {
+  const harness = createPageBridgeHarness({ workletLoadFails: true });
+  await harness.dispatchCommand('init');
+  await harness.dispatchCommand('attach');
+
+  const attached = harness.messages.filter((message) => message.event === 'attached');
+  assert.equal(attached.length, 1);
+  // Gain reaches the player; only the measurement path is missing.
+  assert.equal(attached[0].measuring, false);
+  assert.equal(attached[0].takenElsewhere, false);
+});
+
+test('page bridge attaches again after the player element is replaced', async () => {
+  const harness = createPageBridgeHarness({ extraFreeVideo: true });
+  await harness.dispatchCommand('init');
+  await harness.dispatchCommand('attach');
+  assert.equal(harness.messages.filter((message) => message.event === 'attached').length, 1);
+
+  // Twitch swaps the element on a quality change with no navigation, and the
+  // attach loop stopped itself when the first attach succeeded.
+  harness.disconnectTakenVideo();
+  await harness.runTimers();
+
+  assert.equal(harness.messages.filter((message) => message.event === 'attached').length, 2);
+});
+
+test('page bridge reports a context it could not create and builds a new one after', async () => {
+  const harness = createPageBridgeHarness({ audioContextThrows: true });
+  await harness.dispatchCommand('init');
+  await harness.dispatchCommand('attach');
+
+  const failures = harness.messages.filter((message) => message.event === 'attach-failed');
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].reason, 'audio context unavailable');
+  // A context that would not start is not another script holding the element.
+  assert.equal(failures[0].cause, 'audio-context');
+  // One report per state, not one per retry.
+  await harness.runTimers();
+  assert.equal(harness.messages.filter((message) => message.event === 'attach-failed').length, 1);
+
+  harness.allowAudioContext();
+  await harness.runTimers();
+  const attached = harness.messages.filter((message) => message.event === 'attached');
+  assert.equal(attached.length, 1);
+  assert.equal(attached[0].measuring, true);
+});
+
+test('page bridge takes the element once when two attach ticks overlap', async () => {
+  const harness = createPageBridgeHarness({ deferWorkletLoad: true });
+  const init = harness.dispatchCommand('init');
+  await harness.dispatchCommand('attach');
+  // A second tick enters while the first is still waiting for the context.
+  // Both are parked inside attach(), so neither call can be awaited yet.
+  const secondTick = harness.runTimers();
+  await flushTasks(4);
+  assert.equal(harness.messages.some((message) => message.event === 'attached'), false);
+
+  await harness.releaseWorkletLoad();
+  await Promise.all([init, secondTick]);
+
+  // Taking the same element twice throws, and the throw is the extension's own
+  // doing: reporting it would lock the popup for the rest of the session.
+  assert.equal(harness.mediaSourceCalls(), 1);
+  assert.equal(harness.messages.filter((message) => message.event === 'attached').length, 1);
+  assert.deepEqual(harness.messages.filter((message) => message.event === 'attach-failed'), []);
+});
+
+test('page bridge withdraws the held-element report once that element is gone', async () => {
+  const harness = createPageBridgeHarness({ mediaElementSourceTaken: true, extraFreeVideo: true });
+  await harness.dispatchCommand('init');
+  await harness.dispatchCommand('attach');
+  await harness.runTimers();
+  let attached = harness.messages.filter((message) => message.event === 'attached');
+  assert.equal(attached.length, 1);
+  assert.equal(attached[0].takenElsewhere, true);
+
+  // The page drops the held element; nothing stands between the gain node and
+  // the player any more.
+  harness.disconnectTakenVideo();
+  await harness.runTimers();
+
+  attached = harness.messages.filter((message) => message.event === 'attached');
+  assert.equal(attached.length, 2);
+  assert.equal(attached[1].takenElsewhere, false);
+  // Level-triggered, not a per-sweep repost.
+  await harness.runTimers();
+  assert.equal(harness.messages.filter((message) => message.event === 'attached').length, 2);
+});
+
+test('page bridge builds a retried context at the gain the ad calls for', async () => {
+  const harness = createPageBridgeHarness({ audioContextThrows: true });
+  await harness.dispatchCommand('init');
+  await harness.dispatchCommand('attach');
+  assert.equal(harness.gainValue(), null);
+
+  await harness.dispatchCommand('setGain', { value: 0.5 });
+  await harness.dispatchCommand('setAdGain', { value: 0.5 });
+  await harness.dispatchCommand('setAdActive', { active: true });
+
+  harness.allowAudioContext();
+  await harness.runTimers();
+  assert.equal(harness.gainValue(), 0.25);
+});
+
+test('page bridge reports a taken media element once and stays silent after', async () => {
+  const harness = createPageBridgeHarness({ mediaElementSourceTaken: true });
+  await harness.dispatchCommand('init');
+  await harness.dispatchCommand('attach');
+
+  assert.equal(harness.messages.filter((message) => message.event === 'attach-failed').length, 1);
+  assert.equal(harness.messages.some((message) => message.event === 'attached'), false);
+
+  // The retry loop skips the element it already failed on. content.js therefore
+  // holds the reported state until an attach succeeds, including across SPA
+  // navigation that keeps the same <video>.
+  harness.messages.length = 0;
+  await harness.runTimers();
+  await harness.dispatchCommand('attach');
+  await harness.runTimers();
+  assert.deepEqual(harness.messages, []);
+
+  // Positive control: the same drive on a free element does report an attach.
+  const available = createPageBridgeHarness();
+  await available.dispatchCommand('init');
+  available.messages.length = 0;
+  await available.dispatchCommand('attach');
+  await available.runTimers();
+  assert.equal(available.messages.some((message) => message.event === 'attached'), true);
 });
 
 test('page bridge stamps posted measurements with the reset epoch', async () => {

@@ -81,6 +81,11 @@
   let adActive = false;
   let attachTimer = null;
   const attachFailedFor = new WeakSet();
+  // Elements another script holds. They keep the gain node out of the player's
+  // audio path even after a different element attaches.
+  const takenVideos = [];
+  let contextFailureReported = false;
+  let reportedTakenElsewhere = false;
   let attachAttempts = 0;
 
   const blocks = [];
@@ -341,30 +346,42 @@
   let ctxPromise = null;
   async function ensureContext() {
     if (ctxPromise) return ctxPromise;
-    ctxPromise = (async () => {
-      const C = window.AudioContext || window.webkitAudioContext;
-      if (!C) return null;
+    ctxPromise = createContext();
+    const created = await ctxPromise;
+    // A failed attempt is not cached: the next call builds its own context.
+    if (!created) ctxPromise = null;
+    return created;
+  }
+
+  async function createContext() {
+    const C = window.AudioContext || window.webkitAudioContext;
+    if (!C) {
+      console.warn('[TCV] Web Audio is unavailable in this page');
+      return null;
+    }
+    try {
       ctx = new C();
       gain = ctx.createGain();
       gain.gain.value = baselineGain;
       gain.connect(ctx.destination);
-      if (WORKLET_URL) {
-        try {
-          await ctx.audioWorklet.addModule(WORKLET_URL);
-          workletReady = true;
-          console.info('[TCV] worklet module loaded');
-          // If we already attached before the worklet finished loading, wire
-          // up the measurement chain retroactively.
-          if (attachedVideo && sourceNode && !workletNode) {
-            buildMeasurementChain(ctx);
-          }
-        } catch (err) {
-          console.warn('[TCV] worklet load failed', err);
-        }
+      // The retry can land mid-ad, and baselineGain alone is the content level.
+      applyEffectiveGain();
+    } catch (err) {
+      console.warn('[TCV] audio context unavailable', err);
+      ctx = null;
+      gain = null;
+      return null;
+    }
+    if (WORKLET_URL) {
+      try {
+        await ctx.audioWorklet.addModule(WORKLET_URL);
+        workletReady = true;
+        console.info('[TCV] worklet module loaded');
+      } catch (err) {
+        console.warn('[TCV] worklet load failed', err);
       }
-      return ctx;
-    })();
-    return ctxPromise;
+    }
+    return ctx;
   }
 
   function buildMeasurementChain(c) {
@@ -408,6 +425,24 @@
     return null;
   }
 
+  // Elements pruned as they leave the page: a held element that is gone no
+  // longer stands between the gain node and the player.
+  function takenVideoPresent() {
+    for (let i = takenVideos.length - 1; i >= 0; i--) {
+      if (!takenVideos[i].isConnected) takenVideos.splice(i, 1);
+    }
+    return takenVideos.length > 0;
+  }
+
+  function postAttached() {
+    reportedTakenElsewhere = takenVideoPresent();
+    postReady({
+      event: 'attached',
+      measuring: !!workletNode,
+      takenElsewhere: reportedTakenElsewhere
+    });
+  }
+
   function clearStaleAttachment() {
     if (attachedVideo && !attachedVideo.isConnected) {
       console.info('[TCV] previous video detached from DOM; resetting attachment');
@@ -418,6 +453,8 @@
       lastVolumeState = '';
       sourceNode = null;
       workletNode = null;
+      // The element that replaces it needs the loop that first attached.
+      scheduleAttach();
     }
   }
 
@@ -433,12 +470,20 @@
       if (!v) {
         attachAttempts++;
         if (attachAttempts === 1 || attachAttempts % 10 === 0) {
-          console.info('[TCV] waiting for <video> element (attempt', attachAttempts, ')');
+          if (takenVideoPresent()) {
+            console.info('[TCV] no attachable <video>; the player audio is held elsewhere (attempt', attachAttempts, ')');
+          } else {
+            console.info('[TCV] waiting for <video> element (attempt', attachAttempts, ')');
+          }
         }
         return;
       }
       attachAttempts = 0;
-      await attach(v);
+      try {
+        await attach(v);
+      } catch (err) {
+        console.warn('[TCV] attach failed', err);
+      }
       if (attachedVideo) stopAttachLoop();
     };
     attachTimer = setInterval(tick, 1000);
@@ -452,18 +497,43 @@
     }
   }
 
-  setInterval(clearStaleAttachment, 2000);
+  function syncAttachment() {
+    clearStaleAttachment();
+    // A held element can leave the page after the attach that reported it.
+    if (attachedVideo && takenVideoPresent() !== reportedTakenElsewhere) postAttached();
+  }
+
+  setInterval(syncAttachment, 2000);
 
   async function attach(video) {
     if (!video || attachedVideo === video) return;
     const c = await ensureContext();
-    if (!c) return;
+    // Another tick can finish this attach while the context is still being
+    // built. The element is ours by then, and taking it again throws.
+    if (attachedVideo) return;
+    if (!c) {
+      if (!contextFailureReported) {
+        contextFailureReported = true;
+        postReady({
+          event: 'attach-failed',
+          cause: 'audio-context',
+          reason: 'audio context unavailable'
+        });
+      }
+      return;
+    }
+    contextFailureReported = false;
     try {
       sourceNode = c.createMediaElementSource(video);
     } catch (err) {
       attachFailedFor.add(video);
+      takenVideos.push(video);
       console.warn('[TCV] createMediaElementSource failed (possibly already attached by another extension)', err);
-      postReady({ event: 'attach-failed', reason: String(err?.message || err) });
+      postReady({
+        event: 'attach-failed',
+        cause: 'element-taken',
+        reason: String(err?.message || err)
+      });
       return;
     }
     sourceNode.connect(gain);
@@ -484,7 +554,7 @@
     } else {
       console.warn('[TCV] worklet not ready yet; will wire measurement chain after load');
     }
-    postReady({ event: 'attached' });
+    postAttached();
   }
 
   let receivedFirstBlock = false;
@@ -717,7 +787,14 @@
         resetMeasurement(data.initialIntegratedLufs, data.epoch);
         break;
       case 'resume':
-        try { await ctx?.resume(); } catch (_) {}
+        try {
+          await ctx?.resume();
+          if (ctx && ctx.state !== 'running') {
+            console.warn('[TCV] audio context stayed', ctx.state, 'after resume');
+          }
+        } catch (err) {
+          console.warn('[TCV] audio context resume failed', err);
+        }
         break;
     }
   });

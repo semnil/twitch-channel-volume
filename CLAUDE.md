@@ -18,8 +18,10 @@ page-bridge.js (MAIN world content script, document_start)
 ├── 境界スキップ: CM 終了・音量変更のあと、ゲーティング窓が境界を離れるまでの 4 窓を Integrated から除外
 ├── CM 開始ロールバック: CM 検出時点で直近 5 窓を Integrated から取り消す (リセット以降に積んだ窓のみ。リングバッファが溢れた後も行う)
 ├── 計測世代 (measurement epoch): resetMeasurement で受け取った番号を保持し、以降の lufs 通知へ付与
-├── attach loop (scheduleAttach): video 出現を 1s 間隔でリトライ + DOM detach 検出で再 attach
-├── buildMeasurementChain: worklet ロードが attach より遅れた場合は後付けで接続
+├── attach loop (scheduleAttach): video 出現を 1s 間隔でリトライ。DOM から消えた video を
+│   検出したら経路を切って自分でループを再開する
+├── attach できなかった要素を保持し、ページに残っている間は attached に takenElsewhere を載せる
+├── buildMeasurementChain: attach 時に接続する (attach は worklet ロードの結果が出てから走る)
 ├── Fetch hook (GraphQL のみ):
 │   └── gql.twitch.tv → user.id / video.owner.id / clip.broadcaster.id と
 │       リクエスト時点の content kind/id を抽出
@@ -27,7 +29,14 @@ page-bridge.js (MAIN world content script, document_start)
 └── postMessage (`__twitch_channel_volume__`) → content.js
 
 content.js (ISOLATED world content script, document_idle)
-├── postMessage listener: page-bridge.js から LUFS / owner / CM 状態を受信
+├── postMessage listener: page-bridge.js から LUFS / owner / CM 状態 / attach 結果を受信
+├── attach 結果の保持: attach-failed で audioUnavailable と cause (element-taken /
+│   audio-context)、attached は takenElsewhere (他が握る要素がまだページにある) と
+│   measuring (計測経路の有無) で audioUnavailable / measurementUnavailable を決める。
+│   bridge 再読込時は解除して attach を送り直す
+├── audioUnavailable の間は lufs 通知を破棄し (別要素の計測値を保存・Auto 適用しない)、
+│   ゲインオーバーレイを外し、手動ゲイン・Auto 設定・測定値リセットの mutation を拒否する。
+│   解除された時点で計測を初期化する (bridge の窓に別要素のブロックが残っているため)
 ├── URL 分類 (classifyTwitchUrl): live / vod / clip / none
 ├── Channel resolution:
 │   ├── live: URL の login 名 (`login:<name>`) / GraphQL user.id 解決後は数値 ID
@@ -37,7 +46,7 @@ content.js (ISOLATED world content script, document_idle)
 ├── 保存済み gain の自動適用 (Live/VOD/Clip 種別ごとに別管理)
 ├── LUFS 自動追従: チャンネル × Live/VOD/Clip 別の Auto 設定が ON の間、
 │   popup の表示周期と同じく 1 秒以上空けて Target LUFS との差から baseline gain を再計算
-├── Gain overlay: `.volume-slider__slider-container` の **次の兄弟** として span を挿入。 mute wrapper と slider container はプレイヤーコントロール内の flex 行に並ぶ sibling 構造のため、 slider container の右隣に span が並ぶ。 表示/非表示は親 `[data-a-target="player-controls"][data-a-visible]` の切り替えに自動追従する (= プレイヤーコントロール内に埋め込んでいるため)。 gain ≠ 1.0 時のみ、表示は `%` 固定 / displayUnit に依存しない
+├── Gain overlay: `.volume-slider__slider-container` の **次の兄弟** として span を挿入。 mute wrapper と slider container はプレイヤーコントロール内の flex 行に並ぶ sibling 構造のため、 slider container の右隣に span が並ぶ。 表示/非表示は親 `[data-a-target="player-controls"][data-a-visible]` の切り替えに自動追従する (= プレイヤーコントロール内に埋め込んでいるため)。 gain ≠ 1.0 かつ音声経路がある間のみ、表示は `%` 固定 / displayUnit に依存しない
 ├── 保存済み LUFS による計測の初期化は、起動時・SPA 遷移時に加えて owner ID 解決後にも行う。再初期化の要否は alias 解決後のチャンネル ID と種別で判定する
 ├── 計測リセットは世代番号を進めて送り、それより古い世代の lufs 通知は破棄する
 ├── DOM ad detection fallback (`[data-a-target="video-ad-countdown"]`)
@@ -96,6 +105,11 @@ popup.html / popup.js
 ├── 現在視聴中の種別に対するチャンネル別「LUFS 自動追従」トグル
 ├── Auto 保存失敗時はローカライズ済みエラーを表示して最新状態を再取得
 ├── Auto 保存中は Apply / Manual 操作を無効化し、content 側でも手動 gain mutation を拒否
+├── audioUnavailable / measurementUnavailable の間はチャンネル行の下に理由と対処を出す
+│   (文言は cause 別に 3 種: 要素を他に握られた / AudioContext を作れない / 計測経路のみ不可)
+│   (チャンネル未解決のページでは出さない)。audioUnavailable では Apply / Manual /
+│   Auto トグル / 測定値リセットを無効化し、3 カードを unknown 表示にする。
+│   ゲイン保存の失敗表示はこの通知より優先し、ヒント行は空にする
 ├── Manual slider (slider 自体は 0–600%, 表示値は displayUnit 追従) + 6 プリセット (0/50/100/200/400/MAX)
 └── SETTINGS_KEY を初期ロード + storage.onChanged で options の単位切替に即時反応
 
@@ -144,7 +158,7 @@ options.html / options.js
 | `icons/` | 16/48/128 px PNG (Twitch purple 3-bar meter) |
 | `gen_icons.py` | アイコン生成 (Python Pillow) |
 | `gen_screenshots.py` | ストア審査用スクリーンショット生成 (PIL 直接描画, 640×400 ja/en) |
-| `pack.py` | Chrome Web Store 用 zip 生成 |
+| `pack.py` | Chrome Web Store 用 zip 生成 (manifest からの参照グラフで選択、`--list` で選択結果のみ出力) |
 | `PRIVACY_POLICY.md` / `PRIVACY_POLICY_JA.md` | プライバシーポリシー (審査・README リンク用, EN/JA) |
 | `docs/security-audit.md` | セキュリティ監査レポート |
 | `test.js` | ユニットテスト (`node test.js`) — utils 全般 |
@@ -170,13 +184,17 @@ options.html / options.js
 - **プレイヤー音量の相殺**: 計測タップは `sourceNode` 直後で、Twitch のプレイヤー音量 (`video.volume`) はその上流に掛かる。ブロックの MS を volume² で割り、Integrated LUFS を常に音量 1.0 基準にする。視聴者がスライダーを下げても算出ゲインは上がらない。音量変更を跨ぐゲーティング窓は CM 境界と同じ仕組みで除外する
 - **保存済み値の基準**: 音量 1.0 基準で測った値だけが基準名を持つ。保存済み LUFS は `lastLufsRef`、保存済み Auto gain は `autoGainRef` と、それぞれ自分のフィールドの更新番号でマージされる (共用すると ID 統合で値と基準の組が入れ替わる)。基準の無い値 (拡張更新前の保存) は計測の初期サンプルに使わず、基準の無い Auto gain も起動時に適用しない。手動ゲインは視聴者自身の設定なので従来どおり適用する
 - **計測値が無い間の Suggested gain**: ゲート通過値が 1 つも無い間は `suggestedGain` が 1.0 を返し、ゲインを上げる提案をしない
-- **createMediaElementSource**: `<video>` に対し 1 回のみ呼び出し可能。他拡張 (FrankerFaceZ Compressor 等) が先に取ると失敗する。失敗した video は `WeakSet` で除外し、他の video にフォールバック。`attach-failed` イベントを post して content 側で診断可能
+- **createMediaElementSource**: `<video>` に対し 1 回のみ呼び出し可能。他拡張 (FrankerFaceZ Compressor 等) が先に取ると失敗する。失敗した video は `WeakSet` で除外し、他の video にフォールバック。attach できなかった video では GainNode もプレイヤーの音声経路に入らないため、`attach-failed` を content.js が受けて popup に理由と対処を表示し、適用中ゲインの表示 (オーバーレイ) を取り下げる。フォールバック先へ attach できても、握られた要素がページに残る限り音量はその要素で鳴り続けるため、`attached` の `takenElsewhere` で通知を維持する
+- **AudioContext を作れない場合**: 生成が失敗した試行はキャッシュせず、次の attach で作り直す。失敗の通知は状態が変わったときだけ 1 回送る (リトライごとには送らない)。`cause: 'audio-context'` を付けて他拡張との競合と区別し、popup は再読み込みを促す別文言を出す
+- **音声経路が無い間の計測値**: `attach-failed` 後や `takenElsewhere` の間に届く lufs は、視聴者が聞いている要素のものではないため破棄する (保存も Auto 追従もしない)。復帰した時点で計測を初期化する — bridge のリングバッファには別要素のブロックが残っている
+- **計測経路だけ落ちた場合**: worklet の読込・接続に失敗しても GainNode は経路内にあるため、`attached` の `measuring: false` で計測のみ不可と伝え、音量調整が効く旨を含む別の文言を出す
 - **attach のリトライ**: video 要素は document_start 時点では存在しないため、`scheduleAttach()` で 1s 間隔のループ。`clearStaleAttachment()` が DOM から消えた video を検出して再 attach を許可 (Twitch SPA で video が入れ替わるケース対応)。SPA navigation 時にも content.js が `attach` を再送
-- **measurement chain の後付け**: `audioWorklet.addModule()` が attach より遅れた場合に備え、`buildMeasurementChain()` を分離。worklet ロード完了時に既に attached なら計測経路を後から接続
+- **measurement chain の接続点**: `attach()` は `ensureContext()` を await し、その await が `audioWorklet.addModule()` の解決まで含むため、attach 時点で worklet の可否は確定している。読込に失敗した attach は `measuring: false` を報告し、以降その attachment に計測経路は付かない
 - **SPA navigation**: history.pushState/replaceState フック + popstate + MutationObserver の 3 段構え。URL 変更で resetMeasurement + 種別判定再実行 + attach 再送
 - **計測リセットの世代番号**: content.js は resetMeasurement を送るたびに世代番号を進め、page-bridge はその番号を以降の lufs 通知へ付与する。content.js は現在の世代より古い通知を破棄するため、リセット送信前に page-bridge が算出したブロックが保存済み LUFS を復活させない
 - **Live/VOD/Clip 別ゲイン**: 配信は時間帯で音作りが変わるため種別ごとに別管理。同チャンネルの過去 VOD のゲインを現 Live にコピーしない
 - **Twitch reserved paths**: `/directory`, `/settings`, `/videos`, `/p`, `/jobs` 等は live channel として誤検出しないよう TWITCH_RESERVED_PATHS で除外
+- **パッケージの選択は参照グラフ**: `pack.py` は manifest から辿れるもの (content_scripts / web_accessible_resources / service_worker / options_page / action.default_popup / icons) と、その HTML の `<script src>`・worker の `importScripts`、および `_locales/<locale>/messages.json` だけを選ぶ。参照されないファイルは拡張子に関わらず入らない。パスは 1 箇所の resolver を通し、絶対パス・`..`・途中のディレクトリを含むシンボリックリンクで実体がパッケージ外へ出るものは失敗させる (壊れた zip も、外部ファイルを同梱した zip も黙って作らない)
 - **CSP 対応**: AudioWorklet モジュールは web_accessible_resources で公開する。page-bridge は MAIN world でページ自身のスクリプトと window を共有し、init も含む全コマンドをページが送れるため、モジュール URL を受け取らず自分のスタックフレームから拡張 origin を取り、`<origin>/audio-worklet.js` を読み込む。origin を取れないときはモジュールを読み込まない
 - **NaN/Infinity ガード**: 計測値が無限大・NaN の場合は gain 1.0 にフォールバック
 
@@ -210,7 +228,7 @@ python3 pack.py
 - 旧形式 `{ gain }` 単一ゲインは extractGainForKind で自動マイグレーション
 - popup は `DISPLAY_UPDATE_INTERVAL_MS` ごとに getState をポーリングし LUFS / Suggested / Current カードを更新。Auto gain も同じ周期を上限として更新する。Manual slider は Auto ON の間だけ適用中 gain へ同期し、Auto OFF の通常ポーリングでは更新しない。Auto OFF では初回表示・「チャンネルに適用」・Auto 切替・表示単位変更・ユーザー操作時だけ同期する。計測自体は popup の開閉に依存せず、Twitch ページが開いている限り常時走る
 - 拡張機能の再ロードで chrome.runtime が無効化された場合、popup は `reloadPageNeeded` を表示して F5 を促す
-- 計測パイプラインの診断: DevTools Console で `[TCV]` ログを確認。`waiting for <video>` → `attached to video` → `measurement chain ready` → `first measurement block received` の順に出る。`createMediaElementSource failed` で止まる場合は他拡張競合 (技術的限界)
+- 計測パイプラインの診断: DevTools Console で `[TCV]` ログを確認。`waiting for <video>` → `attached to video` → `measurement chain ready` → `first measurement block received` の順に出る。`createMediaElementSource failed` で止まる場合は他拡張競合 (技術的限界)。この状態は popup の通知と `getState` の audioUnavailable に出る。以降のリトライは `no attachable <video>; the player audio is held elsewhere` を出す (`waiting for <video>` は要素そのものが無いときだけ)。`audio context unavailable` / `audio context resume failed` / `audio context stayed suspended after resume` も同じ経路の診断
 - CM 境界・音量変更の診断: `[TCV] ad detected in DOM` (DOM 検出と `video.currentTime`)、`[TCV] gate boundary` / `[TCV] gate resumed` (境界の理由・volume・muted・再生位置と、除外した窓数・直近 4 窓の LUFS)、`[TCV] ad start rollback` (取り消した窓数と各窓の LUFS) を Console で追う。別の理由で打ち切られた skip はその時点までの除外数を次の `gate boundary` の `superseded` / `droppedBefore` に載せる
 
 ## Existing extensions (reference)

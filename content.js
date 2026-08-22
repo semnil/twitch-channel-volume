@@ -26,6 +26,9 @@
   let lastLufs = { momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity };
   let adActive = false;
   let requestedAdActive = false;
+  let audioUnavailable = false;
+  let audioUnavailableCause = '';
+  let measurementUnavailable = false;
   let preferenceRevision = 0;
   let channelMutationQueue = Promise.resolve();
   let migratingChannelId = '';
@@ -251,8 +254,10 @@
 
   let _overlayEl = null;
 
+  // The badge reports the gain the player runs at. While the bridge holds no
+  // media element source, the gain node sits outside the player's audio path.
   function updateGainOverlay() {
-    if (!showGainOverlay || currentGain === 1.0) {
+    if (!showGainOverlay || audioUnavailable || currentGain === 1.0) {
       if (_overlayEl) {
         if (_overlayEl.parentNode) _overlayEl.parentNode.removeChild(_overlayEl);
         _overlayEl = null;
@@ -412,16 +417,45 @@
         // page-bridge may post `loaded` before our listener attaches. The
         // startup IIFE handles init/attach unconditionally; this case only
         // matters for hot-reloads where the bridge restarts mid-session.
+        audioUnavailable = false;
+        audioUnavailableCause = '';
+        measurementUnavailable = false;
         injectWorklet();
         resetMeasurementForCurrentChannel();
+        // A restarted bridge attaches only when asked, so the cleared state
+        // gets its own attach result instead of standing on the old one.
+        sendCmd({ cmd: 'attach' });
         break;
       case 'init-done':
         initResolve && initResolve();
         break;
-      case 'attached':
+      case 'attached': {
+        // Attaching to a different element leaves the held one playing
+        // untouched, so the bridge reports whether one is still on the page.
+        const recovered = audioUnavailable && !data.takenElsewhere;
+        audioUnavailable = !!data.takenElsewhere;
+        audioUnavailableCause = audioUnavailable ? 'element-taken' : '';
+        measurementUnavailable = !audioUnavailable && data.measuring === false;
+        // The blocks measured until now came from an element the player was
+        // not using, and they stay in the bridge's window.
+        if (recovered) resetMeasurementForCurrentChannel();
+        updateGainOverlay();
+        break;
+      }
+      case 'attach-failed':
+        // The gain node reaches the player only through the media element
+        // source, so a failed attach stops gain and measurement alike.
+        audioUnavailable = true;
+        audioUnavailableCause = data.cause === 'audio-context' ? 'audio-context' : 'element-taken';
+        measurementUnavailable = false;
+        console.warn('[TCV] player audio unavailable', data.cause, data.reason);
+        updateGainOverlay();
         break;
       case 'lufs':
         if (measurementResetPending) break;
+        // A measurement taken while the player's audio is out of reach belongs
+        // to some other element; saving it would overwrite the channel's level.
+        if (audioUnavailable) break;
         if (Number.isFinite(data.epoch) && data.epoch < measurementEpoch) break;
         lastLufs = {
           momentary: Number.isFinite(data.momentary) ? data.momentary : -Infinity,
@@ -568,6 +602,9 @@
           ),
           gain: currentGain,
           adActive,
+          audioUnavailable,
+          audioUnavailableCause,
+          measurementUnavailable,
           targetLufs,
           adGainDb: currentAdGainDb,
           autoApplyLoudness: currentAutoApplyLoudness,
@@ -577,10 +614,14 @@
         });
         return;
       case 'setGain':
-        if (autoMutationPending || currentAutoApplyLoudness) {
+        if (autoMutationPending || currentAutoApplyLoudness || audioUnavailable) {
+          // A gain saved here would be applied on a later visit without the
+          // viewer ever hearing what they set.
           sendResponse({
             ok: false,
-            reason: autoMutationPending ? 'auto update pending' : 'auto apply enabled'
+            reason: audioUnavailable
+              ? 'audio unavailable'
+              : (autoMutationPending ? 'auto update pending' : 'auto apply enabled')
           });
           return;
         }
@@ -613,8 +654,11 @@
           sendResponse({ ok: false, reason: 'channel mismatch' });
           return;
         }
-        if (autoMutationPending) {
-          sendResponse({ ok: false, reason: 'auto update pending' });
+        if (autoMutationPending || audioUnavailable) {
+          sendResponse({
+            ok: false,
+            reason: audioUnavailable ? 'audio unavailable' : 'auto update pending'
+          });
           return;
         }
         const autoGain = req.enabled && Number.isFinite(lastLufs.integrated)
@@ -677,6 +721,11 @@
         const kind = ['live', 'vod', 'clip'].includes(req.kind) ? req.kind : '';
         if (!currentChannel.id || req.channelId !== currentChannel.id || kind !== currentChannel.kind) {
           sendResponse({ ok: false, reason: 'channel mismatch' });
+          return;
+        }
+        if (audioUnavailable) {
+          // Deleting the saved level here leaves nothing able to rebuild it.
+          sendResponse({ ok: false, reason: 'audio unavailable' });
           return;
         }
         if (measurementResetPending) {
