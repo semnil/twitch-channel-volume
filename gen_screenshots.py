@@ -5,9 +5,15 @@ PIL 直接描画。popup / settings / overlay の 3 シーンを ja/en で出力
 """
 import math
 import os
+import shutil
+import tempfile
 from PIL import Image, ImageDraw, ImageFont
 
 W, H = 640, 400
+
+# 拡張機能には同梱しない資料用の画像なので docs/ 側に置く。実行した
+# ディレクトリではなくこのファイルの位置から解決する。
+OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'docs', 'screenshots')
 
 # ── Colors (popup.html / options.html の実値) ───────────────────────
 PAGE_BG = (15, 15, 35)    # #0f0f23 options body
@@ -37,22 +43,21 @@ PLAYER_GEAR_RADIUS = 5      # プレイヤー操作列の設定アイコン
 FULLSCREEN_SIZE = 12        # プレイヤー操作列の全画面アイコン
 
 
+# 追跡している画像はこの 2 書体で描いたもの。別の書体で描くと 6 枚とも
+# バイト列が変わるため、候補から選ばずこの 2 つだけを使い、無ければ止める。
+FONT_REGULAR_FILE = '/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc'
+FONT_BOLD_FILE = '/System/Library/Fonts/ヒラギノ角ゴシック W6.ttc'
+
+
 def _font(size, bold=False):
-    cands = (
-        ['meiryob.ttc', 'C:/Windows/Fonts/meiryob.ttc',
-         '/System/Library/Fonts/ヒラギノ角ゴシック W6.ttc',
-         '/System/Library/Fonts/Supplemental/Arial Unicode.ttf']
-        if bold else
-        ['meiryo.ttc', 'C:/Windows/Fonts/meiryo.ttc',
-         '/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc',
-         '/System/Library/Fonts/Supplemental/Arial Unicode.ttf']
-    )
-    for c in cands:
-        try:
-            return ImageFont.truetype(c, size)
-        except Exception:
-            continue
-    return ImageFont.load_default()
+    path = FONT_BOLD_FILE if bold else FONT_REGULAR_FILE
+    try:
+        return ImageFont.truetype(path, size)
+    except OSError:
+        raise SystemExit(
+            f'{path} が見つからない。docs/screenshots/ の画像はこの書体で描いたもので、'
+            '別の書体で生成すると 6 枚とも差し替わる。'
+        )
 
 
 FONT = _font(13)
@@ -185,7 +190,7 @@ STRINGS = {
 }
 
 
-def screenshot_popup(lang):
+def screenshot_popup(lang, out_dir):
     s = STRINGS[lang]
     img = Image.new('RGB', (W, H), PAGE_BG)
     draw = ImageDraw.Draw(img)
@@ -284,11 +289,10 @@ def screenshot_popup(lang):
         draw.text((bx + (bw - ptw) / 2, by + 4), p, fill=DIM2, font=FONT_PRESET)
         bx += bw + 4
 
-    img.save(f'screenshots/popup_{lang}.png')
-    print(f'Generated screenshots/popup_{lang}.png')
+    img.save(os.path.join(out_dir, f'popup_{lang}.png'))
 
 
-def screenshot_settings(lang):
+def screenshot_settings(lang, out_dir):
     s = STRINGS[lang]
     img = Image.new('RGB', (W, H), PAGE_BG)
     draw = ImageDraw.Draw(img)
@@ -368,26 +372,30 @@ def screenshot_settings(lang):
 
     # Header row: CHANNEL | Live | VOD | Clip
     hy = cy + 31
-    col_live, col_vod, col_clip = sx + 300, sx + 405, sx + 500
+    col_live, col_vod, col_clip = sx + 270, sx + 370, sx + 465
     draw.text((sx + 20, hy), s['col_channel'], fill=HINT, font=FONT_SM)
     for cxh, t in ((col_live, 'LIVE'), (col_vod, 'VOD'), (col_clip, 'CLIP')):
         draw.text((cxh, hy), t, fill=HINT, font=FONT_SM)
     draw.line([(sx + 20, hy + 18), (sx + sw - 20, hy + 18)], fill=BORDER)
 
     ry = hy + 23
+    delete_x = sx + sw - 36
     for name, live, vod, clip in s['channels']:
         draw.text((sx + 20, ry), name, fill=TEAL, font=FONT)
         for cxh, v in ((col_live, live), (col_vod, vod), (col_clip, clip)):
             color = TEAL if v.startswith('Auto') else (PINK if v != '—' else HINT)
             draw.text((cxh, ry), v, fill=color, font=FONT_BOLD)
-        draw.text((sx + sw - 36, ry - 2), '×', fill=HINT, font=FONT_LG)
+            end = cxh + draw.textlength(v, font=FONT_BOLD)
+            limit = delete_x if cxh == col_clip else next(
+                c for c in (col_vod, col_clip) if c > cxh)
+            assert end + 8 <= limit, f'{lang}: {v!r} runs into the next column'
+        draw.text((delete_x, ry - 2), '×', fill=HINT, font=FONT_LG)
         ry += 23
 
-    img.save(f'screenshots/settings_{lang}.png')
-    print(f'Generated screenshots/settings_{lang}.png')
+    img.save(os.path.join(out_dir, f'settings_{lang}.png'))
 
 
-def screenshot_overlay(lang):
+def screenshot_overlay(lang, out_dir):
     s = STRINGS[lang]
     img = Image.new('RGB', (W, H), (24, 24, 24))
     draw = ImageDraw.Draw(img)
@@ -436,8 +444,7 @@ def screenshot_overlay(lang):
     draw_gear(draw, (W - 62, cy), WHITE, radius=PLAYER_GEAR_RADIUS)
     draw_fullscreen(draw, (W - 34, cy), WHITE)
 
-    img.save(f'screenshots/overlay_{lang}.png')
-    print(f'Generated screenshots/overlay_{lang}.png')
+    img.save(os.path.join(out_dir, f'overlay_{lang}.png'))
 
 
 def verify_icons():
@@ -488,13 +495,49 @@ def verify_icons():
                 f'draw_fullscreen: 角 ({sx}, {sy}) の垂直アームが描かれていない'
 
 
+def replace_all(staging, out_dir):
+    """staging の全ファイルで out_dir を置き換える。1 つでも失敗したら元へ戻す。
+
+    描画が最後まで通っても置換は 6 回に分かれるため、途中で止まると新しい
+    ものと前回のものが並ぶ。戻せるように、上書きする分を先に控える。
+    """
+    names = sorted(os.listdir(staging))
+    os.makedirs(out_dir, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=out_dir) as backup:
+        saved = [n for n in names if os.path.exists(os.path.join(out_dir, n))]
+        for name in saved:
+            shutil.copy2(os.path.join(out_dir, name), os.path.join(backup, name))
+        # 名前は移動を試みる前に控える。移動し終えた直後に割り込まれると、
+        # 後から控える形では戻す対象から漏れる。
+        attempted = []
+        try:
+            for name in names:
+                attempted.append(name)
+                shutil.move(os.path.join(staging, name), os.path.join(out_dir, name))
+        except BaseException:
+            for name in attempted:
+                if name in saved:
+                    shutil.copy2(os.path.join(backup, name), os.path.join(out_dir, name))
+                elif os.path.exists(os.path.join(out_dir, name)):
+                    os.remove(os.path.join(out_dir, name))
+            raise
+    return names
+
+
+# 全 6 枚を作業ディレクトリで描き切ってから追跡先へ移す。レイアウトの assert は
+# 2 枚目以降でも落ちるため、追跡先へ直に書くと新しい 1 枚と古い 5 枚が残る。
+# 作業ディレクトリを追跡先の隣に置くのは、移動が同一ファイルシステム内の
+# rename になるようにするため。
 def main():
     verify_icons()
-    os.makedirs('screenshots', exist_ok=True)
-    for lang in ('ja', 'en'):
-        screenshot_popup(lang)
-        screenshot_settings(lang)
-        screenshot_overlay(lang)
+    os.makedirs(OUT_DIR, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=OUT_DIR) as staging:
+        for lang in ('ja', 'en'):
+            screenshot_popup(lang, staging)
+            screenshot_settings(lang, staging)
+            screenshot_overlay(lang, staging)
+        for name in replace_all(staging, OUT_DIR):
+            print(f'Generated docs/screenshots/{name}')
 
 
 if __name__ == '__main__':

@@ -9,6 +9,22 @@ bounds in the element's own timeline. The extension wraps the `Worker` construct
 itself is created from the argument the page passed, untouched. Where no cue arrives — a client-side ad on a VOD — the
 player's ad indicator in the DOM stands in.
 
+## Screenshots
+
+Drawn from the extension's own colours and strings by `gen_screenshots.py`; the same images are used on the Chrome Web Store listing.
+
+**Popup** — integrated loudness, the gain it suggests, the gain in force, and the manual slider.
+
+![Popup](docs/screenshots/popup_en.png)
+
+**Settings** — target loudness, the per-kind auto-follow defaults, ad-break gain, and the saved channels.
+
+![Settings](docs/screenshots/settings_en.png)
+
+**Gain overlay** — the gain in force, next to the player's own volume bar.
+
+![Gain overlay](docs/screenshots/overlay_en.png)
+
 ## Features
 
 - **Real-time LUFS metering**: Momentary (400 ms), Short-term (3 s), Integrated (BS.1770 absolute and relative gates with indexed updates)

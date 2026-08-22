@@ -4473,6 +4473,152 @@ test('popup re-enables its controls in the render that reports the reset result'
   assert.ok(clearedOnFailure < failure, 'pending flag clears before the failure render');
 });
 
+// Importing the module resolves the font, so this answers both of the things
+// the run below needs: Pillow, and the one face the generator will accept.
+const generatorImport = spawnSync('python3', ['-B', '-c',
+  "import importlib.util, sys;" +
+  "spec = importlib.util.spec_from_file_location('g', 'gen_screenshots.py');" +
+  "m = importlib.util.module_from_spec(spec);" +
+  "spec.loader.exec_module(m)"
+], { cwd: __dirname, encoding: 'utf8' });
+const generatorSkip = generatorImport.status === 0
+  ? false
+  : 'gen_screenshots.py cannot be imported here: ' +
+    ((generatorImport.stderr || '').trim().split('\n').pop() || 'python3 failed');
+
+// Drawing all six before replacing any is only half of it: the replacement is
+// six moves, and a run that stops among them leaves some of the tracked images
+// from this run and the rest from the last one.
+const INJECT_MOVE_FAILURE = [
+  'import hashlib, importlib.util, os, shutil, sys, tempfile',
+  'fail_at = int(sys.argv[1])',
+  'when = sys.argv[2]',
+  "seeded = sys.argv[3] == '1'",
+  'repo = os.getcwd()',
+  'def digests(d):',
+  "    return {n: hashlib.sha256(open(os.path.join(d, n), 'rb').read()).hexdigest()",
+  '            for n in sorted(os.listdir(d))}',
+  'with tempfile.TemporaryDirectory() as sandbox:',
+  "    script = os.path.join(sandbox, 'gen_screenshots.py')",
+  "    source = open(os.path.join(repo, 'gen_screenshots.py'), encoding='utf-8').read()",
+  '    # The run has to draw something other than what is on disk, or a partial',
+  '    # replacement cannot be told from a finished one.',
+  "    source = source.replace('WHITE = (255, 255, 255)', 'WHITE = (254, 254, 254)', 1)",
+  "    open(script, 'w', encoding='utf-8').write(source)",
+  "    out = os.path.join(sandbox, 'docs', 'screenshots')",
+  '    os.makedirs(out)',
+  "    tracked = os.path.join(repo, 'docs', 'screenshots')",
+  '    if seeded:',
+  '        for name in os.listdir(tracked):',
+  '            shutil.copy2(os.path.join(tracked, name), os.path.join(out, name))',
+  '    before = digests(out)',
+  "    spec = importlib.util.spec_from_file_location('gen_under_test', script)",
+  '    gen = importlib.util.module_from_spec(spec)',
+  '    spec.loader.exec_module(gen)',
+  "    calls = {'n': 0}",
+  '    real_move = shutil.move',
+  '    def flaky_move(src, dst, *a, **k):',
+  "        calls['n'] += 1",
+  "        hit = calls['n'] == fail_at",
+  "        if hit and when == 'before':",
+  "            raise OSError('injected before the move')",
+  '        result = real_move(src, dst, *a, **k)',
+  '        if hit:',
+  '            # The rename is done and the caller has not recorded it yet.',
+  "            raise KeyboardInterrupt('interrupted after the move')",
+  '        return result',
+  '    gen.shutil.move = flaky_move',
+  '    try:',
+  '        gen.main()',
+  '    except BaseException as error:',
+  '        escaped = str(error)',
+  '    else:',
+  "        print('the injected failure never fired')",
+  '        raise SystemExit(2)',
+  '    gen.shutil.move = real_move',
+  '    after = digests(out)',
+  '    # The interrupted move renamed in one mode and not in the other.',
+  "    done = calls['n'] - 1 if when == 'before' else calls['n']",
+  '    changed = [n for n in before if before[n] != after.get(n)]',
+  '    added = [n for n in after if n not in before]',
+  "    print('%s move %d: moves completed %d, changed %d, added %d'",
+  '          % (when, fail_at, done, len(changed), len(added)))',
+  '    if done < 1:',
+  "        print('nothing had been moved, so the run proves nothing')",
+  '        raise SystemExit(3)',
+  '    # A rollback that raises on its own way out buries what actually failed.',
+  "    if 'injected' not in escaped and 'interrupted' not in escaped:",
+  "        print('the failure that escaped was not the injected one: ' + escaped)",
+  '        raise SystemExit(4)',
+  '    raise SystemExit(1 if changed or added else 0)'
+].join('\n');
+
+test('store screenshot generator leaves the tracked images alone when a replacement fails',
+  { skip: generatorSkip }, () => {
+    // 'before' needs an earlier move to have landed; 'after' lands the one it
+    // interrupts, so the first is already worth injecting into.
+    for (const [when, positions] of [['before', ['2', '4', '6']], ['after', ['1', '2', '4', '6']]]) {
+      for (const failAt of positions) {
+        // Once with the six already there, once on a first run with nothing to
+        // restore - rollback removes what it put down instead of copying back.
+        for (const seeded of ['1', '0']) {
+          const run = spawnSync('python3',
+            ['-B', '-c', INJECT_MOVE_FAILURE, failAt, when, seeded],
+            { cwd: __dirname, encoding: 'utf8' });
+          const report = (run.stdout || '').trim();
+          assert.equal(run.status, 0, when + ' move ' + failAt +
+            (seeded === '1' ? ' over the tracked six' : ' on a first run') +
+            ': ' + report + (run.stderr || ''));
+        }
+      }
+    }
+  });
+
+// The images the generator writes are tracked and the README shows three of
+// them, so where it writes, what it draws with, and when it replaces them are
+// all part of what the repository carries. Running it here is not available to
+// check that: CI installs node alone, without Pillow or the font.
+test('store screenshot generator writes the tracked directory, and only whole', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'gen_screenshots.py'), 'utf8');
+
+  // Resolved from the script rather than the caller, so the destination does
+  // not follow whoever ran it.
+  assert.match(
+    source,
+    /^OUT_DIR = os\.path\.join\(os\.path\.dirname\(os\.path\.abspath\(__file__\)\), 'docs', 'screenshots'\)$/m
+  );
+
+  const saves = [...source.matchAll(/^\s*img\.save\((.+)\)$/gm)].map((match) => match[1]);
+  assert.equal(saves.length, 3);
+  for (const argument of saves) {
+    // Scenes write to the directory they are handed, so a run that fails part
+    // way through leaves the tracked files as they were.
+    assert.match(argument, /^os\.path\.join\(out_dir, /, argument);
+    assert.ok(!argument.includes('OUT_DIR'), argument);
+  }
+  // Beside the destination, so each move is a rename within one filesystem.
+  assert.match(source, /with tempfile\.TemporaryDirectory\(dir=OUT_DIR\) as staging:/);
+  // main hands the staging directory over rather than moving anything itself.
+  assert.match(source, /for name in replace_all\(staging, OUT_DIR\):/);
+  const replaceAll = source.slice(source.indexOf('def replace_all('), source.indexOf('def main('));
+  assert.match(replaceAll, /except BaseException:/);
+  // Recorded before the move is attempted: a run interrupted once the rename
+  // has happened still has that name to put back.
+  assert.ok(replaceAll.indexOf('attempted.append(name)') <
+    replaceAll.indexOf('shutil.move('), 'the name is recorded before the move');
+  assert.match(replaceAll, /shutil\.copy2\(os\.path\.join\(backup, name\), os\.path\.join\(out_dir, name\)\)/);
+  assert.match(replaceAll, /os\.remove\(os\.path\.join\(out_dir, name\)\)/);
+  assert.match(replaceAll, /raise$/m);
+
+  // One named face per weight: a fallback chain would redraw all six wherever
+  // a different font resolved first.
+  const faces = [...source.matchAll(/^FONT_(?:REGULAR|BOLD)_FILE = '(.+)'$/gm)].map((m) => m[1]);
+  assert.equal(faces.length, 2);
+  assert.deepEqual([...new Set(faces)].length, 2);
+  assert.match(source, /raise SystemExit\(/);
+  assert.ok(!source.includes('ImageFont.load_default()'), 'no silent fallback face');
+});
+
 test('store screenshot generator mirrors the stylesheet muted colors', () => {
   const source = fs.readFileSync(path.join(__dirname, 'gen_screenshots.py'), 'utf8');
   const popup = fs.readFileSync(path.join(__dirname, 'popup.html'), 'utf8');
