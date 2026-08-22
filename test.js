@@ -1157,7 +1157,7 @@ const HTML_SPACE = '\\t\\n\\f\\r ';
 const IS_HTML_SPACE = /[\t\n\f\r ]/;
 
 function htmlMarkup(source) {
-  let markup = source.replace(/<!--[\s\S]*?-->/g, '');
+  let markup = source.replace(/<!--[\s\S]*?--!?>/g, '');
   for (const name of RAW_TEXT_ELEMENTS) {
     // The name ends where a browser ends it, and the end tag closes on
     // whitespace or a slash as well as on `>`, carrying attributes that are
@@ -1322,6 +1322,11 @@ test('the pages stay inside the markup the extractor reads', () => {
     for (const element of ['textarea', 'iframe', 'xmp', 'noembed', 'noframes', 'noscript', 'plaintext']) {
       assert.doesNotMatch(source, new RegExp(`<${element}\\b`, 'i'), `${name} uses <${element}>`);
     }
+    // A comment ends on `--!>` as well as on `-->`, and template content is a
+    // fragment that querySelectorAll never reaches. The pages need neither, so
+    // they are refused rather than read two ways.
+    assert.doesNotMatch(source, /<!--/, `${name} carries an HTML comment`);
+    assert.doesNotMatch(source, /<template\b/i, `${name} uses <template>`);
     // The raw-text elements the pages do use close the plain way. A browser
     // also closes them on `</title >`, and closes them on nothing at all if
     // what follows the name is not ASCII whitespace.
