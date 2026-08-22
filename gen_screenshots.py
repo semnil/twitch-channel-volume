@@ -9,6 +9,10 @@ from PIL import Image, ImageDraw, ImageFont
 
 W, H = 640, 400
 
+# 拡張機能には同梱しない資料用の画像なので docs/ 側に置く。実行した
+# ディレクトリではなくこのファイルの位置から解決する。
+OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'docs', 'screenshots')
+
 # ── Colors (popup.html / options.html の実値) ───────────────────────
 PAGE_BG = (15, 15, 35)    # #0f0f23 options body
 POPUP_BG = (26, 26, 46)   # #1a1a2e
@@ -284,8 +288,8 @@ def screenshot_popup(lang):
         draw.text((bx + (bw - ptw) / 2, by + 4), p, fill=DIM2, font=FONT_PRESET)
         bx += bw + 4
 
-    img.save(f'screenshots/popup_{lang}.png')
-    print(f'Generated screenshots/popup_{lang}.png')
+    img.save(os.path.join(OUT_DIR, f'popup_{lang}.png'))
+    print(f'Generated docs/screenshots/popup_{lang}.png')
 
 
 def screenshot_settings(lang):
@@ -383,8 +387,8 @@ def screenshot_settings(lang):
         draw.text((sx + sw - 36, ry - 2), '×', fill=HINT, font=FONT_LG)
         ry += 23
 
-    img.save(f'screenshots/settings_{lang}.png')
-    print(f'Generated screenshots/settings_{lang}.png')
+    img.save(os.path.join(OUT_DIR, f'settings_{lang}.png'))
+    print(f'Generated docs/screenshots/settings_{lang}.png')
 
 
 def screenshot_overlay(lang):
@@ -436,8 +440,8 @@ def screenshot_overlay(lang):
     draw_gear(draw, (W - 62, cy), WHITE, radius=PLAYER_GEAR_RADIUS)
     draw_fullscreen(draw, (W - 34, cy), WHITE)
 
-    img.save(f'screenshots/overlay_{lang}.png')
-    print(f'Generated screenshots/overlay_{lang}.png')
+    img.save(os.path.join(OUT_DIR, f'overlay_{lang}.png'))
+    print(f'Generated docs/screenshots/overlay_{lang}.png')
 
 
 def verify_icons():
@@ -490,7 +494,7 @@ def verify_icons():
 
 def main():
     verify_icons()
-    os.makedirs('screenshots', exist_ok=True)
+    os.makedirs(OUT_DIR, exist_ok=True)
     for lang in ('ja', 'en'):
         screenshot_popup(lang)
         screenshot_settings(lang)

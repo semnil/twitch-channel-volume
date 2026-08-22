@@ -181,10 +181,11 @@ options.html / options.js
 | `_locales/` | i18n (ja, en) |
 | `icons/` | 16/48/128 px PNG (Twitch purple 3-bar meter) |
 | `gen_icons.py` | アイコン生成 (Python Pillow) |
-| `gen_screenshots.py` | ストア審査用スクリーンショット生成 (PIL 直接描画, 640×400 ja/en) |
+| `gen_screenshots.py` | スクリーンショット生成 (PIL 直接描画, 640×400 ja/en → `docs/screenshots/`) |
 | `pack.py` | Chrome Web Store 用 zip 生成 (manifest からの参照グラフで選択、`--list` で選択結果のみ出力) |
 | `PRIVACY_POLICY.md` / `PRIVACY_POLICY_JA.md` | プライバシーポリシー (審査・README リンク用, EN/JA) |
 | `docs/security-audit.md` | セキュリティ監査レポート |
+| `docs/screenshots/` | `gen_screenshots.py` の出力。README とストア掲載の両方が使う (拡張機能には同梱しない) |
 | `test.js` | ユニットテスト (`node test.js`) — utils と store に加え、content.js / page-bridge.js / popup.js / options.js / background.js を VM 上の harness で走らせる |
 
 ## Key design decisions
@@ -245,7 +246,7 @@ options.html / options.js
 # Regenerate icons
 python3 gen_icons.py
 
-# Regenerate store screenshots (カレントディレクトリの screenshots/ へ書く)
+# Regenerate store screenshots (docs/screenshots/ へ書く。README が参照する)
 python3 gen_screenshots.py
 
 # Run tests
