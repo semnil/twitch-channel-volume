@@ -1050,14 +1050,23 @@ test('every message key is read somewhere and both locales carry it', () => {
     'channel-store.js', 'settings-store.js'
   ].map((name) => fs.readFileSync(path.join(__dirname, name), 'utf8')).join('\n');
 
-  // `msg('key')`, `data-i18n="key"`, and the manifest's `__MSG_key__`. Quoted
-  // so a key that is a prefix of another does not read as used.
-  const unread = Object.keys(ja).filter((key) => !(
-    sources.includes(`'${key}'`) ||
-    sources.includes(`"${key}"`) ||
-    sources.includes(`__MSG_${key}__`)
-  ));
-  assert.deepEqual(unread, []);
+  // Only the three ways a message is actually read count. A quoted string on
+  // its own does not: `'settings'` is also a path Twitch reserves.
+  const referenced = new Set();
+  for (const pattern of [
+    /\bmsg\(\s*'([A-Za-z0-9_]+)'/g,
+    /data-i18n="([A-Za-z0-9_]+)"/g,
+    /__MSG_([A-Za-z0-9_]+)__/g
+  ]) {
+    for (const match of sources.matchAll(pattern)) referenced.add(match[1]);
+  }
+
+  const declared = Object.keys(ja);
+  // A key assembled at runtime reads as unread here: inline the literal at the
+  // call site rather than widening this test.
+  assert.deepEqual(declared.filter((key) => !referenced.has(key)), []);
+  // The other direction catches a typo, which msg() answers with the key text.
+  assert.deepEqual([...referenced].filter((key) => !declared.includes(key)).sort(), []);
 });
 
 test('privacy policies list exactly the manifest permissions', () => {
