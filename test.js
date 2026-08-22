@@ -4874,10 +4874,13 @@ test('page bridge does not measure an element it holds for an ad', async () => {
 
   // The player swaps its element while the ad element is still on the page.
   harness.removeVideo(harness.currentVideo());
-  harness.addVideo({ src: 'https://example.test/next' });
+  harness.addVideo({ src: 'https://example.test/next', volume: 0.25 });
   harness.logs.length = 0;
   await harness.dispatchCommand('attach');
-  assert.equal(harness.logs.filter((entry) => entry[0] === '[TCV] attached to video').length, 1);
+  const attached = harness.logs.filter((entry) => entry[0] === '[TCV] attached to video');
+  assert.equal(attached.length, 1);
+  // The volume says which element it took: the ad element is at 1.
+  assert.equal(attached[0][1].volume, 0.25);
 });
 
 test('page bridge measures on when the Worker constructor cannot be wrapped', async () => {
