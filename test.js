@@ -36,11 +36,12 @@ function withFixtureDir(prefix, body) {
   assert.ok(!fs.existsSync(dir), `${dir} was left behind`);
 }
 
-// Chrome refuses to load an unpacked extension whose root holds a reserved
-// name, and takes one deeper in the tree. The walk goes further than Chrome
-// does and reports both: a `_` name below the root is junk in the tree the
-// package is built from, even where the browser would tolerate it.
-function reservedNamesUnder(root) {
+// This project's own rule, not the browser's: no underscore-prefixed name
+// outside `_locales`, and no Python leftovers, anywhere in the tree the
+// package is built from. Chrome refuses an unpacked extension only for an
+// underscore name at the root and takes one deeper in, so the names below the
+// root are reported here as junk in the tree rather than as a load failure.
+function forbiddenNamesUnder(root) {
   const forbidden = [];
   function walk(directory, relative = '') {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
@@ -59,8 +60,8 @@ function reservedNamesUnder(root) {
   return forbidden;
 }
 
-test('extension tree contains no Chrome-reserved filenames', () => {
-  assert.deepEqual(reservedNamesUnder(__dirname), []);
+test('extension tree keeps out underscore names and build leftovers', () => {
+  assert.deepEqual(forbiddenNamesUnder(__dirname), []);
 });
 
 test('every packaged path is one the extension loads', () => {
@@ -94,7 +95,7 @@ test('every packaged path is one the extension loads', () => {
   }
 });
 
-test('the reserved-name walk skips the scratch roots and nothing else', () => {
+test('the forbidden-name walk skips the scratch roots and nothing else', () => {
   // Named here because the fixture below is built from this set: dropping an
   // entry would otherwise pass by leaving nothing to skip.
   assert.deepEqual([...SCRATCH_DIRS].sort(), ['.claude', 'work']);
@@ -117,7 +118,7 @@ test('the reserved-name walk skips the scratch roots and nothing else', () => {
     // keeps its contents checked whatever it is called.
     write(path.join('icons', 'work', '_metadata', 'deep.txt'));
 
-    assert.deepEqual(reservedNamesUnder(fixture).sort(), [
+    assert.deepEqual(forbiddenNamesUnder(fixture).sort(), [
       '__pycache__',
       '_stray',
       path.join('icons', '_cache'),
