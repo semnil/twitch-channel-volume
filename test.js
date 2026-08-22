@@ -2543,6 +2543,18 @@ test('popup exposes the selected channel-row measurement reset control', () => {
   assert.equal(en.resetMeasurement.message, 'Reset measurement');
 });
 
+test('popup offers Apply only once a measurement exists', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'popup.js'), 'utf8');
+  // The suggestion is unity without a measurement, so its finiteness cannot be
+  // what enables the button: applying it would overwrite a saved manual gain.
+  assert.match(source, /\} else if \(hasIntegrated && ch\.id\) \{\s*applyButton\.disabled = false;/s);
+  assert.doesNotMatch(source, /else if \(Number\.isFinite\(lastSuggestedGain\) && ch\.id\)/);
+  assert.match(
+    source,
+    /applyButton\.disabled = currentAutoApplyLoudness \|\| !hasIntegrated \|\| !ch\.id;/
+  );
+});
+
 test('popup re-enables its controls in the render that reports the reset result', () => {
   const source = fs.readFileSync(path.join(__dirname, 'popup.js'), 'utf8');
   const body = source.slice(
@@ -2827,12 +2839,12 @@ test('page bridge removes the windows appended before an ad was detected', async
   await harness.startMeasurement();
   harness.messages.length = 0;
 
-  const quiet = 0.01;
   const quietBlocks = 60;
   const adBlocks = 5;
-  for (let i = 0; i < quietBlocks; i++) harness.emitMeasurementBlock(quiet);
+  // A ramp, so removing a different number of windows lands somewhere else.
+  const content = Array.from({ length: quietBlocks }, (_, i) => 0.01 + i * 0.0004);
+  for (const ms of content) harness.emitMeasurementBlock(ms);
   const beforeAd = harness.messages.at(-1).integrated;
-  assert.ok(Math.abs(beforeAd - u.meanSquareToLufs(quiet)) < 1e-12);
 
   // The ad's first audio reaches the gate before its DOM marker appears.
   for (let i = 0; i < adBlocks; i++) harness.emitMeasurementBlock(1.0);
@@ -2842,7 +2854,10 @@ test('page bridge removes the windows appended before an ad was detected', async
   await harness.dispatchCommand('setAdActive', { active: true });
   harness.emitMeasurementBlock(1.0);
   // The cap leaves the oldest windows, which never saw the ad.
-  assert.ok(Math.abs(harness.messages.at(-1).integrated - beforeAd) < 1e-12);
+  const emittedAll = [...content, ...Array(adBlocks).fill(1.0)];
+  const kept = gatingWindows(emittedAll).slice(0, -AD_START_ROLLBACK);
+  assert.equal(kept.length, gatingWindows(emittedAll).length - AD_START_ROLLBACK);
+  assertLufsClose(harness.messages.at(-1).integrated, u.gatedIntegratedLufs(kept));
 
   // The removed windows are reported so their level can be read.
   const rollback = harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback');
@@ -2850,8 +2865,7 @@ test('page bridge removes the windows appended before an ad was detected', async
   assert.equal(rollback[0][1].removed, AD_START_ROLLBACK);
   assert.equal(rollback[0][1].truncated, true);
   // Oldest first, thinned to the two ends when there are too many to print.
-  const emitted = [...Array(quietBlocks).fill(quiet), ...Array(adBlocks).fill(1.0)];
-  const removedWindows = gatingWindows(emitted)
+  const removedWindows = gatingWindows(emittedAll)
     .slice(-AD_START_ROLLBACK)
     .map((window) => Number(u.meanSquareToLufs(window).toFixed(2)));
   const half = ROLLBACK_LOG_SAMPLES / 2;
@@ -2887,6 +2901,108 @@ test('page bridge starts a fresh gating window after the video is replaced', asy
 
   harness.emitMeasurementBlock(0.01);
   assert.ok(Math.abs(harness.messages.at(-1).integrated - u.meanSquareToLufs(0.01)) < 1e-12);
+});
+
+test('page bridge rolls back after the ring buffer has started evicting', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  const quiet = 0.01;
+  const ringWindows = 60 * 60 * 10;
+  for (let i = 0; i < ringWindows + 3; i++) harness.emitMeasurementBlock(quiet);
+  harness.messages.length = 0;
+
+  for (let i = 0; i < AD_START_ROLLBACK; i++) harness.emitMeasurementBlock(1.0);
+  const contaminated = harness.messages.at(-1).integrated;
+  assert.ok(contaminated > u.meanSquareToLufs(quiet) + 0.3);
+
+  await harness.dispatchCommand('setAdActive', { active: true });
+  harness.emitMeasurementBlock(1.0);
+  assert.ok(Math.abs(harness.messages.at(-1).integrated - u.meanSquareToLufs(quiet)) < 1e-12);
+});
+
+test('page bridge counts rollback budget from the last reset only', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  for (let i = 0; i < 20; i++) harness.emitMeasurementBlock(0.5);
+
+  await harness.dispatchCommand('resetMeasurement', { initialIntegratedLufs: -20 });
+  harness.messages.length = 0;
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(1.0);
+
+  await harness.dispatchCommand('setAdActive', { active: true });
+  harness.emitMeasurementBlock(1.0);
+  // One window existed since the reset; the seeded sample is not one of them.
+  assert.ok(Math.abs(harness.messages.at(-1).integrated - (-20)) < 1e-12);
+});
+
+test('page bridge rolls back once per ad, not once per detection', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  for (let i = 0; i < 20; i++) harness.emitMeasurementBlock(0.01);
+  harness.messages.length = 0;
+  harness.logs.length = 0;
+
+  await harness.dispatchCommand('setAdActive', { active: true });
+  await harness.dispatchCommand('setAdActive', { active: true });
+  harness.emitMeasurementBlock(1.0);
+  const rollbacks = harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback');
+  assert.equal(rollbacks.length, 1);
+});
+
+test('page bridge removes a window sitting exactly on the absolute gate', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  const atGate = Math.pow(10, (-70 + 0.691) / 10);
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(atGate);
+  assert.ok(Math.abs(harness.messages.at(-1).integrated - (-70)) < 1e-12);
+
+  await harness.dispatchCommand('setAdActive', { active: true });
+  harness.emitMeasurementBlock(atGate);
+  // Removed from the index as well as the ring, or it haunts the gate forever.
+  assert.equal(harness.messages.at(-1).integrated, -Infinity);
+});
+
+test('page bridge keeps a zero player volume out of the measurement', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.setVolume(0);
+  for (let i = 0; i < 8; i++) harness.emitMeasurementBlock(0.01);
+
+  // Dividing by a zero volume would put Infinity in the index, where it stays:
+  // every later value reads back as -Infinity.
+  harness.setVolume(1);
+  for (let i = 0; i < 8; i++) harness.emitMeasurementBlock(0.01);
+  assert.ok(Math.abs(harness.messages.at(-1).integrated - u.meanSquareToLufs(0.01)) < 1e-9);
+});
+
+test('page bridge holds the boundary skip open across an ad', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(0.01);
+  harness.setVolume(0.5);
+  harness.logs.length = 0;
+
+  await harness.dispatchCommand('setAdActive', { active: true });
+  for (let i = 0; i < 6; i++) harness.emitMeasurementBlock(0.01);
+  assert.equal(harness.logs.filter((e) => e[0] === '[TCV] gate resumed').length, 0);
+});
+
+test('page bridge restarts the skip count when a boundary re-arms', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(0.01);
+  harness.setVolume(0.5);
+  harness.logs.length = 0;
+
+  harness.emitMeasurementBlock(0.01);
+  harness.emitMeasurementBlock(0.01);
+  harness.setVolume(0.4);
+  for (let i = 0; i < 3; i++) harness.emitMeasurementBlock(0.01);
+  assert.equal(harness.logs.filter((e) => e[0] === '[TCV] gate resumed').length, 0);
+  harness.emitMeasurementBlock(0.01);
+  const resumed = harness.logs.filter((e) => e[0] === '[TCV] gate resumed');
+  assert.equal(resumed.length, 1);
+  assert.equal(resumed[0][1].dropped, 6);
 });
 
 test('page bridge references the measurement to player volume 1.0', async () => {

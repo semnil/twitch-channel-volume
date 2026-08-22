@@ -296,12 +296,12 @@
     return integratedLufs();
   }
 
-  // Only windows appended since the last reset are removable, and only while
-  // the ring buffer has not started evicting: an evicted value cannot return.
+  // Only windows appended since the last reset are removable. Removing the
+  // newest entry frees the slot the next append reuses, so a full ring is no
+  // different; what the eviction took stays gone either way.
   function removeRecentIntegratedBlocks(count) {
     const removed = [];
-    while (removed.length < count && windowsSinceReset > 0 &&
-           integratedBlockLength > 0 && integratedBlockLength < MAX_INTEGRATED_BLOCKS) {
+    while (removed.length < count && windowsSinceReset > 0 && integratedBlockLength > 0) {
       const index = (integratedBlockStart + integratedBlockLength - 1) % MAX_INTEGRATED_BLOCKS;
       const ms = integratedBlocks[index];
       if (ms >= ABSOLUTE_GATE_MEAN_SQUARE) {
@@ -578,23 +578,25 @@
     adActive = !!active;
     if (adActive) {
       const removed = removeRecentIntegratedBlocks(AD_START_ROLLBACK_BLOCKS);
-      if (removed.length) {
-        const half = ROLLBACK_LOG_SAMPLES / 2;
-        const truncated = removed.length > ROLLBACK_LOG_SAMPLES;
-        console.info('[TCV] ad start rollback', {
-          removed: removed.length,
-          windowLufs: truncated
-            ? [...removed.slice(0, half), ...removed.slice(-half)]
-            : removed,
-          ...(truncated ? { truncated: true } : {})
-        });
-      }
+      const half = ROLLBACK_LOG_SAMPLES / 2;
+      const truncated = removed.length > ROLLBACK_LOG_SAMPLES;
+      console.info('[TCV] ad start rollback', {
+        removed: removed.length,
+        requested: AD_START_ROLLBACK_BLOCKS,
+        // At the budget the removal stopped short of the ad's own start.
+        exhausted: removed.length === AD_START_ROLLBACK_BLOCKS,
+        windowsSinceReset,
+        windowLufs: truncated
+          ? [...removed.slice(0, half), ...removed.slice(-half)]
+          : removed,
+        ...(truncated ? { truncated: true } : {})
+      });
     } else armBoundarySkip('ad-end');
     applyEffectiveGain();
     postAd(adActive, range);
   }
 
-  // ── Fetch hook: HLS manifests + GraphQL ─────────────────────────────
+  // ── Fetch hook: GraphQL ─────────────────────────────────────────────
 
   function currentContentIdentity() {
     try {

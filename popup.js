@@ -168,15 +168,14 @@
 
     $('applyHint').classList.toggle('error', gainSaveError);
     if (gainSaveError) {
-      applyButton.disabled = currentAutoApplyLoudness ||
-        !Number.isFinite(lastSuggestedGain) || !ch.id;
+      applyButton.disabled = currentAutoApplyLoudness || !hasIntegrated || !ch.id;
       $('applyHint').textContent = msg('gainSaveFailed');
     } else if (currentAutoApplyLoudness && ch.id) {
       applyButton.disabled = true;
       $('applyHint').textContent = msg('hintAutoApplyEnabled');
-    } else if (Number.isFinite(lastSuggestedGain) && ch.id) {
+    } else if (hasIntegrated && ch.id) {
       applyButton.disabled = false;
-      $('applyHint').textContent = hasIntegrated ? '' : msg('hintNoLufs');
+      $('applyHint').textContent = '';
     } else {
       applyButton.disabled = true;
       $('applyHint').textContent = ch.id ? msg('hintNoLufs') : msg('channelNotDetected');
