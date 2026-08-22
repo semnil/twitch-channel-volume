@@ -26,6 +26,10 @@
   let lastLufs = { momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity };
   let adActive = false;
   let requestedAdActive = false;
+  // Filled on a route change with the indicator elements the media that ended
+  // left in the page.
+  let staleAdIndicators = new Set();
+  let lastSeenAdIndicators = new Set();
   let audioUnavailable = false;
   let audioUnavailableCause = '';
   let measurementUnavailable = false;
@@ -496,13 +500,33 @@
     });
   }
 
-  // ── DOM-based ad detection (fallback) ─────────────────────────────
+  // ── DOM-based ad detection ────────────────────────────────────────
+  const AD_INDICATOR_SELECTOR =
+    '[data-a-target="video-ad-countdown"], [data-test-selector="ad-banner-default-text"]';
+
+  // The indicator appears after the ad's first audio and can stay in the page
+  // after the break, so the bridge prefers the player's own cue and falls back
+  // to this where no cue arrives.
+
+  // Right after a route change the player being left is still in the page, and
+  // the elements it put there say nothing about the new media. What the page
+  // held the last time it was read is what belongs to the old media, and every
+  // read happens before the route change is handled - so which elements to
+  // ignore is decided by element, not by when the page is read, and an
+  // indicator that is not one of them counts however it got there.
+  function adIndicatorPresent() {
+    for (const node of staleAdIndicators) {
+      if (!node.isConnected) staleAdIndicators.delete(node);
+    }
+    lastSeenAdIndicators = new Set(document.querySelectorAll(AD_INDICATOR_SELECTOR));
+    for (const node of lastSeenAdIndicators) {
+      if (!staleAdIndicators.has(node)) return true;
+    }
+    return false;
+  }
 
   function checkAdDom() {
-    const node = document.querySelector(
-      '[data-a-target="video-ad-countdown"], [data-test-selector="ad-banner-default-text"]'
-    );
-    const detected = !!node;
+    const detected = adIndicatorPresent();
     // adActive only catches up when the bridge echoes the change back, so the
     // request is what this compares against.
     if (detected !== requestedAdActive) {
@@ -516,9 +540,6 @@
     }
   }
 
-  const adObserver = new MutationObserver(() => checkAdDom());
-  adObserver.observe(document.documentElement, { subtree: true, childList: true });
-
   // ── SPA navigation ─────────────────────────────────────────────────
 
   let lastHref = location.href;
@@ -531,26 +552,47 @@
     currentAutoApplyLoudness = false;
     lastLufs = { momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity };
     lastSavedAt = 0;
+    // New media: the break the player cued for the old one no longer applies.
+    // The bridge drops the indicator state with it, so the cache here matches
+    // it again and the observer reports the new media's own transitions.
+    sendCmd({ cmd: 'mediaChanged' });
+    requestedAdActive = false;
+    // These were the media being left; the new one has to put its own indicator
+    // in the page to be heard.
+    for (const node of lastSeenAdIndicators) staleAdIndicators.add(node);
+    // The batch that carried the route change can have carried the new media's
+    // indicator with it, and nothing more needs to happen in the page for it to
+    // count.
+    checkAdDom();
     sendResetMeasurement();
     sendCmd({ cmd: 'attach' });
     await resolveChannel();
     if (await reapplyForCurrentChannel()) resetMeasurementForCurrentChannel();
   }
 
+  // Read the page before the URL moves: an indicator that is up at that point
+  // belongs to the media being left, even if nothing has observed it yet.
   const origPush = history.pushState;
   history.pushState = function (...args) {
+    checkAdDom();
     const r = origPush.apply(this, args);
     queueMicrotask(onNavigate);
     return r;
   };
   const origReplace = history.replaceState;
   history.replaceState = function (...args) {
+    checkAdDom();
     const r = origReplace.apply(this, args);
     queueMicrotask(onNavigate);
     return r;
   };
   window.addEventListener('popstate', onNavigate);
+  // Ahead of the ad observer, so a batch that carries a route change is read
+  // against the media that arrived rather than the one that left.
   new MutationObserver(onNavigate).observe(document, { subtree: true, childList: true });
+
+  const adObserver = new MutationObserver(() => checkAdDom());
+  adObserver.observe(document.documentElement, { subtree: true, childList: true });
 
   // ── Storage onChanged → cross-tab sync ────────────────────────────
 

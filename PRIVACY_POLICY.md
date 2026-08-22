@@ -2,7 +2,7 @@
 
 [日本語版はこちら (Japanese)](PRIVACY_POLICY_JA.md)
 
-Last updated: 2026-06-06
+Last updated: 2026-08-22
 
 ## Overview
 
@@ -30,9 +30,9 @@ Twitch Channel Volume is a Chrome extension that remembers and auto-applies volu
 
 ### Twitch Page Data (read-only)
 
-- **What**: GraphQL responses issued by Twitch itself (to obtain a channel's owner ID / broadcaster ID), and the presence of the player's ad indicator in the page.
+- **What**: GraphQL responses issued by Twitch itself (to obtain a channel's owner ID / broadcaster ID), the ad cues the player posts to its own page (to learn when an ad break starts and ends), and the presence of the player's ad indicator in the page.
 - **Purpose**: Obtain a persistent channel identifier and detect ad breaks.
-- **Storage**: GraphQL responses are not stored. Only the required values (channel IDs) are extracted and used.
+- **Storage**: GraphQL responses and ad cues are not stored. Only the required values are extracted and used: channel IDs, and the start, end, roll type (pre-roll / mid-roll) and position within the pod of an ad break. Ad identifiers, advertiser names and tracking URLs carried by a cue are not read.
 
 ## Data NOT Collected
 
@@ -62,6 +62,10 @@ Nowhere. This extension makes **no external network requests**. GraphQL response
 ## Remote Code
 
 This extension does **not** use remote code. All JavaScript is bundled locally within the extension package. The `page-bridge.js` content script runs in the page's main world (`"world": "MAIN"`) to control the AudioContext and read Twitch page data — this is local code, not remotely fetched.
+
+To hear the player's ad cues, `page-bridge.js` wraps the page's `Worker` constructor and adds a message listener to each
+worker the page creates. The worker itself is created from the argument the page passed; no worker script is read,
+modified or replaced, and no code is fetched from any server.
 
 ## Single Purpose
 

@@ -2,7 +2,8 @@
 // Owns the AudioContext, GainNode and K-weighted LUFS measurement pipeline.
 // Twitch publishes no loudness metadata, so the bridge measures the playing
 // <video> directly via Web Audio. It also hooks fetch to read Twitch's GraphQL
-// responses for the authoritative user_id/login.
+// responses for the authoritative user_id/login, and wraps the Worker
+// constructor to hear the ad cues the player's own media engine posts.
 
 (() => {
   'use strict';
@@ -79,6 +80,14 @@
   let baselineGain = 1.0;
   let adGainOffset = 1.0;
   let adActive = false;
+  let domAdActive = false;
+  // The media times the player's cues gave for the break it is playing, and
+  // whether any cue has been accepted for this media.
+  let adBreakStartMedia = Infinity;
+  let adBreakEndMedia = -Infinity;
+  // The cue said another creative of the pod follows the one it named.
+  let adPodPending = false;
+  let adCueSeen = false;
   let attachTimer = null;
   const attachFailedFor = new WeakSet();
   // Elements another script holds. They keep the gain node out of the player's
@@ -259,12 +268,11 @@
     }, '*');
   }
 
-  function postAd(active, range) {
+  function postAd(active) {
     window.postMessage({
       type: MSG_OUT,
       event: 'ad',
-      active,
-      range: range || null
+      active
     }, '*');
   }
 
@@ -408,11 +416,15 @@
     }
   }
 
+  function heldAsAdElement(video) {
+    return adElementChains.some((chain) => chain.video === video);
+  }
+
   function findVideo() {
     const all = document.querySelectorAll('video');
     let best = null;
     for (const v of all) {
-      if (attachFailedFor.has(v)) continue;
+      if (attachFailedFor.has(v) || heldAsAdElement(v)) continue;
       if (!v.src && v.readyState === 0) continue;
       if (!best || (v.clientWidth * v.clientHeight) > (best.clientWidth * best.clientHeight)) {
         best = v;
@@ -420,7 +432,7 @@
     }
     if (best) return best;
     for (const v of all) {
-      if (!attachFailedFor.has(v)) return v;
+      if (!attachFailedFor.has(v) && !heldAsAdElement(v)) return v;
     }
     return null;
   }
@@ -451,8 +463,10 @@
       attachedVideo.removeEventListener('volumechange', onVolumeChange);
       attachedVideo = null;
       lastVolumeState = '';
+      forgetCues();
       sourceNode = null;
       workletNode = null;
+      updateAdState();
       // The element that replaces it needs the loop that first attached.
       scheduleAttach();
     }
@@ -582,6 +596,10 @@
     const mom = blocksToLufs(blocks, MOMENTARY_BLOCKS);
     const st = blocksToLufs(blocks, SHORT_BLOCKS);
     const gateWindow = blocksMeanSquare(blocks, GATE_BLOCKS);
+    // The playhead passing the end the cue gave is what ends a break, so the
+    // state is re-read on every block.
+    updateAdState();
+    if (adActive || adElementChains.length) syncAdElementGains();
     // Credit is spent on windows, so a reset that empties the sub-block buffer
     // does not consume it before a window exists.
     const skipBoundary = boundarySkipBlocks > 0 && gateWindow !== null;
@@ -652,27 +670,209 @@
     gain.gain.setTargetAtTime(effective, ctx.currentTime, 0.02);
   }
 
-  function setAdActive(active, range) {
-    if (adActive === !!active) return;
-    adActive = !!active;
+  const AD_CUE_LEAD_SEC = 1;
+  // The cue for the next creative of a pod arrives shortly after the one before
+  // it ended, and the break is held that long rather than closing between them.
+  const AD_POD_GAP_SEC = 0.4;
+
+  // The cue names the break in the media timeline of the element that is being
+  // measured, so the break runs from the start it gave until the playhead
+  // passes the end.
+  function playerBreakActive() {
+    const position = attachedVideo?.currentTime;
+    if (!Number.isFinite(position) || position < adBreakStartMedia) return false;
+    if (position < adBreakEndMedia) return true;
+    return adPodPending && position < adBreakEndMedia + AD_POD_GAP_SEC;
+  }
+
+  function forgetCuedBreak() {
+    adBreakStartMedia = Infinity;
+    adBreakEndMedia = -Infinity;
+    adPodPending = false;
+  }
+
+  // A cue's times belong to one element's timeline, and whether the media is
+  // cued at all is unknown again once that element changes.
+  function forgetCues() {
+    adCueSeen = false;
+    forgetCuedBreak();
+  }
+
+  // The cue arrives a little after the break's first audio, and the windows
+  // appended over that distance are the ones holding it.
+  function adStartRollbackBlocks() {
+    const position = attachedVideo?.currentTime;
+    if (!adCueSeen || !Number.isFinite(position) || !Number.isFinite(adBreakStartMedia)) {
+      return AD_START_ROLLBACK_BLOCKS;
+    }
+    return 1 + Math.floor(Math.max(0, position - adBreakStartMedia) / BLOCK_SEC);
+  }
+
+  // The player's cue names the break with its first audio and ends it on time;
+  // the DOM indicator does neither, so it only stands in where no cue arrives,
+  // which is where a VOD's client-side ad lives.
+  function adWanted() {
+    return adCueSeen ? playerBreakActive() : domAdActive;
+  }
+
+  function rollBackAdStart(blocks) {
+    const requested = Math.max(0, blocks);
+    const removed = removeRecentIntegratedBlocks(requested);
+    const half = ROLLBACK_LOG_SAMPLES / 2;
+    const truncated = removed.length > ROLLBACK_LOG_SAMPLES;
+    console.info('[TCV] ad start rollback', {
+      removed: removed.length,
+      requested,
+      // At the budget the removal stopped short of the ad's own start.
+      exhausted: requested > 0 && removed.length === requested,
+      windowsSinceReset,
+      windowLufs: truncated
+        ? [...removed.slice(0, half), ...removed.slice(-half)]
+        : removed,
+      ...(truncated ? { truncated: true } : {})
+    });
+  }
+
+  function updateAdState() {
+    const wanted = adWanted();
+    if (wanted === adActive) return;
+    adActive = wanted;
     if (adActive) {
-      const removed = removeRecentIntegratedBlocks(AD_START_ROLLBACK_BLOCKS);
-      const half = ROLLBACK_LOG_SAMPLES / 2;
-      const truncated = removed.length > ROLLBACK_LOG_SAMPLES;
-      console.info('[TCV] ad start rollback', {
-        removed: removed.length,
-        requested: AD_START_ROLLBACK_BLOCKS,
-        // At the budget the removal stopped short of the ad's own start.
-        exhausted: removed.length === AD_START_ROLLBACK_BLOCKS,
-        windowsSinceReset,
-        windowLufs: truncated
-          ? [...removed.slice(0, half), ...removed.slice(-half)]
-          : removed,
-        ...(truncated ? { truncated: true } : {})
-      });
-    } else armBoundarySkip('ad-end');
+      rollBackAdStart(adStartRollbackBlocks());
+    } else {
+      // The break the cue named is behind the playhead; moving back into it
+      // must not open it again.
+      forgetCuedBreak();
+      armBoundarySkip('ad-end');
+    }
     applyEffectiveGain();
-    postAd(adActive, range);
+    syncAdElementGains();
+    postAd(adActive);
+  }
+
+  function setDomAdActive(active) {
+    if (domAdActive === !!active) return;
+    domAdActive = !!active;
+    updateAdState();
+  }
+
+  // ── Ad breaks: the player's own cues ────────────────────────────────
+  // The player runs its media engine in a worker and posts a cue for each ad it
+  // is about to play. The Worker constructor is wrapped only to listen; the
+  // worker is created from the argument the page passed, untouched.
+
+  function onPlayerWorkerMessage(event) {
+    const cue = event.data?.arg;
+    if (!cue || typeof cue !== 'object') return;
+    if (typeof cue.rollType !== 'string') return;
+    const { startTime, endTime } = cue;
+    if (!Number.isFinite(startTime) || !Number.isFinite(endTime)) return;
+    if (endTime <= startTime) return;
+    const position = attachedVideo?.currentTime;
+    if (!Number.isFinite(position)) return;
+    // A second player runs during a break and cues its own ads; the cue that
+    // belongs to the element being measured is the one holding its playhead.
+    if (position < startTime - AD_CUE_LEAD_SEC || position >= endTime) return;
+    adCueSeen = true;
+    // Only a cue that says it is the last of its pod closes it; anything else
+    // leaves the break open for a creative that may still be cued.
+    adPodPending = !(Number.isFinite(cue.podPosition)
+      && Number.isFinite(cue.podCount)
+      && cue.podPosition >= cue.podCount - 1);
+    if (endTime <= adBreakEndMedia) return;
+    // The start belongs to the cue that opened the break; the ones that follow
+    // it in the same pod only push the end out.
+    if (adBreakEndMedia === -Infinity) adBreakStartMedia = startTime;
+    adBreakEndMedia = endTime;
+    console.info('[TCV] ad cue from the player', {
+      rollType: cue.rollType,
+      startTime: Number(startTime.toFixed(3)),
+      endTime: Number(endTime.toFixed(3)),
+      videoTime: Number(position.toFixed(3)),
+      pod: `${cue.podPosition}/${cue.podCount}`
+    });
+    updateAdState();
+  }
+
+  function installWorkerHook() {
+    const NativeWorker = window.Worker;
+    if (typeof NativeWorker !== 'function') return;
+    try {
+      window.Worker = class extends NativeWorker {
+        constructor(url, options) {
+          super(url, options);
+          this.addEventListener('message', onPlayerWorkerMessage);
+        }
+      };
+    } catch (err) {
+      // The rest of the bridge runs after this; an unwritable Worker must not
+      // take the measurement down with it.
+      console.warn('[TCV] Worker constructor could not be wrapped; ads are detected from the DOM alone', err);
+    }
+  }
+
+  installWorkerHook();
+
+  // ── Ad breaks: the element a client-side ad plays in ────────────────
+  // A VOD ad is a second element playing at its own volume while the element
+  // being measured is paused, so the ad gain has to reach it and cancel the
+  // difference between the two volumes.
+
+  const adElementChains = [];
+
+  function attachAdElement(video) {
+    if (!ctx || ctx.state !== 'running' || attachFailedFor.has(video)) return null;
+    try {
+      const source = ctx.createMediaElementSource(video);
+      const node = ctx.createGain();
+      node.gain.value = 1;
+      source.connect(node);
+      node.connect(ctx.destination);
+      const chain = { video, source, node };
+      adElementChains.push(chain);
+      console.info('[TCV] ad element attached', {
+        volume: video.volume,
+        playerVolume: attachedVideo ? attachedVideo.volume : null
+      });
+      return chain;
+    } catch (err) {
+      attachFailedFor.add(video);
+      console.warn('[TCV] ad element could not be attached', err);
+      return null;
+    }
+  }
+
+  function adElementGain(video) {
+    const reference = attachedVideo?.volume;
+    const own = video.volume;
+    const match = (Number.isFinite(reference) && own > 0) ? reference / own : 1;
+    return baselineGain * adGainOffset * match;
+  }
+
+  function syncAdElementGains() {
+    if (!ctx) return;
+    for (let i = adElementChains.length - 1; i >= 0; i--) {
+      const chain = adElementChains[i];
+      if (chain.video.isConnected) continue;
+      try { chain.source.disconnect(); } catch (_) {}
+      try { chain.node.disconnect(); } catch (_) {}
+      adElementChains.splice(i, 1);
+    }
+    // Only a client-side ad leaves the measured element paused while another
+    // element plays; a stitched ad stays in the element already attached.
+    const clientSideAd = adActive && attachedVideo?.paused === true;
+    if (clientSideAd) {
+      for (const video of document.querySelectorAll('video')) {
+        if (video === attachedVideo) continue;
+        if (video.paused || video.muted || video.volume === 0) continue;
+        if (heldAsAdElement(video)) continue;
+        attachAdElement(video);
+      }
+    }
+    for (const chain of adElementChains) {
+      const value = clientSideAd ? adElementGain(chain.video) : 1;
+      chain.node.gain.setTargetAtTime(value, ctx.currentTime, 0.02);
+    }
   }
 
   // ── Fetch hook: GraphQL ─────────────────────────────────────────────
@@ -781,10 +981,18 @@
         setAdGainOffset(data.value);
         break;
       case 'setAdActive':
-        setAdActive(data.active, data.range);
+        setDomAdActive(data.active);
         break;
       case 'resetMeasurement':
         resetMeasurement(data.initialIntegratedLufs, data.epoch);
+        break;
+      case 'mediaChanged':
+        // New media answers for itself: the old cues mean nothing against its
+        // timeline, and the indicator is reported against it again by
+        // content.js rather than carried over.
+        forgetCues();
+        domAdActive = false;
+        updateAdState();
         break;
       case 'resume':
         try {
