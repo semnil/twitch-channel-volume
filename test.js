@@ -1039,82 +1039,194 @@ test('resolvePreferredGain ignores an Auto gain measured at an unknown volume', 
   assert.equal(u.resolvePreferredGain(manual, 'live', false, -Infinity, -18).gain, 2.0);
 });
 
-// A message is read through one of these three; a quoted string on its own is
-// not one: `'settings'` is also a path Twitch reserves.
-const MESSAGE_KEY_PATTERNS = [
-  /\bmsg\(\s*'([A-Za-z0-9_]+)'/g,
-  /data-i18n="([A-Za-z0-9_]+)"/g,
-  /__MSG_([A-Za-z0-9_]+)__/g
-];
+// A message is read at a call site, not wherever its characters appear. The
+// sources are tokenized so that a string, a template chunk or a regex holding
+// `msg('key')` stays what it is: text.
+const REGEX_MAY_FOLLOW = new Set([
+  'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void',
+  'case', 'do', 'else', 'yield', 'await'
+]);
 
-function messageKeysIn(text) {
-  const found = new Set();
-  for (const pattern of MESSAGE_KEY_PATTERNS) {
-    for (const match of text.matchAll(pattern)) found.add(match[1]);
-  }
-  return found;
-}
+function jsTokens(source) {
+  const tokens = [];
+  const nameChar = (character) => /[A-Za-z0-9_$]/.test(character);
+  let previous = null;
+  const push = (token) => { tokens.push(token); previous = token; };
+  // Depth of the enclosing braces for each template whose interpolation is open.
+  const templates = [];
+  let depth = 0;
+  let i = 0;
 
-// Commented-out code reads like a call site and has no reader at runtime, so
-// the comments come out before the scan. Strings are tracked because a `//`
-// inside one is text, not the start of a comment.
-function stripComments(source, kind) {
-  if (kind === 'json') return source;
-  if (kind === 'html') {
-    return source.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
-  }
-  let out = '';
-  let quote = '';
-  for (let i = 0; i < source.length; i++) {
+  // Reads to the end of a template chunk: either the template closes, or an
+  // interpolation opens and the expression inside it is tokenized as code.
+  const readTemplateChunk = () => {
+    let value = '';
+    while (i < source.length) {
+      const character = source[i];
+      if (character === '\\') { value += source[i + 1] || ''; i += 2; continue; }
+      if (character === '`') { i++; push({ type: 'string', value }); templates.pop(); return; }
+      if (character === '$' && source[i + 1] === '{') {
+        i += 2;
+        push({ type: 'string', value });
+        return;
+      }
+      value += source[i];
+      i++;
+    }
+  };
+
+  while (i < source.length) {
     const character = source[i];
     const next = source[i + 1];
-    if (quote) {
-      out += character;
-      if (character === '\\') {
-        out += next || '';
-        i++;
-      } else if (character === quote) {
-        quote = '';
-      }
-      continue;
-    }
-    if (character === "'" || character === '"' || character === '`') {
-      quote = character;
-      out += character;
-      continue;
-    }
+
+    if (/\s/.test(character)) { i++; continue; }
     if (character === '/' && next === '/') {
       while (i < source.length && source[i] !== '\n') i++;
-      out += '\n';
       continue;
     }
     if (character === '/' && next === '*') {
       i += 2;
       while (i < source.length && !(source[i] === '*' && source[i + 1] === '/')) i++;
-      i++;
+      i += 2;
       continue;
     }
-    out += character;
+    if (character === '`') {
+      i++;
+      templates.push(depth);
+      readTemplateChunk();
+      continue;
+    }
+    if (character === '}' && templates.length && templates[templates.length - 1] === depth) {
+      i++;
+      readTemplateChunk();
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      const quote = character;
+      let value = '';
+      i++;
+      while (i < source.length && source[i] !== quote) {
+        if (source[i] === '\\') { value += source[i + 1] || ''; i += 2; continue; }
+        value += source[i];
+        i++;
+      }
+      i++;
+      push({ type: 'string', value });
+      continue;
+    }
+    if (character === '/' && (
+      !previous ||
+      (previous.type === 'punct' && !')]'.includes(previous.value)) ||
+      (previous.type === 'name' && REGEX_MAY_FOLLOW.has(previous.value))
+    )) {
+      i++;
+      while (i < source.length && source[i] !== '/') {
+        if (source[i] === '\\') { i += 2; continue; }
+        if (source[i] === '[') {
+          while (i < source.length && source[i] !== ']') {
+            i += source[i] === '\\' ? 2 : 1;
+          }
+        }
+        i++;
+      }
+      i++;
+      while (i < source.length && nameChar(source[i])) i++;
+      push({ type: 'regex' });
+      continue;
+    }
+    if (nameChar(character)) {
+      let value = '';
+      while (i < source.length && nameChar(source[i])) value += source[i++];
+      push({ type: 'name', value });
+      continue;
+    }
+    if (character === '{') depth++;
+    if (character === '}') depth--;
+    push({ type: 'punct', value: character });
+    i++;
   }
-  return out;
+  return tokens;
+}
+
+// `msg` `(` '<key>' — the key has to be a literal, so a key assembled at
+// runtime reads as unread here rather than passing unchecked.
+function messageKeysInJs(source) {
+  const tokens = jsTokens(source);
+  const found = new Set();
+  for (let i = 0; i + 2 < tokens.length; i++) {
+    if (tokens[i].type === 'name' && tokens[i].value === 'msg' &&
+        tokens[i + 1].type === 'punct' && tokens[i + 1].value === '(' &&
+        tokens[i + 2].type === 'string') {
+      found.add(tokens[i + 2].value);
+    }
+  }
+  return found;
+}
+
+// Markup only: comments, stylesheets and inline scripts are not where an
+// attribute lives, and a CSS `content` string can spell one out.
+function messageKeysInHtml(source) {
+  const markup = source
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '');
+  const found = new Set();
+  for (const match of markup.matchAll(/\sdata-i18n="([A-Za-z0-9_]+)"/g)) found.add(match[1]);
+  return found;
+}
+
+// The manifest names a message as the whole value of a field.
+function messageKeysInJson(source) {
+  const found = new Set();
+  const walk = (value) => {
+    if (typeof value === 'string') {
+      const match = /^__MSG_([A-Za-z0-9_]+)__$/.exec(value);
+      if (match) found.add(match[1]);
+    } else if (value && typeof value === 'object') {
+      Object.values(value).forEach(walk);
+    }
+  };
+  walk(JSON.parse(source));
+  return found;
+}
+
+function messageKeysIn(name, source) {
+  if (name.endsWith('.json')) return messageKeysInJson(source);
+  if (name.endsWith('.html')) return messageKeysInHtml(source);
+  return messageKeysInJs(source);
 }
 
 test('the message-key scan reads call sites, not text that looks like one', () => {
   const js = [
     "const live = msg('typeLive');",
-    "// const old = msg('orphanLine');",
+    "const inTemplate = `${esc(msg('typeVod'))}`;",
+    "// const commented = msg('orphanLine');",
     "/* msg('orphanBlock') */",
+    "const text = \"msg('orphanString')\";",
+    "const quasi = `msg('orphanQuasi')`;",
+    "const pattern = /msg\\('orphanRegex'\\)/;",
     "const url = 'https://www.twitch.tv/settings'; // msg('orphanTail')",
-    "const kept = 'https://example.test/a//b' + msg('typeVod');"
+    "const computed = msg(['type', 'Clip'].join(''));"
   ].join('\n');
-  assert.deepEqual([...messageKeysIn(stripComments(js, 'js'))].sort(), ['typeLive', 'typeVod']);
+  assert.deepEqual([...messageKeysInJs(js)].sort(), ['typeLive', 'typeVod']);
+  // The tokenizer has to keep reading past a regex that follows a keyword.
+  assert.deepEqual(
+    [...messageKeysInJs("function f(x) { return /^a$/.test(x) ? msg('typeLive') : ''; }")],
+    ['typeLive']
+  );
 
   const html = [
     '<h2 data-i18n="settings">Settings</h2>',
     '<!-- <h2 data-i18n="orphanHtml">Old</h2> -->',
-    '<style>/* data-i18n="orphanCss" */</style>'
+    '<style>.x::after { content: "data-i18n=\\"orphanCss\\""; }</style>',
+    '<script>const s = \'data-i18n="orphanScript"\';</script>'
   ].join('\n');
-  assert.deepEqual([...messageKeysIn(stripComments(html, 'html'))].sort(), ['settings']);
+  assert.deepEqual([...messageKeysInHtml(html)].sort(), ['settings']);
+
+  assert.deepEqual(
+    [...messageKeysInJson('{"name":"__MSG_extName__","other":"see __MSG_notAKey__ inline"}')],
+    ['extName']
+  );
 });
 
 test('every message key is read somewhere and both locales carry it', () => {
@@ -1128,14 +1240,11 @@ test('every message key is read somewhere and both locales carry it', () => {
     'content.js', 'utils.js', 'background.js', 'page-bridge.js',
     'channel-store.js', 'settings-store.js'
   ]) {
-    const kind = name.endsWith('.json') ? 'json' : (name.endsWith('.html') ? 'html' : 'js');
-    const source = stripComments(fs.readFileSync(path.join(__dirname, name), 'utf8'), kind);
-    for (const key of messageKeysIn(source)) referenced.add(key);
+    const source = fs.readFileSync(path.join(__dirname, name), 'utf8');
+    for (const key of messageKeysIn(name, source)) referenced.add(key);
   }
 
   const declared = Object.keys(ja);
-  // A key assembled at runtime reads as unread here: inline the literal at the
-  // call site rather than widening this test.
   assert.deepEqual(declared.filter((key) => !referenced.has(key)), []);
   // The other direction catches a typo, which msg() answers with the key text.
   assert.deepEqual([...referenced].filter((key) => !declared.includes(key)).sort(), []);
