@@ -11,6 +11,7 @@
   let currentChannel = { id: '', kind: 'none' };
   let currentAutoApplyLoudness = false;
   let audioUnavailable = false;
+  let measurementUnavailable = false;
   let autoUpdatePending = false;
   let measurementResetPending = false;
   let hasResettableMeasurement = false;
@@ -19,9 +20,11 @@
   function syncInteractionDisabledState() {
     const validChannel = !!currentChannel.id &&
       ['live', 'vod', 'clip'].includes(currentChannel.kind);
-    $('autoApplyToggle').disabled = autoUpdatePending || measurementResetPending || !validChannel;
+    $('autoApplyToggle').disabled = autoUpdatePending || measurementResetPending ||
+      audioUnavailable || !validChannel;
+    // Resetting clears the saved measurement, and nothing would rebuild it.
     $('resetMeasurementBtn').disabled = autoUpdatePending || measurementResetPending ||
-      !validChannel || !hasResettableMeasurement;
+      audioUnavailable || !validChannel || !hasResettableMeasurement;
     if (autoUpdatePending) $('applyBtn').disabled = true;
     if (measurementResetPending) $('applyBtn').disabled = true;
 
@@ -31,6 +34,11 @@
     document.querySelectorAll('.presets button').forEach((btn) => {
       btn.disabled = manualDisabled;
     });
+  }
+
+  // The gain reaches the player only while the bridge holds its audio.
+  function currentCardClass() {
+    return audioUnavailable ? 'current unknown' : 'current';
   }
 
   function formatGainText(gain) {
@@ -64,13 +72,15 @@
     return v.toFixed(1);
   }
 
+  // A value the pipeline can no longer update is shown in the unknown style:
+  // it is the last one measured, not the level playing now.
   function setLufsCell(id, v) {
     const el = $(id);
     const s = fmtLufs(v);
     if (s === null) {
       setCardValue(el, '---', null, 'unknown');
     } else {
-      setCardValue(el, s, ' LUFS');
+      setCardValue(el, s, ' LUFS', audioUnavailable ? 'unknown' : '');
     }
   }
 
@@ -79,7 +89,7 @@
     const fc = formatGain(gain, displayUnit);
     $('manualSlider').value = String(gainPct);
     $('manualValue').textContent = fc.text + fc.unit;
-    setCardValue($('current'), fc.text, fc.unit, 'current');
+    setCardValue($('current'), fc.text, fc.unit, currentCardClass());
   }
 
   async function getActiveTab() {
@@ -120,7 +130,15 @@
     currentChannel = ch;
     currentAutoApplyLoudness = !!state.autoApplyLoudness;
     audioUnavailable = !!state.audioUnavailable;
-    $('audioError').classList.toggle('hidden', !audioUnavailable);
+    measurementUnavailable = !audioUnavailable && !!state.measurementUnavailable;
+    // Both notices name the player of a channel, so neither is shown on a page
+    // where no channel was resolved.
+    const notice = ch.id && (audioUnavailable || measurementUnavailable);
+    $('audioError').classList.toggle('hidden', !notice);
+    if (notice) {
+      $('audioError').textContent =
+        msg(audioUnavailable ? 'audioUnavailable' : 'measurementUnavailable');
+    }
     const nameEl = $('channelName');
     if (ch.name) {
       nameEl.textContent = ch.name;
@@ -159,10 +177,15 @@
     const suggestedEl = $('suggested');
     lastSuggestedGain = suggestedGain(lufs.integrated, state.targetLufs);
     const fs = formatGain(lastSuggestedGain, displayUnit);
-    setCardValue(suggestedEl, fs.text, fs.unit, hasIntegrated ? 'suggested' : 'suggested unknown');
+    setCardValue(
+      suggestedEl,
+      fs.text,
+      fs.unit,
+      hasIntegrated && !audioUnavailable ? 'suggested' : 'suggested unknown'
+    );
 
     const applyButton = $('applyBtn');
-    if (!currentAutoApplyLoudness && hasIntegrated && ch.id) {
+    if (!currentAutoApplyLoudness && hasIntegrated && ch.id && !audioUnavailable) {
       applyButton.textContent =
         msg('applyToChannelWithValue', [formatGainText(lastSuggestedGain)]);
     } else {
@@ -170,13 +193,16 @@
     }
 
     $('applyHint').classList.toggle('error', gainSaveError);
-    if (audioUnavailable && ch.id) {
-      // The banner carries the reason; the hint stays empty.
+    if (gainSaveError) {
+      // The save failure is the viewer's own last action; the notice above
+      // carries the audio state alongside it.
+      applyButton.disabled =
+        currentAutoApplyLoudness || audioUnavailable || !hasIntegrated || !ch.id;
+      $('applyHint').textContent = msg('gainSaveFailed');
+    } else if (audioUnavailable && ch.id) {
+      // The notice carries the reason; the hint stays empty.
       applyButton.disabled = true;
       $('applyHint').textContent = '';
-    } else if (gainSaveError) {
-      applyButton.disabled = currentAutoApplyLoudness || !hasIntegrated || !ch.id;
-      $('applyHint').textContent = msg('gainSaveFailed');
     } else if (currentAutoApplyLoudness && ch.id) {
       applyButton.disabled = true;
       $('applyHint').textContent = msg('hintAutoApplyEnabled');
@@ -185,7 +211,10 @@
       $('applyHint').textContent = '';
     } else {
       applyButton.disabled = true;
-      $('applyHint').textContent = ch.id ? msg('hintNoLufs') : msg('channelNotDetected');
+      // The notice already says a stalled measurement is not coming.
+      $('applyHint').textContent = ch.id
+        ? (measurementUnavailable ? '' : msg('hintNoLufs'))
+        : msg('channelNotDetected');
     }
 
     const actualGain = Number.isFinite(state.gain) ? state.gain : 1.0;
@@ -195,7 +224,7 @@
       sliderSynced = true;
     } else {
       const currentFormatted = formatGain(actualGain, displayUnit);
-      setCardValue($('current'), currentFormatted.text, currentFormatted.unit, 'current');
+      setCardValue($('current'), currentFormatted.text, currentFormatted.unit, currentCardClass());
     }
 
     syncInteractionDisabledState();
@@ -204,7 +233,7 @@
   }
 
   async function applyMeasured() {
-    if (autoUpdatePending || measurementResetPending ||
+    if (autoUpdatePending || measurementResetPending || audioUnavailable ||
         !Number.isFinite(lastSuggestedGain)) return;
     try {
       const tab = await getActiveTab();
@@ -225,7 +254,7 @@
   }
 
   async function setGain(percent) {
-    if (autoUpdatePending) return;
+    if (autoUpdatePending || audioUnavailable) return;
     try {
       const tab = await getActiveTab();
       if (!tab) throw new Error('No active tab');
@@ -242,6 +271,10 @@
 
   async function setAutoApplyLoudness() {
     const toggle = $('autoApplyToggle');
+    if (audioUnavailable) {
+      toggle.checked = currentAutoApplyLoudness;
+      return;
+    }
     if (autoUpdatePending || measurementResetPending ||
         !currentChannel.id || currentChannel.kind === 'none') return;
     const enabled = toggle.checked;
@@ -281,7 +314,7 @@
   }
 
   async function resetMeasurement() {
-    if (measurementResetPending || !hasResettableMeasurement ||
+    if (measurementResetPending || audioUnavailable || !hasResettableMeasurement ||
         !currentChannel.id || currentChannel.kind === 'none') return;
     $('resetMeasurementError').classList.add('hidden');
     measurementResetPending = true;

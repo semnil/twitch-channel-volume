@@ -284,6 +284,7 @@ function createContentHarness({
       const [badge] = volumeRow.children;
       return badge ? badge.textContent : null;
     },
+    gainBadgeCount() { return volumeRow.children.size; },
     mutate() { for (const callback of observerCallbacks) callback([]); },
     commands,
     stored,
@@ -340,6 +341,173 @@ function createContentHarness({
   };
 }
 
+function createPopupHarness({
+  state = {},
+  displayUnit = '%',
+  deferAutoSave = false,
+  failGainSave = false
+} = {}) {
+  const messages = JSON.parse(
+    fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json'), 'utf8')
+  );
+  const elements = new Map();
+  const presetButtons = [];
+  const sent = [];
+  const intervals = [];
+  let resolveAutoSave;
+  let currentState = {
+    channel: { id: '123', name: 'somechannel', kind: 'live', url: 'https://www.twitch.tv/somechannel' },
+    lufs: { momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity },
+    hasSavedMeasurement: false,
+    gain: 1.5,
+    adActive: false,
+    audioUnavailable: false,
+    measurementUnavailable: false,
+    targetLufs: -18,
+    adGainDb: -6,
+    autoApplyLoudness: false,
+    ...state
+  };
+
+  function stubElement(id) {
+    const classes = new Set();
+    const listeners = {};
+    const element = {
+      id,
+      listeners,
+      disabled: false,
+      checked: false,
+      value: '',
+      title: '',
+      textContent: '',
+      offsetWidth: 0,
+      attributes: {},
+      classList: {
+        add(...names) { names.forEach((name) => classes.add(name)); },
+        remove(...names) { names.forEach((name) => classes.delete(name)); },
+        contains(name) { return classes.has(name); },
+        toggle(name, force) {
+          const on = force === undefined ? !classes.has(name) : !!force;
+          if (on) classes.add(name); else classes.delete(name);
+          return on;
+        }
+      },
+      get className() { return [...classes].join(' '); },
+      set className(value) {
+        classes.clear();
+        String(value).split(/\s+/).filter(Boolean).forEach((name) => classes.add(name));
+      },
+      get innerHTML() { return element.textContent; },
+      set innerHTML(value) { element.textContent = String(value); },
+      appendChild(node) {
+        element.textContent += node.textContent || '';
+        return node;
+      },
+      getAttribute(name) { return name in element.attributes ? element.attributes[name] : null; },
+      setAttribute(name, value) { element.attributes[name] = value; },
+      addEventListener(type, listener) { (listeners[type] ||= []).push(listener); }
+    };
+    return element;
+  }
+
+  function element(id) {
+    if (!elements.has(id)) elements.set(id, stubElement(id));
+    return elements.get(id);
+  }
+
+  for (const percent of [0, 50, 100, 200, 400, 600]) {
+    const button = stubElement(`preset-${percent}`);
+    button.setAttribute('data-gain', String(percent));
+    presetButtons.push(button);
+  }
+
+  const document = {
+    body: stubElement('body'),
+    getElementById: element,
+    createElement: () => stubElement(''),
+    createTextNode: (text) => ({ textContent: text }),
+    querySelectorAll(selector) {
+      return selector === '.presets button' ? presetButtons : [];
+    }
+  };
+
+  const chrome = {
+    tabs: {
+      async query() { return [{ id: 1, url: 'https://www.twitch.tv/somechannel' }]; },
+      async sendMessage(_tabId, request) {
+        sent.push(structuredClone(request));
+        if (request.cmd === 'getState') return structuredClone(currentState);
+        if (request.cmd === 'setGain' && failGainSave) {
+          return { ok: false, reason: 'storage update failed' };
+        }
+        if (request.cmd === 'setAutoApplyLoudness') {
+          if (deferAutoSave) await new Promise((resolve) => { resolveAutoSave = resolve; });
+          currentState = { ...currentState, autoApplyLoudness: !!request.enabled };
+          return { ok: true, autoApplyLoudness: !!request.enabled, gain: currentState.gain };
+        }
+        return { ok: true };
+      }
+    },
+    storage: {
+      local: { async get() { return { [u.SETTINGS_KEY]: { displayUnit } }; } },
+      onChanged: { addListener() {} }
+    },
+    runtime: { openOptionsPage() {} }
+  };
+
+  const context = vm.createContext({
+    ...u,
+    msg: (key, substitutions) => {
+      const text = messages[key] ? messages[key].message : key;
+      return substitutions && substitutions.length
+        ? text.replace('$VALUE$', substitutions[0])
+        : text;
+    },
+    chrome,
+    document,
+    console: { warn() {}, error() {}, info() {} },
+    requestAnimationFrame(callback) { callback(); },
+    setInterval(callback) { return intervals.push(callback); },
+    structuredClone
+  });
+  vm.runInContext(
+    fs.readFileSync(path.join(__dirname, 'popup.js'), 'utf8'),
+    context,
+    { filename: 'popup.js' }
+  );
+
+  return {
+    el: element,
+    presets: presetButtons,
+    sent,
+    message: (key, substitutions) => {
+      const text = messages[key] ? messages[key].message : key;
+      return substitutions && substitutions.length
+        ? text.replace('$VALUE$', substitutions[0])
+        : text;
+    },
+    setState(next) { currentState = { ...currentState, ...next }; },
+    async poll() {
+      for (const callback of intervals) await callback();
+      await flushTasks(8);
+    },
+    async fire(id, type) {
+      for (const listener of element(id).listeners[type] || []) await listener({ target: element(id) });
+      await flushTasks(8);
+    },
+    async firePreset(index, type) {
+      for (const listener of presetButtons[index].listeners[type] || []) await listener({ target: presetButtons[index] });
+      await flushTasks(8);
+    },
+    async releaseAutoSave() {
+      assert.ok(resolveAutoSave, 'auto save is not pending');
+      resolveAutoSave();
+      resolveAutoSave = null;
+      await flushTasks(8);
+    }
+  };
+}
+
 // BS.1770-4 gates 400ms blocks overlapping by 75%: one window per 100ms
 // sub-block, formed from the four most recent sub-blocks.
 function gatingWindows(subBlocks) {
@@ -376,9 +544,18 @@ function measured(lastLufs) {
   };
 }
 
-function createPageBridgeHarness({ mediaElementSourceTaken = false } = {}) {
+function createPageBridgeHarness({
+  mediaElementSourceTaken = false,
+  extraFreeVideo = false,
+  audioContextThrows = false,
+  workletLoadFails = false
+} = {}) {
   const messages = [];
-  const intervalCallbacks = [];
+  // Real ids: a loop that was cancelled has to stop running here too, or a
+  // bridge that gave up looks the same as one that keeps trying.
+  const timers = new Map();
+  let nextTimerId = 0;
+  let contextThrows = audioContextThrows;
   const logs = [];
   const listeners = {};
   const location = { href: 'https://www.twitch.tv/videos/100' };
@@ -397,6 +574,22 @@ function createPageBridgeHarness({ mediaElementSourceTaken = false } = {}) {
       videoListeners[type] = (videoListeners[type] || []).filter((f) => f !== fn);
     }
   };
+  const freeVideoListeners = {};
+  const freeVideo = {
+    src: 'https://example.test/free-video',
+    readyState: 4,
+    clientWidth: 320,
+    clientHeight: 180,
+    isConnected: true,
+    volume: 1,
+    muted: false,
+    currentTime: 0,
+    addEventListener(type, fn) { (freeVideoListeners[type] ||= []).push(fn); },
+    removeEventListener(type, fn) {
+      freeVideoListeners[type] = (freeVideoListeners[type] || []).filter((f) => f !== fn);
+    }
+  };
+  const videos = extraFreeVideo ? [video, freeVideo] : [video];
   let measurementPort;
   let resolveFetch;
   const audioNode = () => ({
@@ -413,11 +606,16 @@ function createPageBridgeHarness({ mediaElementSourceTaken = false } = {}) {
   }
   class AudioContext {
     constructor() {
+      if (contextThrows) throw new DOMException('too many contexts', 'NotSupportedError');
       this.sampleRate = 48000;
       this.currentTime = 0;
       this.state = 'running';
       this.destination = {};
-      this.audioWorklet = { addModule: async () => {} };
+      this.audioWorklet = {
+        addModule: async () => {
+          if (workletLoadFails) throw new Error('worklet module blocked');
+        }
+      };
     }
     createGain() {
       return {
@@ -426,9 +624,9 @@ function createPageBridgeHarness({ mediaElementSourceTaken = false } = {}) {
       };
     }
     createIIRFilter() { return audioNode(); }
-    createMediaElementSource() {
+    createMediaElementSource(element) {
       // What Chrome throws once another AudioContext holds the element.
-      if (mediaElementSourceTaken) {
+      if (mediaElementSourceTaken && element === video) {
         throw new DOMException('HTMLMediaElement already connected', 'InvalidStateError');
       }
       return audioNode();
@@ -449,14 +647,18 @@ function createPageBridgeHarness({ mediaElementSourceTaken = false } = {}) {
   };
   const context = vm.createContext({
     AudioWorkletNode,
-    clearInterval() {},
+    clearInterval(id) { timers.delete(id); },
     console: { warn() {}, error() {}, info(...args) { logs.push(args); } },
     document: {
-      querySelectorAll(selector) { return selector === 'video' ? [video] : []; }
+      querySelectorAll(selector) { return selector === 'video' ? videos : []; }
     },
     DOMException,
     location,
-    setInterval(callback) { return intervalCallbacks.push(callback); },
+    setInterval(callback) {
+      nextTimerId += 1;
+      timers.set(nextTimerId, callback);
+      return nextTimerId;
+    },
     URL,
     window
   });
@@ -492,9 +694,11 @@ function createPageBridgeHarness({ mediaElementSourceTaken = false } = {}) {
     },
     dispatchCommand,
     async runTimers() {
-      for (const callback of intervalCallbacks) await callback();
+      for (const callback of [...timers.values()]) await callback();
       await flushTasks();
     },
+    disconnectTakenVideo() { video.isConnected = false; },
+    allowAudioContext() { contextThrows = false; },
     emitMeasurementBlock(ms) {
       measurementPort.onmessage({ data: { ms } });
     },
@@ -1066,6 +1270,126 @@ test('content reports the player audio the bridge could not attach to', async ()
   await harness.dispatchMessage({ type: '__twitch_channel_volume__', event: 'loaded' });
   state = await harness.dispatchRuntime({ cmd: 'getState' });
   assert.equal(state.audioUnavailable, false);
+});
+
+const ATTACH_FAILED = {
+  type: '__twitch_channel_volume__',
+  event: 'attach-failed',
+  reason: 'InvalidStateError: HTMLMediaElement already connected'
+};
+
+test('content keeps the audio notice through the messages that do not answer it', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  await harness.dispatchMessage(ATTACH_FAILED);
+
+  // A measurement or an ad marker says nothing about the audio path.
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    momentary: -23,
+    shortTerm: -23,
+    integrated: -23
+  });
+  await harness.dispatchMessage({ type: '__twitch_channel_volume__', event: 'ad', active: true });
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).audioUnavailable, true);
+
+  // An SPA navigation that keeps the same <video> gets no second report from
+  // the bridge, so clearing here would drop the notice for good.
+  await harness.navigate('https://www.twitch.tv/videos/200');
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).audioUnavailable, true);
+  assert.equal(harness.gainBadgeText(), null);
+});
+
+test('content asks a restarted bridge to attach before it drops the notice', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  await harness.dispatchMessage(ATTACH_FAILED);
+  harness.commands.length = 0;
+
+  await harness.dispatchMessage({ type: '__twitch_channel_volume__', event: 'loaded' });
+  await flushTasks(8);
+
+  assert.equal(harness.commands.filter((command) => command.cmd === 'attach').length, 1);
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).audioUnavailable, false);
+});
+
+test('content holds the notice when the bridge attaches past a held element', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  await harness.dispatchMessage(ATTACH_FAILED);
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'attached',
+    measuring: true,
+    takenElsewhere: true
+  });
+
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).audioUnavailable, true);
+  assert.equal(harness.gainBadgeText(), null);
+});
+
+test('content reports a measurement chain that never came up', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'attached',
+    measuring: false,
+    takenElsewhere: false
+  });
+  let state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.measurementUnavailable, true);
+  assert.equal(state.audioUnavailable, false);
+  // Gain reaches the player on this path, so the badge stands.
+  assert.equal(harness.gainBadgeText(), '50%');
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'attached',
+    measuring: true,
+    takenElsewhere: false
+  });
+  state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.measurementUnavailable, false);
+  assert.equal(harness.gainBadgeCount(), 1);
+});
+
+test('content refuses gain and Auto writes while the player audio is unavailable', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  const { channel } = await harness.dispatchRuntime({ cmd: 'getState' });
+  await harness.dispatchMessage(ATTACH_FAILED);
+
+  const gainResponse = await harness.dispatchRuntime({ cmd: 'setGain', gain: 4 });
+  assert.equal(gainResponse.ok, false);
+  assert.equal(gainResponse.reason, 'audio unavailable');
+  const autoResponse = await harness.dispatchRuntime({
+    cmd: 'setAutoApplyLoudness',
+    channelId: channel.id,
+    kind: channel.kind,
+    enabled: true
+  });
+  assert.equal(autoResponse.ok, false);
+  assert.equal(autoResponse.reason, 'audio unavailable');
+  const stored = harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'];
+  assert.equal(stored.gainVod, 0.5);
+  assert.equal(stored.autoApplyLoudnessVod, false);
+});
+
+test('content leaves the badge off when the failure precedes the saved gain', async () => {
+  const harness = createContentHarness({ deferInitialStorageGet: true });
+  await harness.dispatchMessage(ATTACH_FAILED);
+  harness.releaseInitialStorageGet();
+  await flushTasks(8);
+
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.audioUnavailable, true);
+  // The saved gain is applied to the node; only its badge is withheld.
+  assert.equal(state.gain, 0.5);
+  assert.equal(harness.gainBadgeText(), null);
 });
 
 test('content requests one ad state change per transition', async () => {
@@ -2612,16 +2936,25 @@ test('options disables settings until load and saves only field mutations', () =
 
 test('popup disables Manual and Apply controls while an Auto update is pending', () => {
   const source = fs.readFileSync(path.join(__dirname, 'popup.js'), 'utf8');
+  // Each condition is asserted on its own: a snapshot of the whole expression
+  // stops holding the moment another condition joins it.
   assert.match(
     source,
     /const manualDisabled = [^;]*\bautoUpdatePending\b[^;]*;/
+  );
+  assert.match(
+    source,
+    /const manualDisabled = [^;]*\bcurrentAutoApplyLoudness\b[^;]*;/
   );
   assert.match(source, /if \(autoUpdatePending\) \$\('applyBtn'\)\.disabled = true;/);
   assert.match(
     source,
     /async function applyMeasured\(\) \{\s*if \(autoUpdatePending \|\|/s
   );
-  assert.match(source, /async function setGain\(percent\) \{\s*if \(autoUpdatePending\) return;/s);
+  assert.match(
+    source,
+    /async function setGain\(percent\) \{\s*if \(autoUpdatePending[^)]*\) return;/s
+  );
   assert.match(
     source,
     /autoUpdatePending = true;\s*syncInteractionDisabledState\(\);/s
@@ -2732,7 +3065,7 @@ test('popup exposes the selected channel-row measurement reset control', () => {
   assert.equal(en.resetMeasurement.message, 'Reset measurement');
 });
 
-test('popup states unavailable player audio instead of an endless measurement', () => {
+test('popup declares the player audio notice with its localized text', () => {
   const html = fs.readFileSync(path.join(__dirname, 'popup.html'), 'utf8');
   assert.match(
     html,
@@ -2741,39 +3074,157 @@ test('popup states unavailable player audio instead of an endless measurement', 
   // WCAG 2.1 SC 1.4.3: the notice sits on the info panel.
   assertContrastFloor(html, [['.audio-error', '.info-section']], 4.5);
 
-  const source = fs.readFileSync(path.join(__dirname, 'popup.js'), 'utf8');
-  assert.match(source, /audioUnavailable = !!state\.audioUnavailable;/);
-  assert.match(
-    source,
-    /\$\('audioError'\)\.classList\.toggle\('hidden', !audioUnavailable\);/
-  );
-  assert.match(source, /const manualDisabled = [^;]*\baudioUnavailable\b[^;]*;/);
-
-  // Without this arm the hint keeps announcing a measurement that no longer runs.
-  const branch = source.slice(
-    source.indexOf('if (audioUnavailable && ch.id) {'),
-    source.indexOf('} else if (gainSaveError) {')
-  );
-  assert.ok(branch.length > 0, 'popup renders an unavailable-audio arm before the save error');
-  assert.match(branch, /applyButton\.disabled = true;/);
-  assert.match(branch, /\$\('applyHint'\)\.textContent = '';/);
-
   const ja = JSON.parse(fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json')));
   const en = JSON.parse(fs.readFileSync(path.join(__dirname, '_locales/en/messages.json')));
   for (const [locale, messages] of [['ja', ja], ['en', en]]) {
-    assert.ok(messages.audioUnavailable?.message, `${locale} declares audioUnavailable`);
+    for (const key of ['audioUnavailable', 'measurementUnavailable']) {
+      assert.ok(messages[key]?.message, `${locale} declares ${key}`);
+    }
   }
 });
 
-test('popup offers Apply only once a measurement exists', () => {
+test('popup states unavailable player audio and locks what would not reach it', async () => {
+  const harness = createPopupHarness({
+    state: {
+      audioUnavailable: true,
+      hasSavedMeasurement: true,
+      lufs: { momentary: -21, shortTerm: -21, integrated: -21 }
+    }
+  });
+  await flushTasks(8);
+
+  assert.equal(harness.el('audioError').classList.contains('hidden'), false);
+  assert.equal(harness.el('audioError').textContent, harness.message('audioUnavailable'));
+  // The notice carries the reason, so the hint does not repeat it.
+  assert.equal(harness.el('applyHint').textContent, '');
+  assert.equal(harness.el('applyBtn').disabled, true);
+  assert.equal(harness.el('manualSlider').disabled, true);
+  assert.equal(harness.el('manualSection').classList.contains('disabled'), true);
+  assert.deepEqual(harness.presets.map((button) => button.disabled), [true, true, true, true, true, true]);
+  assert.equal(harness.el('autoApplyToggle').disabled, true);
+  // Resetting would drop the saved measurement with nothing able to rebuild it.
+  assert.equal(harness.el('resetMeasurementBtn').disabled, true);
+  // The saved gain is a setting here, not the level the player runs at, and
+  // the measurement stopped where it stopped.
+  assert.ok(harness.el('current').className.includes('unknown'));
+  assert.ok(harness.el('integrated').className.includes('unknown'));
+  assert.ok(harness.el('suggested').className.includes('unknown'));
+  // The label offers a gain the viewer would not hear applied.
+  assert.equal(harness.el('applyBtn').textContent, harness.message('applyToChannel'));
+});
+
+test('popup restores its controls when the bridge attaches', async () => {
+  const harness = createPopupHarness({
+    state: { audioUnavailable: true, hasSavedMeasurement: true }
+  });
+  await flushTasks(8);
+  assert.equal(harness.el('manualSlider').disabled, true);
+
+  harness.setState({
+    audioUnavailable: false,
+    lufs: { momentary: -21, shortTerm: -21, integrated: -21 }
+  });
+  await harness.poll();
+
+  assert.equal(harness.el('audioError').classList.contains('hidden'), true);
+  assert.equal(harness.el('manualSlider').disabled, false);
+  assert.equal(harness.el('autoApplyToggle').disabled, false);
+  assert.equal(harness.el('resetMeasurementBtn').disabled, false);
+  assert.equal(harness.el('applyBtn').disabled, false);
+  assert.ok(!harness.el('current').className.includes('unknown'));
+});
+
+test('popup separates a stalled measurement from unreachable audio', async () => {
+  const harness = createPopupHarness({ state: { measurementUnavailable: true } });
+  await flushTasks(8);
+
+  assert.equal(harness.el('audioError').classList.contains('hidden'), false);
+  assert.equal(harness.el('audioError').textContent, harness.message('measurementUnavailable'));
+  // The hint would otherwise keep announcing the measurement that stalled.
+  assert.equal(harness.el('applyHint').textContent, '');
+  // Gain still reaches the player on this path, so Manual stays usable.
+  assert.equal(harness.el('manualSlider').disabled, false);
+  assert.equal(harness.el('applyBtn').disabled, true);
+  assert.ok(!harness.el('current').className.includes('unknown'));
+});
+
+test('popup keeps both notices off a page with no channel', async () => {
+  const harness = createPopupHarness({
+    state: { audioUnavailable: true, channel: { id: '', kind: 'none' } }
+  });
+  await flushTasks(8);
+
+  assert.equal(harness.el('audioError').classList.contains('hidden'), true);
+  assert.equal(harness.el('applyHint').textContent, harness.message('channelNotDetected'));
+});
+
+test('popup keeps a failed save visible while the audio notice stands', async () => {
+  const harness = createPopupHarness({
+    failGainSave: true,
+    state: { lufs: { momentary: -21, shortTerm: -21, integrated: -21 } }
+  });
+  await flushTasks(8);
+
+  await harness.firePreset(3, 'click');
+  assert.equal(harness.el('applyHint').textContent, harness.message('gainSaveFailed'));
+
+  harness.setState({ audioUnavailable: true });
+  await harness.poll();
+  // The viewer's own last action still reads back, and Apply stays out of reach.
+  assert.equal(harness.el('applyHint').textContent, harness.message('gainSaveFailed'));
+  assert.equal(harness.el('applyBtn').disabled, true);
+  assert.equal(harness.el('audioError').classList.contains('hidden'), false);
+});
+
+test('popup turns the Auto toggle down while the player audio is unavailable', async () => {
+  const harness = createPopupHarness({ state: { audioUnavailable: true } });
+  await flushTasks(8);
+
+  harness.el('autoApplyToggle').checked = true;
+  await harness.fire('autoApplyToggle', 'change');
+
+  assert.equal(harness.sent.some((request) => request.cmd === 'setAutoApplyLoudness'), false);
+  assert.equal(harness.el('autoApplyToggle').checked, false);
+});
+
+test('popup disables Manual while an Auto save is in flight', async () => {
+  const harness = createPopupHarness({
+    deferAutoSave: true,
+    state: { lufs: { momentary: -21, shortTerm: -21, integrated: -21 } }
+  });
+  await flushTasks(8);
+  assert.equal(harness.el('manualSlider').disabled, false);
+
+  harness.el('autoApplyToggle').checked = true;
+  const pending = harness.fire('autoApplyToggle', 'change');
+  await flushTasks(4);
+  assert.equal(harness.el('manualSlider').disabled, true);
+  assert.equal(harness.el('applyBtn').disabled, true);
+  assert.deepEqual(harness.presets.map((button) => button.disabled), [true, true, true, true, true, true]);
+
+  await harness.releaseAutoSave();
+  await pending;
+  assert.equal(harness.el('manualSlider').disabled, true, 'Auto ON keeps Manual disabled');
+});
+
+test('popup offers Apply only once a measurement exists', async () => {
   const source = fs.readFileSync(path.join(__dirname, 'popup.js'), 'utf8');
   // The suggestion is unity without a measurement, so its finiteness cannot be
   // what enables the button: applying it would overwrite a saved manual gain.
-  assert.match(source, /\} else if \(hasIntegrated && ch\.id\) \{\s*applyButton\.disabled = false;/s);
   assert.doesNotMatch(source, /Number\.isFinite\(lastSuggestedGain\) && ch\.id/);
-  assert.match(
-    source,
-    /applyButton\.disabled = currentAutoApplyLoudness \|\| !hasIntegrated \|\| !ch\.id;/
+
+  const harness = createPopupHarness();
+  await flushTasks(8);
+  assert.equal(harness.el('applyBtn').disabled, true);
+  assert.equal(harness.el('applyHint').textContent, harness.message('hintNoLufs'));
+
+  harness.setState({ lufs: { momentary: -21, shortTerm: -21, integrated: -21 } });
+  await harness.poll();
+  assert.equal(harness.el('applyBtn').disabled, false);
+  const suggested = u.formatGain(u.suggestedGain(-21, -18), '%');
+  assert.ok(
+    harness.el('applyBtn').textContent.includes(suggested.text + suggested.unit),
+    harness.el('applyBtn').textContent
   );
 });
 
@@ -3452,6 +3903,79 @@ test('page bridge uses saved LUFS as the initial Integrated mean', async () => {
   const savedMeanSquare = Math.pow(10, (savedLufs + 0.691) / 10);
   const expected = u.meanSquareToLufs((savedMeanSquare + nextMeanSquare) / 2);
   assert.ok(Math.abs(harness.messages.at(-1).integrated - expected) < 1e-12);
+});
+
+test('page bridge keeps retrying past a held element and reports it is still there', async () => {
+  const harness = createPageBridgeHarness({ mediaElementSourceTaken: true, extraFreeVideo: true });
+  await harness.dispatchCommand('init', { workletUrl: 'chrome-extension://test/audio-worklet.js' });
+  await harness.dispatchCommand('attach');
+  assert.equal(harness.messages.filter((message) => message.event === 'attach-failed').length, 1);
+  assert.equal(harness.messages.some((message) => message.event === 'attached'), false);
+
+  // The retry loop is still armed, so the next tick reaches the free element.
+  await harness.runTimers();
+  const attached = harness.messages.filter((message) => message.event === 'attached');
+  assert.equal(attached.length, 1);
+  // The held element is still on the page and still the one being listened to.
+  assert.equal(attached[0].takenElsewhere, true);
+  assert.equal(attached[0].measuring, true);
+});
+
+test('page bridge stops naming a held element once it leaves the page', async () => {
+  const harness = createPageBridgeHarness({ mediaElementSourceTaken: true, extraFreeVideo: true });
+  await harness.dispatchCommand('init', { workletUrl: 'chrome-extension://test/audio-worklet.js' });
+  await harness.dispatchCommand('attach');
+  harness.disconnectTakenVideo();
+
+  await harness.runTimers();
+  const attached = harness.messages.filter((message) => message.event === 'attached');
+  assert.equal(attached.length, 1);
+  assert.equal(attached[0].takenElsewhere, false);
+});
+
+test('page bridge reports an attach whose measurement chain never came up', async () => {
+  const harness = createPageBridgeHarness({ workletLoadFails: true });
+  await harness.dispatchCommand('init', { workletUrl: 'chrome-extension://test/audio-worklet.js' });
+  await harness.dispatchCommand('attach');
+
+  const attached = harness.messages.filter((message) => message.event === 'attached');
+  assert.equal(attached.length, 1);
+  // Gain reaches the player; only the measurement path is missing.
+  assert.equal(attached[0].measuring, false);
+  assert.equal(attached[0].takenElsewhere, false);
+});
+
+test('page bridge attaches again after the player element is replaced', async () => {
+  const harness = createPageBridgeHarness({ extraFreeVideo: true });
+  await harness.dispatchCommand('init', { workletUrl: 'chrome-extension://test/audio-worklet.js' });
+  await harness.dispatchCommand('attach');
+  assert.equal(harness.messages.filter((message) => message.event === 'attached').length, 1);
+
+  // Twitch swaps the element on a quality change with no navigation, and the
+  // attach loop stopped itself when the first attach succeeded.
+  harness.disconnectTakenVideo();
+  await harness.runTimers();
+
+  assert.equal(harness.messages.filter((message) => message.event === 'attached').length, 2);
+});
+
+test('page bridge reports a context it could not create and builds a new one after', async () => {
+  const harness = createPageBridgeHarness({ audioContextThrows: true });
+  await harness.dispatchCommand('init', { workletUrl: 'chrome-extension://test/audio-worklet.js' });
+  await harness.dispatchCommand('attach');
+
+  const failures = harness.messages.filter((message) => message.event === 'attach-failed');
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].reason, 'audio context unavailable');
+  // One report per state, not one per retry.
+  await harness.runTimers();
+  assert.equal(harness.messages.filter((message) => message.event === 'attach-failed').length, 1);
+
+  harness.allowAudioContext();
+  await harness.runTimers();
+  const attached = harness.messages.filter((message) => message.event === 'attached');
+  assert.equal(attached.length, 1);
+  assert.equal(attached[0].measuring, true);
 });
 
 test('page bridge reports a taken media element once and stays silent after', async () => {

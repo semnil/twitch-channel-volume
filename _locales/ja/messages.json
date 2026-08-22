@@ -32,6 +32,9 @@
   "audioUnavailable": {
     "message": "プレイヤーの音声を取得できないため、音量調整と計測ができません。同じ音声を使う他の拡張機能を無効にしてページを再読み込みしてください"
   },
+  "measurementUnavailable": {
+    "message": "ラウドネス計測を開始できません。音量調整は有効です。ページを再読み込みしてください"
+  },
   "resetMeasurement": {
     "message": "測定値をリセット"
   },

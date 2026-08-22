@@ -27,6 +27,7 @@
   let adActive = false;
   let requestedAdActive = false;
   let audioUnavailable = false;
+  let measurementUnavailable = false;
   let preferenceRevision = 0;
   let channelMutationQueue = Promise.resolve();
   let migratingChannelId = '';
@@ -417,20 +418,29 @@
         // startup IIFE handles init/attach unconditionally; this case only
         // matters for hot-reloads where the bridge restarts mid-session.
         audioUnavailable = false;
+        measurementUnavailable = false;
         injectWorklet();
         resetMeasurementForCurrentChannel();
+        // A restarted bridge attaches only when asked, so the cleared state
+        // gets its own attach result instead of standing on the old one.
+        sendCmd({ cmd: 'attach' });
         break;
       case 'init-done':
         initResolve && initResolve();
         break;
       case 'attached':
-        audioUnavailable = false;
+        // Attaching to a different element leaves the held one playing
+        // untouched, so the bridge reports whether one is still on the page.
+        audioUnavailable = !!data.takenElsewhere;
+        measurementUnavailable = !audioUnavailable && data.measuring === false;
         updateGainOverlay();
         break;
       case 'attach-failed':
         // The gain node reaches the player only through the media element
         // source, so a failed attach stops gain and measurement alike.
         audioUnavailable = true;
+        measurementUnavailable = false;
+        console.warn('[TCV] player audio unavailable', data.reason);
         updateGainOverlay();
         break;
       case 'lufs':
@@ -582,6 +592,7 @@
           gain: currentGain,
           adActive,
           audioUnavailable,
+          measurementUnavailable,
           targetLufs,
           adGainDb: currentAdGainDb,
           autoApplyLoudness: currentAutoApplyLoudness,
@@ -591,10 +602,14 @@
         });
         return;
       case 'setGain':
-        if (autoMutationPending || currentAutoApplyLoudness) {
+        if (autoMutationPending || currentAutoApplyLoudness || audioUnavailable) {
+          // A gain saved here would be applied on a later visit without the
+          // viewer ever hearing what they set.
           sendResponse({
             ok: false,
-            reason: autoMutationPending ? 'auto update pending' : 'auto apply enabled'
+            reason: audioUnavailable
+              ? 'audio unavailable'
+              : (autoMutationPending ? 'auto update pending' : 'auto apply enabled')
           });
           return;
         }
@@ -627,8 +642,11 @@
           sendResponse({ ok: false, reason: 'channel mismatch' });
           return;
         }
-        if (autoMutationPending) {
-          sendResponse({ ok: false, reason: 'auto update pending' });
+        if (autoMutationPending || audioUnavailable) {
+          sendResponse({
+            ok: false,
+            reason: audioUnavailable ? 'audio unavailable' : 'auto update pending'
+          });
           return;
         }
         const autoGain = req.enabled && Number.isFinite(lastLufs.integrated)
