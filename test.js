@@ -4246,6 +4246,15 @@ test('the options page offers no destructive action over a list it has not read'
   // A disabled control that looks live is a control the viewer will press.
   assert.match(html, /\.clear-all-btn:disabled\s*\{[^}]*opacity:\s*0\.45;/s);
   assert.match(html, /\.clear-all-btn:hover:not\(:disabled\)\s*\{/);
+  assert.match(html, /\.ch-del:disabled\s*\{[^}]*opacity:\s*0\.45;/s);
+  assert.match(html, /\.ch-del:hover:not\(:disabled\)\s*\{/);
+
+  // The row button is written by the render, so the refusal is stated twice:
+  // the markup it writes, and the handler the click reaches.
+  const source = fs.readFileSync(path.join(__dirname, 'options.js'), 'utf8');
+  assert.match(source, /class="ch-del"[^`]*\$\{settingsReady \? '' : ' disabled'\}/);
+  assert.match(source, /async function removeChannel\(id\) \{[^}]*if \(!settingsReady\) return;/);
+  assert.match(source, /async function clearAll\(\) \{\s*if \(!settingsReady\) return;/);
 });
 
 test('the options markup ships the defaults the extension installs', () => {
@@ -4319,6 +4328,7 @@ test('options put the stored values on their controls before showing the page', 
     'the stored unit is the selected one'
   );
   assert.ok(harness.el('channelsBody').textContent.includes('somechannel'));
+  assert.doesNotMatch(harness.el('channelsBody').textContent, /class="ch-del"[^>]*\bdisabled\b/);
   assert.equal(harness.el('select:.channel-table').style.display, '');
   assert.equal(harness.el('emptyMsg').style.display, 'none');
   assert.equal(harness.el('targetLufs').disabled, false);
@@ -4404,8 +4414,10 @@ test('a channel change that arrived before the read failed stays on the page', a
   assert.equal(harness.el('select:.channel-table').style.display, '');
   assert.equal(harness.el('emptyMsg').style.display, 'none');
   assert.equal(harness.el('settingsError').textContent, harness.message('settingsLoadFailed'));
-  // It is still a page asking to be reloaded, so it offers nothing destructive.
+  // It is still a page asking to be reloaded, so it offers nothing destructive:
+  // neither the button that empties the list nor the one on the row.
   assert.equal(harness.el('clearAllBtn').disabled, true);
+  assert.match(harness.el('channelsBody').textContent, /class="ch-del"[^>]*\bdisabled\b/);
 });
 
 test('a page that could not read keeps what another tab writes off its screen', async () => {
