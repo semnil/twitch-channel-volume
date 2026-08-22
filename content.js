@@ -232,8 +232,7 @@
   const initPromise = new Promise((res) => { initResolve = res; });
 
   function injectWorklet() {
-    const url = chrome.runtime.getURL('audio-worklet.js');
-    sendCmd({ cmd: 'init', workletUrl: url });
+    sendCmd({ cmd: 'init' });
   }
 
   function applyGain(gain) {

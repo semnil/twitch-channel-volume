@@ -29,7 +29,11 @@ Twitch does not publish any loudness metadata (no `loudnessDb`-equivalent API, n
 
 The measurement path applies the BS.1770-4 K-weighting (high-shelf pre-filter + RLB high-pass) and accumulates mean-square in an AudioWorklet. The main thread aggregates 400 ms momentary and 3 s short-term LUFS. Integrated LUFS starts from the saved value for the current channel and media kind. A one-hour ring buffer and balanced energy index preserve the absolute and relative two-stage gate while updating each block in logarithmic time instead of rescanning the retained history.
 
-## Install (developer mode)
+## Install
+
+Install from the [Chrome Web Store](https://chromewebstore.google.com/detail/twitch-channel-volume/naieebjjbkfihkbcfkpcbjolckkiehmj).
+
+### Developer mode
 
 1. Clone or download this repository
 2. Open `chrome://extensions/`

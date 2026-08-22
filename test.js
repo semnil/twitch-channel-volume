@@ -791,7 +791,10 @@ function measured(lastLufs) {
   };
 }
 
+const BRIDGE_SCRIPT_URL = 'chrome-extension://abcdefghijklmnopabcdefghijklmnop/page-bridge.js';
+
 function createPageBridgeHarness({
+  scriptUrl = BRIDGE_SCRIPT_URL,
   mediaElementSourceTaken = false,
   extraFreeVideo = false,
   audioContextThrows = false,
@@ -805,6 +808,7 @@ function createPageBridgeHarness({
   let nextTimerId = 0;
   let contextThrows = audioContextThrows;
   const logs = [];
+  const workletModules = [];
   const listeners = {};
   const location = { href: 'https://www.twitch.tv/videos/100' };
   const videoListeners = {};
@@ -863,9 +867,10 @@ function createPageBridgeHarness({
       this.state = 'running';
       this.destination = {};
       this.audioWorklet = {
-        addModule: async () => {
+        addModule: async (url) => {
           if (deferWorkletLoad) await new Promise((resolve) => { resolveWorkletLoad = resolve; });
           if (workletLoadFails) throw new Error('worklet module blocked');
+          workletModules.push(url);
         }
       };
     }
@@ -928,7 +933,7 @@ function createPageBridgeHarness({
   vm.runInContext(
     fs.readFileSync(path.join(__dirname, 'page-bridge.js'), 'utf8'),
     context,
-    { filename: 'page-bridge.js' }
+    { filename: scriptUrl }
   );
   const dispatchCommand = async (cmd, data = {}) => {
     const pending = (listeners.message || []).map((listener) => listener({
@@ -946,12 +951,11 @@ function createPageBridgeHarness({
     location,
     messages,
     logs,
+    workletModules,
     fetch: (...args) => window.fetch(...args),
     resolveFetch(response) { resolveFetch(response); },
     async startMeasurement() {
-      await dispatchCommand('init', {
-        workletUrl: 'chrome-extension://test/audio-worklet.js'
-      });
+      await dispatchCommand('init');
       await dispatchCommand('attach');
       assert.equal(typeof measurementPort?.onmessage, 'function');
     },
@@ -3862,6 +3866,40 @@ test('gatedIntegratedLufs: constant signal close to single-block LUFS', () => {
   assert.ok(Math.abs(result - (-0.691)) < 1e-6);
 });
 
+test('page bridge loads the worklet module from its own origin', async () => {
+  const harness = createPageBridgeHarness();
+  const own = 'chrome-extension://abcdefghijklmnopabcdefghijklmnop/audio-worklet.js';
+
+  // page-bridge.js runs in the page's own world, so any script in the page can
+  // send an init command, including one carrying another extension's module.
+  await harness.dispatchCommand('init', {
+    workletUrl: 'chrome-extension://ponmlkjihgfedcbaponmlkjihgfedcba/audio-worklet.js'
+  });
+  await harness.dispatchCommand('init', { workletUrl: 'https://ad.example/audio-worklet.js' });
+  assert.deepEqual(harness.workletModules, [own]);
+
+  // The forged commands must not cost the extension its own measurement.
+  await harness.dispatchCommand('attach');
+  harness.emitMeasurementBlock(0.05);
+  assert.equal(typeof harness.messages.at(-1).integrated, 'number');
+
+  // A later forged command cannot swap the module that is already loaded.
+  await harness.dispatchCommand('init', {
+    workletUrl: 'chrome-extension://ponmlkjihgfedcbaponmlkjihgfedcba/audio-worklet.js'
+  });
+  assert.deepEqual(harness.workletModules, [own]);
+});
+
+test('page bridge loads no module when it cannot name its own origin', async () => {
+  const harness = createPageBridgeHarness({ scriptUrl: 'https://www.twitch.tv/inline-script.js' });
+
+  await harness.dispatchCommand('init', {
+    workletUrl: 'chrome-extension://abcdefghijklmnopabcdefghijklmnop/audio-worklet.js'
+  });
+  await harness.dispatchCommand('attach');
+  assert.deepEqual(harness.workletModules, []);
+});
+
 test('page bridge Integrated LUFS is invariant to gating window order', async () => {
   async function measure(blocks) {
     const harness = createPageBridgeHarness();
@@ -4333,7 +4371,7 @@ test('page bridge uses saved LUFS as the initial Integrated mean', async () => {
 
 test('page bridge keeps retrying past a held element and reports it is still there', async () => {
   const harness = createPageBridgeHarness({ mediaElementSourceTaken: true, extraFreeVideo: true });
-  await harness.dispatchCommand('init', { workletUrl: 'chrome-extension://test/audio-worklet.js' });
+  await harness.dispatchCommand('init');
   await harness.dispatchCommand('attach');
   const failures = harness.messages.filter((message) => message.event === 'attach-failed');
   assert.equal(failures.length, 1);
@@ -4351,7 +4389,7 @@ test('page bridge keeps retrying past a held element and reports it is still the
 
 test('page bridge stops naming a held element once it leaves the page', async () => {
   const harness = createPageBridgeHarness({ mediaElementSourceTaken: true, extraFreeVideo: true });
-  await harness.dispatchCommand('init', { workletUrl: 'chrome-extension://test/audio-worklet.js' });
+  await harness.dispatchCommand('init');
   await harness.dispatchCommand('attach');
   harness.disconnectTakenVideo();
 
@@ -4363,7 +4401,7 @@ test('page bridge stops naming a held element once it leaves the page', async ()
 
 test('page bridge reports an attach whose measurement chain never came up', async () => {
   const harness = createPageBridgeHarness({ workletLoadFails: true });
-  await harness.dispatchCommand('init', { workletUrl: 'chrome-extension://test/audio-worklet.js' });
+  await harness.dispatchCommand('init');
   await harness.dispatchCommand('attach');
 
   const attached = harness.messages.filter((message) => message.event === 'attached');
@@ -4375,7 +4413,7 @@ test('page bridge reports an attach whose measurement chain never came up', asyn
 
 test('page bridge attaches again after the player element is replaced', async () => {
   const harness = createPageBridgeHarness({ extraFreeVideo: true });
-  await harness.dispatchCommand('init', { workletUrl: 'chrome-extension://test/audio-worklet.js' });
+  await harness.dispatchCommand('init');
   await harness.dispatchCommand('attach');
   assert.equal(harness.messages.filter((message) => message.event === 'attached').length, 1);
 
@@ -4389,7 +4427,7 @@ test('page bridge attaches again after the player element is replaced', async ()
 
 test('page bridge reports a context it could not create and builds a new one after', async () => {
   const harness = createPageBridgeHarness({ audioContextThrows: true });
-  await harness.dispatchCommand('init', { workletUrl: 'chrome-extension://test/audio-worklet.js' });
+  await harness.dispatchCommand('init');
   await harness.dispatchCommand('attach');
 
   const failures = harness.messages.filter((message) => message.event === 'attach-failed');
@@ -4410,7 +4448,7 @@ test('page bridge reports a context it could not create and builds a new one aft
 
 test('page bridge takes the element once when two attach ticks overlap', async () => {
   const harness = createPageBridgeHarness({ deferWorkletLoad: true });
-  const init = harness.dispatchCommand('init', { workletUrl: 'chrome-extension://test/audio-worklet.js' });
+  const init = harness.dispatchCommand('init');
   await harness.dispatchCommand('attach');
   // A second tick enters while the first is still waiting for the context.
   // Both are parked inside attach(), so neither call can be awaited yet.
@@ -4430,7 +4468,7 @@ test('page bridge takes the element once when two attach ticks overlap', async (
 
 test('page bridge withdraws the held-element report once that element is gone', async () => {
   const harness = createPageBridgeHarness({ mediaElementSourceTaken: true, extraFreeVideo: true });
-  await harness.dispatchCommand('init', { workletUrl: 'chrome-extension://test/audio-worklet.js' });
+  await harness.dispatchCommand('init');
   await harness.dispatchCommand('attach');
   await harness.runTimers();
   let attached = harness.messages.filter((message) => message.event === 'attached');
@@ -4452,7 +4490,7 @@ test('page bridge withdraws the held-element report once that element is gone', 
 
 test('page bridge builds a retried context at the gain the ad calls for', async () => {
   const harness = createPageBridgeHarness({ audioContextThrows: true });
-  await harness.dispatchCommand('init', { workletUrl: 'chrome-extension://test/audio-worklet.js' });
+  await harness.dispatchCommand('init');
   await harness.dispatchCommand('attach');
   assert.equal(harness.gainValue(), null);
 
@@ -4467,7 +4505,7 @@ test('page bridge builds a retried context at the gain the ad calls for', async 
 
 test('page bridge reports a taken media element once and stays silent after', async () => {
   const harness = createPageBridgeHarness({ mediaElementSourceTaken: true });
-  await harness.dispatchCommand('init', { workletUrl: 'chrome-extension://test/audio-worklet.js' });
+  await harness.dispatchCommand('init');
   await harness.dispatchCommand('attach');
 
   assert.equal(harness.messages.filter((message) => message.event === 'attach-failed').length, 1);
@@ -4484,7 +4522,7 @@ test('page bridge reports a taken media element once and stays silent after', as
 
   // Positive control: the same drive on a free element does report an attach.
   const available = createPageBridgeHarness();
-  await available.dispatchCommand('init', { workletUrl: 'chrome-extension://test/audio-worklet.js' });
+  await available.dispatchCommand('init');
   available.messages.length = 0;
   await available.dispatchCommand('attach');
   await available.runTimers();
