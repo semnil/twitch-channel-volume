@@ -12,7 +12,7 @@ Twitch Channel Volume is a Chrome extension that remembers and auto-applies volu
 
 ### Channel Volume Settings
 
-- **What**: Twitch channel identifiers (the numeric owner ID / broadcaster ID once the page has provided it; the login name, video ID or clip slug until then), display names, page URLs, the gain values you set per kind (Live / VOD / Clip), and a cache of the most recent loudness measurement with the time it was taken. Alongside these, the extension keeps the mapping from a provisional identifier to the numeric one and a counter that orders field updates.
+- **What**: Twitch channel identifiers (the numeric owner ID / broadcaster ID once the page has provided it; the login name, video ID or clip slug until then), display names, page URLs, the gain values you set per kind (Live / VOD / Clip), and a cache of the most recent loudness measurement with the time it was taken, the number of measurement windows behind it, and a note that it is expressed as if the player's own volume were at full. Alongside these, the extension keeps the mapping from a provisional identifier to the numeric one and a counter that orders field updates.
 - **Purpose**: Used to automatically apply your preferred volume when you open a stream, VOD, or clip from a saved channel.
 - **Storage**: Saved locally in `chrome.storage.local` on your device. Never transmitted to any external server.
 
@@ -26,7 +26,7 @@ Twitch Channel Volume is a Chrome extension that remembers and auto-applies volu
 
 - **What**: Momentary / Short-term / Integrated LUFS values computed from the playing `<video>` element via the Web Audio API.
 - **Purpose**: Display loudness information and calculate the suggested gain.
-- **Storage**: No audio waveform or audio data is stored. The Momentary and Short-term values are held in memory only while the page is open. The Integrated value is saved without any action from you: while a channel is identified, its most recent value is written to that channel's settings for the kind you are watching, at most once every five seconds, along with the time it was taken and — while auto-follow is on for that kind — the gain it produced. "Apply to channel" saves a gain; it is not what saves the measurement.
+- **Storage**: No audio waveform or audio data is stored. The Momentary and Short-term values are held in memory only while the page is open. The Integrated value is saved without any action from you: while a channel is identified, its most recent value is written to that channel's settings for the kind you are watching, at most once every five seconds, along with the time it was taken, how many measurement windows the value rests on, and a note recording that the value is expressed as if the player's own volume control were at full (it is converted for you, whatever you have the control set to). While auto-follow is on for that kind, the gain the value produced and the same note for that gain are written with it. "Apply to channel" saves a gain; it is not what saves the measurement.
 
 ### Twitch Page Data (read-only)
 
