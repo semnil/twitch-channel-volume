@@ -5236,18 +5236,70 @@ test('page bridge lets new windows displace a seed at the cap', async () => {
   await harness.startMeasurement();
   harness.messages.length = 0;
   const capped = 3 * 60 * 10;
+  // Within the relative gate of the audio that follows, so the seed stays in
+  // the value and the count stays at what it came in with.
   await harness.dispatchCommand('resetMeasurement', {
-    initialIntegratedLufs: -40,
+    initialIntegratedLufs: -12,
     initialIntegratedWindows: capped
   });
-  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(0.1);
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(0.5);
   const first = harness.messages.at(-1).integrated;
-  for (let i = 0; i < 20; i++) harness.emitMeasurementBlock(0.1);
+  for (let i = 0; i < 20; i++) harness.emitMeasurementBlock(0.5);
   const later = harness.messages.at(-1);
 
-  // The count is already at the cap, and the value keeps moving under it.
   assert.equal(later.integratedWindows, capped);
   assert.ok(later.integrated > first, `${later.integrated} vs ${first}`);
+});
+
+// The ring evicts what it can no longer hold, and silence evicts without
+// putting anything in the index in return. What the value stands on shrinks
+// with it, and a count kept alongside the index rather than read from it does
+// not.
+test('page bridge reports what the index holds after the ring turns over', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.messages.length = 0;
+  const ring = 60 * 60 * 10;
+  const loud = Math.pow(10, (-18 + 0.691) / 10);
+  await harness.dispatchCommand('resetMeasurement', {
+    initialIntegratedLufs: -18,
+    initialIntegratedWindows: 3 * 60 * 10
+  });
+
+  for (let i = 0; i < ring; i++) harness.emitMeasurementBlock(loud);
+  harness.messages.length = 0;
+  // Silence reaches the ring but not the index, so it pushes the index empty.
+  for (let i = 0; i < ring; i++) harness.emitMeasurementBlock(0);
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(loud);
+
+  assert.equal(harness.messages.at(-1).integratedWindows, 4);
+});
+
+// A seed the relative gate leaves out carried none of the value, so it is not
+// part of what the value stands on either.
+test('page bridge stops counting a seed the relative gate left out', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.messages.length = 0;
+  const seedMeanSquare = Math.pow(10, (-33 + 0.691) / 10);
+  const loudMeanSquare = Math.pow(10, (-18 + 0.691) / 10);
+  // A claim under the floor, so the seed's own entries outnumber what it says
+  // the value stands on: what the gate does with them is then visible.
+  await harness.dispatchCommand('resetMeasurement', {
+    initialIntegratedLufs: -33,
+    initialIntegratedWindows: 100
+  });
+
+  // While the seed still holds the gate up, it is inside the value.
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(loudMeanSquare);
+  assert.equal(harness.messages.at(-1).integratedWindows, 101);
+
+  // Thirty seconds of audio 15 dB above it puts the seed under the gate.
+  for (let i = 0; i < 296; i++) harness.emitMeasurementBlock(loudMeanSquare);
+  const posted = harness.messages.at(-1);
+  assert.ok(Math.abs(posted.integrated - u.meanSquareToLufs(loudMeanSquare)) < 1e-12);
+  assert.equal(posted.integratedWindows, 297);
+  assert.ok(seedMeanSquare < loudMeanSquare);
 });
 
 test('page bridge counts the windows behind the value it posts', async () => {

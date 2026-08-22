@@ -128,11 +128,12 @@
   const ROLLBACK_LOG_SAMPLES = 8;
   let windowsSinceReset = 0;
   let windowsObserved = 0;
-  // The windows behind the posted value: what the seed was told the saved value
-  // stood on, plus the windows this session put into the index. The seed's own
-  // floor is not one of them - it weighs the seed without having been measured.
+  // The windows behind the posted value: the ones inside the relative gate,
+  // with the seed standing for what it was told the saved value was measured
+  // over. The floor the seed is raised to is not one of them, and neither is a
+  // window the gate left out - the value does not rest on either.
   let seedClaimedWindows = 0;
-  let indexedWindowsSinceReset = 0;
+  let seedMeanSquare = null;
   const ABSOLUTE_GATE_MEAN_SQUARE = Math.pow(10, (-70 + 0.691) / 10);
   const RELATIVE_GATE_FACTOR = Math.pow(10, -10 / 10);
   const integratedBlocks = new Array(MAX_INTEGRATED_BLOCKS);
@@ -234,6 +235,16 @@
     return balanceTree(node);
   }
 
+  function treeCountOfKey(node, key) {
+    let current = node;
+    while (current) {
+      if (key < current.key) current = current.left;
+      else if (key > current.key) current = current.right;
+      else return current.count;
+    }
+    return 0;
+  }
+
   function treeValuesAtOrAbove(node, threshold) {
     if (!node) return { sum: 0, count: 0 };
     if (node.key < threshold) return treeValuesAtOrAbove(node.right, threshold);
@@ -323,7 +334,9 @@
   }
 
   // The value, and the windows a later session would seed with if it were
-  // stored now.
+  // stored now. The seed is one value repeated, so its entries are the ones
+  // sharing its key; they stand for the count it was told rather than for
+  // however many were laid down to weigh it.
   function integratedLufs() {
     const absoluteGatedCount = treeCount(absoluteGatedRoot);
     if (absoluteGatedCount === 0) return { lufs: -Infinity, windows: 0 };
@@ -331,16 +344,19 @@
     const relativeGate = absoluteMeanSquare * RELATIVE_GATE_FACTOR;
     const gated = treeValuesAtOrAbove(absoluteGatedRoot, relativeGate);
     if (gated.count === 0) return { lufs: -Infinity, windows: 0 };
+    const seedInGate = seedMeanSquare !== null && seedMeanSquare >= relativeGate
+      ? treeCountOfKey(absoluteGatedRoot, seedMeanSquare)
+      : 0;
+    const windows = Math.min(seedClaimedWindows, seedInGate) + (gated.count - seedInGate);
     return {
       lufs: msToLufs(gated.sum / gated.count),
-      windows: Math.min(MAX_SEED_WINDOWS, seedClaimedWindows + indexedWindowsSinceReset)
+      windows: Math.min(MAX_SEED_WINDOWS, windows)
     };
   }
 
   function updateIntegratedLufs(ms) {
     appendIntegratedBlock(ms, windowsObserved);
     windowsSinceReset++;
-    if (ms >= ABSOLUTE_GATE_MEAN_SQUARE) indexedWindowsSinceReset++;
     return integratedLufs();
   }
 
@@ -354,7 +370,6 @@
       const ms = integratedBlocks[index];
       if (ms >= ABSOLUTE_GATE_MEAN_SQUARE) {
         absoluteGatedRoot = removeTreeValue(absoluteGatedRoot, ms);
-        indexedWindowsSinceReset--;
       }
       integratedBlockLength--;
       windowsSinceReset--;
@@ -379,7 +394,7 @@
     windowsSinceReset = 0;
     windowsObserved = 0;
     seedClaimedWindows = 0;
-    indexedWindowsSinceReset = 0;
+    seedMeanSquare = null;
     if (!Number.isFinite(initialIntegratedLufs)) return;
     const initialMeanSquare = Math.pow(10, (initialIntegratedLufs + 0.691) / 10);
     if (!Number.isFinite(initialMeanSquare)) return;
@@ -389,6 +404,7 @@
     // Values below the absolute gate reach the ring buffer but not the index,
     // so they never contribute to Integrated.
     seedClaimedWindows = savedWindowCount(initialIntegratedWindows);
+    seedMeanSquare = initialMeanSquare;
     const seedWindows = Math.max(MIN_SEED_WINDOWS, seedClaimedWindows);
     for (let i = 0; i < seedWindows; i++) {
       appendIntegratedBlock(initialMeanSquare, windowsObserved);
