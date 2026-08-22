@@ -177,7 +177,7 @@ options.html / options.js
 - **計測リセットの世代番号**: content.js は resetMeasurement を送るたびに世代番号を進め、page-bridge はその番号を以降の lufs 通知へ付与する。content.js は現在の世代より古い通知を破棄するため、リセット送信前に page-bridge が算出したブロックが保存済み LUFS を復活させない
 - **Live/VOD/Clip 別ゲイン**: 配信は時間帯で音作りが変わるため種別ごとに別管理。同チャンネルの過去 VOD のゲインを現 Live にコピーしない
 - **Twitch reserved paths**: `/directory`, `/settings`, `/videos`, `/p`, `/jobs` 等は live channel として誤検出しないよう TWITCH_RESERVED_PATHS で除外
-- **CSP 対応**: AudioWorklet モジュールは web_accessible_resources で公開し、content.js が chrome.runtime.getURL で解決して page-bridge に渡す。page-bridge は MAIN world でページ自身のスクリプトと window を共有するため、`chrome-extension://` で始まり `/audio-worklet.js` で終わる URL だけを採り、拒否した init の後に届いた正規の init でもモジュールを読み込む
+- **CSP 対応**: AudioWorklet モジュールは web_accessible_resources で公開する。page-bridge は MAIN world でページ自身のスクリプトと window を共有し、init も含む全コマンドをページが送れるため、モジュール URL を受け取らず自分のスタックフレームから拡張 origin を取り、`<origin>/audio-worklet.js` を読み込む。origin を取れないときはモジュールを読み込まない
 - **NaN/Infinity ガード**: 計測値が無限大・NaN の場合は gain 1.0 にフォールバック
 
 ## Commands

@@ -9,7 +9,7 @@ LUFS の索引更新、保存済み LUFS による計測初期化、測定値リ
 | 項目 | 実装 | 検証方法 |
 |---|---|---|
 | 権限 | `manifest.json` は `storage` と `twitch.tv` のみを要求する | `node test.js` の manifest とプライバシーポリシーの一致テスト |
-| コマンド入力 | page-bridge は MAIN world でページとイベントを共有するため、init が渡す AudioWorklet モジュール URL は `chrome-extension://` 始まり + `/audio-worklet.js` 終わりのものだけを採る。拒否しても計測は失われず、後続の正規 init がモジュールを読み込む | `node test.js` の page bridge init テスト (偽装 URL・拒否後の復帰・読込済みの差し替え) |
+| コマンド入力 | page-bridge は MAIN world でページとイベントを共有し、init を含む全コマンドをページが送れる。AudioWorklet モジュール URL はコマンドから取らず、page-bridge 自身のスタックフレームが示す拡張 origin から組み立てる。origin を取れないときはモジュールを読み込まない | `node test.js` の page bridge init テスト (別拡張 origin・非拡張 origin・読込済みの差し替え・origin 不明時) |
 | リセット対象 | popup が表示中のチャンネル ID と種別を送り、content script が現在値との完全一致を検証する | チャンネル ID・種別が不一致の要求は `channel mismatch` で拒否 |
 | 保存値 | Service Worker の単一キューで対象種別の `lastLufs` と `lastLufsRef` を削除し、gain・Auto 設定・`autoGainRef`・他種別の LUFS を維持する | `node test.js` の mutation・競合テスト |
 | 競合 | リセット要求前の保存を完了してから削除し、削除処理中に到着した計測値は保存しない。リセット送信前に page-bridge が算出したブロックは計測世代番号で破棄する | 保存待ちを挿入した content script テスト、旧世代の計測を投入した content script / page bridge テスト |

@@ -11,6 +11,16 @@
   const MSG_IN = '__twitch_channel_volume_cmd__';
   const REF_RATE = 48000;
 
+  // The page shares this window and can send the same commands content.js
+  // sends, so the module to load is derived here instead of being received:
+  // this script is served from the extension, and its own stack frames name
+  // the origin it was served from.
+  const SELF_ORIGIN = (() => {
+    const found = /chrome-extension:\/\/[0-9a-z]+/.exec(new Error().stack || '');
+    return found ? found[0] : '';
+  })();
+  const WORKLET_URL = SELF_ORIGIN ? `${SELF_ORIGIN}/audio-worklet.js` : '';
+
   const K_PRE_48K = {
     b: [1.53512485958697, -2.69169618940638, 1.19839281085285],
     a: [1.0, -1.69065929318241, 0.73248077421585]
@@ -60,7 +70,6 @@
     return -0.691 + 10 * Math.log10(ms);
   }
 
-  let workletUrl = '';
   let ctx = null;
   let gain = null;
   let sourceNode = null;
@@ -329,28 +338,6 @@
     appendIntegratedBlock(initialMeanSquare);
   }
 
-  let workletPromise = null;
-  async function loadWorklet() {
-    if (workletReady || !workletUrl || !ctx) return;
-    if (workletPromise) return workletPromise;
-    workletPromise = (async () => {
-      try {
-        await ctx.audioWorklet.addModule(workletUrl);
-        workletReady = true;
-        console.info('[TCV] worklet module loaded');
-        // If we already attached before the worklet finished loading, wire
-        // up the measurement chain retroactively.
-        if (attachedVideo && sourceNode && !workletNode) {
-          buildMeasurementChain(ctx);
-        }
-      } catch (err) {
-        console.warn('[TCV] worklet load failed', err);
-        workletPromise = null;
-      }
-    })();
-    return workletPromise;
-  }
-
   let ctxPromise = null;
   async function ensureContext() {
     if (ctxPromise) return ctxPromise;
@@ -361,7 +348,20 @@
       gain = ctx.createGain();
       gain.gain.value = baselineGain;
       gain.connect(ctx.destination);
-      await loadWorklet();
+      if (WORKLET_URL) {
+        try {
+          await ctx.audioWorklet.addModule(WORKLET_URL);
+          workletReady = true;
+          console.info('[TCV] worklet module loaded');
+          // If we already attached before the worklet finished loading, wire
+          // up the measurement chain retroactively.
+          if (attachedVideo && sourceNode && !workletNode) {
+            buildMeasurementChain(ctx);
+          }
+        } catch (err) {
+          console.warn('[TCV] worklet load failed', err);
+        }
+      }
       return ctx;
     })();
     return ctxPromise;
@@ -695,20 +695,11 @@
     const data = event.data;
     if (!data || data.type !== MSG_IN) return;
     switch (data.cmd) {
-      case 'init': {
-        // Any script sharing this window can send a command, so the module
-        // URL is taken only when it names the packaged worklet.
-        const url = data.workletUrl;
-        if (typeof url === 'string'
-          && url.startsWith('chrome-extension://')
-          && url.endsWith('/audio-worklet.js')) {
-          workletUrl = url;
-        }
+      case 'init':
+        if (!WORKLET_URL) console.error('[TCV] extension origin unavailable, measurement stays off');
         await ensureContext();
-        await loadWorklet();
         postReady({ event: 'init-done' });
         break;
-      }
       case 'attach': {
         scheduleAttach();
         break;
