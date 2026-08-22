@@ -9,7 +9,7 @@ EXCLUDE_FILES = {
     'CHANGES.md', 'CHANGES_ja.md', 'LICENSE',
     'PRIVACY_POLICY.md', 'PRIVACY_POLICY_JA.md'
 }
-EXCLUDE_DIRS = {'.claude', '.git', '.github', '__pycache__', 'screenshots', 'docs'}
+EXCLUDE_DIRS = {'.claude', '.git', '.github', '__pycache__', 'screenshots', 'docs', 'work'}
 
 
 def pack():

@@ -20,12 +20,17 @@ function readStoredKeys(stored, keys) {
   return result;
 }
 
+// Repo-root directories that hold session artifacts rather than extension
+// files. pack.py keeps them out of the store package too.
+const SCRATCH_DIRS = new Set(['work', '.claude']);
+
 test('unpacked extension tree contains no Chrome-reserved filenames', () => {
   const forbidden = [];
   function walk(directory, relative = '') {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
       if (entry.name === '.git' || entry.name === 'node_modules') continue;
       const nextRelative = path.join(relative, entry.name);
+      if (SCRATCH_DIRS.has(nextRelative)) continue;
       const allowedLocaleDirectory = nextRelative === '_locales';
       if ((entry.name.startsWith('_') && !allowedLocaleDirectory) || entry.name.endsWith('.pyc')) {
         forbidden.push(nextRelative);
@@ -36,6 +41,20 @@ test('unpacked extension tree contains no Chrome-reserved filenames', () => {
   }
   walk(__dirname);
   assert.deepEqual(forbidden, []);
+});
+
+test('the store package drops the directories the tree walk skips', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'pack.py'), 'utf8');
+  const declaration = source.match(/EXCLUDE_DIRS = \{([^}]*)\}/);
+  assert.ok(declaration, 'pack.py still declares EXCLUDE_DIRS');
+  const excluded = new Set(
+    [...declaration[1].matchAll(/'([^']+)'/g)].map((match) => match[1])
+  );
+  // Skipping a directory here has to mean it never reaches the store zip,
+  // otherwise the walk stops reporting what the package still carries.
+  for (const name of SCRATCH_DIRS) {
+    assert.ok(excluded.has(name), `pack.py excludes ${name}`);
+  }
 });
 
 async function flushTasks(turns = 4) {
