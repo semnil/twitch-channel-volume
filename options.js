@@ -23,6 +23,7 @@
 
   let displayUnit = '%';
   let settingsReady = false;
+  let loadFailed = false;
   let settingsRevision = 0;
   let channelRevision = 0;
   let currentSettings = {};
@@ -275,6 +276,11 @@
   $('clearAllBtn').addEventListener('click', clearAll);
 
   chrome.storage.onChanged.addListener((changes) => {
+    // The page that could not read its own settings is telling the viewer to
+    // reload it, and it never read the channels at all. Taking what another tab
+    // writes would put values under that message and answer for a list that was
+    // never read.
+    if (loadFailed) return;
     if (changes[CHANNEL_VOLUMES_KEY]) {
       channelRevision++;
       channelVolumes = changes[CHANNEL_VOLUMES_KEY].newValue || {};
@@ -302,6 +308,7 @@
     settingsReady = true;
     setSettingsControlsDisabled(false);
   }).catch((error) => {
+    loadFailed = true;
     showSettingsError(true, 'settingsLoadFailed');
     console.error('[TCV] failed to load settings', error);
   }).finally(revealOptions);
