@@ -59,12 +59,23 @@ test('every packaged path is one the extension loads', () => {
 
   assert.ok(packaged.includes('manifest.json'));
   assert.ok(!packaged.includes('test.js'));
+
+  // Read independently of pack.py's own parsing: every packaged script or page
+  // is named by the manifest, by a page the manifest names, or by the worker.
+  const references = ['manifest.json', 'popup.html', 'options.html', 'background.js']
+    .map((name) => fs.readFileSync(path.join(__dirname, name), 'utf8'))
+    .join('\n');
   for (const arcname of packaged) {
     const segments = arcname.split(path.sep);
-    const shipped = segments.length === 1
-      ? (arcname === 'manifest.json' || /\.(js|html)$/.test(arcname))
-      : (segments[0] === 'icons' && segments.length === 2 && arcname.endsWith('.png')) ||
-        (segments[0] === '_locales' && segments.length === 3 && segments[2] === 'messages.json');
+    if (segments.length === 1) {
+      if (arcname === 'manifest.json') continue;
+      assert.match(arcname, /\.(js|html)$/, `${arcname} is not a script or a page`);
+      assert.ok(references.includes(arcname), `${arcname} is packaged but nothing loads it`);
+      continue;
+    }
+    const shipped =
+      (segments[0] === 'icons' && segments.length === 2 && arcname.endsWith('.png')) ||
+      (segments[0] === '_locales' && segments.length === 3 && segments[2] === 'messages.json');
     assert.ok(shipped, `${arcname} is not a path the extension loads`);
   }
 });
@@ -114,24 +125,38 @@ test('the store package carries only the files the extension loads', () => {
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.writeFileSync(target, body);
     };
-    write('manifest.json', '{"version":"1.0.0"}');
+    write('manifest.json', JSON.stringify({
+      manifest_version: 3,
+      version: '1.0.0',
+      content_scripts: [{ js: ['utils.js', 'content.js'] }],
+      web_accessible_resources: [{ resources: ['audio-worklet.js'] }],
+      background: { service_worker: 'background.js' },
+      action: { default_popup: 'popup.html', default_icon: { 16: 'icons/icon16.png' } }
+    }));
+    write('utils.js');
     write('content.js');
-    write('_locales/ja/messages.json', '{}');
+    write('audio-worklet.js');
+    write('background.js', "importScripts('channel-store.js');\n");
+    write('channel-store.js');
+    write('popup.html', '<script src="utils.js"></script>\n<script src="popup.js"></script>\n');
+    write('popup.js');
     write('icons/icon16.png');
-    write('docs/security-audit.md');
-    write('screenshots/store.png');
-    write('.claude/settings.json', '{}');
-    write('node_modules/_cache/index.js');
-    write('test.js');
-    write('twitch-channel-volume-1.0.0.zip');
-    write('.git', 'gitdir: /elsewhere');
-    // Files nobody listed anywhere: an allowlist is what keeps them out.
+    write('_locales/ja/messages.json', '{}');
+
+    // Nothing references these, whatever their extension says.
+    write('review-probe.js');
+    write('notes.html', '<p>notes</p>');
     write('.env', 'TOKEN=secret');
     write('review-notes.txt');
     write('README.md');
     write('gen_icons.py');
+    write('test.js');
+    write('twitch-channel-volume-1.0.0.zip');
+    write('.git', 'gitdir: /elsewhere');
     write('icons/source.svg');
     write('_locales/ja/notes.txt');
+    write('docs/security-audit.md');
+    write('node_modules/_cache/index.js');
     fs.symlinkSync(path.join(fixture, 'content.js'), path.join(fixture, 'linked.js'));
     for (const name of SCRATCH_DIRS) write(path.join(name, 'session', '_metadata', 'note.txt'));
     fs.copyFileSync(path.join(__dirname, 'pack.py'), path.join(fixture, 'pack.py'));
@@ -144,10 +169,49 @@ test('the store package carries only the files the extension loads', () => {
     const packaged = listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
     assert.deepEqual(packaged.sort(), [
       '_locales/ja/messages.json',
+      'audio-worklet.js',
+      'background.js',
+      'channel-store.js',
       'content.js',
       'icons/icon16.png',
-      'manifest.json'
+      'manifest.json',
+      'popup.html',
+      'popup.js',
+      'utils.js'
     ]);
+  } finally {
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test('the store package refuses a reference it cannot pack', () => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'tcv-pack-missing-'));
+  try {
+    fs.writeFileSync(path.join(fixture, 'manifest.json'), JSON.stringify({
+      manifest_version: 3,
+      version: '1.0.0',
+      content_scripts: [{ js: ['content.js'] }]
+    }));
+    fs.copyFileSync(path.join(__dirname, 'pack.py'), path.join(fixture, 'pack.py'));
+
+    // A zip built around a missing file is a broken extension, not a smaller one.
+    const missing = spawnSync('python3', ['-B', 'pack.py', '--list'], {
+      cwd: fixture,
+      encoding: 'utf8'
+    });
+    assert.notEqual(missing.status, 0);
+    assert.match(missing.stderr, /content\.js/);
+
+    // A referenced symlink resolves outside the package: it is not packed
+    // silently in place of the file it points at.
+    fs.writeFileSync(path.join(fixture, 'elsewhere.js'), '//');
+    fs.symlinkSync(path.join(fixture, 'elsewhere.js'), path.join(fixture, 'content.js'));
+    const linked = spawnSync('python3', ['-B', 'pack.py', '--list'], {
+      cwd: fixture,
+      encoding: 'utf8'
+    });
+    assert.notEqual(linked.status, 0);
+    assert.match(linked.stderr, /content\.js/);
   } finally {
     fs.rmSync(fixture, { recursive: true, force: true });
   }

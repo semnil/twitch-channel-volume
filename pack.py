@@ -2,52 +2,87 @@
 import zipfile
 import os
 import json
+import re
 import sys
 
-# The package is an allowlist: the manifest, the scripts and pages the
-# extension loads, the icons and the locale files. Anything else in the tree —
-# notes, dotfiles, scratch directories, symlinks — is not part of it.
-ROOT_FILES = {'manifest.json'}
-ROOT_SUFFIXES = ('.js', '.html')
-EXCLUDE_FILES = {'test.js'}
-ICON_DIR = 'icons'
-ICON_SUFFIX = '.png'
+# The package is what the extension loads: the manifest, everything the
+# manifest names, what those pages and workers pull in, and the locale files.
+# A file nobody references is not part of it, whatever it is called.
 LOCALE_DIR = '_locales'
 LOCALE_FILE = 'messages.json'
+SCRIPT_SRC = re.compile(r'<script[^>]+src="([^"]+)"')
+STYLE_HREF = re.compile(r'<link[^>]+href="([^"]+)"')
+IMPORT_SCRIPTS = re.compile(r'importScripts\(([^)]*)\)')
+QUOTED = re.compile(r'[\'"]([^\'"]+)[\'"]')
+REMOTE = ('http:', 'https:', '//', 'data:', 'chrome-extension:')
 
 
-def _files_in(directory):
-    if not os.path.isdir(directory) or os.path.islink(directory):
-        return []
-    names = []
-    for name in sorted(os.listdir(directory)):
-        full = os.path.join(directory, name)
-        if os.path.isfile(full) and not os.path.islink(full):
-            names.append(name)
-    return names
+def _read(root, relative):
+    with open(os.path.join(root, relative), encoding='utf-8') as handle:
+        return handle.read()
+
+
+def _manifest_references(manifest):
+    for entry in manifest.get('content_scripts', []):
+        yield from entry.get('js', [])
+        yield from entry.get('css', [])
+    for entry in manifest.get('web_accessible_resources', []):
+        yield from entry.get('resources', [])
+    worker = manifest.get('background', {}).get('service_worker')
+    if worker:
+        yield worker
+    for key in ('options_page',):
+        if manifest.get(key):
+            yield manifest[key]
+    if manifest.get('options_ui', {}).get('page'):
+        yield manifest['options_ui']['page']
+    if manifest.get('action', {}).get('default_popup'):
+        yield manifest['action']['default_popup']
+    yield from manifest.get('icons', {}).values()
+    yield from manifest.get('action', {}).get('default_icon', {}).values()
+
+
+def _references_within(root, relative):
+    """Paths the given page or script pulls in, relative to the package root."""
+    base = os.path.dirname(relative)
+    found = []
+    if relative.endswith('.html'):
+        text = _read(root, relative)
+        found.extend(SCRIPT_SRC.findall(text))
+        found.extend(href for href in STYLE_HREF.findall(text) if href.endswith('.css'))
+    elif relative.endswith('.js'):
+        for call in IMPORT_SCRIPTS.findall(_read(root, relative)):
+            found.extend(QUOTED.findall(call))
+    for reference in found:
+        if reference.startswith(REMOTE):
+            continue
+        yield os.path.normpath(os.path.join(base, reference))
 
 
 def selected_files(root):
     """Yield (path, arcname) for every file the package carries."""
-    for name in _files_in(root):
-        if name in EXCLUDE_FILES:
+    pending = ['manifest.json']
+    pending.extend(_manifest_references(json.loads(_read(root, 'manifest.json'))))
+    selected = []
+    while pending:
+        relative = os.path.normpath(pending.pop(0))
+        if relative in selected:
             continue
-        if name in ROOT_FILES or name.endswith(ROOT_SUFFIXES):
-            yield os.path.join(root, name), name
+        full = os.path.join(root, relative)
+        if os.path.islink(full) or not os.path.isfile(full):
+            raise SystemExit(f'referenced file is missing or not a regular file: {relative}')
+        selected.append(relative)
+        pending.extend(_references_within(root, relative))
 
-    icons = os.path.join(root, ICON_DIR)
-    for name in _files_in(icons):
-        if name.endswith(ICON_SUFFIX):
-            yield os.path.join(icons, name), os.path.join(ICON_DIR, name)
+    for relative in sorted(selected):
+        yield os.path.join(root, relative), relative
 
     locales = os.path.join(root, LOCALE_DIR)
     if os.path.isdir(locales) and not os.path.islink(locales):
         for locale in sorted(os.listdir(locales)):
-            if LOCALE_FILE in _files_in(os.path.join(locales, locale)):
-                yield (
-                    os.path.join(locales, locale, LOCALE_FILE),
-                    os.path.join(LOCALE_DIR, locale, LOCALE_FILE)
-                )
+            full = os.path.join(locales, locale, LOCALE_FILE)
+            if os.path.isfile(full) and not os.path.islink(full):
+                yield full, os.path.join(LOCALE_DIR, locale, LOCALE_FILE)
 
 
 def pack():
