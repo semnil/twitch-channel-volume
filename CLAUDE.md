@@ -259,7 +259,7 @@ python3 pack.py --list
 
 - Gain value 1.0 = 100% (passthrough). Range 0.0–6.0
 - unpacked extension のルートでは `python3 -m py_compile` を実行しない。Chrome が拒否する `__pycache__` を生成するため、Python 構文検査は上記の AST parse を使う (`node test.js` が走査する範囲は「予約名の扱い」節)
-- `popup.html` / `options.html` は i18n 抽出器が読める形に限る: HTML コメント・`<template>`・raw text 要素を置かず、`data-i18n` は小文字 + 引用符付きで書き、属性を載せる要素はテキストだけを持つ (`applyI18n` が `textContent` を代入するため)。キーとそれを載せた要素 (タグ名・`id`・`class` トークン) の対応は `node test.js` がスナップショットで固定する
+- `popup.html` / `options.html` は i18n 抽出器が読める形に限る: HTML コメント・`<template>`・`<textarea>` / `<iframe>` / `<xmp>` / `<noembed>` / `<noframes>` / `<noscript>` / `<plaintext>` を置かず、ページが使う raw text 要素 `<title>` / `<style>` / `<script>` は名前の直後に `>` を置いて閉じ (`</titles>` のように名前が続く形は別要素で、raw text を閉じずに以降を飲み込む)、`data-i18n` は小文字 + 引用符付きで書き、属性を載せる要素はテキストだけを持つ (`applyI18n` が `textContent` を代入するため)。キーとそれを載せた要素 (タグ名・`id`・`class` トークン) の対応は `node test.js` がスナップショットで固定する
 - AudioContext may be `suspended` until first user interaction (Chrome autoplay policy) — content.js sends `resume` on first click capture
 - BS.1770 reference is 48 kHz. Chrome の AudioContext は通常 48000 だが、サンプルレート変動には redesignBiquad で対応
 - Storage keys: `autoLoudnessSettings` (target LUFS, ad gain, display unit, kind 別 Auto 既定値), `channelVolumes` (per-channel saved gains + kind 別 Auto + lastLufs cache), `channelVolumeAliases` (仮 ID → 正準 ID), `channelVolumeSequence` (永続更新番号)

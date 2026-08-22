@@ -1454,8 +1454,9 @@ test('the extractor reads a page the way a browser does', () => {
 test('the pages stay inside the markup the extractor reads', () => {
   for (const name of ['popup.html', 'options.html']) {
     const source = fs.readFileSync(path.join(__dirname, name), 'utf8');
-    // Raw text swallows what follows it. <title> and the stylesheet and script
-    // tags are the two the pages use, and both are read as raw text.
+    // Raw text swallows what follows it. The extractor is written around the
+    // raw text elements the pages do use - <title>, <style> and <script> - so
+    // no other one belongs in them.
     for (const element of ['textarea', 'iframe', 'xmp', 'noembed', 'noframes', 'noscript', 'plaintext']) {
       assert.doesNotMatch(source, new RegExp(`<${element}\\b`, 'i'), `${name} uses <${element}>`);
     }
