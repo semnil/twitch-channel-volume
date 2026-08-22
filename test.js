@@ -743,18 +743,22 @@ function createOptionsHarness({
   }
 
   const body = stubElement('body');
-  // What options.html ships: the page stays hidden until the load renders, the
-  // error line stays out of the layout, and the empty-list message stays out
-  // until the render that counts the channels.
+  // What options.html ships. The page stays hidden until the load renders, the
+  // error line stays out of the layout, the channel table and its empty-list
+  // message stay out until the render that counts the channels, and the overlay
+  // toggle carries the default the settings are installed with. Each one is the
+  // value a write has to move, so a test that reads it is falsifiable.
   body.className = 'initializing';
   element('settingsError').className = 'settings-error hidden';
   element('emptyMsg').style.display = 'none';
+  element('select:.channel-table').style.display = 'none';
+  element('overlayToggle').checked = true;
   const document = {
     body,
     getElementById: element,
     createElement: () => stubElement(''),
     createTextNode: (text) => ({ textContent: text }),
-    querySelector: () => stubElement(''),
+    querySelector: (selector) => element('select:' + selector),
     querySelectorAll(selector) {
       if (selector === '[data-i18n]') return i18nNodes;
       if (selector === '#unitToggle button') return unitButtons;
@@ -796,6 +800,11 @@ function createOptionsHarness({
     },
     chrome,
     document,
+    // utils.js escapes by writing the text into an element and reading its
+    // markup back; the stub has no serializer, so the harness escapes the
+    // characters that one would.
+    esc: (value) => String(value)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
     console: { warn() {}, error() {}, info() {} },
     requestAnimationFrame(callback) { callback(); },
     setTimeout(callback) { queueMicrotask(callback); return 1; },
@@ -811,6 +820,7 @@ function createOptionsHarness({
     el: element,
     body,
     i18nNodes,
+    unitButtons,
     sent,
     releaseStorage() {
       assert.ok(resolveStorageGet, 'the storage read is not pending');
@@ -4227,14 +4237,61 @@ test('the options page offers no destructive action over a list it has not read'
   // "no saved channels" claim, and no way to delete what it did not count.
   assert.match(html, /<button[^>]+id="clearAllBtn"[^>]*\bdisabled\b/);
   assert.match(html, /<div[^>]+id="emptyMsg"[^>]*style="display:none"/);
+  // The column headers over no rows answer the same question the line does.
+  assert.match(html, /<table class="channel-table" style="display:none">/);
   // A disabled control that looks live is a control the viewer will press.
   assert.match(html, /\.clear-all-btn:disabled\s*\{[^}]*opacity:\s*0\.45;/s);
   assert.match(html, /\.clear-all-btn:hover:not\(:disabled\)\s*\{/);
 });
 
+test('the options markup ships the defaults the extension installs', () => {
+  // A failed load tells the viewer the values on screen are the defaults, and
+  // leaves the markup on screen to be them.
+  const html = fs.readFileSync(path.join(__dirname, 'options.html'), 'utf8');
+  const background = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
+  const start = background.indexOf("operation: 'initializeSettings'");
+  const installed = background.slice(start, background.indexOf('}', background.indexOf('defaults: {', start)));
+  const installedValue = (field) => {
+    const match = installed.match(new RegExp(`${field}:\\s*([^,\\n]+)`));
+    assert.ok(match, `${field} is still installed`);
+    return match[1].trim();
+  };
+  const tag = (id) => {
+    const match = html.match(new RegExp(`<input[^>]+id="${id}"[^>]*>`));
+    assert.ok(match, `${id} is still an input`);
+    return match[0];
+  };
+
+  assert.equal(installedValue('targetLufs'), String(u.DEFAULT_TARGET_LUFS));
+  assert.equal(installedValue('adGainDb'), String(u.DEFAULT_AD_GAIN_DB));
+  assert.equal(installedValue('displayUnit'), "'%'");
+  assert.equal(installedValue('showGainOverlay'), 'true');
+  assert.match(tag('targetLufs'), new RegExp(`value="${u.DEFAULT_TARGET_LUFS}"`));
+  assert.match(tag('adGainDb'), new RegExp(`value="${u.DEFAULT_AD_GAIN_DB}"`));
+  assert.match(tag('overlayToggle'), /\bchecked\b/);
+  assert.match(html, /<button data-unit="%" class="active"/);
+  for (const kind of ['Live', 'Vod', 'Clip']) {
+    assert.equal(
+      installedValue(`autoApplyLoudness${kind}Default`),
+      String(u.DEFAULT_AUTO_APPLY_LOUDNESS),
+      kind
+    );
+    assert.doesNotMatch(tag(`defaultAuto${kind}Toggle`), /\bchecked\b/, kind);
+  }
+});
+
 test('options put the stored values on their controls before showing the page', async () => {
   const harness = createOptionsHarness({
-    settings: { targetLufs: -24, adGainDb: -12, displayUnit: 'dB', showGainOverlay: false },
+    settings: {
+      targetLufs: -24,
+      adGainDb: -12,
+      displayUnit: 'dB',
+      showGainOverlay: false,
+      autoApplyLoudnessLiveDefault: true,
+      autoApplyLoudnessVodDefault: true,
+      autoApplyLoudnessClipDefault: true
+    },
+    channelVolumes: { 123: { name: 'somechannel', login: 'somechannel', gainLive: 1.5 } },
     deferStorage: true
   });
   await flushTasks(8);
@@ -4243,14 +4300,25 @@ test('options put the stored values on their controls before showing the page', 
 
   harness.releaseStorage();
   await flushTasks(8);
+  // Every control the render writes, so a write that stops happening is seen.
   assert.equal(harness.el('targetLufs').value, '-24');
   assert.equal(harness.el('targetLufsValue').textContent, '-24 LUFS');
+  assert.equal(harness.el('adGainDb').value, '-12');
   assert.equal(harness.el('adGainValue').textContent, '-12 dB');
   assert.equal(harness.el('overlayToggle').checked, false);
+  for (const kind of ['Live', 'Vod', 'Clip']) {
+    assert.equal(harness.el(`defaultAuto${kind}Toggle`).checked, true, kind);
+  }
+  assert.deepEqual(
+    harness.unitButtons.map((button) => button.classList.contains('active')),
+    [false, true],
+    'the stored unit is the selected one'
+  );
+  assert.ok(harness.el('channelsBody').textContent.includes('somechannel'));
+  assert.equal(harness.el('select:.channel-table').style.display, '');
+  assert.equal(harness.el('emptyMsg').style.display, 'none');
   assert.equal(harness.el('targetLufs').disabled, false);
   assert.equal(harness.el('clearAllBtn').disabled, false);
-  // The render that counted the channels is what puts the message up.
-  assert.equal(harness.el('emptyMsg').style.display, '');
   assert.equal(harness.body.classList.contains('initializing'), false);
 });
 
@@ -4267,6 +4335,7 @@ test('options show the page even when the load that fills it fails', async () =>
   // page must not answer how many are saved either.
   assert.equal(harness.el('clearAllBtn').disabled, true);
   assert.equal(harness.el('emptyMsg').style.display, 'none');
+  assert.equal(harness.el('select:.channel-table').style.display, 'none');
 });
 
 test('options fill and show the page when the channel normalization fails', async () => {
