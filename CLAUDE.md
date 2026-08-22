@@ -245,6 +245,9 @@ options.html / options.js
 # Regenerate icons
 python3 gen_icons.py
 
+# Regenerate store screenshots (カレントディレクトリの screenshots/ へ書く)
+python3 gen_screenshots.py
+
 # Run tests
 node test.js
 
