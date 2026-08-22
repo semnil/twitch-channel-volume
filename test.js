@@ -5,6 +5,8 @@ const { test } = require('node:test');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const os = require('node:os');
+const { spawnSync } = require('node:child_process');
 const u = require('./utils.js');
 const channelStore = require('./channel-store.js');
 const settingsStore = require('./settings-store.js');
@@ -44,16 +46,62 @@ test('unpacked extension tree contains no Chrome-reserved filenames', () => {
 });
 
 test('the store package drops the directories the tree walk skips', () => {
+  // Skipping a directory in the walk has to mean it never reaches the store
+  // zip, otherwise the walk stops reporting what the package still carries.
+  // pack.py runs for real here: its declaration alone would still pass with
+  // the filter that reads it deleted.
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'tcv-pack-'));
+  try {
+    const write = (relative, body = 'x') => {
+      const target = path.join(fixture, relative);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, body);
+    };
+    write('manifest.json', '{"version":"1.0.0"}');
+    write('content.js');
+    write('_locales/ja/messages.json', '{}');
+    write('icons/icon16.png');
+    write('docs/security-audit.md');
+    write('screenshots/store.png');
+    write('.claude/settings.json', '{}');
+    write('node_modules/_cache/index.js');
+    write('test.js');
+    write('twitch-channel-volume-1.0.0.zip');
+    write('.git', 'gitdir: /elsewhere');
+    for (const name of SCRATCH_DIRS) write(path.join(name, 'session', '_metadata', 'note.txt'));
+    fs.copyFileSync(path.join(__dirname, 'pack.py'), path.join(fixture, 'pack.py'));
+
+    const listed = spawnSync('python3', ['-B', 'pack.py', '--list'], {
+      cwd: fixture,
+      encoding: 'utf8'
+    });
+    assert.equal(listed.status, 0, listed.stderr);
+    const packaged = listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+    assert.deepEqual(packaged.sort(), [
+      '_locales/ja/messages.json',
+      'content.js',
+      'icons/icon16.png',
+      'manifest.json'
+    ]);
+  } finally {
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test('the scratch directories are skipped, unpacked, and untracked alike', () => {
   const source = fs.readFileSync(path.join(__dirname, 'pack.py'), 'utf8');
-  const declaration = source.match(/EXCLUDE_DIRS = \{([^}]*)\}/);
+  const declaration = source.match(/EXCLUDE_DIRS = \{([^}]*)\}/s);
   assert.ok(declaration, 'pack.py still declares EXCLUDE_DIRS');
   const excluded = new Set(
     [...declaration[1].matchAll(/'([^']+)'/g)].map((match) => match[1])
   );
-  // Skipping a directory here has to mean it never reaches the store zip,
-  // otherwise the walk stops reporting what the package still carries.
+  const ignored = fs.readFileSync(path.join(__dirname, '.gitignore'), 'utf8')
+    .split('\n')
+    .map((line) => line.trim());
   for (const name of SCRATCH_DIRS) {
     assert.ok(excluded.has(name), `pack.py excludes ${name}`);
+    // Otherwise every session's artifacts come back as untracked changes.
+    assert.ok(ignored.includes(`${name}/`), `.gitignore lists ${name}/`);
   }
 });
 

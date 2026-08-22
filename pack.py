@@ -2,14 +2,28 @@
 import zipfile
 import os
 import json
+import sys
 
 EXCLUDE_FILES = {
     'CLAUDE.md', 'gen_icons.py', 'gen_screenshots.py', 'pack.py', 'test.js',
     '.gitignore', '.webstoreignore', 'README.md',
     'CHANGES.md', 'CHANGES_ja.md', 'LICENSE',
-    'PRIVACY_POLICY.md', 'PRIVACY_POLICY_JA.md'
+    'PRIVACY_POLICY.md', 'PRIVACY_POLICY_JA.md',
+    '.git', '.DS_Store'
 }
-EXCLUDE_DIRS = {'.claude', '.git', '.github', '__pycache__', 'screenshots', 'docs', 'work'}
+EXCLUDE_DIRS = {'.claude', '.git', '.github', '__pycache__', 'screenshots', 'docs',
+                'work', 'node_modules'}
+
+
+def selected_files(root):
+    """Yield (path, arcname) for every file the package carries."""
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIRS]
+        for fname in sorted(filenames):
+            if fname in EXCLUDE_FILES or fname.endswith('.zip'):
+                continue
+            full = os.path.join(dirpath, fname)
+            yield full, os.path.relpath(full, root)
 
 
 def pack():
@@ -21,17 +35,20 @@ def pack():
     if os.path.exists(out_path):
         os.remove(out_path)
     with zipfile.ZipFile(out_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIRS]
-            for fname in filenames:
-                if fname in EXCLUDE_FILES or fname.endswith('.zip'):
-                    continue
-                full = os.path.join(dirpath, fname)
-                arcname = os.path.relpath(full, root)
-                zf.write(full, arcname)
-                print(f'  + {arcname}')
+        for full, arcname in selected_files(root):
+            zf.write(full, arcname)
+            print(f'  + {arcname}')
     print(f'\n=> {out}')
 
 
+def list_files():
+    root = os.path.dirname(os.path.abspath(__file__))
+    for _full, arcname in selected_files(root):
+        print(arcname)
+
+
 if __name__ == '__main__':
-    pack()
+    if '--list' in sys.argv:
+        list_files()
+    else:
+        pack()
