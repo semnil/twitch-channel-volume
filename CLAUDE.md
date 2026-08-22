@@ -16,7 +16,7 @@ page-bridge.js (MAIN world content script, document_start)
 │   ├── Short-term: 直近 30 ブロック (3s) の MS 平均 → LUFS
 │   └── Integrated: 直近 4 ブロック (400ms) の MS 平均を 100ms ごとに 1 件のゲーティング窓として投入し、保存済みの種別別 LUFS を初期値に、1 時間リングバッファ + 平衡木で絶対ゲート (-70 LUFS) と相対ゲート (-10 LU) を O(log n) 更新
 ├── 境界スキップ: CM 終了・音量変更のあと、ゲーティング窓が境界を離れるまでの 4 窓を Integrated から除外
-├── CM ゲート: cue が来た区間の間 (再生位置が cue の `endTime` を越えるまで) Integrated へ積まない。
+├── CM ゲート: 再生位置が cue の `startTime` 以降 `endTime` 未満の間 Integrated へ積まない。
 │   cue を 1 つも受け取っていない間は DOM 指標が立っている間
 ├── CM 開始ロールバック: cue を受けた時点の経過 (再生位置 − cue の `startTime`) から
 │   1 + 経過/0.1 窓を取り消す。cue が無く DOM 指標だけのときは 5 窓
@@ -32,8 +32,8 @@ page-bridge.js (MAIN world content script, document_start)
 ├── Worker hook: `Worker` を包んで message リスナーを足すだけ。worker はページが
 │   渡した引数のまま生成する
 │   └── プレイヤーが投げる CM の cue (`rollType` と media 時刻の `startTime` / `endTime`) を読む。
-│       再生位置がその区間に入っている cue だけを受け取る (CM 中はもう 1 つのプレイヤーが
-│       別の時間軸で自分の CM を cue する)
+│       受理するのは再生位置がその区間 (開始 1 秒前から終了まで) に入っている cue だけ
+│       (CM 中はもう 1 つのプレイヤーが別の時間軸で自分の CM を cue する)
 ├── CM 要素: 本編要素が停止したまま別要素が鳴っているとき (VOD の CM で観測) は、その
 │   要素にも GainNode を挟み baseline * adGainOffset * (本編 volume / 当該 volume) を適用
 ├── GainNode は ad active 時に baseline * adGainOffset (dB → gain) を適用
@@ -60,6 +60,8 @@ content.js (ISOLATED world content script, document_idle)
 ├── Gain overlay: `.volume-slider__slider-container` の **次の兄弟** として span を挿入。 mute wrapper と slider container はプレイヤーコントロール内の flex 行に並ぶ sibling 構造のため、 slider container の右隣に span が並ぶ。 表示/非表示は親 `[data-a-target="player-controls"][data-a-visible]` の切り替えに自動追従する (= プレイヤーコントロール内に埋め込んでいるため)。 gain ≠ 1.0 かつ音声経路がある間のみ、表示は `%` 固定 / displayUnit に依存しない
 ├── 保存済み LUFS による計測の初期化は、起動時・SPA 遷移時に加えて owner ID 解決後にも行う。再初期化の要否は alias 解決後のチャンネル ID と種別で判定する
 ├── 計測リセットは世代番号を進めて送り、それより古い世代の lufs 通知は破棄する
+├── SPA 遷移では `mediaChanged` を先に送る (計測リセットは同一 media でも起きるため、
+│   cue の破棄はこちらだけが行う)
 ├── DOM ad detection (`[data-a-target="video-ad-countdown"]`) は ad gain を駆動する
 ├── SPA navigation: history.pushState/replaceState hook + popstate + MutationObserver
 ├── channelVolumes の更新は Service Worker の単一キューへ委譲し、onChanged でクロスタブ同期
@@ -191,7 +193,8 @@ options.html / options.js
 - **channelVolumes 単一ライター**: aggregate key の read-modify-write は background.js → channel-store.js のキューだけが実行。content scripts と options は mutation message を送り、複数タブの LUFS キャッシュ保存と Auto/手動設定保存が古い全体オブジェクトで互いを上書きしないようにする
 - **設定のフィールド単位保存**: options は初期ロード完了後に操作を有効化し、変更した設定フィールドだけを background.js → settings-store.js の単一キューへ送る。複数の設定タブが異なる項目を古い表示状態から変更しても、`autoLoudnessSettings` 全体を置換せず最新値へマージする
 - **CM 区間検出**: 独立した 2 つの指標を使う
-  - プレイヤーの cue: メディアエンジンは worker で動き、再生する CM ごとに cue をページへ post する。`Worker` コンストラクタを包んで message リスナーを足し、`rollType` と `startTime` / `endTime` を持つ cue を読む。この 2 つは attach している要素の media 時刻で、CM の終わりと一致する。CM 中はプレイヤーがもう 1 つ動いて自分の CM を別の時間軸で cue するため、再生位置がその区間に入っている cue だけを受け取る
+  - プレイヤーの cue: メディアエンジンは worker で動き、再生する CM ごとに cue をページへ post する。`Worker` コンストラクタを包んで message リスナーを足し、`rollType` と `startTime` / `endTime` を持つ cue を読む。この 2 つは attach している要素の media 時刻で、CM の終わりと一致する。CM 中はプレイヤーがもう 1 つ動いて自分の CM を別の時間軸で cue するため、再生位置がその区間に入っている cue だけを受け取る。**受理の範囲と CM 判定は別**で、受理は開始 1 秒前から、CM 中の判定は開始以降 — 早く届いた cue が本編に CM Gain を掛けない。CM を通り過ぎたら区間を捨てるので、再生位置が戻っても同じ CM は開かない
+  - cue の保持期間: cue は media に属する。計測リセット (popup の操作や owner ID 確定でも走る) では捨てず、SPA 遷移の `mediaChanged` と要素の差し替えでだけ捨てる
   - DOM: `[data-a-target="video-ad-countdown"]` / `[data-test-selector="ad-banner-default-text"]` の有無
 - **2 つの指標の使い分け**: cue は CM の最初の音声とほぼ同時に届き、CM の終わりも正確に示す。DOM 指標は CM の最初の音声より遅れて現れ、CM 後も DOM に残ることがある。したがって cue を 1 つでも受け取った media では cue だけで開閉し、cue の来ない media (VOD のクライアント側挿入の CM) では DOM 指標へ戻る
 - **CM 要素**: VOD の CM は本編要素を停止させたまま別の `<video>` で再生され、その要素は本編要素の volume を無視して自前の volume で鳴る。本編要素が停止していて別の要素が鳴っているときは、その要素にも `MediaElementSource` + `GainNode` を挟み、`baseline * adGainOffset * (本編 volume / 当該要素の volume)` を掛ける。CM が終わればゲインを 1.0 へ戻し、要素が DOM から消えたら切り離す。計測はこの要素からは採らない
