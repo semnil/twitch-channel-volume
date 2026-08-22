@@ -395,14 +395,22 @@
     }
   });
 
+  function revealPopup() {
+    // Commit the values the load wrote while the transitions are off, then show
+    // the popup on the next frame.
+    void document.body.offsetWidth;
+    requestAnimationFrame(() => {
+      document.body.classList.remove('initializing');
+    });
+  }
+
   applyI18n();
   (async () => {
     try {
       await loadDisplayUnit();
       await refresh();
     } finally {
-      void document.body.offsetWidth;
-      requestAnimationFrame(() => document.body.classList.remove('initializing'));
+      revealPopup();
     }
   })();
   setInterval(refresh, DISPLAY_UPDATE_INTERVAL_MS);

@@ -4164,14 +4164,61 @@ test('options disables settings until load and saves only field mutations', () =
   assert.doesNotMatch(source, /chrome\.storage\.local\.set\(\{\s*\[SETTINGS_KEY\]/);
 });
 
-test('the options page ships hidden with the animations of its controls off', () => {
-  const html = fs.readFileSync(path.join(__dirname, 'options.html'), 'utf8');
-  assert.match(html, /<body class="initializing">/);
-  assert.match(html, /body\.initializing\s*\{[^}]*visibility:\s*hidden;/s);
-  // The load writes both of these controls. With their transitions left on, the
-  // stored value is what they animate to once the page is on screen.
-  assert.match(html, /body\.initializing[^{]*\.switch-slider[^{]*\{[^}]*transition:\s*none;/s);
-  assert.match(html, /body\.initializing[^{]*#unitToggle button\s*\{[^}]*transition:\s*none;/s);
+// A control whose transition survives initialization animates from its markup
+// default into its stored value after the page is already on screen. Only a
+// universal rule covers every control, including ones added later.
+function suppressesEveryTransition(html) {
+  const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
+  for (const rule of style.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (!/transition\s*:\s*none\s*!important/.test(rule[2])) continue;
+    const selectors = rule[1].split(',').map((selector) => selector.trim().replace(/\s+/g, ' '));
+    if (['*', '*::before', '*::after']
+      .every((universal) => selectors.includes('body.initializing ' + universal))) return true;
+  }
+  return false;
+}
+
+function revealBody(source, name) {
+  const start = source.indexOf(`function ${name}()`);
+  if (start < 0) return null;
+  const open = source.indexOf('{', start);
+  let depth = 0;
+  let i = open;
+  for (; i < source.length; i++) {
+    if (source[i] === '{') depth++;
+    else if (source[i] === '}' && --depth === 0) break;
+  }
+  return source.slice(open, i + 1);
+}
+
+test('both pages ship hidden and hold every transition until the values are written', () => {
+  for (const [page, htmlName, sourceName, reveal, fn] of [
+    ['options', 'options.html', 'options.js', /\.finally\(revealOptions\);/, 'revealOptions'],
+    ['popup', 'popup.html', 'popup.js', /finally \{\s*revealPopup\(\);/, 'revealPopup']
+  ]) {
+    const html = fs.readFileSync(path.join(__dirname, htmlName), 'utf8');
+    const source = fs.readFileSync(path.join(__dirname, sourceName), 'utf8');
+    assert.match(html, /<body class="initializing">/, page);
+    assert.match(html, /body\.initializing\s*\{[^}]*visibility:\s*hidden;/s, page);
+    assert.ok(suppressesEveryTransition(html), `${page} stops every transition while initializing`);
+    assert.match(source, reveal, `${page} reveals after the load settles either way`);
+
+    const body = revealBody(source, fn);
+    assert.ok(body, `${page} reveals from a named function`);
+    const flush = body.indexOf('document.body.offsetWidth');
+    const frame = body.indexOf('requestAnimationFrame(');
+    const drop = body.indexOf("classList.remove('initializing')");
+    // Dropping the class in the style pass that wrote the values leaves the
+    // pre-write style as the starting point of every transition.
+    assert.ok(
+      flush > -1 && flush < frame && frame < drop,
+      `${page} flushes the written values before dropping the class on the next frame`
+    );
+    assert.equal(
+      (source.match(new RegExp(fn, 'g')) || []).length, 2,
+      `${page} reveals from one place`
+    );
+  }
 });
 
 test('the options page offers no destructive action over a list it has not read', () => {

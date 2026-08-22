@@ -13,9 +13,12 @@ body {
   min-height: 100vh;
 }
 body.initializing { visibility: hidden; }
-body.initializing .toggle-switch .switch-slider,
-body.initializing .toggle-switch .switch-slider::before,
-body.initializing #unitToggle button { transition: none; }
+/* Controls take their stored values in one step while initializing; the
+   revealed page never shows a markup default. */
+body.initializing,
+body.initializing *,
+body.initializing *::before,
+body.initializing *::after { transition: none !important; }
 
 .container {
   max-width: 760px;
