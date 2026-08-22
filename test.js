@@ -1165,6 +1165,19 @@ test('privacy policies list exactly the manifest permissions', () => {
   }
 });
 
+test('the page is given the worklet module and nothing else', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, 'manifest.json'), 'utf8'));
+  // The audit report cites this test for what the extension exposes to the page.
+  assert.deepEqual(
+    manifest.web_accessible_resources.flatMap((entry) => entry.resources),
+    ['audio-worklet.js']
+  );
+  assert.deepEqual(
+    manifest.web_accessible_resources.flatMap((entry) => entry.matches).sort(),
+    ['*://*.twitch.tv/*', '*://clips.twitch.tv/*']
+  );
+});
+
 test('suggestedGain stays at unity until a gated measurement exists', () => {
   assert.equal(u.suggestedGain(-Infinity, -18), 1.0);
   assert.equal(u.suggestedGain(NaN, -18), 1.0);
@@ -2670,6 +2683,41 @@ test('content rejects Manual gain changes while an Auto mutation is pending', as
     true
   );
   assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].gainVod, 0.5);
+});
+
+test('the fetch hook hands back the response the page asked for', async () => {
+  const harness = createPageBridgeHarness();
+  harness.messages.length = 0;
+  let cloned = 0;
+  const untouched = harness.fetch('https://www.twitch.tv/api/something');
+  const plain = {
+    clone() {
+      cloned++;
+      return { async json() { return {}; } };
+    }
+  };
+  harness.resolveFetch(plain);
+  // A response the hook has no interest in is neither read nor replaced.
+  assert.equal(await untouched, plain);
+  await flushTasks();
+  assert.equal(cloned, 0);
+  assert.deepEqual(harness.messages.filter((message) => message.event === 'owner'), []);
+
+  const read = harness.fetch('https://gql.twitch.tv/gql');
+  const answered = {
+    clone() {
+      return {
+        async json() {
+          return { data: { user: { id: '123', login: 'owner', displayName: 'Owner' } } };
+        }
+      };
+    }
+  };
+  harness.resolveFetch(answered);
+  // The one it does read reaches the page as the very same response.
+  assert.equal(await read, answered);
+  await flushTasks();
+  assert.equal(harness.messages.filter((message) => message.event === 'owner').length, 1);
 });
 
 test('GraphQL owner fallback keeps the request-time VOD identity across navigation', async () => {
