@@ -708,7 +708,12 @@ function stubElement(id) {
 }
 
 
-function createOptionsHarness({ settings = {}, channelVolumes = {} } = {}) {
+function createOptionsHarness({
+  settings = {},
+  channelVolumes = {},
+  deferStorage = false,
+  failStorage = false
+} = {}) {
   const messages = JSON.parse(
     fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json'), 'utf8')
   );
@@ -736,8 +741,13 @@ function createOptionsHarness({ settings = {}, channelVolumes = {} } = {}) {
     return elements.get(id);
   }
 
+  const body = stubElement('body');
+  // options.html ships these classes: the page stays hidden until the load
+  // renders, and the error line stays out of the layout until a save fails.
+  body.className = 'initializing';
+  element('settingsError').className = 'settings-error hidden';
   const document = {
-    body: stubElement('body'),
+    body,
     getElementById: element,
     createElement: () => stubElement(''),
     createTextNode: (text) => ({ textContent: text }),
@@ -749,9 +759,20 @@ function createOptionsHarness({ settings = {}, channelVolumes = {} } = {}) {
     }
   };
 
+  let resolveStorageGet = null;
+  const storageGate = deferStorage
+    ? new Promise((resolve) => { resolveStorageGet = resolve; })
+    : Promise.resolve();
+
   const chrome = {
     storage: {
-      local: { async get(keys) { return readStoredKeys(stored, keys); } },
+      local: {
+        async get(keys) {
+          await storageGate;
+          if (failStorage) throw new Error('storage unavailable');
+          return readStoredKeys(stored, keys);
+        }
+      },
       onChanged: { addListener() {} }
     },
     runtime: {
@@ -781,8 +802,14 @@ function createOptionsHarness({ settings = {}, channelVolumes = {} } = {}) {
 
   return {
     el: element,
+    body,
     i18nNodes,
     sent,
+    releaseStorage() {
+      assert.ok(resolveStorageGet, 'the storage read is not pending');
+      resolveStorageGet();
+      resolveStorageGet = null;
+    },
     message: (key) => (messages[key] ? messages[key].message : key)
   };
 }
@@ -4128,6 +4155,44 @@ test('options disables settings until load and saves only field mutations', () =
   assert.match(source, /loadAll\(\)[\s\S]*operation:\s*'normalizeChannels'/);
   assert.match(source, /setSettingsControlsDisabled\(true\);\s*loadAll\(\)/s);
   assert.doesNotMatch(source, /chrome\.storage\.local\.set\(\{\s*\[SETTINGS_KEY\]/);
+});
+
+test('the options page ships hidden with the animations of its controls off', () => {
+  const html = fs.readFileSync(path.join(__dirname, 'options.html'), 'utf8');
+  assert.match(html, /<body class="initializing">/);
+  assert.match(html, /body\.initializing\s*\{[^}]*visibility:\s*hidden;/s);
+  // The load writes both of these controls. With their transitions left on, the
+  // stored value is what they animate to once the page is on screen.
+  assert.match(html, /body\.initializing[^{]*\.switch-slider[^{]*\{[^}]*transition:\s*none;/s);
+  assert.match(html, /body\.initializing[^{]*#unitToggle button\s*\{[^}]*transition:\s*none;/s);
+});
+
+test('options put the stored values on their controls before showing the page', async () => {
+  const harness = createOptionsHarness({
+    settings: { targetLufs: -24, adGainDb: -12, displayUnit: 'dB', showGainOverlay: false },
+    deferStorage: true
+  });
+  await flushTasks(8);
+  assert.ok(harness.body.classList.contains('initializing'), 'hidden while the read is pending');
+  assert.equal(harness.el('targetLufsValue').textContent, '');
+
+  harness.releaseStorage();
+  await flushTasks(8);
+  assert.equal(harness.el('targetLufs').value, '-24');
+  assert.equal(harness.el('targetLufsValue').textContent, '-24 LUFS');
+  assert.equal(harness.el('adGainValue').textContent, '-12 dB');
+  assert.equal(harness.el('overlayToggle').checked, false);
+  assert.equal(harness.el('targetLufs').disabled, false);
+  assert.equal(harness.body.classList.contains('initializing'), false);
+});
+
+test('options show the page even when the load that fills it fails', async () => {
+  const harness = createOptionsHarness({ failStorage: true });
+  await flushTasks(8);
+  // Revealing only on success leaves the viewer looking at a blank window.
+  assert.equal(harness.body.classList.contains('initializing'), false);
+  assert.equal(harness.el('targetLufs').disabled, true);
+  assert.equal(harness.el('settingsError').classList.contains('hidden'), false);
 });
 
 test('popup disables Manual and Apply controls while an Auto update is pending', () => {
