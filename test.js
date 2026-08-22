@@ -697,7 +697,8 @@ function createOptionsHarness({ settings = {}, channelVolumes = {} } = {}) {
   const context = vm.createContext({
     ...u,
     msg: (key, substitutions) => {
-      const text = messages[key] ? messages[key].message : key;
+      assert.ok(messages[key], `msg('${key}') has no message`);
+      const text = messages[key].message;
       return substitutions && substitutions.length ? text.replace('$VALUE$', substitutions[0]) : text;
     },
     chrome,
@@ -806,7 +807,11 @@ function createPopupHarness({
   const context = vm.createContext({
     ...u,
     msg: (key, substitutions) => {
-      const text = messages[key] ? messages[key].message : key;
+      // A key the locale does not declare reaches the viewer as its own name.
+      // Refusing it here covers every path these tests run, including the ones
+      // no static scan can name.
+      assert.ok(messages[key], `msg('${key}') has no message`);
+      const text = messages[key].message;
       return substitutions && substitutions.length
         ? text.replace('$VALUE$', substitutions[0])
         : text;
@@ -1128,196 +1133,30 @@ test('resolvePreferredGain ignores an Auto gain measured at an unknown volume', 
   assert.equal(u.resolvePreferredGain(manual, 'live', false, -Infinity, -18).gain, 2.0);
 });
 
-// A message is read at a call site, not wherever its characters appear. The
-// scanners below take keys from token and attribute positions, and refuse to
-// guess: a construct they cannot classify fails the test that uses them.
+// Where the localized strings are checked, and what each check is worth.
+//
+// Reading JavaScript well enough to name every call site needs a parser, and
+// a hand-written one keeps meeting the language: comments, then strings,
+// templates and regular expressions, then `x.msg(`, `of`, a local named msg.
+// So the checks below do not try. The two that have to be right are decided
+// by running the pages, and the text search that remains is only asked
+// whether a translation is mentioned at all.
 
-// `/` starts a regular expression after these, and divides after a value.
-// `this`, `true`, `false`, `null` and `super` are values, so they are not here.
-const REGEX_MAY_FOLLOW = new Set([
-  'await', 'break', 'case', 'catch', 'class', 'const', 'continue', 'debugger',
-  'default', 'delete', 'do', 'else', 'enum', 'export', 'extends', 'finally',
-  'for', 'function', 'if', 'implements', 'import', 'in', 'instanceof',
-  'interface', 'let', 'new', 'of', 'package', 'private', 'protected', 'public',
-  'return', 'static', 'switch', 'throw', 'try', 'typeof', 'var', 'void',
-  'while', 'with', 'yield'
-]);
-const CONTROL_HEADS = new Set(['if', 'for', 'while', 'switch', 'catch', 'with']);
+// Raw text and escapable raw text: what is inside is characters, not markup.
+// (HTML parsing spec, tokenizer: RAWTEXT, RCDATA and PLAINTEXT states.)
+const RAW_TEXT_ELEMENTS = [
+  'script', 'style', 'textarea', 'title', 'iframe', 'xmp',
+  'noembed', 'noframes', 'noscript', 'plaintext'
+];
 
-function jsTokens(source) {
-  const tokens = [];
-  const nameChar = (character) => /[A-Za-z0-9_$]/.test(character);
-  let previous = null;
-  const push = (token) => { tokens.push(token); previous = token; return token; };
-  const templates = [];
-  const parens = [];
-  let depth = 0;
-  let i = 0;
-
-  const readTemplateChunk = () => {
-    let value = '';
-    while (i < source.length) {
-      const character = source[i];
-      if (character === '\\') { value += source[i + 1] || ''; i += 2; continue; }
-      if (character === '`') { i++; push({ type: 'string', quoted: false, value }); templates.pop(); return; }
-      if (character === '$' && source[i + 1] === '{') {
-        i += 2;
-        push({ type: 'string', quoted: false, value });
-        return;
-      }
-      value += source[i];
-      i++;
-    }
-  };
-
-  // Everything a `/` can follow, decided rather than guessed. A `}` leaves it
-  // open — block or object literal — so it is reported instead of assumed.
-  const slashStarts = () => {
-    if (!previous) return 'regex';
-    if (previous.type === 'punct') {
-      if (previous.value === ')') return previous.controlHead ? 'regex' : 'division';
-      if (previous.value === ']') return 'division';
-      if (previous.value === '}') return 'unclassified';
-      return 'regex';
-    }
-    if (previous.type === 'name') {
-      return REGEX_MAY_FOLLOW.has(previous.value) ? 'regex' : 'division';
-    }
-    return 'division';
-  };
-
-  while (i < source.length) {
-    const character = source[i];
-    const next = source[i + 1];
-
-    if (/\s/.test(character)) { i++; continue; }
-    if (character === '/' && next === '/') {
-      while (i < source.length && source[i] !== '\n') i++;
-      continue;
-    }
-    if (character === '/' && next === '*') {
-      i += 2;
-      while (i < source.length && !(source[i] === '*' && source[i + 1] === '/')) i++;
-      i += 2;
-      continue;
-    }
-    if (character === '`') {
-      i++;
-      templates.push(depth);
-      readTemplateChunk();
-      continue;
-    }
-    if (character === '}' && templates.length && templates[templates.length - 1] === depth) {
-      i++;
-      readTemplateChunk();
-      continue;
-    }
-    if (character === "'" || character === '"') {
-      const quote = character;
-      let value = '';
-      i++;
-      while (i < source.length && source[i] !== quote) {
-        if (source[i] === '\\') { value += source[i + 1] || ''; i += 2; continue; }
-        value += source[i];
-        i++;
-      }
-      i++;
-      push({ type: 'string', quoted: true, value });
-      continue;
-    }
-    if (character === '/') {
-      const role = slashStarts();
-      if (role === 'unclassified') {
-        push({ type: 'unclassified', value: '/' });
-        i++;
-        continue;
-      }
-      if (role === 'division') {
-        push({ type: 'punct', value: '/' });
-        i++;
-        continue;
-      }
-      i++;
-      while (i < source.length && source[i] !== '/') {
-        if (source[i] === '\\') { i += 2; continue; }
-        if (source[i] === '[') {
-          while (i < source.length && source[i] !== ']') i += source[i] === '\\' ? 2 : 1;
-        }
-        i++;
-      }
-      i++;
-      while (i < source.length && nameChar(source[i])) i++;
-      push({ type: 'regex' });
-      continue;
-    }
-    if (nameChar(character)) {
-      let value = '';
-      while (i < source.length && nameChar(source[i])) value += source[i++];
-      push({ type: 'name', value });
-      continue;
-    }
-    if (character === '(') {
-      const controlHead = !!previous && previous.type === 'name' && CONTROL_HEADS.has(previous.value);
-      parens.push(controlHead);
-      push({ type: 'punct', value: '(' });
-      i++;
-      continue;
-    }
-    if (character === ')') {
-      push({ type: 'punct', value: ')', controlHead: parens.pop() === true });
-      i++;
-      continue;
-    }
-    if (character === '{') depth++;
-    if (character === '}') depth--;
-    push({ type: 'punct', value: character });
-    i++;
+function htmlMarkup(source) {
+  let markup = source.replace(/<!--[\s\S]*?-->/g, '');
+  for (const name of RAW_TEXT_ELEMENTS) {
+    markup = markup.replace(new RegExp(`<${name}\\b[\\s\\S]*?</${name}>`, 'gi'), '');
   }
-  return tokens;
+  return markup;
 }
 
-// A call site is `msg` `(` '<key>' and then the end of that argument. Anything
-// else built onto the key — a template chunk, a concatenation — is not a key
-// this scan can name, and shows up in msgCallsNeedingReview instead.
-function messageKeysInJs(source) {
-  const tokens = jsTokens(source);
-  const found = new Set();
-  for (const site of msgCallSites(tokens)) {
-    if (site.key !== null) found.add(site.key);
-  }
-  return found;
-}
-
-function msgCallSites(tokens) {
-  const sites = [];
-  for (let i = 0; i < tokens.length; i++) {
-    const token = tokens[i];
-    if (token.type !== 'name' || token.value !== 'msg') continue;
-    const before = tokens[i - 1];
-    // `function msg(` declares it; `x.msg(` or `x?.msg(` calls something else.
-    if (before && before.type === 'name' && before.value === 'function') continue;
-    if (before && before.type === 'punct' && (before.value === '.' || before.value === '?')) continue;
-    const open = tokens[i + 1];
-    if (!open || open.type !== 'punct' || open.value !== '(') continue;
-    const argument = tokens[i + 2];
-    const after = tokens[i + 3];
-    const literal = argument && argument.type === 'string' && argument.quoted &&
-      after && after.type === 'punct' && (after.value === ',' || after.value === ')');
-    sites.push({ key: literal ? argument.value : null });
-  }
-  return sites;
-}
-
-function msgCallsNeedingReview(source) {
-  return msgCallSites(jsTokens(source)).filter((site) => site.key === null).length;
-}
-
-function unclassifiedTokens(source) {
-  return jsTokens(source).filter((token) => token.type === 'unclassified').length;
-}
-
-// Attribute positions in start tags. A value that spells out an attribute is a
-// value: quotes are tracked so the tag ends where the markup says it does.
 function htmlStartTags(markup) {
   const tags = [];
   for (let i = 0; i < markup.length; i++) {
@@ -1340,13 +1179,8 @@ function htmlStartTags(markup) {
   return tags;
 }
 
-function htmlMarkup(source) {
-  return source
-    .replace(/<!--[\s\S]*?-->/g, '')
-    // Raw text: what is inside reads as characters, not as tags.
-    .replace(/<(style|script|textarea|title)\b[\s\S]*?<\/\1>/gi, '');
-}
-
+// Quoted attribute values only. An unquoted one is not read here, which is
+// why the count check below exists: it fails rather than passing them over.
 function i18nKeysInOrder(source) {
   const keys = [];
   for (const tag of htmlStartTags(htmlMarkup(source))) {
@@ -1358,12 +1192,8 @@ function i18nKeysInOrder(source) {
   return keys;
 }
 
-function messageKeysInHtml(source) {
-  return new Set(i18nKeysInOrder(source));
-}
-
 // The manifest names a message as the whole value of a field.
-function messageKeysInJson(source) {
+function manifestMessageKeys(source) {
   const found = new Set();
   const walk = (value) => {
     if (typeof value === 'string') {
@@ -1377,79 +1207,56 @@ function messageKeysInJson(source) {
   return found;
 }
 
-function messageKeysIn(name, source) {
-  if (name.endsWith('.json')) return messageKeysInJson(source);
-  if (name.endsWith('.html')) return messageKeysInHtml(source);
-  return messageKeysInJs(source);
-}
-
-// Whatever the package carries can read a message, so the scan follows the
+// Whatever the package carries can read a message, so the files come from the
 // same selection rather than a list that has to be remembered.
-function localizedSources() {
+function packagedSources() {
   const listed = spawnSync('python3', ['-B', 'pack.py', '--list'], {
     cwd: __dirname,
     encoding: 'utf8'
   });
   assert.equal(listed.status, 0, listed.stderr);
   const packaged = listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
-  const sources = packaged.filter((name) => /\.(js|html|json)$/.test(name) && !name.startsWith('_locales'));
-  assert.ok(sources.includes('manifest.json') && sources.includes('popup.js'), packaged.join(' '));
-  return sources;
+  assert.ok(packaged.includes('manifest.json') && packaged.includes('popup.js'), packaged.join(' '));
+  return packaged;
 }
 
-test('the message-key scan reads call sites, not text that looks like one', () => {
-  const js = [
-    "const live = msg('typeLive');",
-    "const inTemplate = `${esc(msg('typeVod'))}`;",
-    "const withArgs = msg('applyToChannelWithValue', [gain]);",
-    "// const commented = msg('orphanLine');",
-    "/* msg('orphanBlock') */",
-    "const text = \"msg('orphanString')\";",
-    "const quasi = `msg('orphanQuasi')`;",
-    "const pattern = /msg\\('orphanRegex'\\)/;",
-    "function f(x) { throw /msg('orphanThrow')/.test(x); }",
-    "const url = 'https://www.twitch.tv/settings'; // msg('orphanTail')"
-  ].join('\n');
-  assert.deepEqual(
-    [...messageKeysInJs(js)].sort(),
-    ['applyToChannelWithValue', 'typeLive', 'typeVod']
-  );
-
-  // Keys built at runtime are not keys this scan can name, and it says so
-  // rather than taking the leading string for the whole argument.
-  for (const call of [
-    "msg(`openOnTwitch${suffix}`)",
-    "msg('openOnTwitch' + suffix)",
-    "msg(key)",
-    "msg(['type', 'Clip'].join(''))"
-  ]) {
-    assert.deepEqual([...messageKeysInJs(call)], [], call);
-    assert.equal(msgCallsNeedingReview(call), 1, call);
+test('every data-i18n in the pages is one the extractor reads', () => {
+  // The extractor handles quoted attributes in start tags. Anything else
+  // spelling `data-i18n` — unquoted, inside raw text, split across a tag it
+  // cannot see — leaves the counts apart, and this fails rather than passing
+  // the attribute over.
+  for (const name of ['popup.html', 'options.html']) {
+    const source = fs.readFileSync(path.join(__dirname, name), 'utf8');
+    const mentions = (source.match(/data-i18n/g) || []).length;
+    assert.equal(i18nKeysInOrder(source).length, mentions, `${name} spells data-i18n somewhere the extractor does not read`);
   }
-  assert.equal(msgCallsNeedingReview("const live = msg('typeLive');"), 0);
-  // Division after a value, a regex after a keyword or a control head.
-  assert.equal(unclassifiedTokens('const a = (b - c) / d;'), 0);
-  assert.deepEqual([...messageKeysInJs("if (a) /x/.test(b); const t = msg('typeLive');")], ['typeLive']);
+});
 
-  const html = [
-    '<h2 data-i18n="settings">Settings</h2>',
-    '<h2 title=\'x data-i18n="orphanAttr"\'>Settings</h2>',
-    '<p>data-i18n="orphanText"</p>',
-    '<!-- <h2 data-i18n="orphanHtml">Old</h2> -->',
-    '<style>.x::after { content: "data-i18n=\\"orphanCss\\""; }</style>',
-    '<script>const s = \'data-i18n="orphanScript"\';</script>'
-  ].join('\n');
-  assert.deepEqual([...messageKeysInHtml(html)].sort(), ['settings']);
+test('the pages mark the elements they are meant to mark', async () => {
+  // A snapshot: an attribute that disappears, moves into raw text or gains a
+  // different key changes this list. Keeping it here is what makes the
+  // extractor's blind spots fail instead of pass.
+  const popupKeys = i18nKeysInOrder(fs.readFileSync(path.join(__dirname, 'popup.html'), 'utf8'));
+  assert.deepEqual(popupKeys, [
+    'channelNotDetected', 'adDetected', 'resetMeasurement', 'resetMeasurementFailed',
+    'audioUnavailable', 'labelIntegrated', 'labelSuggested', 'labelCurrent',
+    'labelFallback', 'autoApplyLoudness', 'autoSaveFailed', 'applyToChannel',
+    'hintNoLufs', 'manualVolume'
+  ]);
 
-  assert.deepEqual(
-    [...messageKeysInJson('{"name":"__MSG_extName__","other":"see __MSG_notAKey__ inline"}')],
-    ['extName']
-  );
+  const optionsKeys = i18nKeysInOrder(fs.readFileSync(path.join(__dirname, 'options.html'), 'utf8'));
+  assert.deepEqual(optionsKeys, [
+    'settings', 'settingsSaveFailed', 'targetLufs', 'targetLufsDesc',
+    'allChannelsAutoApply', 'allChannelsAutoApplyDesc', 'typeLive', 'typeVod',
+    'typeClip', 'adGain', 'adGainDesc', 'displayUnit', 'displayUnitDesc',
+    'showGainOverlay', 'showGainOverlayDesc', 'savedChannels', 'clearAll',
+    'colChannel', 'typeLive', 'typeVod', 'typeClip', 'noSavedChannels'
+  ]);
 });
 
 test('both pages localize every element their markup marks', async () => {
-  // The scan can name the static keys; what applyI18n does with the one it
-  // reads at runtime is only visible by running it.
+  // What applyI18n does with the key it reads at runtime is only visible by
+  // running it: the harness msg refuses a key the locale does not declare.
   for (const [label, harness] of [
     ['popup', createPopupHarness()],
     ['options', createOptionsHarness()]
@@ -1464,33 +1271,31 @@ test('both pages localize every element their markup marks', async () => {
   }
 });
 
-test('the sources hold no msg call this scan cannot classify', () => {
-  const needingReview = [];
-  for (const name of localizedSources().filter((file) => file.endsWith('.js'))) {
-    const source = fs.readFileSync(path.join(__dirname, name), 'utf8');
-    assert.equal(unclassifiedTokens(source), 0, `${name} holds a token the scan cannot classify`);
-    for (let i = 0; i < msgCallsNeedingReview(source); i++) needingReview.push(name);
-  }
-  // applyI18n passes the key it read from a data-i18n attribute, which the
-  // markup scan already counts. Any other runtime key has to land here first.
-  assert.deepEqual(needingReview.sort(), ['options.js', 'popup.js']);
-});
-
-test('every message key is read somewhere and both locales carry it', () => {
+test('no message is declared that nothing mentions, and both locales agree', () => {
   const ja = JSON.parse(fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json'), 'utf8'));
   const en = JSON.parse(fs.readFileSync(path.join(__dirname, '_locales/en/messages.json'), 'utf8'));
   assert.deepEqual(Object.keys(ja).sort(), Object.keys(en).sort());
 
-  const referenced = new Set();
-  for (const name of localizedSources()) {
+  const mentioned = new Set();
+  for (const name of packagedSources()) {
     const source = fs.readFileSync(path.join(__dirname, name), 'utf8');
-    for (const key of messageKeysIn(name, source)) referenced.add(key);
+    if (name.endsWith('.json')) {
+      for (const key of manifestMessageKeys(source)) mentioned.add(key);
+      continue;
+    }
+    if (name.endsWith('.html')) {
+      for (const key of i18nKeysInOrder(source)) mentioned.add(key);
+      continue;
+    }
+    // Over-approximating on purpose: a quoted mention counts, wherever it is.
+    // A key nothing mentions is dead for certain; whether every mention is a
+    // live call is what running the pages answers.
+    for (const key of Object.keys(ja)) {
+      if (source.includes(`'${key}'`)) mentioned.add(key);
+    }
   }
 
-  const declared = Object.keys(ja);
-  assert.deepEqual(declared.filter((key) => !referenced.has(key)), []);
-  // The other direction catches a typo, which msg() answers with the key text.
-  assert.deepEqual([...referenced].filter((key) => !declared.includes(key)).sort(), []);
+  assert.deepEqual(Object.keys(ja).filter((key) => !mentioned.has(key)), []);
 });
 
 test('privacy policies list exactly the manifest permissions', () => {
