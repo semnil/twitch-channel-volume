@@ -75,7 +75,7 @@ content.js (ISOLATED world content script, document_idle)
 │   は cue を 1 つも受け取っていない media でだけ ad gain を駆動する
 ├── SPA navigation: history.pushState/replaceState hook + popstate + MutationObserver
 ├── channelVolumes の更新は Service Worker の単一キューへ委譲し、onChanged でクロスタブ同期
-├── popup/options からの chrome.tabs.sendMessage を `getState` / `setGain` / `setAutoApplyLoudness` / `resetMeasurement` / `resume` / `deleteChannel` で処理
+├── popup からの chrome.tabs.sendMessage を `getState` / `setGain` / `setAutoApplyLoudness` / `resetMeasurement` / `resume` で処理 (options は削除・全消去を Service Worker へ直接送る)
 └── Storage
     ├── autoLoudnessSettings: { targetLufs, adGainDb, displayUnit, showGainOverlay,
     │     autoApplyLoudnessLiveDefault, autoApplyLoudnessVodDefault, autoApplyLoudnessClipDefault }
