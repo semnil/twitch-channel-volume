@@ -329,9 +329,12 @@ function measured(lastLufs) {
   };
 }
 
-function createPageBridgeHarness() {
+const BRIDGE_SCRIPT_URL = 'chrome-extension://abcdefghijklmnopabcdefghijklmnop/page-bridge.js';
+
+function createPageBridgeHarness(scriptUrl = BRIDGE_SCRIPT_URL) {
   const messages = [];
   const logs = [];
+  const workletModules = [];
   const listeners = {};
   const location = { href: 'https://www.twitch.tv/videos/100' };
   const videoListeners = {};
@@ -369,7 +372,7 @@ function createPageBridgeHarness() {
       this.currentTime = 0;
       this.state = 'running';
       this.destination = {};
-      this.audioWorklet = { addModule: async () => {} };
+      this.audioWorklet = { addModule: async (url) => { workletModules.push(url); } };
     }
     createGain() {
       return {
@@ -408,7 +411,7 @@ function createPageBridgeHarness() {
   vm.runInContext(
     fs.readFileSync(path.join(__dirname, 'page-bridge.js'), 'utf8'),
     context,
-    { filename: 'page-bridge.js' }
+    { filename: scriptUrl }
   );
   const dispatchCommand = async (cmd, data = {}) => {
     const pending = (listeners.message || []).map((listener) => listener({
@@ -426,12 +429,11 @@ function createPageBridgeHarness() {
     location,
     messages,
     logs,
+    workletModules,
     fetch: (...args) => window.fetch(...args),
     resolveFetch(response) { resolveFetch(response); },
     async startMeasurement() {
-      await dispatchCommand('init', {
-        workletUrl: 'chrome-extension://test/audio-worklet.js'
-      });
+      await dispatchCommand('init');
       await dispatchCommand('attach');
       assert.equal(typeof measurementPort?.onmessage, 'function');
     },
@@ -2843,6 +2845,40 @@ test('gatedIntegratedLufs: constant signal close to single-block LUFS', () => {
   const blocks = Array(50).fill(ms);
   const result = u.gatedIntegratedLufs(blocks);
   assert.ok(Math.abs(result - (-0.691)) < 1e-6);
+});
+
+test('page bridge loads the worklet module from its own origin', async () => {
+  const harness = createPageBridgeHarness();
+  const own = 'chrome-extension://abcdefghijklmnopabcdefghijklmnop/audio-worklet.js';
+
+  // page-bridge.js runs in the page's own world, so any script in the page can
+  // send an init command, including one carrying another extension's module.
+  await harness.dispatchCommand('init', {
+    workletUrl: 'chrome-extension://ponmlkjihgfedcbaponmlkjihgfedcba/audio-worklet.js'
+  });
+  await harness.dispatchCommand('init', { workletUrl: 'https://ad.example/audio-worklet.js' });
+  assert.deepEqual(harness.workletModules, [own]);
+
+  // The forged commands must not cost the extension its own measurement.
+  await harness.dispatchCommand('attach');
+  harness.emitMeasurementBlock(0.05);
+  assert.equal(typeof harness.messages.at(-1).integrated, 'number');
+
+  // A later forged command cannot swap the module that is already loaded.
+  await harness.dispatchCommand('init', {
+    workletUrl: 'chrome-extension://ponmlkjihgfedcbaponmlkjihgfedcba/audio-worklet.js'
+  });
+  assert.deepEqual(harness.workletModules, [own]);
+});
+
+test('page bridge loads no module when it cannot name its own origin', async () => {
+  const harness = createPageBridgeHarness('https://www.twitch.tv/inline-script.js');
+
+  await harness.dispatchCommand('init', {
+    workletUrl: 'chrome-extension://abcdefghijklmnopabcdefghijklmnop/audio-worklet.js'
+  });
+  await harness.dispatchCommand('attach');
+  assert.deepEqual(harness.workletModules, []);
 });
 
 test('page bridge Integrated LUFS is invariant to gating window order', async () => {
