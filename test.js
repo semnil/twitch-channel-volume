@@ -663,6 +663,126 @@ function createContentHarness({
   };
 }
 
+function stubElement(id) {
+  const classes = new Set();
+  const listeners = {};
+  const element = {
+    id,
+    listeners,
+    disabled: false,
+    checked: false,
+    value: '',
+    title: '',
+    textContent: '',
+    offsetWidth: 0,
+    attributes: {},
+    classList: {
+      add(...names) { names.forEach((name) => classes.add(name)); },
+      remove(...names) { names.forEach((name) => classes.delete(name)); },
+      contains(name) { return classes.has(name); },
+      toggle(name, force) {
+        const on = force === undefined ? !classes.has(name) : !!force;
+        if (on) classes.add(name); else classes.delete(name);
+        return on;
+      }
+    },
+    get className() { return [...classes].join(' '); },
+    set className(value) {
+      classes.clear();
+      String(value).split(/\s+/).filter(Boolean).forEach((name) => classes.add(name));
+    },
+    get innerHTML() { return element.textContent; },
+    set innerHTML(value) { element.textContent = String(value); },
+    appendChild(node) {
+      element.textContent += node.textContent || '';
+      return node;
+    },
+    getAttribute(name) { return name in element.attributes ? element.attributes[name] : null; },
+    setAttribute(name, value) { element.attributes[name] = value; },
+    addEventListener(type, listener) { (listeners[type] ||= []).push(listener); }
+  };
+  return element;
+}
+
+
+function createOptionsHarness({ settings = {}, channelVolumes = {} } = {}) {
+  const messages = JSON.parse(
+    fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json'), 'utf8')
+  );
+  const elements = new Map();
+  const unitButtons = ['%', 'dB'].map((unit) => {
+    const button = stubElement(`unit-${unit}`);
+    button.setAttribute('data-unit', unit);
+    return button;
+  });
+  const i18nNodes = i18nKeysInOrder(
+    fs.readFileSync(path.join(__dirname, 'options.html'), 'utf8')
+  ).map((key) => {
+    const node = stubElement('');
+    node.setAttribute('data-i18n', key);
+    return node;
+  });
+  const sent = [];
+  const stored = {
+    [u.SETTINGS_KEY]: { targetLufs: -18, adGainDb: -6, displayUnit: '%', showGainOverlay: true, ...settings },
+    [u.CHANNEL_VOLUMES_KEY]: channelVolumes
+  };
+
+  function element(id) {
+    if (!elements.has(id)) elements.set(id, stubElement(id));
+    return elements.get(id);
+  }
+
+  const document = {
+    body: stubElement('body'),
+    getElementById: element,
+    createElement: () => stubElement(''),
+    createTextNode: (text) => ({ textContent: text }),
+    querySelector: () => stubElement(''),
+    querySelectorAll(selector) {
+      if (selector === '[data-i18n]') return i18nNodes;
+      if (selector === '#unitToggle button') return unitButtons;
+      return [];
+    }
+  };
+
+  const chrome = {
+    storage: {
+      local: { async get(keys) { return readStoredKeys(stored, keys); } },
+      onChanged: { addListener() {} }
+    },
+    runtime: {
+      async sendMessage(message) { sent.push(structuredClone(message)); return { ok: true }; }
+    }
+  };
+
+  const context = vm.createContext({
+    ...u,
+    msg: (key, substitutions) => {
+      assert.ok(messages[key], `msg('${key}') has no message`);
+      const text = messages[key].message;
+      return substitutions && substitutions.length ? text.replace('$VALUE$', substitutions[0]) : text;
+    },
+    chrome,
+    document,
+    console: { warn() {}, error() {}, info() {} },
+    setTimeout(callback) { queueMicrotask(callback); return 1; },
+    structuredClone
+  });
+  vm.runInContext(
+    fs.readFileSync(path.join(__dirname, 'options.js'), 'utf8'),
+    context,
+    { filename: 'options.js' }
+  );
+
+  return {
+    el: element,
+    i18nNodes,
+    sent,
+    message: (key) => (messages[key] ? messages[key].message : key)
+  };
+}
+
 function createPopupHarness({
   state = {},
   displayUnit = '%',
@@ -691,47 +811,6 @@ function createPopupHarness({
     ...state
   };
 
-  function stubElement(id) {
-    const classes = new Set();
-    const listeners = {};
-    const element = {
-      id,
-      listeners,
-      disabled: false,
-      checked: false,
-      value: '',
-      title: '',
-      textContent: '',
-      offsetWidth: 0,
-      attributes: {},
-      classList: {
-        add(...names) { names.forEach((name) => classes.add(name)); },
-        remove(...names) { names.forEach((name) => classes.delete(name)); },
-        contains(name) { return classes.has(name); },
-        toggle(name, force) {
-          const on = force === undefined ? !classes.has(name) : !!force;
-          if (on) classes.add(name); else classes.delete(name);
-          return on;
-        }
-      },
-      get className() { return [...classes].join(' '); },
-      set className(value) {
-        classes.clear();
-        String(value).split(/\s+/).filter(Boolean).forEach((name) => classes.add(name));
-      },
-      get innerHTML() { return element.textContent; },
-      set innerHTML(value) { element.textContent = String(value); },
-      appendChild(node) {
-        element.textContent += node.textContent || '';
-        return node;
-      },
-      getAttribute(name) { return name in element.attributes ? element.attributes[name] : null; },
-      setAttribute(name, value) { element.attributes[name] = value; },
-      addEventListener(type, listener) { (listeners[type] ||= []).push(listener); }
-    };
-    return element;
-  }
-
   function element(id) {
     if (!elements.has(id)) elements.set(id, stubElement(id));
     return elements.get(id);
@@ -743,13 +822,23 @@ function createPopupHarness({
     presetButtons.push(button);
   }
 
+  const i18nNodes = i18nKeysInOrder(
+    fs.readFileSync(path.join(__dirname, 'popup.html'), 'utf8')
+  ).map((key) => {
+    const node = stubElement('');
+    node.setAttribute('data-i18n', key);
+    return node;
+  });
+
   const document = {
     body: stubElement('body'),
     getElementById: element,
     createElement: () => stubElement(''),
     createTextNode: (text) => ({ textContent: text }),
     querySelectorAll(selector) {
-      return selector === '.presets button' ? presetButtons : [];
+      if (selector === '.presets button') return presetButtons;
+      if (selector === '[data-i18n]') return i18nNodes;
+      return [];
     }
   };
 
@@ -780,7 +869,11 @@ function createPopupHarness({
   const context = vm.createContext({
     ...u,
     msg: (key, substitutions) => {
-      const text = messages[key] ? messages[key].message : key;
+      // A key the locale does not declare reaches the viewer as its own name.
+      // Refusing it here covers every path these tests run, including the ones
+      // no static scan can name.
+      assert.ok(messages[key], `msg('${key}') has no message`);
+      const text = messages[key].message;
       return substitutions && substitutions.length
         ? text.replace('$VALUE$', substitutions[0])
         : text;
@@ -801,6 +894,7 @@ function createPopupHarness({
   return {
     el: element,
     presets: presetButtons,
+    i18nNodes,
     sent,
     message: (key, substitutions) => {
       const text = messages[key] ? messages[key].message : key;
@@ -1146,6 +1240,359 @@ test('resolvePreferredGain ignores an Auto gain measured at an unknown volume', 
   // The viewer's own manual gain is still honoured when no Auto gain applies.
   const manual = { ...entry, gainLive: 2.0 };
   assert.equal(u.resolvePreferredGain(manual, 'live', false, -Infinity, -18).gain, 2.0);
+});
+
+// Where the localized strings are checked, and what each check is worth.
+//
+// Reading JavaScript well enough to name every call site needs a parser, and
+// a hand-written one keeps meeting the language: comments, then strings,
+// templates and regular expressions, then `x.msg(`, `of`, a local named msg.
+// So the checks below do not try. The two that have to be right are decided
+// by running the pages, and the text search that remains is only asked
+// whether a translation is mentioned at all.
+
+// Raw text and escapable raw text: what is inside is characters, not markup.
+// (HTML parsing spec, tokenizer: RAWTEXT, RCDATA and PLAINTEXT states.) The
+// pages are held to the first two by the test below; the rest are listed so
+// that a page which grows one is read the way a browser reads it.
+const RAW_TEXT_ELEMENTS = [
+  'script', 'style', 'textarea', 'title', 'iframe', 'xmp',
+  'noembed', 'noframes', 'noscript'
+];
+// PLAINTEXT has no end tag: everything after it is text, to end of file.
+// ASCII whitespace, which is what separates the parts of a tag. JavaScript's
+// \s is wider — a no-break space is whitespace to it and text to a browser.
+const HTML_SPACE = '\\t\\n\\f\\r ';
+const IS_HTML_SPACE = /[\t\n\f\r ]/;
+const IS_HTML_SPACE_RUN = /[\t\n\f\r ]+/;
+
+function htmlMarkup(source) {
+  let markup = source.replace(/<!--[\s\S]*?--!?>/g, '');
+  for (const name of RAW_TEXT_ELEMENTS) {
+    // The name ends where a browser ends it, and the end tag closes on
+    // whitespace or a slash as well as on `>`, carrying attributes that are
+    // read and thrown away. (HTML parsing spec, tokenizer: end tag open state.)
+    markup = markup.replace(
+      new RegExp(
+        `<${name}(?=[${HTML_SPACE}/>])[\\s\\S]*?</${name}(?=[${HTML_SPACE}/>])[^>]*>`,
+        'gi'
+      ),
+      ''
+    );
+  }
+  // An opener with no end tag the browser accepts — a stray one, or one
+  // closed with something that is not ASCII whitespace — turns the rest of the
+  // document into text, exactly as PLAINTEXT does.
+  for (const name of [...RAW_TEXT_ELEMENTS, 'plaintext']) {
+    const opener = markup.search(new RegExp(`<${name}(?=[${HTML_SPACE}/>])`, 'i'));
+    if (opener !== -1) markup = markup.slice(0, opener);
+  }
+  return markup;
+}
+
+function htmlStartTags(markup) {
+  const tags = [];
+  for (let i = 0; i < markup.length; i++) {
+    if (markup[i] !== '<' || !/[a-zA-Z]/.test(markup[i + 1] || '')) continue;
+    let quote = '';
+    let j = i + 1;
+    for (; j < markup.length; j++) {
+      const character = markup[j];
+      if (quote) {
+        if (character === quote) quote = '';
+      } else if (character === '"' || character === "'") {
+        quote = character;
+      } else if (character === '>') {
+        break;
+      }
+    }
+    tags.push({ text: markup.slice(i, j), after: j + 1 });
+    i = j;
+  }
+  return tags;
+}
+
+// A start tag handed over one attribute at a time, the way the tokenizer
+// hands them over: a name, then a value that is text. Searching the tag for
+// something that looks like an attribute reads a value again as markup, and an
+// attribute spelled inside another one's value then counts as one of its own.
+function tagAttributes(tag) {
+  const attributes = [];
+  const seen = new Set();
+  const space = (character) => character !== undefined && IS_HTML_SPACE.test(character);
+  let i = 1;
+  while (i < tag.length && !space(tag[i]) && !'/>'.includes(tag[i])) i++;
+  while (i < tag.length) {
+    while (i < tag.length && (space(tag[i]) || tag[i] === '/')) i++;
+    const nameStart = i;
+    while (i < tag.length && !space(tag[i]) && !'/=>'.includes(tag[i])) i++;
+    if (i === nameStart) break;
+    const name = tag.slice(nameStart, i).toLowerCase();
+    while (i < tag.length && space(tag[i])) i++;
+    let value = '';
+    if (tag[i] === '=') {
+      i++;
+      while (i < tag.length && space(tag[i])) i++;
+      const quote = tag[i];
+      if (quote === '"' || quote === "'") {
+        const end = tag.indexOf(quote, i + 1);
+        value = tag.slice(i + 1, end === -1 ? tag.length : end);
+        i = end === -1 ? tag.length : end + 1;
+      } else {
+        const valueStart = i;
+        while (i < tag.length && !space(tag[i]) && tag[i] !== '>') i++;
+        value = tag.slice(valueStart, i);
+      }
+    }
+    // A repeated name is dropped, the way the tokenizer drops it, so the page
+    // and this scan read the same attribute.
+    if (seen.has(name)) continue;
+    seen.add(name);
+    attributes.push([name, value]);
+  }
+  return attributes;
+}
+
+// Each element the page marks, in document order: the key, what names the
+// element in the page, and whether it holds text alone. What is left over the
+// count check below still catches: a mention in a comment, in raw text, or
+// anywhere that is not a start tag leaves the counts apart rather than being
+// passed over.
+function i18nElementsInOrder(source) {
+  const markup = htmlMarkup(source);
+  const marked = [];
+  for (const { text, after } of htmlStartTags(markup)) {
+    const attributes = tagAttributes(text);
+    const key = attributes.find(([name]) => name === 'data-i18n');
+    if (!key) continue;
+    const named = new Map(attributes);
+    const tag = text.slice(1).split(/[\t\n\f\r /]/)[0].toLowerCase();
+    // applyI18n writes textContent, so anything an element holds besides text
+    // is removed when the page is localized. It holds text alone when the
+    // first tag inside it is its own end tag.
+    const inside = markup.slice(after);
+    const child = inside.indexOf('<');
+    marked.push({
+      key: key[1],
+      tag,
+      id: named.get('id') || '',
+      classes: (named.get('class') || '').split(IS_HTML_SPACE_RUN).filter(Boolean),
+      textOnly: child !== -1 && new RegExp(`^</${tag}(?=[${HTML_SPACE}/>])`, 'i').test(inside.slice(child))
+    });
+  }
+  return marked;
+}
+
+function i18nKeysInOrder(source) {
+  return i18nElementsInOrder(source).map((element) => element.key);
+}
+
+// The manifest names a message as the whole value of a field.
+function manifestMessageKeys(source) {
+  const found = new Set();
+  const walk = (value) => {
+    if (typeof value === 'string') {
+      const match = /^__MSG_([A-Za-z0-9_]+)__$/.exec(value);
+      if (match) found.add(match[1]);
+    } else if (value && typeof value === 'object') {
+      Object.values(value).forEach(walk);
+    }
+  };
+  walk(JSON.parse(source));
+  return found;
+}
+
+// Whatever the package carries can read a message, so the files come from the
+// same selection rather than a list that has to be remembered.
+function packagedSources() {
+  const listed = spawnSync('python3', ['-B', 'pack.py', '--list'], {
+    cwd: __dirname,
+    encoding: 'utf8'
+  });
+  assert.equal(listed.status, 0, listed.stderr);
+  const packaged = listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+  assert.ok(packaged.includes('manifest.json') && packaged.includes('popup.js'), packaged.join(' '));
+  return packaged;
+}
+
+test('the extractor reads a page the way a browser does', () => {
+  // Each expectation below is what Chrome 151 puts in the DOM for the same
+  // markup, read back with --dump-dom.
+  const keys = (html) => i18nKeysInOrder(html);
+
+  // An attribute value is text. `_` is a name a browser accepts, and what it
+  // holds never becomes an attribute of its own.
+  assert.deepEqual(keys(`<h2 _='data-i18n="settings"'>Settings</h2>`), []);
+  assert.deepEqual(keys('<h2 data-i18n="settings">Settings</h2>'), ['settings']);
+
+  // An end tag ends on whitespace, and may carry attributes that are dropped.
+  assert.deepEqual(keys('<title><x data-i18n="a"></title ><h2>H</h2>'), []);
+  assert.deepEqual(keys('<title><x data-i18n="a"></title foo=bar><h2 data-i18n="b">B</h2>'), ['b']);
+  assert.deepEqual(keys('<title><x data-i18n="a"></title><h2 data-i18n="b">B</h2>'), ['b']);
+
+  // The name of a raw text element ends where the browser ends it: a longer
+  // name is an element of its own, and the next real end tag is not its.
+  assert.deepEqual(keys('<titles data-i18n="e">E</titles>'), ['e']);
+  assert.deepEqual(
+    keys('<titles data-i18n="e">E</titles><title>x</title><h2 data-i18n="f">F</h2>'),
+    ['e', 'f']
+  );
+
+  // A tag name is not an attribute, however it is spelled.
+  assert.deepEqual(keys('<data-i18n="x">y<h2 data-i18n="g">G</h2>'), ['g']);
+
+  // A value with no quotes is still a value.
+  assert.deepEqual(keys('<h2 data-i18n=c>C</h2><h2 data-i18n=d >D</h2>'), ['c', 'd']);
+});
+
+test('the pages stay inside the markup the extractor reads', () => {
+  for (const name of ['popup.html', 'options.html']) {
+    const source = fs.readFileSync(path.join(__dirname, name), 'utf8');
+    // Raw text swallows what follows it. <title> and the stylesheet and script
+    // tags are the two the pages use, and both are read as raw text.
+    for (const element of ['textarea', 'iframe', 'xmp', 'noembed', 'noframes', 'noscript', 'plaintext']) {
+      assert.doesNotMatch(source, new RegExp(`<${element}\\b`, 'i'), `${name} uses <${element}>`);
+    }
+    // A comment ends on `--!>` as well as on `-->`, and template content is a
+    // fragment that querySelectorAll never reaches. The pages need neither, so
+    // they are refused rather than read two ways.
+    assert.doesNotMatch(source, /<!--/, `${name} carries an HTML comment`);
+    assert.doesNotMatch(source, /<template\b/i, `${name} uses <template>`);
+    // The raw-text elements the pages do use close the plain way. A browser
+    // also closes them on `</title >`, and closes them on nothing at all if
+    // what follows the name is not ASCII whitespace.
+    for (const closing of source.matchAll(/<\/(script|style|title)/gi)) {
+      const after = source[closing.index + closing[0].length];
+      assert.equal(after, '>', `${name} closes <${closing[1]}> with ${JSON.stringify(after)}`);
+    }
+    // Every mention is the attribute itself, spelled the way the extractor
+    // reads it: lower case, quoted, inside a start tag.
+    for (const mention of source.matchAll(/data-i18n/gi)) {
+      const spelling = source.slice(mention.index, mention.index + 'data-i18n="'.length);
+      assert.equal(spelling, 'data-i18n="', `${name} spells an attribute as ${spelling}`);
+    }
+  }
+});
+
+test('every data-i18n in the pages is one the extractor reads', () => {
+  // The extractor handles quoted attributes in start tags. Anything else
+  // spelling `data-i18n` — unquoted, inside raw text, split across a tag it
+  // cannot see — leaves the counts apart, and this fails rather than passing
+  // the attribute over.
+  for (const name of ['popup.html', 'options.html']) {
+    const source = fs.readFileSync(path.join(__dirname, name), 'utf8');
+    const mentions = (source.match(/data-i18n/gi) || []).length;
+    assert.equal(i18nKeysInOrder(source).length, mentions, `${name} spells data-i18n somewhere the extractor does not read`);
+  }
+});
+
+test('the pages mark the elements they are meant to mark', () => {
+  // A snapshot of the key and the element that carries it — tag, id, and the
+  // class tokens kept apart, since the page reads them apart. An attribute
+  // that disappears, moves onto another element or gains a different key
+  // changes this list. Keeping it here is what makes the extractor's blind
+  // spots fail instead of pass.
+  const marked = (name) =>
+    i18nElementsInOrder(fs.readFileSync(path.join(__dirname, name), 'utf8'))
+      .map(({ key, tag, id, classes }) => [key, tag, id, classes]);
+
+  assert.deepEqual(marked('popup.html'), [
+    ['channelNotDetected', 'div', 'channelName', ['channel-name', 'empty']],
+    ['adDetected', 'span', 'adFlag', ['ad-badge', 'hidden']],
+    ['resetMeasurement', 'span', '', ['sr-only']],
+    ['resetMeasurementFailed', 'div', 'resetMeasurementError', ['reset-measurement-error', 'hidden']],
+    ['audioUnavailable', 'div', 'audioError', ['audio-error', 'hidden']],
+    ['labelIntegrated', 'div', '', ['label']],
+    ['labelSuggested', 'div', '', ['label']],
+    ['labelCurrent', 'span', '', []],
+    ['labelFallback', 'span', 'fallbackBadge', ['fallback-badge', 'hidden']],
+    ['autoApplyLoudness', 'div', 'autoApplyLabel', ['auto-label']],
+    ['autoSaveFailed', 'div', 'autoError', ['auto-error', 'hidden']],
+    ['applyToChannel', 'button', 'applyBtn', ['apply-btn']],
+    ['hintNoLufs', 'span', 'applyHint', ['apply-hint']],
+    ['manualVolume', 'span', '', ['label']]
+  ]);
+
+  assert.deepEqual(marked('options.html'), [
+    ['settings', 'h2', '', []],
+    ['settingsSaveFailed', 'div', 'settingsError', ['settings-error', 'hidden']],
+    ['targetLufs', 'div', '', ['setting-label']],
+    ['targetLufsDesc', 'div', '', ['setting-desc']],
+    ['allChannelsAutoApply', 'div', 'allChannelsAutoLabel', ['setting-label']],
+    ['allChannelsAutoApplyDesc', 'div', '', ['setting-desc']],
+    ['typeLive', 'span', 'defaultAutoLiveLabel', ['type-switch-label']],
+    ['typeVod', 'span', 'defaultAutoVodLabel', ['type-switch-label']],
+    ['typeClip', 'span', 'defaultAutoClipLabel', ['type-switch-label']],
+    ['adGain', 'div', '', ['setting-label']],
+    ['adGainDesc', 'div', '', ['setting-desc']],
+    ['displayUnit', 'div', '', ['setting-label']],
+    ['displayUnitDesc', 'div', '', ['setting-desc']],
+    ['showGainOverlay', 'div', '', ['setting-label']],
+    ['showGainOverlayDesc', 'div', '', ['setting-desc']],
+    ['savedChannels', 'h2', '', []],
+    ['clearAll', 'button', 'clearAllBtn', ['clear-all-btn']],
+    ['colChannel', 'th', '', []],
+    ['typeLive', 'th', '', ['right']],
+    ['typeVod', 'th', '', ['right']],
+    ['typeClip', 'th', '', ['right']],
+    ['noSavedChannels', 'div', 'emptyMsg', ['empty-msg']]
+  ]);
+});
+
+test('the pages mark only elements that hold text', () => {
+  // applyI18n assigns textContent, so a key on an element that holds other
+  // elements removes them the moment the page is localized. The snapshot above
+  // names the element; this is what makes carrying a key illegal there.
+  for (const name of ['popup.html', 'options.html']) {
+    const source = fs.readFileSync(path.join(__dirname, name), 'utf8');
+    for (const { key, tag, textOnly } of i18nElementsInOrder(source)) {
+      assert.ok(textOnly, `${name} marks ${key} on <${tag}>, which holds more than text`);
+    }
+  }
+});
+
+test('both pages localize every element their markup marks', async () => {
+  // What applyI18n does with the key it reads at runtime is only visible by
+  // running it: the harness msg refuses a key the locale does not declare.
+  for (const [label, harness] of [
+    ['popup', createPopupHarness()],
+    ['options', createOptionsHarness()]
+  ]) {
+    await flushTasks(8);
+    const nodes = harness.i18nNodes;
+    assert.ok(nodes.length > 5, `${label} marks elements for translation`);
+    for (const node of nodes) {
+      const key = node.getAttribute('data-i18n');
+      assert.equal(node.textContent, harness.message(key), `${label} ${key}`);
+    }
+  }
+});
+
+test('no message is declared that nothing mentions, and both locales agree', () => {
+  const ja = JSON.parse(fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json'), 'utf8'));
+  const en = JSON.parse(fs.readFileSync(path.join(__dirname, '_locales/en/messages.json'), 'utf8'));
+  assert.deepEqual(Object.keys(ja).sort(), Object.keys(en).sort());
+
+  const mentioned = new Set();
+  for (const name of packagedSources()) {
+    const source = fs.readFileSync(path.join(__dirname, name), 'utf8');
+    if (name.endsWith('.json')) {
+      for (const key of manifestMessageKeys(source)) mentioned.add(key);
+      continue;
+    }
+    if (name.endsWith('.html')) {
+      for (const key of i18nKeysInOrder(source)) mentioned.add(key);
+      continue;
+    }
+    // Over-approximating on purpose: a quoted mention counts, wherever it is.
+    // A key nothing mentions is dead for certain; whether every mention is a
+    // live call is what running the pages answers.
+    for (const key of Object.keys(ja)) {
+      if (source.includes(`'${key}'`)) mentioned.add(key);
+    }
+  }
+
+  assert.deepEqual(Object.keys(ja).filter((key) => !mentioned.has(key)), []);
 });
 
 test('privacy policies list exactly the manifest permissions', () => {

@@ -39,11 +39,10 @@
 
   // Each failure has its own remedy: another script holding the element, an
   // audio context that would not start, a measurement path that never came up.
-  function noticeKey() {
-    if (!audioUnavailable) return 'measurementUnavailable';
-    return audioUnavailableCause === 'audio-context'
-      ? 'audioContextUnavailable'
-      : 'audioUnavailable';
+  function noticeText() {
+    if (!audioUnavailable) return msg('measurementUnavailable');
+    if (audioUnavailableCause === 'audio-context') return msg('audioContextUnavailable');
+    return msg('audioUnavailable');
   }
 
   // The gain reaches the player only while the bridge holds its audio.
@@ -146,7 +145,7 @@
     // where no channel was resolved.
     const notice = ch.id && (audioUnavailable || measurementUnavailable);
     $('audioError').classList.toggle('hidden', !notice);
-    if (notice) $('audioError').textContent = msg(noticeKey());
+    if (notice) $('audioError').textContent = noticeText();
     const nameEl = $('channelName');
     if (ch.name) {
       nameEl.textContent = ch.name;
