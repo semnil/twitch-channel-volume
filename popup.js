@@ -10,6 +10,7 @@
   let sliderSynced = false;
   let currentChannel = { id: '', kind: 'none' };
   let currentAutoApplyLoudness = false;
+  let audioUnavailable = false;
   let autoUpdatePending = false;
   let measurementResetPending = false;
   let hasResettableMeasurement = false;
@@ -24,7 +25,7 @@
     if (autoUpdatePending) $('applyBtn').disabled = true;
     if (measurementResetPending) $('applyBtn').disabled = true;
 
-    const manualDisabled = currentAutoApplyLoudness || autoUpdatePending;
+    const manualDisabled = currentAutoApplyLoudness || autoUpdatePending || audioUnavailable;
     $('manualSection').classList.toggle('disabled', manualDisabled);
     $('manualSlider').disabled = manualDisabled;
     document.querySelectorAll('.presets button').forEach((btn) => {
@@ -118,6 +119,8 @@
     }
     currentChannel = ch;
     currentAutoApplyLoudness = !!state.autoApplyLoudness;
+    audioUnavailable = !!state.audioUnavailable;
+    $('audioError').classList.toggle('hidden', !audioUnavailable);
     const nameEl = $('channelName');
     if (ch.name) {
       nameEl.textContent = ch.name;
@@ -167,7 +170,11 @@
     }
 
     $('applyHint').classList.toggle('error', gainSaveError);
-    if (gainSaveError) {
+    if (audioUnavailable && ch.id) {
+      // The banner carries the reason; the hint stays empty.
+      applyButton.disabled = true;
+      $('applyHint').textContent = '';
+    } else if (gainSaveError) {
       applyButton.disabled = currentAutoApplyLoudness || !hasIntegrated || !ch.id;
       $('applyHint').textContent = msg('gainSaveFailed');
     } else if (currentAutoApplyLoudness && ch.id) {

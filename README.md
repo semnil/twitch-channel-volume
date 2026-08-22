@@ -12,6 +12,7 @@ Twitch does not publish any loudness metadata (no `loudnessDb`-equivalent API, n
 - **Per-channel manual gain**: Save gain per Live / VOD / Clip kind; applied automatically on revisit and used while Auto is waiting for measurement
 - **Global Auto defaults**: Independent Live / VOD / Clip defaults apply only when a channel kind has neither an explicit Auto choice nor a manual gain
 - **Ad-break handling**: Detects the player's ad indicator in the DOM and applies a separate gain offset during ads
+- **Audio conflict notice**: When the player's audio is already held by another script, `MediaElementSource` cannot be created and neither gain nor measurement reaches the player. The popup states that and what to do instead of reporting a measurement in progress
 - **0–600 % gain range** via Web Audio `GainNode` (HTML5 `video.volume` would cap at 1.0)
 - **No external dependencies** — pure JavaScript, no bundler
 

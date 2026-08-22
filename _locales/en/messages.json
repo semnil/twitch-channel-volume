@@ -29,6 +29,9 @@
   "gainSaveFailed": {
     "message": "Could not save the gain. Please try again."
   },
+  "audioUnavailable": {
+    "message": "This player's audio is unavailable, so volume control and measurement do not run. Disable other extensions that use the same audio, then reload the page."
+  },
   "resetMeasurement": {
     "message": "Reset measurement"
   },

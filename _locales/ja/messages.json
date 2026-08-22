@@ -29,6 +29,9 @@
   "gainSaveFailed": {
     "message": "ゲインを保存できませんでした。もう一度お試しください"
   },
+  "audioUnavailable": {
+    "message": "プレイヤーの音声を取得できないため、音量調整と計測ができません。同じ音声を使う他の拡張機能を無効にしてページを再読み込みしてください"
+  },
   "resetMeasurement": {
     "message": "測定値をリセット"
   },

@@ -2,7 +2,7 @@
 
 ## 対象
 
-LUFS の索引更新、保存済み LUFS による計測初期化、測定値リセットを対象とする。
+LUFS の索引更新、保存済み LUFS による計測初期化、測定値リセット、page-bridge からの attach 結果通知を対象とする。
 
 ## 結果
 
@@ -14,3 +14,4 @@ LUFS の索引更新、保存済み LUFS による計測初期化、測定値リ
 | 競合 | リセット要求前の保存を完了してから削除し、削除処理中に到着した計測値は保存しない。リセット送信前に page-bridge が算出したブロックは計測世代番号で破棄する | 保存待ちを挿入した content script テスト、旧世代の計測を投入した content script / page bridge テスト |
 | 入力値 | 保存済み LUFS は有限値の場合だけ計算初期値に使い、絶対ゲート未満の値は Integrated に寄与しない | NaN、Infinity、文字列、ゲート境界の page bridge テスト |
 | 失敗時 | 保存値の削除に失敗した場合は実行中の計測を初期化せず、popup にローカライズ済みエラーを表示する | 保存失敗を注入した content script テスト |
+| ページ由来の通知 | `attach-failed` は真偽状態としてのみ扱い、付随する `reason` 文字列は表示も保存もしない。popup が出す文言は `_locales` の固定メッセージ | `attach-failed` / `attached` を投入した content script テスト、popup の `data-i18n` と両ロケールの文言テスト |

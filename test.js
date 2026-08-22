@@ -134,13 +134,37 @@ function createContentHarness({
   };
   let adNodePresent = false;
   const observerCallbacks = [];
+  // The player's volume row: the gain badge is inserted next to the slider.
+  const volumeRow = {
+    children: new Set(),
+    removeChild(node) {
+      volumeRow.children.delete(node);
+      node.parentNode = null;
+      node.previousElementSibling = null;
+    }
+  };
+  const sliderContainer = {
+    parentElement: volumeRow,
+    insertAdjacentElement(position, node) {
+      assert.equal(position, 'afterend');
+      volumeRow.children.add(node);
+      node.parentNode = volumeRow;
+      node.previousElementSibling = sliderContainer;
+    }
+  };
   const document = {
     documentElement: {},
     querySelector(selector) {
-      return adNodePresent && String(selector).includes('video-ad-countdown') ? {} : null;
+      const text = String(selector);
+      if (text.includes('video-ad-countdown')) return adNodePresent ? {} : null;
+      if (text.includes('volume-slider__slider-container')) return sliderContainer;
+      return null;
+    },
+    createElement() {
+      return { style: { cssText: '' }, textContent: '', parentNode: null, previousElementSibling: null };
     },
     addEventListener() {},
-    contains() { return false; }
+    contains(node) { return volumeRow.children.has(node); }
   };
   class MutationObserver {
     constructor(callback) { observerCallbacks.push(callback); }
@@ -237,6 +261,10 @@ function createContentHarness({
 
   return {
     setAdNodePresent(present) { adNodePresent = present; },
+    gainBadgeText() {
+      const [badge] = volumeRow.children;
+      return badge ? badge.textContent : null;
+    },
     mutate() { for (const callback of observerCallbacks) callback([]); },
     commands,
     stored,
@@ -329,8 +357,9 @@ function measured(lastLufs) {
   };
 }
 
-function createPageBridgeHarness() {
+function createPageBridgeHarness({ mediaElementSourceTaken = false } = {}) {
   const messages = [];
+  const intervalCallbacks = [];
   const logs = [];
   const listeners = {};
   const location = { href: 'https://www.twitch.tv/videos/100' };
@@ -378,7 +407,13 @@ function createPageBridgeHarness() {
       };
     }
     createIIRFilter() { return audioNode(); }
-    createMediaElementSource() { return audioNode(); }
+    createMediaElementSource() {
+      // What Chrome throws once another AudioContext holds the element.
+      if (mediaElementSourceTaken) {
+        throw new DOMException('HTMLMediaElement already connected', 'InvalidStateError');
+      }
+      return audioNode();
+    }
     async resume() {}
   }
   const window = {
@@ -400,8 +435,9 @@ function createPageBridgeHarness() {
     document: {
       querySelectorAll(selector) { return selector === 'video' ? [video] : []; }
     },
+    DOMException,
     location,
-    setInterval() { return 1; },
+    setInterval(callback) { return intervalCallbacks.push(callback); },
     URL,
     window
   });
@@ -436,6 +472,10 @@ function createPageBridgeHarness() {
       assert.equal(typeof measurementPort?.onmessage, 'function');
     },
     dispatchCommand,
+    async runTimers() {
+      for (const callback of intervalCallbacks) await callback();
+      await flushTasks();
+    },
     emitMeasurementBlock(ms) {
       measurementPort.onmessage({ data: { ms } });
     },
@@ -976,6 +1016,37 @@ test('content seeds measurement with the saved LUFS for the current media kind',
   assert.ok(resetIndex < attachIndex);
   const state = await harness.dispatchRuntime({ cmd: 'getState' });
   assert.equal(state.hasSavedMeasurement, true);
+});
+
+test('content reports the player audio the bridge could not attach to', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+
+  let state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.audioUnavailable, false);
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'attach-failed',
+    reason: 'InvalidStateError: HTMLMediaElement already connected'
+  });
+  state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.audioUnavailable, true);
+
+  // The bridge falls back to another video, so a later attach clears it.
+  await harness.dispatchMessage({ type: '__twitch_channel_volume__', event: 'attached' });
+  state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.audioUnavailable, false);
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'attach-failed',
+    reason: 'InvalidStateError: HTMLMediaElement already connected'
+  });
+  // A restarted bridge attaches from scratch and reports its own failure.
+  await harness.dispatchMessage({ type: '__twitch_channel_volume__', event: 'loaded' });
+  state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.audioUnavailable, false);
 });
 
 test('content requests one ad state change per transition', async () => {
@@ -2524,7 +2595,7 @@ test('popup disables Manual and Apply controls while an Auto update is pending',
   const source = fs.readFileSync(path.join(__dirname, 'popup.js'), 'utf8');
   assert.match(
     source,
-    /const manualDisabled = currentAutoApplyLoudness \|\| autoUpdatePending;/
+    /const manualDisabled = [^;]*\bautoUpdatePending\b[^;]*;/
   );
   assert.match(source, /if \(autoUpdatePending\) \$\('applyBtn'\)\.disabled = true;/);
   assert.match(
@@ -2640,6 +2711,39 @@ test('popup exposes the selected channel-row measurement reset control', () => {
   const en = JSON.parse(fs.readFileSync(path.join(__dirname, '_locales/en/messages.json')));
   assert.equal(ja.resetMeasurement.message, '測定値をリセット');
   assert.equal(en.resetMeasurement.message, 'Reset measurement');
+});
+
+test('popup states unavailable player audio instead of an endless measurement', () => {
+  const html = fs.readFileSync(path.join(__dirname, 'popup.html'), 'utf8');
+  assert.match(
+    html,
+    /<div id="audioError" class="audio-error hidden" role="status" data-i18n="audioUnavailable">[^<]+<\/div>/
+  );
+  // WCAG 2.1 SC 1.4.3: the notice sits on the info panel.
+  assertContrastFloor(html, [['.audio-error', '.info-section']], 4.5);
+
+  const source = fs.readFileSync(path.join(__dirname, 'popup.js'), 'utf8');
+  assert.match(source, /audioUnavailable = !!state\.audioUnavailable;/);
+  assert.match(
+    source,
+    /\$\('audioError'\)\.classList\.toggle\('hidden', !audioUnavailable\);/
+  );
+  assert.match(source, /const manualDisabled = [^;]*\baudioUnavailable\b[^;]*;/);
+
+  // Without this arm the hint keeps announcing a measurement that no longer runs.
+  const branch = source.slice(
+    source.indexOf('if (audioUnavailable && ch.id) {'),
+    source.indexOf('} else if (gainSaveError) {')
+  );
+  assert.ok(branch.length > 0, 'popup renders an unavailable-audio arm before the save error');
+  assert.match(branch, /applyButton\.disabled = true;/);
+  assert.match(branch, /\$\('applyHint'\)\.textContent = '';/);
+
+  const ja = JSON.parse(fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json')));
+  const en = JSON.parse(fs.readFileSync(path.join(__dirname, '_locales/en/messages.json')));
+  for (const [locale, messages] of [['ja', ja], ['en', en]]) {
+    assert.ok(messages.audioUnavailable?.message, `${locale} declares audioUnavailable`);
+  }
 });
 
 test('popup offers Apply only once a measurement exists', () => {
@@ -2776,6 +2880,23 @@ test('Auto switches expose hit targets, keyboard focus, and reduced-motion behav
       `${filename} reduced-motion style`
     );
   }
+});
+
+test('content withdraws the gain badge while the player audio is unavailable', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  // The saved VOD gain for the harness channel.
+  assert.equal(harness.gainBadgeText(), '50%');
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'attach-failed',
+    reason: 'InvalidStateError: HTMLMediaElement already connected'
+  });
+  assert.equal(harness.gainBadgeText(), null);
+
+  await harness.dispatchMessage({ type: '__twitch_channel_volume__', event: 'attached' });
+  assert.equal(harness.gainBadgeText(), '50%');
 });
 
 test('content reads and observes the persisted channel alias key', () => {
@@ -3312,6 +3433,32 @@ test('page bridge uses saved LUFS as the initial Integrated mean', async () => {
   const savedMeanSquare = Math.pow(10, (savedLufs + 0.691) / 10);
   const expected = u.meanSquareToLufs((savedMeanSquare + nextMeanSquare) / 2);
   assert.ok(Math.abs(harness.messages.at(-1).integrated - expected) < 1e-12);
+});
+
+test('page bridge reports a taken media element once and stays silent after', async () => {
+  const harness = createPageBridgeHarness({ mediaElementSourceTaken: true });
+  await harness.dispatchCommand('init', { workletUrl: 'chrome-extension://test/audio-worklet.js' });
+  await harness.dispatchCommand('attach');
+
+  assert.equal(harness.messages.filter((message) => message.event === 'attach-failed').length, 1);
+  assert.equal(harness.messages.some((message) => message.event === 'attached'), false);
+
+  // The retry loop skips the element it already failed on. content.js therefore
+  // holds the reported state until an attach succeeds, including across SPA
+  // navigation that keeps the same <video>.
+  harness.messages.length = 0;
+  await harness.runTimers();
+  await harness.dispatchCommand('attach');
+  await harness.runTimers();
+  assert.deepEqual(harness.messages, []);
+
+  // Positive control: the same drive on a free element does report an attach.
+  const available = createPageBridgeHarness();
+  await available.dispatchCommand('init', { workletUrl: 'chrome-extension://test/audio-worklet.js' });
+  available.messages.length = 0;
+  await available.dispatchCommand('attach');
+  await available.runTimers();
+  assert.equal(available.messages.some((message) => message.event === 'attached'), true);
 });
 
 test('page bridge stamps posted measurements with the reset epoch', async () => {

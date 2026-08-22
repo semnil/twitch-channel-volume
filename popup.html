@@ -159,6 +159,13 @@ body.initializing .toggle-switch .switch-slider::before { transition: none; }
   text-align: right;
 }
 
+.audio-error {
+  margin: -2px 0 10px;
+  color: #ff6b9d;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
 .loudness-grid {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
@@ -425,6 +432,7 @@ body.initializing .toggle-switch .switch-slider::before { transition: none; }
       </button>
     </div>
     <div id="resetMeasurementError" class="reset-measurement-error hidden" role="status" data-i18n="resetMeasurementFailed">測定値をリセットできませんでした。もう一度お試しください</div>
+    <div id="audioError" class="audio-error hidden" role="status" data-i18n="audioUnavailable">プレイヤーの音声を取得できないため、音量調整と計測ができません。同じ音声を使う他の拡張機能を無効にしてページを再読み込みしてください</div>
     <div class="loudness-grid">
       <div class="loudness-card">
         <div class="label" data-i18n="labelIntegrated">Integrated</div>

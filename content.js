@@ -26,6 +26,7 @@
   let lastLufs = { momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity };
   let adActive = false;
   let requestedAdActive = false;
+  let audioUnavailable = false;
   let preferenceRevision = 0;
   let channelMutationQueue = Promise.resolve();
   let migratingChannelId = '';
@@ -252,8 +253,10 @@
 
   let _overlayEl = null;
 
+  // The badge reports the gain the player runs at. While the bridge holds no
+  // media element source, the gain node sits outside the player's audio path.
   function updateGainOverlay() {
-    if (!showGainOverlay || currentGain === 1.0) {
+    if (!showGainOverlay || audioUnavailable || currentGain === 1.0) {
       if (_overlayEl) {
         if (_overlayEl.parentNode) _overlayEl.parentNode.removeChild(_overlayEl);
         _overlayEl = null;
@@ -413,6 +416,7 @@
         // page-bridge may post `loaded` before our listener attaches. The
         // startup IIFE handles init/attach unconditionally; this case only
         // matters for hot-reloads where the bridge restarts mid-session.
+        audioUnavailable = false;
         injectWorklet();
         resetMeasurementForCurrentChannel();
         break;
@@ -420,6 +424,14 @@
         initResolve && initResolve();
         break;
       case 'attached':
+        audioUnavailable = false;
+        updateGainOverlay();
+        break;
+      case 'attach-failed':
+        // The gain node reaches the player only through the media element
+        // source, so a failed attach stops gain and measurement alike.
+        audioUnavailable = true;
+        updateGainOverlay();
         break;
       case 'lufs':
         if (measurementResetPending) break;
@@ -569,6 +581,7 @@
           ),
           gain: currentGain,
           adActive,
+          audioUnavailable,
           targetLufs,
           adGainDb: currentAdGainDb,
           autoApplyLoudness: currentAutoApplyLoudness,
