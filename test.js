@@ -488,8 +488,11 @@ test('resolvePreferredGain ignores an Auto gain measured at an unknown volume', 
   assert.equal(u.resolvePreferredGain(manual, 'live', false, -Infinity, -18).gain, 2.0);
 });
 
-test('privacy policies list exactly the manifest host permissions', () => {
+test('privacy policies list exactly the manifest permissions', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, 'manifest.json'), 'utf8'));
+  // The audit report cites this test for what the extension asks for.
+  assert.deepEqual(manifest.permissions, ['storage']);
+  assert.deepEqual(manifest.host_permissions, ['*://*.twitch.tv/*']);
   const hosts = new Set(
     manifest.host_permissions.map((pattern) => pattern.replace(/^\*:\/\/\*?\.?/, '').replace(/\/\*$/, ''))
   );
@@ -2562,7 +2565,7 @@ test('popup offers Apply only once a measurement exists', () => {
   // The suggestion is unity without a measurement, so its finiteness cannot be
   // what enables the button: applying it would overwrite a saved manual gain.
   assert.match(source, /\} else if \(hasIntegrated && ch\.id\) \{\s*applyButton\.disabled = false;/s);
-  assert.doesNotMatch(source, /else if \(Number\.isFinite\(lastSuggestedGain\) && ch\.id\)/);
+  assert.doesNotMatch(source, /Number\.isFinite\(lastSuggestedGain\) && ch\.id/);
   assert.match(
     source,
     /applyButton\.disabled = currentAutoApplyLoudness \|\| !hasIntegrated \|\| !ch\.id;/

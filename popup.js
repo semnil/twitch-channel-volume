@@ -159,7 +159,7 @@
     setCardValue(suggestedEl, fs.text, fs.unit, hasIntegrated ? 'suggested' : 'suggested unknown');
 
     const applyButton = $('applyBtn');
-    if (!currentAutoApplyLoudness && Number.isFinite(lastSuggestedGain) && ch.id) {
+    if (!currentAutoApplyLoudness && hasIntegrated && ch.id) {
       applyButton.textContent =
         msg('applyToChannelWithValue', [formatGainText(lastSuggestedGain)]);
     } else {
