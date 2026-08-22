@@ -1156,7 +1156,13 @@ const PLAINTEXT_OPENS = /<plaintext\b/i;
 function htmlMarkup(source) {
   let markup = source.replace(/<!--[\s\S]*?-->/g, '');
   for (const name of RAW_TEXT_ELEMENTS) {
-    markup = markup.replace(new RegExp(`<${name}\\b[\\s\\S]*?</${name}>`, 'gi'), '');
+    // The name ends where a browser ends it, and the end tag closes on
+    // whitespace or a slash as well as on `>`, carrying attributes that are
+    // read and thrown away. (HTML parsing spec, tokenizer: end tag open state.)
+    markup = markup.replace(
+      new RegExp(`<${name}(?=[\\s/>])[\\s\\S]*?</${name}(?=[\\s/>])[^>]*>`, 'gi'),
+      ''
+    );
   }
   const plaintext = markup.search(PLAINTEXT_OPENS);
   return plaintext === -1 ? markup : markup.slice(0, plaintext);
@@ -1184,14 +1190,49 @@ function htmlStartTags(markup) {
   return tags;
 }
 
-// Quoted attribute values only. An unquoted one is not read here, which is
-// why the count check below exists: it fails rather than passing them over.
+// A start tag handed over one attribute at a time, the way the tokenizer
+// hands them over: a name, then a value that is text. Searching the tag for
+// something that looks like an attribute reads a value again as markup, and an
+// attribute spelled inside another one's value then counts as one of its own.
+function tagAttributes(tag) {
+  const attributes = [];
+  let i = 1;
+  while (i < tag.length && !/[\s/>]/.test(tag[i])) i++;
+  while (i < tag.length) {
+    while (i < tag.length && /[\s/]/.test(tag[i])) i++;
+    const nameStart = i;
+    while (i < tag.length && !/[\s/=>]/.test(tag[i])) i++;
+    if (i === nameStart) break;
+    const name = tag.slice(nameStart, i).toLowerCase();
+    while (i < tag.length && /\s/.test(tag[i])) i++;
+    let value = '';
+    if (tag[i] === '=') {
+      i++;
+      while (i < tag.length && /\s/.test(tag[i])) i++;
+      const quote = tag[i];
+      if (quote === '"' || quote === "'") {
+        const end = tag.indexOf(quote, i + 1);
+        value = tag.slice(i + 1, end === -1 ? tag.length : end);
+        i = end === -1 ? tag.length : end + 1;
+      } else {
+        const valueStart = i;
+        while (i < tag.length && !/[\s>]/.test(tag[i])) i++;
+        value = tag.slice(valueStart, i);
+      }
+    }
+    attributes.push([name, value]);
+  }
+  return attributes;
+}
+
+// What is left over the count check below still catches: a mention in a
+// comment, in raw text, or anywhere that is not a start tag leaves the counts
+// apart rather than being passed over.
 function i18nKeysInOrder(source) {
   const keys = [];
   for (const tag of htmlStartTags(htmlMarkup(source))) {
-    for (const attribute of tag.matchAll(/([a-zA-Z][\w-]*)\s*=\s*("([^"]*)"|'([^']*)')/g)) {
-      if (attribute[1].toLowerCase() !== 'data-i18n') continue;
-      keys.push(attribute[3] !== undefined ? attribute[3] : attribute[4]);
+    for (const [name, value] of tagAttributes(tag)) {
+      if (name === 'data-i18n') keys.push(value);
     }
   }
   return keys;
@@ -1224,6 +1265,36 @@ function packagedSources() {
   assert.ok(packaged.includes('manifest.json') && packaged.includes('popup.js'), packaged.join(' '));
   return packaged;
 }
+
+test('the extractor reads a page the way a browser does', () => {
+  // Each expectation below is what Chrome 151 puts in the DOM for the same
+  // markup, read back with --dump-dom.
+  const keys = (html) => i18nKeysInOrder(html);
+
+  // An attribute value is text. `_` is a name a browser accepts, and what it
+  // holds never becomes an attribute of its own.
+  assert.deepEqual(keys(`<h2 _='data-i18n="settings"'>Settings</h2>`), []);
+  assert.deepEqual(keys('<h2 data-i18n="settings">Settings</h2>'), ['settings']);
+
+  // An end tag ends on whitespace, and may carry attributes that are dropped.
+  assert.deepEqual(keys('<title><x data-i18n="a"></title ><h2>H</h2>'), []);
+  assert.deepEqual(keys('<title><x data-i18n="a"></title foo=bar><h2 data-i18n="b">B</h2>'), ['b']);
+  assert.deepEqual(keys('<title><x data-i18n="a"></title><h2 data-i18n="b">B</h2>'), ['b']);
+
+  // The name of a raw text element ends where the browser ends it: a longer
+  // name is an element of its own, and the next real end tag is not its.
+  assert.deepEqual(keys('<titles data-i18n="e">E</titles>'), ['e']);
+  assert.deepEqual(
+    keys('<titles data-i18n="e">E</titles><title>x</title><h2 data-i18n="f">F</h2>'),
+    ['e', 'f']
+  );
+
+  // A tag name is not an attribute, however it is spelled.
+  assert.deepEqual(keys('<data-i18n="x">y<h2 data-i18n="g">G</h2>'), ['g']);
+
+  // A value with no quotes is still a value.
+  assert.deepEqual(keys('<h2 data-i18n=c>C</h2><h2 data-i18n=d >D</h2>'), ['c', 'd']);
+});
 
 test('the pages stay inside the markup the extractor reads', () => {
   for (const name of ['popup.html', 'options.html']) {
