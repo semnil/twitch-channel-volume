@@ -26,9 +26,9 @@
   let lastLufs = { momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity };
   let adActive = false;
   let requestedAdActive = false;
-  // Set on a route change: an indicator left over from the media that ended is
-  // not the new one's.
-  let staleAdIndicator = false;
+  // Filled on a route change with the indicator elements the media that ended
+  // left in the page.
+  let staleAdIndicators = new Set();
   let audioUnavailable = false;
   let audioUnavailableCause = '';
   let measurementUnavailable = false;
@@ -507,19 +507,22 @@
   // after the break, so the bridge prefers the player's own cue and falls back
   // to this where no cue arrives.
 
+  // Right after a route change the player being left is still in the page, and
+  // the elements it put there say nothing about the new media. They are held by
+  // identity, so an indicator that replaces one of them - in the same observer
+  // callback, without the page ever being seen without one - still counts.
   function adIndicatorPresent() {
-    return !!document.querySelector(AD_INDICATOR_SELECTOR);
+    for (const node of staleAdIndicators) {
+      if (!node.isConnected) staleAdIndicators.delete(node);
+    }
+    for (const node of document.querySelectorAll(AD_INDICATOR_SELECTOR)) {
+      if (!staleAdIndicators.has(node)) return true;
+    }
+    return false;
   }
 
   function checkAdDom() {
     const detected = adIndicatorPresent();
-    // Right after a route change the player being left is still in the page, so
-    // an indicator it put there says nothing about the new media. Wait for the
-    // page to be without one before believing the next.
-    if (staleAdIndicator) {
-      if (detected) return;
-      staleAdIndicator = false;
-    }
     // adActive only catches up when the bridge echoes the change back, so the
     // request is what this compares against.
     if (detected !== requestedAdActive) {
@@ -553,9 +556,9 @@
     // it again and the observer reports the new media's own transitions.
     sendCmd({ cmd: 'mediaChanged' });
     requestedAdActive = false;
-    // Only an indicator that is up right now belongs to the media being left;
-    // with none there, the next one to appear is the new media's own.
-    staleAdIndicator = adIndicatorPresent();
+    // Whatever is up right now belongs to the media being left; anything that
+    // appears after this is the new media's own.
+    staleAdIndicators = new Set(document.querySelectorAll(AD_INDICATOR_SELECTOR));
     sendResetMeasurement();
     sendCmd({ cmd: 'attach' });
     await resolveChannel();

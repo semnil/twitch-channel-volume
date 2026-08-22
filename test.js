@@ -423,7 +423,10 @@ function createContentHarness({
       commands.push(structuredClone(message));
     }
   };
-  let adNodePresent = false;
+  // Indicator elements have identity: a route change has to tell the one the
+  // page is leaving from the one that replaces it.
+  let adNodes = [];
+  let lastRemovedAdNode = null;
   const observerCallbacks = [];
   // The player's volume row: the gain badge is inserted next to the slider.
   const volumeRow = {
@@ -447,9 +450,12 @@ function createContentHarness({
     documentElement: {},
     querySelector(selector) {
       const text = String(selector);
-      if (text.includes('video-ad-countdown')) return adNodePresent ? {} : null;
+      if (text.includes('video-ad-countdown')) return adNodes[0] || null;
       if (text.includes('volume-slider__slider-container')) return sliderContainer;
       return null;
+    },
+    querySelectorAll(selector) {
+      return String(selector).includes('video-ad-countdown') ? adNodes.slice() : [];
     },
     createElement() {
       return { style: { cssText: '' }, textContent: '', parentNode: null, previousElementSibling: null };
@@ -551,7 +557,23 @@ function createContentHarness({
   );
 
   return {
-    setAdNodePresent(present) { adNodePresent = present; },
+    setAdNodePresent(present) {
+      for (const node of adNodes) node.isConnected = false;
+      if (adNodes.length) lastRemovedAdNode = adNodes[0];
+      adNodes = present ? [{ isConnected: true }] : [];
+    },
+    replaceAdNode() {
+      // What one observer callback can carry: the old element out, a new one in.
+      for (const node of adNodes) node.isConnected = false;
+      if (adNodes.length) lastRemovedAdNode = adNodes[0];
+      adNodes = [{ isConnected: true }];
+    },
+    reuseAdNode() {
+      // A framework can put the element it took out back, rather than build one.
+      assert.ok(lastRemovedAdNode, 'no indicator has been taken out');
+      lastRemovedAdNode.isConnected = true;
+      adNodes = [lastRemovedAdNode];
+    },
     gainBadgeText() {
       const [badge] = volumeRow.children;
       return badge ? badge.textContent : null;
@@ -5168,6 +5190,45 @@ test('content takes the first ad of the new media when the old one showed none',
 
   // The first change on the new media brings its own ad.
   harness.setAdNodePresent(true);
+  harness.mutate();
+  assert.deepEqual(sent().map((command) => command.active), [true]);
+});
+
+test('content takes an indicator that replaced the old one in the same batch', async () => {
+  const harness = createContentHarness();
+  const sent = () => harness.commands.filter((command) => command.cmd === 'setAdActive');
+  await flushTasks();
+  harness.setAdNodePresent(true);
+  harness.mutate();
+  assert.deepEqual(sent().map((command) => command.active), [true]);
+
+  harness.commands.length = 0;
+  await harness.navigate('https://www.twitch.tv/videos/200');
+  assert.deepEqual(sent(), []);
+
+  // The observer batches: the indicator of the media that ended goes and the
+  // new one arrives between two callbacks, so the page is never seen without
+  // one.
+  harness.replaceAdNode();
+  harness.mutate();
+  assert.deepEqual(sent().map((command) => command.active), [true]);
+});
+
+test('content takes an indicator the page puts back after taking it out', async () => {
+  const harness = createContentHarness();
+  const sent = () => harness.commands.filter((command) => command.cmd === 'setAdActive');
+  await flushTasks();
+  harness.setAdNodePresent(true);
+  harness.mutate();
+  harness.commands.length = 0;
+  await harness.navigate('https://www.twitch.tv/videos/200');
+
+  harness.setAdNodePresent(false);
+  harness.mutate();
+  assert.deepEqual(sent(), []);
+
+  // The new media's ad arrives in the element the page took out a moment ago.
+  harness.reuseAdNode();
   harness.mutate();
   assert.deepEqual(sent().map((command) => command.active), [true]);
 });
