@@ -766,6 +766,7 @@ function createOptionsHarness({
     }
   };
 
+  const storageListeners = [];
   let resolveStorageGet = null;
   const storageGate = deferStorage
     ? new Promise((resolve) => { resolveStorageGet = resolve; })
@@ -780,7 +781,7 @@ function createOptionsHarness({
           return readStoredKeys(stored, keys);
         }
       },
-      onChanged: { addListener() {} }
+      onChanged: { addListener(listener) { storageListeners.push(listener); } }
     },
     runtime: {
       async sendMessage(message) {
@@ -822,6 +823,9 @@ function createOptionsHarness({
     i18nNodes,
     unitButtons,
     sent,
+    fireStorageChanged(changes) {
+      for (const listener of storageListeners) listener(changes);
+    },
     releaseStorage() {
       assert.ok(resolveStorageGet, 'the storage read is not pending');
       resolveStorageGet();
@@ -4336,6 +4340,24 @@ test('options show the page even when the load that fills it fails', async () =>
   assert.equal(harness.el('clearAllBtn').disabled, true);
   assert.equal(harness.el('emptyMsg').style.display, 'none');
   assert.equal(harness.el('select:.channel-table').style.display, 'none');
+});
+
+test('a page that could not read keeps what another tab writes off its screen', async () => {
+  const harness = createOptionsHarness({ failStorage: true });
+  await flushTasks(8);
+
+  harness.fireStorageChanged({
+    [u.SETTINGS_KEY]: { newValue: { targetLufs: -24, displayUnit: 'dB', showGainOverlay: false } }
+  });
+  await flushTasks(4);
+  // The message says the values are the defaults and the page should be
+  // reloaded; a settings write from another tab carries no channels, so taking
+  // it would put stored values under that message and answer for the list.
+  assert.equal(harness.el('targetLufsValue').textContent, '');
+  assert.equal(harness.el('settingsError').textContent, harness.message('settingsLoadFailed'));
+  assert.equal(harness.el('emptyMsg').style.display, 'none');
+  assert.equal(harness.el('select:.channel-table').style.display, 'none');
+  assert.equal(harness.el('clearAllBtn').disabled, true);
 });
 
 test('options fill and show the page when the channel normalization fails', async () => {
