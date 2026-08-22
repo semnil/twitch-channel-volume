@@ -105,6 +105,12 @@
   // 100ms sub-block, formed from the most recent GATE_BLOCKS sub-blocks.
   const GATE_BLOCKS = 4;
   const MAX_INTEGRATED_BLOCKS = 60 * 60 * 10;
+  // A saved value seeds the new measurement as at least this many windows,
+  // whatever the count stored with it says.
+  const MIN_SEED_WINDOWS = 300;
+  // and as at most this many, so a session of that length carries the same
+  // weight as the seed and can move the value off it.
+  const MAX_SEED_WINDOWS = 3 * 60 * 10;
   // A gating window that spans the end of an ad or a volume change carries
   // audio it cannot represent. Windows stay out of Integrated until they are
   // clear of the boundary.
@@ -122,6 +128,13 @@
   const ROLLBACK_LOG_SAMPLES = 8;
   let windowsSinceReset = 0;
   let windowsObserved = 0;
+  // The windows behind the posted value: the ones inside the relative gate,
+  // with the seed standing for what it was told the saved value was measured
+  // over. The floor the seed is raised to is not one of them, and neither is a
+  // window the gate left out - the value does not rest on either.
+  let seedClaimedWindows = 0;
+  let seedMeanSquare = null;
+  let seedEntriesInRing = 0;
   const ABSOLUTE_GATE_MEAN_SQUARE = Math.pow(10, (-70 + 0.691) / 10);
   const RELATIVE_GATE_FACTOR = Math.pow(10, -10 / 10);
   const integratedBlocks = new Array(MAX_INTEGRATED_BLOCKS);
@@ -242,6 +255,9 @@
       integratedBlockLength++;
     } else {
       removed = integratedBlocks[integratedBlockStart];
+      // Observed windows are stamped from one upwards, so the seed's own
+      // entries are the ones the ring gives back with a stamp of zero.
+      if (integratedBlockWindows[integratedBlockStart] === 0) seedEntriesInRing--;
       integratedBlocks[integratedBlockStart] = ms;
       integratedBlockWindows[integratedBlockStart] = gatingWindow;
       integratedBlockStart = (integratedBlockStart + 1) % MAX_INTEGRATED_BLOCKS;
@@ -271,7 +287,8 @@
       epoch: measurementEpoch,
       momentary,
       shortTerm,
-      integrated
+      integrated: integrated.lufs,
+      integratedWindows: integrated.windows
     }, '*');
   }
 
@@ -310,13 +327,25 @@
     return msToLufs(sum / n);
   }
 
+  // The value, and the windows a later session would seed with if it were
+  // stored now. The seed's entries stand for the count it was told rather than
+  // for however many were laid down to weigh it.
   function integratedLufs() {
     const absoluteGatedCount = treeCount(absoluteGatedRoot);
-    if (absoluteGatedCount === 0) return -Infinity;
+    if (absoluteGatedCount === 0) return { lufs: -Infinity, windows: 0 };
     const absoluteMeanSquare = treeSum(absoluteGatedRoot) / absoluteGatedCount;
     const relativeGate = absoluteMeanSquare * RELATIVE_GATE_FACTOR;
     const gated = treeValuesAtOrAbove(absoluteGatedRoot, relativeGate);
-    return gated.count === 0 ? -Infinity : msToLufs(gated.sum / gated.count);
+    if (gated.count === 0) return { lufs: -Infinity, windows: 0 };
+    const seedInGate = seedMeanSquare !== null &&
+      seedMeanSquare >= ABSOLUTE_GATE_MEAN_SQUARE && seedMeanSquare >= relativeGate
+      ? seedEntriesInRing
+      : 0;
+    const windows = Math.min(seedClaimedWindows, seedInGate) + (gated.count - seedInGate);
+    return {
+      lufs: msToLufs(gated.sum / gated.count),
+      windows: Math.min(MAX_SEED_WINDOWS, windows)
+    };
   }
 
   function updateIntegratedLufs(ms) {
@@ -343,7 +372,14 @@
     return removed.reverse();
   }
 
-  function resetMeasurement(initialIntegratedLufs, epoch) {
+  // What the caller says the saved value stands on, held to what a seed may
+  // weigh. A count that is not a positive integer says nothing.
+  function savedWindowCount(savedWindows) {
+    const saved = Number.isSafeInteger(savedWindows) && savedWindows > 0 ? savedWindows : 0;
+    return Math.min(MAX_SEED_WINDOWS, saved);
+  }
+
+  function resetMeasurement(initialIntegratedLufs, epoch, initialIntegratedWindows) {
     if (Number.isFinite(epoch)) measurementEpoch = epoch;
     blocks.length = 0;
     integratedBlockStart = 0;
@@ -351,12 +387,24 @@
     absoluteGatedRoot = null;
     windowsSinceReset = 0;
     windowsObserved = 0;
+    seedClaimedWindows = 0;
+    seedMeanSquare = null;
+    seedEntriesInRing = 0;
     if (!Number.isFinite(initialIntegratedLufs)) return;
     const initialMeanSquare = Math.pow(10, (initialIntegratedLufs + 0.691) / 10);
     if (!Number.isFinite(initialMeanSquare)) return;
+    // The seed enters as the number of windows the saved value stands on, or
+    // the floor where that is less. Its entries carry a window stamp below
+    // every observed window, so a rollback does not reach them.
     // Values below the absolute gate reach the ring buffer but not the index,
     // so they never contribute to Integrated.
-    appendIntegratedBlock(initialMeanSquare, windowsObserved);
+    seedClaimedWindows = savedWindowCount(initialIntegratedWindows);
+    seedMeanSquare = initialMeanSquare;
+    const seedWindows = Math.max(MIN_SEED_WINDOWS, seedClaimedWindows);
+    for (let i = 0; i < seedWindows; i++) {
+      appendIntegratedBlock(initialMeanSquare, windowsObserved);
+    }
+    seedEntriesInRing = seedWindows;
   }
 
   let ctxPromise = null;
@@ -1015,7 +1063,7 @@
         setDomAdActive(data.active);
         break;
       case 'resetMeasurement':
-        resetMeasurement(data.initialIntegratedLufs, data.epoch);
+        resetMeasurement(data.initialIntegratedLufs, data.epoch, data.initialIntegratedWindows);
         break;
       case 'mediaChanged':
         // New media answers for itself: the old cues mean nothing against its

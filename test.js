@@ -951,12 +951,17 @@ function expectedIntegrated(subBlocks, seedMeanSquare) {
 }
 
 // Saved measurements carry the reference they were taken at.
-function measured(lastLufs) {
+function measured(lastLufs, windows) {
   return {
     lastLufs,
     lastLufsRef: Object.fromEntries(
       Object.keys(lastLufs).map((kind) => [kind, u.LUFS_REFERENCE_VOLUME_1])
-    )
+    ),
+    ...(windows === undefined ? {} : {
+      lastLufsWindows: Object.fromEntries(
+        Object.keys(lastLufs).map((kind) => [kind, windows])
+      )
+    })
   };
 }
 
@@ -2408,18 +2413,92 @@ test('content stores a measurement the next session can seed from', async () => 
     event: 'lufs',
     momentary: -21,
     shortTerm: -21,
-    integrated: -21
+    integrated: -21,
+    integratedWindows: 1800
   });
   await flushTasks();
   const saved = harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'];
   assert.equal(saved.lastLufs.vod, -21);
   assert.equal(saved.lastLufsRef.vod, u.LUFS_REFERENCE_VOLUME_1);
+  assert.equal(saved.lastLufsWindows.vod, 1800);
 
-  // What was written is what the next session reads back as a seed.
+  // What was written is what the next session reads back as a seed, weight
+  // included: without it the first second of the new session outweighs it.
   const next = createContentHarness({ channelVolumes: structuredClone(harness.stored[u.CHANNEL_VOLUMES_KEY]) });
   await flushTasks();
   const resets = next.commands.filter((command) => command.cmd === 'resetMeasurement');
   assert.equal(resets.at(-1).initialIntegratedLufs, -21);
+  assert.equal(resets.at(-1).initialIntegratedWindows, 1800);
+});
+
+test('content leaves the seed unweighed where the count was never stored', async () => {
+  const harness = createContentHarness({
+    channelVolumes: {
+      // Saved before the window count was stored alongside the measurement.
+      // The count another kind carries is not this kind's.
+      'vod-owner:100': {
+        name: '100',
+        lastLufs: { vod: -21 },
+        lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 },
+        lastLufsWindows: { live: 900 }
+      }
+    }
+  });
+  await flushTasks();
+
+  const resets = harness.commands.filter((command) => command.cmd === 'resetMeasurement');
+  assert.equal(resets.at(-1).initialIntegratedLufs, -21);
+  assert.equal(resets.at(-1).initialIntegratedWindows, undefined);
+});
+
+test('content ignores a window count the bridge cannot have measured', async () => {
+  for (const integratedWindows of [NaN, -5, 0, 1.5, '600', Infinity, undefined]) {
+    const harness = createContentHarness();
+    await flushTasks();
+    await harness.dispatchMessage({
+      type: '__twitch_channel_volume__',
+      event: 'lufs',
+      momentary: -21,
+      shortTerm: -21,
+      integrated: -21,
+      integratedWindows
+    });
+    await flushTasks();
+
+    const saved = harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'];
+    // The measurement is still worth keeping; only its weight is unknown.
+    assert.equal(saved.lastLufs.vod, -21, String(integratedWindows));
+    assert.equal(saved.lastLufsWindows, undefined, String(integratedWindows));
+  }
+});
+
+test('content drops the window count with the measurement it described', async () => {
+  const harness = createContentHarness({
+    channelVolumes: {
+      'vod-owner:100': {
+        name: '100',
+        autoApplyLoudnessVod: true,
+        lastLufs: { vod: -21 },
+        lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 },
+        lastLufsWindows: { vod: 1800 }
+      }
+    }
+  });
+  await flushTasks();
+  harness.commands.length = 0;
+
+  const response = await harness.dispatchRuntime({
+    cmd: 'resetMeasurement',
+    channelId: 'vod-owner:100',
+    kind: 'vod'
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].lastLufsWindows, undefined);
+  const resets = harness.commands.filter((command) => command.cmd === 'resetMeasurement');
+  assert.equal(resets.length, 1);
+  assert.equal(resets[0].initialIntegratedLufs, undefined);
+  assert.equal(resets[0].initialIntegratedWindows, undefined);
 });
 
 test('content does not seed from a measurement taken at an unknown volume', async () => {
@@ -2679,10 +2758,89 @@ test('channel store keeps the measurement reference with the value it describes'
   );
 });
 
+test('channel store keeps the window count with the value it was measured over', async () => {
+  let stored = { channelVolumes: {} };
+  const storage = {
+    async get(keys) { return readStoredKeys(stored, keys); },
+    async set(update) { stored = { ...stored, ...structuredClone(update) }; }
+  };
+  const write = channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 100);
+  await write({
+    operation: 'saveMeasurement', channelId: 'login:test', kind: 'live', lufs: -19,
+    reference: u.LUFS_REFERENCE_VOLUME_1, windows: 1800, channel: { name: 'Test' }
+  });
+  assert.equal(stored.channelVolumes['login:test'].lastLufsWindows.live, 1800);
+
+  await write({
+    operation: 'mergeChannelIds', fromId: 'login:test', toId: '777', kind: 'live',
+    channel: { name: 'Test', login: 'test' }
+  });
+  assert.equal(stored.channelVolumes['777'].lastLufsWindows.live, 1800);
+
+  // A writer that names no count measured without one, so the one on file goes
+  // with the value it described.
+  await write({
+    operation: 'saveMeasurement', channelId: '777', kind: 'vod', lufs: -20,
+    reference: u.LUFS_REFERENCE_VOLUME_1, windows: 600
+  });
+  await write({
+    operation: 'saveMeasurement', channelId: '777', kind: 'live', lufs: -21,
+    reference: u.LUFS_REFERENCE_VOLUME_1
+  });
+  assert.equal(stored.channelVolumes['777'].lastLufsWindows.live, undefined);
+  assert.equal(stored.channelVolumes['777'].lastLufsWindows.vod, 600);
+
+  // A reset takes the count with the measurement it stood behind.
+  await write({ operation: 'clearMeasurement', channelId: '777', kind: 'vod' });
+  assert.equal(stored.channelVolumes['777'].lastLufsWindows, undefined);
+});
+
+test('channel store keeps the window count of the value that wins an id merge', async () => {
+  for (const lastWriter of ['login:test', '777']) {
+    let stored = { channelVolumes: {} };
+    const storage = {
+      async get(keys) { return readStoredKeys(stored, keys); },
+      async set(update) { stored = { ...stored, ...structuredClone(update) }; }
+    };
+    const write = channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 100);
+    const writes = [
+      ['login:test', -19, 1800],
+      ['777', -25, 300]
+    ];
+    // The later write wins the field, and its count and reference go with it.
+    if (lastWriter === 'login:test') writes.reverse();
+    for (const [channelId, lufs, windows] of writes) {
+      await write({
+        operation: 'saveMeasurement', channelId, kind: 'live', lufs, windows,
+        reference: u.LUFS_REFERENCE_VOLUME_1, channel: { name: 'Test' }
+      });
+    }
+    await write({
+      operation: 'mergeChannelIds', fromId: 'login:test', toId: '777', kind: 'live',
+      channel: { name: 'Test', login: 'test' }
+    });
+
+    const merged = stored.channelVolumes['777'];
+    const [, winnerLufs, winnerWindows] = writes[1];
+    assert.equal(merged.lastLufs.live, winnerLufs, lastWriter);
+    assert.equal(merged.lastLufsWindows.live, winnerWindows, lastWriter);
+    assert.equal(merged.lastLufsRef.live, u.LUFS_REFERENCE_VOLUME_1, lastWriter);
+  }
+});
+
+test('channel store refuses a window count that is not a positive integer', async () => {
+  for (const windows of [0, -1, 1.5, '600', NaN, Infinity, null]) {
+    assert.throws(() => channelStore.applyChannelVolumesMutation({}, {
+      operation: 'saveMeasurement', channelId: '777', kind: 'live', lufs: -19,
+      reference: u.LUFS_REFERENCE_VOLUME_1, windows
+    }), TypeError, `windows: ${String(windows)}`);
+  }
+});
+
 test('content seeds the measurement once the owner ID resolves', async () => {
   const harness = createContentHarness({
     href: 'https://www.twitch.tv/videos/100',
-    channelVolumes: { '777': { name: 'Streamer', ...measured({ vod: -16 }) } }
+    channelVolumes: { '777': { name: 'Streamer', ...measured({ vod: -16 }, 900) } }
   });
   await flushTasks();
 
@@ -2690,6 +2848,7 @@ test('content seeds the measurement once the owner ID resolves', async () => {
   const startup = harness.commands.filter((command) => command.cmd === 'resetMeasurement');
   assert.equal(startup.length, 1);
   assert.equal(startup[0].initialIntegratedLufs, undefined);
+  assert.equal(startup[0].initialIntegratedWindows, undefined);
   harness.commands.length = 0;
 
   await harness.dispatchMessage({
@@ -2707,6 +2866,8 @@ test('content seeds the measurement once the owner ID resolves', async () => {
   const afterOwner = harness.commands.filter((command) => command.cmd === 'resetMeasurement');
   assert.equal(afterOwner.length, 1);
   assert.equal(afterOwner[0].initialIntegratedLufs, -16);
+  // The weight travels with every seed, not only the one sent at startup.
+  assert.equal(afterOwner[0].initialIntegratedWindows, 900);
   const state = await harness.dispatchRuntime({ cmd: 'getState' });
   assert.equal(state.channel.id, '777');
 });
@@ -4998,21 +5159,204 @@ test('page bridge indexed gate evicts the oldest block at the retained-window li
   assert.ok(Math.abs(actual - expected) < 1e-10);
 });
 
-test('page bridge uses saved LUFS as the initial Integrated mean', async () => {
+// A seed that weighs one window is outweighed by the first second of the new
+// session, which is what moved the Auto gain off the level it was applying.
+test('page bridge weighs a saved LUFS by the windows it was measured over', async () => {
+  const savedLufs = -20;
+  const nextMeanSquare = 0.1;
+  const savedMeanSquare = Math.pow(10, (savedLufs + 0.691) / 10);
+
+  // [count stored with the value, windows the seed weighs, windows reported back]
+  for (const [savedWindows, expectedSeed, expectedReported] of [
+    [undefined, 300, 1], [1, 300, 2], [299, 300, 300], [300, 300, 301],
+    [1200, 1200, 1201], [1800, 1800, 1800], [36000, 1800, 1800]
+  ]) {
+    const harness = createPageBridgeHarness();
+    await harness.startMeasurement();
+    harness.messages.length = 0;
+    await harness.dispatchCommand('resetMeasurement', {
+      initialIntegratedLufs: savedLufs,
+      ...(savedWindows === undefined ? {} : { initialIntegratedWindows: savedWindows })
+    });
+    for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(nextMeanSquare);
+
+    const expected = u.meanSquareToLufs(
+      (savedMeanSquare * expectedSeed + nextMeanSquare) / (expectedSeed + 1)
+    );
+    const posted = harness.messages.at(-1);
+    assert.ok(Math.abs(posted.integrated - expected) < 1e-12, `seed of ${savedWindows}`);
+    // The floor is not a measurement, so it is not reported as one.
+    assert.equal(posted.integratedWindows, expectedReported, `seed of ${savedWindows}`);
+  }
+});
+
+test('page bridge ignores a saved window count it cannot read', async () => {
+  const savedLufs = -20;
+  const savedMeanSquare = Math.pow(10, (savedLufs + 0.691) / 10);
+  const expected = u.meanSquareToLufs((savedMeanSquare * 300 + 0.1) / 301);
+
+  for (const initialIntegratedWindows of [NaN, -5, 0, 1.5, '600', Infinity, null, {}]) {
+    const harness = createPageBridgeHarness();
+    await harness.startMeasurement();
+    harness.messages.length = 0;
+    await harness.dispatchCommand('resetMeasurement', {
+      initialIntegratedLufs: savedLufs,
+      initialIntegratedWindows
+    });
+    for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(0.1);
+
+    const posted = harness.messages.at(-1);
+    // A count that says nothing leaves the seed at the floor, still seeded.
+    assert.ok(Math.abs(posted.integrated - expected) < 1e-12, String(initialIntegratedWindows));
+    assert.equal(posted.integratedWindows, 1, String(initialIntegratedWindows));
+  }
+});
+
+// Without the cap the seed loop runs once per claimed window, so a count this
+// size does not come back at all.
+test('page bridge holds the seed to what a seed may weigh', { timeout: 5000 }, async () => {
   const harness = createPageBridgeHarness();
   await harness.startMeasurement();
   harness.messages.length = 0;
-  const savedLufs = -20;
-  const nextMeanSquare = 0.1;
-
   await harness.dispatchCommand('resetMeasurement', {
-    initialIntegratedLufs: savedLufs
+    initialIntegratedLufs: -20,
+    initialIntegratedWindows: Number.MAX_SAFE_INTEGER
   });
-  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(nextMeanSquare);
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(0.1);
 
-  const savedMeanSquare = Math.pow(10, (savedLufs + 0.691) / 10);
-  const expected = u.meanSquareToLufs((savedMeanSquare + nextMeanSquare) / 2);
+  const savedMeanSquare = Math.pow(10, (-20 + 0.691) / 10);
+  const capped = 3 * 60 * 10;
+  const expected = u.meanSquareToLufs((savedMeanSquare * capped + 0.1) / (capped + 1));
   assert.ok(Math.abs(harness.messages.at(-1).integrated - expected) < 1e-12);
+  assert.equal(harness.messages.at(-1).integratedWindows, capped);
+});
+
+test('page bridge lets new windows displace a seed at the cap', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.messages.length = 0;
+  const capped = 3 * 60 * 10;
+  // Within the relative gate of the audio that follows, so the seed stays in
+  // the value and the count stays at what it came in with.
+  await harness.dispatchCommand('resetMeasurement', {
+    initialIntegratedLufs: -12,
+    initialIntegratedWindows: capped
+  });
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(0.5);
+  const first = harness.messages.at(-1).integrated;
+  for (let i = 0; i < 20; i++) harness.emitMeasurementBlock(0.5);
+  const later = harness.messages.at(-1);
+
+  assert.equal(later.integratedWindows, capped);
+  assert.ok(later.integrated > first, `${later.integrated} vs ${first}`);
+});
+
+// The index keys on the level, so audio holding the level the seed sits at
+// lands on the seed's own key. Which entries are the seed's is a matter of
+// where they came from, not of what they are worth.
+test('page bridge counts audio that holds the level the seed sits at', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.messages.length = 0;
+  const level = Math.pow(10, (-18 + 0.691) / 10);
+  await harness.dispatchCommand('resetMeasurement', {
+    initialIntegratedLufs: -18,
+    initialIntegratedWindows: 100
+  });
+
+  // Sixty seconds of it: 597 windows, each landing on the seed's key.
+  for (let i = 0; i < 600; i++) harness.emitMeasurementBlock(level);
+
+  const posted = harness.messages.at(-1);
+  assert.ok(Math.abs(posted.integrated - u.meanSquareToLufs(level)) < 1e-12);
+  assert.equal(posted.integratedWindows, 100 + 597);
+});
+
+// The ring evicts what it can no longer hold, and silence evicts without
+// putting anything in the index in return. What the value stands on shrinks
+// with it, and a count kept alongside the index rather than read from it does
+// not.
+test('page bridge reports what the index holds after the ring turns over', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.messages.length = 0;
+  const ring = 60 * 60 * 10;
+  const loud = Math.pow(10, (-18 + 0.691) / 10);
+  // A claim under the floor again, so what the ring gives back is visible in
+  // the count rather than cancelling against the claim.
+  await harness.dispatchCommand('resetMeasurement', {
+    initialIntegratedLufs: -18,
+    initialIntegratedWindows: 100
+  });
+
+  for (let i = 0; i < ring; i++) harness.emitMeasurementBlock(loud);
+  harness.messages.length = 0;
+  // Silence reaches the ring but not the index, so it pushes the index empty.
+  for (let i = 0; i < ring; i++) harness.emitMeasurementBlock(0);
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(loud);
+
+  assert.equal(harness.messages.at(-1).integratedWindows, 4);
+});
+
+// A seed the relative gate leaves out carried none of the value, so it is not
+// part of what the value stands on either.
+test('page bridge stops counting a seed the relative gate left out', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.messages.length = 0;
+  const seedMeanSquare = Math.pow(10, (-33 + 0.691) / 10);
+  const loudMeanSquare = Math.pow(10, (-18 + 0.691) / 10);
+  // A claim under the floor, so the seed's own entries outnumber what it says
+  // the value stands on: what the gate does with them is then visible.
+  await harness.dispatchCommand('resetMeasurement', {
+    initialIntegratedLufs: -33,
+    initialIntegratedWindows: 100
+  });
+
+  // While the seed still holds the gate up, it is inside the value.
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(loudMeanSquare);
+  assert.equal(harness.messages.at(-1).integratedWindows, 101);
+
+  // Thirty seconds of audio 15 dB above it puts the seed under the gate.
+  for (let i = 0; i < 296; i++) harness.emitMeasurementBlock(loudMeanSquare);
+  const posted = harness.messages.at(-1);
+  assert.ok(Math.abs(posted.integrated - u.meanSquareToLufs(loudMeanSquare)) < 1e-12);
+  assert.equal(posted.integratedWindows, 297);
+  assert.ok(seedMeanSquare < loudMeanSquare);
+});
+
+test('page bridge counts the windows behind the value it posts', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.messages.length = 0;
+  // Three blocks make no gating window, so nothing stands behind Integrated.
+  for (let i = 0; i < 3; i++) harness.emitMeasurementBlock(0.1);
+  assert.equal(harness.messages.at(-1).integrated, -Infinity);
+  assert.equal(harness.messages.at(-1).integratedWindows, 0);
+
+  for (let i = 0; i < 10; i++) harness.emitMeasurementBlock(0.1);
+  assert.equal(harness.messages.at(-1).integratedWindows, 10);
+
+  // Windows under the absolute gate are not among them: of the 8 that silence
+  // makes, the 3 still holding audio from the blocks before it are counted.
+  for (let i = 0; i < 8; i++) harness.emitMeasurementBlock(0);
+  assert.equal(harness.messages.at(-1).integratedWindows, 13);
+});
+
+test('page bridge keeps an ad rollback out of the windows a seed stands for', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  await harness.dispatchCommand('resetMeasurement', {
+    initialIntegratedLufs: -20,
+    initialIntegratedWindows: 400
+  });
+  for (let i = 0; i < 6; i++) harness.emitMeasurementBlock(0.1);
+  assert.equal(harness.messages.at(-1).integratedWindows, 403);
+
+  // The DOM indicator asks for 5 windows back; this session has appended 3.
+  await harness.dispatchCommand('setAdActive', { active: true });
+  harness.emitMeasurementBlock(0.1);
+  assert.equal(harness.messages.at(-1).integratedWindows, 400);
 });
 
 test('page bridge keeps retrying past a held element and reports it is still there', async () => {

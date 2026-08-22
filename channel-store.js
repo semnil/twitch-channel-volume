@@ -78,6 +78,7 @@ function cloneEntry(entry, fallbackName) {
   const cloned = { ...(entry || { name: fallbackName }) };
   if (entry?.lastLufs) cloned.lastLufs = { ...entry.lastLufs };
   if (entry?.lastLufsRef) cloned.lastLufsRef = { ...entry.lastLufsRef };
+  if (entry?.lastLufsWindows) cloned.lastLufsWindows = { ...entry.lastLufsWindows };
   if (entry?.autoGainRef) cloned.autoGainRef = { ...entry.autoGainRef };
   if (entry?.[FIELD_VERSIONS_FIELD] && typeof entry[FIELD_VERSIONS_FIELD] === 'object') {
     cloned[FIELD_VERSIONS_FIELD] = { ...entry[FIELD_VERSIONS_FIELD] };
@@ -155,7 +156,7 @@ function copyNewerAutoGain(merged, mergedRef, mergedVersions, source, target, ki
   } else delete mergedRef[kind];
 }
 
-function copyNewerLufs(mergedLufs, mergedRef, mergedVersions, source, target, kind) {
+function copyNewerLufs(mergedLufs, mergedCompanions, mergedVersions, source, target, kind) {
   const sourceLufs = source.lastLufs || {};
   const targetLufs = target.lastLufs || {};
   const versionField = `lastLufs.${kind}`;
@@ -171,14 +172,28 @@ function copyNewerLufs(mergedLufs, mergedRef, mergedVersions, source, target, ki
   const winnerHasValue = sourceWins ? sourceHas : targetHas;
   const winnerValue = sourceWins ? sourceLufs[kind] : targetLufs[kind];
   const winnerVersion = sourceWins ? sourceVersion : targetVersion;
-  const winnerRef = (sourceWins ? source.lastLufsRef : target.lastLufsRef) || {};
   if (winnerHasValue) mergedLufs[kind] = winnerValue;
   else delete mergedLufs[kind];
-  // The reference describes this value, so it goes wherever the value goes.
-  if (winnerHasValue && winnerRef[kind] !== undefined) mergedRef[kind] = winnerRef[kind];
-  else delete mergedRef[kind];
+  // A companion describes this value, so it goes wherever the value goes.
+  for (const [field, merged] of Object.entries(mergedCompanions)) {
+    const winner = (sourceWins ? source[field] : target[field]) || {};
+    if (winnerHasValue && winner[kind] !== undefined) merged[kind] = winner[kind];
+    else delete merged[kind];
+  }
   if (winnerVersion) mergedVersions[versionField] = winnerVersion;
   else delete mergedVersions[versionField];
+}
+
+// The per-kind maps that describe the measurement they were stored with: the
+// player volume it was referenced to, and the windows it was measured over.
+const MEASUREMENT_COMPANION_FIELDS = ['lastLufsRef', 'lastLufsWindows'];
+
+function setMeasurementCompanion(entry, field, kind, value) {
+  const companions = { ...(entry[field] || {}) };
+  if (value === undefined) delete companions[kind];
+  else companions[kind] = value;
+  if (Object.keys(companions).length) entry[field] = companions;
+  else delete entry[field];
 }
 
 // A writer that names no reference drops the one on file: the numbers it just
@@ -188,11 +203,17 @@ function applyMeasurementReference(entry, mutation, field) {
       (typeof mutation.reference !== 'string' || mutation.reference.length > 32)) {
     throw new TypeError('reference must be a short string');
   }
-  const refs = { ...(entry[field] || {}) };
-  if (mutation.reference === undefined) delete refs[mutation.kind];
-  else refs[mutation.kind] = mutation.reference;
-  if (Object.keys(refs).length) entry[field] = refs;
-  else delete entry[field];
+  setMeasurementCompanion(entry, field, mutation.kind, mutation.reference);
+}
+
+// The window count follows the same rule: a writer that names none measured
+// without one.
+function applyMeasurementWindows(entry, mutation) {
+  if (mutation.windows !== undefined &&
+      !(Number.isSafeInteger(mutation.windows) && mutation.windows > 0)) {
+    throw new TypeError('windows must be a positive safe integer');
+  }
+  setMeasurementCompanion(entry, 'lastLufsWindows', mutation.kind, mutation.windows);
 }
 
 function mergeProvisionalEntry(all, mutation) {
@@ -225,14 +246,19 @@ function mergeProvisionalEntry(all, mutation) {
   const sourceLufs = source.lastLufs || {};
   const targetLufs = target.lastLufs || {};
   const mergedLufs = { ...sourceLufs, ...targetLufs };
-  const mergedRef = { ...(source.lastLufsRef || {}), ...(target.lastLufsRef || {}) };
+  const mergedCompanions = {};
+  for (const field of MEASUREMENT_COMPANION_FIELDS) {
+    mergedCompanions[field] = { ...(source[field] || {}), ...(target[field] || {}) };
+  }
   for (const mergeKind of CHANNEL_MUTATION_KINDS) {
-    copyNewerLufs(mergedLufs, mergedRef, mergedVersions, source, target, mergeKind);
+    copyNewerLufs(mergedLufs, mergedCompanions, mergedVersions, source, target, mergeKind);
   }
   if (Object.keys(mergedLufs).length) merged.lastLufs = mergedLufs;
   else delete merged.lastLufs;
-  if (Object.keys(mergedRef).length) merged.lastLufsRef = mergedRef;
-  else delete merged.lastLufsRef;
+  for (const [field, companions] of Object.entries(mergedCompanions)) {
+    if (Object.keys(companions).length) merged[field] = companions;
+    else delete merged[field];
+  }
   if (Object.keys(mergedVersions).length) merged[FIELD_VERSIONS_FIELD] = mergedVersions;
   else delete merged[FIELD_VERSIONS_FIELD];
   if (Object.keys(mergedLufs).length &&
@@ -324,6 +350,7 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
       copyMetadata(entry, mutation.channel);
       entry.lastLufs = { ...(entry.lastLufs || {}), [mutation.kind]: mutation.lufs };
       applyMeasurementReference(entry, mutation, 'lastLufsRef');
+      applyMeasurementWindows(entry, mutation);
       entry.lastMeasuredAt = now;
       setFieldVersion(entry, `lastLufs.${mutation.kind}`, mutation.sequence);
       if (mutation.autoGain !== undefined) {
@@ -343,11 +370,11 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
       const entry = cloneEntry(all[mutation.channelId], mutation.channelId);
       const lastLufs = { ...(entry.lastLufs || {}) };
       delete lastLufs[mutation.kind];
-      // The measurement's own reference goes with it; the Auto gain keeps its.
-      const clearedRef = { ...(entry.lastLufsRef || {}) };
-      delete clearedRef[mutation.kind];
-      if (Object.keys(clearedRef).length) entry.lastLufsRef = clearedRef;
-      else delete entry.lastLufsRef;
+      // What described the measurement goes with it; the Auto gain keeps its
+      // own reference.
+      for (const field of MEASUREMENT_COMPANION_FIELDS) {
+        setMeasurementCompanion(entry, field, mutation.kind, undefined);
+      }
       if (Object.keys(lastLufs).length) entry.lastLufs = lastLufs;
       else {
         delete entry.lastLufs;

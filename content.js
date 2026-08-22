@@ -23,7 +23,10 @@
   let defaultAutoApplyLoudnessClip = DEFAULT_AUTO_APPLY_LOUDNESS;
   let currentChannelEntry = null;
   let currentAutoApplyLoudness = false;
-  let lastLufs = { momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity };
+  let lastLufs;
+  // How many gating windows lastLufs.integrated stands on. Saved with it so the
+  // next session continues that measurement instead of restarting it.
+  let integratedWindows;
   let adActive = false;
   let requestedAdActive = false;
   // Filled on a route change with the indicator elements the media that ended
@@ -42,6 +45,12 @@
   let currentCanonicalChannelId = '';
   let seededMeasurementTarget = '';
   let lastAutoGainUpdateAt = -Infinity;
+
+  function clearMeasurementCache() {
+    lastLufs = { momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity };
+    integratedWindows = 0;
+  }
+  clearMeasurementCache();
 
   // ── Storage helpers ────────────────────────────────────────────────
 
@@ -135,7 +144,7 @@
     });
   }
 
-  function saveLastIntegrated(channelId, kind, lufs, autoGain) {
+  function saveLastIntegrated(channelId, kind, lufs, windows, autoGain) {
     if (!channelId || !isContextValid() || !Number.isFinite(lufs)) {
       return Promise.resolve();
     }
@@ -146,6 +155,9 @@
       kind,
       lufs,
       reference: LUFS_REFERENCE_VOLUME_1,
+      // The count is whatever the bridge reported, already held to a
+      // non-negative integer where it arrives; 0 means it named none.
+      ...(windows ? { windows } : {}),
       ...(Number.isFinite(autoGain) ? { autoGain } : {}),
       channel: channelMetadata(snapshot)
     });
@@ -197,23 +209,33 @@
     window.postMessage({ type: MSG_OUT, ...payload }, '*');
   }
 
-  function sendResetMeasurement(initialIntegratedLufs) {
+  function sendResetMeasurement(seed) {
     measurementEpoch++;
     lastAutoGainUpdateAt = -Infinity;
     sendCmd({
       cmd: 'resetMeasurement',
       epoch: measurementEpoch,
-      ...(Number.isFinite(initialIntegratedLufs) ? { initialIntegratedLufs } : {})
+      ...(seed ? {
+        initialIntegratedLufs: seed.lufs,
+        ...(seed.windows ? { initialIntegratedWindows: seed.windows } : {})
+      } : {})
     });
   }
 
   // Saved values without the reference marker were measured at an unknown
-  // player volume, so they do not seed a new measurement.
-  function savedIntegratedLufsForCurrentChannel() {
+  // player volume, so they do not seed a new measurement. The window count is
+  // what the value was measured over; entries written before it was stored
+  // leave the bridge to weigh the seed on its own.
+  function savedMeasurementForCurrentChannel() {
     const kind = currentChannel.kind;
-    if (currentChannelEntry?.lastLufsRef?.[kind] !== LUFS_REFERENCE_VOLUME_1) return undefined;
+    if (currentChannelEntry?.lastLufsRef?.[kind] !== LUFS_REFERENCE_VOLUME_1) return null;
     const saved = currentChannelEntry?.lastLufs?.[kind];
-    return Number.isFinite(saved) ? saved : undefined;
+    if (!Number.isFinite(saved)) return null;
+    const windows = currentChannelEntry?.lastLufsWindows?.[kind];
+    return {
+      lufs: saved,
+      windows: Number.isSafeInteger(windows) && windows > 0 ? windows : 0
+    };
   }
 
   // Identity of the measurement in progress. The stored LUFS is not usable here
@@ -224,7 +246,7 @@
 
   function resetMeasurementForCurrentChannel() {
     seededMeasurementTarget = currentMeasurementTarget();
-    sendResetMeasurement(savedIntegratedLufsForCurrentChannel());
+    sendResetMeasurement(savedMeasurementForCurrentChannel());
   }
 
   let initResolve;
@@ -461,6 +483,8 @@
           shortTerm: Number.isFinite(data.shortTerm) ? data.shortTerm : -Infinity,
           integrated: Number.isFinite(data.integrated) ? data.integrated : -Infinity
         };
+        integratedWindows = Number.isSafeInteger(data.integratedWindows) &&
+          data.integratedWindows > 0 ? data.integratedWindows : 0;
         if (Number.isFinite(lastLufs.integrated) && currentChannel.id) {
           if (currentAutoApplyLoudness) {
             applyAutoGain(lastLufs.integrated);
@@ -488,6 +512,7 @@
       currentChannel.id,
       currentChannel.kind,
       lastLufs.integrated,
+      integratedWindows,
       currentAutoApplyLoudness ? currentGain : undefined
     ).catch((error) => {
       lastSavedAt = 0;
@@ -545,7 +570,7 @@
     preferenceRevision++;
     currentChannelEntry = null;
     currentAutoApplyLoudness = false;
-    lastLufs = { momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity };
+    clearMeasurementCache();
     lastSavedAt = 0;
     // New media: the break the player cued for the old one no longer applies.
     // The bridge drops the indicator state with it, so the cache here matches
@@ -773,11 +798,7 @@
         measurementResetPending = true;
         clearSavedMeasurement(channelId, kind).then(() => {
           if (currentChannel.id === channelId && currentChannel.kind === kind) {
-            lastLufs = {
-              momentary: -Infinity,
-              shortTerm: -Infinity,
-              integrated: -Infinity
-            };
+            clearMeasurementCache();
             lastSavedAt = 0;
             if (currentChannelEntry) {
               const entry = { ...currentChannelEntry };
