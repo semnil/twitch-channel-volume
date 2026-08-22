@@ -1155,6 +1155,7 @@ const RAW_TEXT_ELEMENTS = [
 // \s is wider — a no-break space is whitespace to it and text to a browser.
 const HTML_SPACE = '\\t\\n\\f\\r ';
 const IS_HTML_SPACE = /[\t\n\f\r ]/;
+const IS_HTML_SPACE_RUN = /[\t\n\f\r ]+/;
 
 function htmlMarkup(source) {
   let markup = source.replace(/<!--[\s\S]*?--!?>/g, '');
@@ -1196,7 +1197,7 @@ function htmlStartTags(markup) {
         break;
       }
     }
-    tags.push(markup.slice(i, j));
+    tags.push({ text: markup.slice(i, j), after: j + 1 });
     i = j;
   }
   return tags;
@@ -1243,17 +1244,44 @@ function tagAttributes(tag) {
   return attributes;
 }
 
-// What is left over the count check below still catches: a mention in a
-// comment, in raw text, or anywhere that is not a start tag leaves the counts
-// apart rather than being passed over.
-function i18nKeysInOrder(source) {
-  const keys = [];
-  for (const tag of htmlStartTags(htmlMarkup(source))) {
-    for (const [name, value] of tagAttributes(tag)) {
-      if (name === 'data-i18n') keys.push(value);
-    }
+// Each element the page marks, in document order: the key, what names the
+// element in the page, and whether it holds text alone. What is left over the
+// count check below still catches: a mention in a comment, in raw text, or
+// anywhere that is not a start tag leaves the counts apart rather than being
+// passed over.
+function i18nElementsInOrder(source) {
+  const markup = htmlMarkup(source);
+  const marked = [];
+  for (const { text, after } of htmlStartTags(markup)) {
+    const attributes = tagAttributes(text);
+    const key = attributes.find(([name]) => name === 'data-i18n');
+    if (!key) continue;
+    const named = new Map(attributes);
+    const tag = text.slice(1).split(/[\t\n\f\r /]/)[0].toLowerCase();
+    // applyI18n writes textContent, so anything an element holds besides text
+    // is removed when the page is localized. It holds text alone when the
+    // first tag inside it is its own end tag.
+    const inside = markup.slice(after);
+    const child = inside.indexOf('<');
+    marked.push({
+      key: key[1],
+      tag,
+      id: named.get('id') || '',
+      classes: (named.get('class') || '').trim(),
+      textOnly: child !== -1 && new RegExp(`^</${tag}(?=[${HTML_SPACE}/>])`, 'i').test(inside.slice(child))
+    });
   }
-  return keys;
+  return marked;
+}
+
+// The element a key is on, named the way the page names it.
+function i18nElementLabel({ key, tag, id, classes }) {
+  const suffix = classes ? `.${classes.split(IS_HTML_SPACE_RUN).join('.')}` : '';
+  return `${key} ${tag}${id ? `#${id}` : ''}${suffix}`;
+}
+
+function i18nKeysInOrder(source) {
+  return i18nElementsInOrder(source).map((element) => element.key);
 }
 
 // The manifest names a message as the whole value of a field.
@@ -1355,26 +1383,70 @@ test('every data-i18n in the pages is one the extractor reads', () => {
   }
 });
 
-test('the pages mark the elements they are meant to mark', async () => {
-  // A snapshot: an attribute that disappears, moves into raw text or gains a
-  // different key changes this list. Keeping it here is what makes the
-  // extractor's blind spots fail instead of pass.
-  const popupKeys = i18nKeysInOrder(fs.readFileSync(path.join(__dirname, 'popup.html'), 'utf8'));
-  assert.deepEqual(popupKeys, [
-    'channelNotDetected', 'adDetected', 'resetMeasurement', 'resetMeasurementFailed',
-    'audioUnavailable', 'labelIntegrated', 'labelSuggested', 'labelCurrent',
-    'labelFallback', 'autoApplyLoudness', 'autoSaveFailed', 'applyToChannel',
-    'hintNoLufs', 'manualVolume'
+test('the pages mark the elements they are meant to mark', () => {
+  // A snapshot of the key and the element that carries it: an attribute that
+  // disappears, moves onto another element or gains a different key changes
+  // this list. Keeping it here is what makes the extractor's blind spots fail
+  // instead of pass.
+  const marked = (name) =>
+    i18nElementsInOrder(fs.readFileSync(path.join(__dirname, name), 'utf8')).map(i18nElementLabel);
+
+  assert.deepEqual(marked('popup.html'), [
+    'channelNotDetected div#channelName.channel-name.empty',
+    'adDetected span#adFlag.ad-badge.hidden',
+    'resetMeasurement span.sr-only',
+    'resetMeasurementFailed div#resetMeasurementError.reset-measurement-error.hidden',
+    'audioUnavailable div#audioError.audio-error.hidden',
+    'labelIntegrated div.label',
+    'labelSuggested div.label',
+    'labelCurrent span',
+    'labelFallback span#fallbackBadge.fallback-badge.hidden',
+    'autoApplyLoudness div#autoApplyLabel.auto-label',
+    'autoSaveFailed div#autoError.auto-error.hidden',
+    'applyToChannel button#applyBtn.apply-btn',
+    'hintNoLufs span#applyHint.apply-hint',
+    'manualVolume span.label'
   ]);
 
-  const optionsKeys = i18nKeysInOrder(fs.readFileSync(path.join(__dirname, 'options.html'), 'utf8'));
-  assert.deepEqual(optionsKeys, [
-    'settings', 'settingsSaveFailed', 'targetLufs', 'targetLufsDesc',
-    'allChannelsAutoApply', 'allChannelsAutoApplyDesc', 'typeLive', 'typeVod',
-    'typeClip', 'adGain', 'adGainDesc', 'displayUnit', 'displayUnitDesc',
-    'showGainOverlay', 'showGainOverlayDesc', 'savedChannels', 'clearAll',
-    'colChannel', 'typeLive', 'typeVod', 'typeClip', 'noSavedChannels'
+  assert.deepEqual(marked('options.html'), [
+    'settings h2',
+    'settingsSaveFailed div#settingsError.settings-error.hidden',
+    'targetLufs div.setting-label',
+    'targetLufsDesc div.setting-desc',
+    'allChannelsAutoApply div#allChannelsAutoLabel.setting-label',
+    'allChannelsAutoApplyDesc div.setting-desc',
+    'typeLive span#defaultAutoLiveLabel.type-switch-label',
+    'typeVod span#defaultAutoVodLabel.type-switch-label',
+    'typeClip span#defaultAutoClipLabel.type-switch-label',
+    'adGain div.setting-label',
+    'adGainDesc div.setting-desc',
+    'displayUnit div.setting-label',
+    'displayUnitDesc div.setting-desc',
+    'showGainOverlay div.setting-label',
+    'showGainOverlayDesc div.setting-desc',
+    'savedChannels h2',
+    'clearAll button#clearAllBtn.clear-all-btn',
+    'colChannel th',
+    'typeLive th.right',
+    'typeVod th.right',
+    'typeClip th.right',
+    'noSavedChannels div#emptyMsg.empty-msg'
   ]);
+});
+
+test('the pages mark only elements that hold text', () => {
+  // applyI18n assigns textContent, so a key on an element that holds other
+  // elements removes them the moment the page is localized. The snapshot above
+  // names the element; this is what makes carrying a key illegal there.
+  for (const name of ['popup.html', 'options.html']) {
+    const source = fs.readFileSync(path.join(__dirname, name), 'utf8');
+    for (const element of i18nElementsInOrder(source)) {
+      assert.ok(
+        element.textOnly,
+        `${name} marks ${i18nElementLabel(element)}, which holds more than text`
+      );
+    }
+  }
 });
 
 test('both pages localize every element their markup marks', async () => {
