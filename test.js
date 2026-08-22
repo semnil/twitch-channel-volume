@@ -36,6 +36,10 @@ function withFixtureDir(prefix, body) {
   assert.ok(!fs.existsSync(dir), `${dir} was left behind`);
 }
 
+// Chrome refuses to load an unpacked extension whose root holds a reserved
+// name, and takes one deeper in the tree. The walk goes further than Chrome
+// does and reports both: a `_` name below the root is junk in the tree the
+// package is built from, even where the browser would tolerate it.
 function reservedNamesUnder(root) {
   const forbidden = [];
   function walk(directory, relative = '') {
@@ -55,7 +59,7 @@ function reservedNamesUnder(root) {
   return forbidden;
 }
 
-test('unpacked extension tree contains no Chrome-reserved filenames', () => {
+test('extension tree contains no Chrome-reserved filenames', () => {
   assert.deepEqual(reservedNamesUnder(__dirname), []);
 });
 
