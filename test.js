@@ -26,6 +26,16 @@ function readStoredKeys(stored, keys) {
 // files. pack.py keeps them out of the store package too.
 const SCRATCH_DIRS = new Set(['work', '.claude']);
 
+function withFixtureDir(prefix, body) {
+  const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), prefix));
+  try {
+    body(dir);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  assert.ok(!fs.existsSync(dir), `${dir} was left behind`);
+}
+
 function reservedNamesUnder(root) {
   const forbidden = [];
   function walk(directory, relative = '') {
@@ -87,8 +97,7 @@ test('the reserved-name walk skips the scratch roots and nothing else', () => {
 
   // The repo tree carries no scratch directory, so the skip is exercised on a
   // fixture: without one, removing it changes no result here.
-  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'tcv-walk-'));
-  try {
+  withFixtureDir('tcv-walk-', (fixture) => {
     const write = (relative) => {
       const target = path.join(fixture, relative);
       fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -110,16 +119,13 @@ test('the reserved-name walk skips the scratch roots and nothing else', () => {
       path.join('icons', '_cache'),
       path.join('icons', 'work', '_metadata')
     ]);
-  } finally {
-    fs.rmSync(fixture, { recursive: true, force: true });
-  }
+  });
 });
 
 test('the store package carries only the files the extension loads', () => {
   // pack.py runs for real here: a declaration read out of its source would
   // still pass with the selection that uses it deleted.
-  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'tcv-pack-'));
-  try {
+  withFixtureDir('tcv-pack-', (fixture) => {
     const write = (relative, body = 'x') => {
       const target = path.join(fixture, relative);
       fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -179,9 +185,7 @@ test('the store package carries only the files the extension loads', () => {
       'popup.js',
       'utils.js'
     ]);
-  } finally {
-    fs.rmSync(fixture, { recursive: true, force: true });
-  }
+  });
 });
 
 test('the store package refuses a reference that leaves it', () => {
@@ -193,14 +197,17 @@ test('the store package refuses a reference that leaves it', () => {
   fs.writeFileSync(path.join(outside, 'messages.json'), '{}');
 
   const run = (build) => {
-    const fixture = fs.mkdtempSync(path.join(tmpRoot, 'tcv-escape-'));
-    try {
+    let result;
+    // The package sits one level down: a case that reaches outside it with ..
+    // writes into its own parent, never into the shared temp root.
+    withFixtureDir('tcv-escape-', (parent) => {
+      const fixture = path.join(parent, 'package');
+      fs.mkdirSync(fixture);
       fs.copyFileSync(path.join(__dirname, 'pack.py'), path.join(fixture, 'pack.py'));
       build(fixture);
-      return spawnSync('python3', ['-B', 'pack.py', '--list'], { cwd: fixture, encoding: 'utf8' });
-    } finally {
-      fs.rmSync(fixture, { recursive: true, force: true });
-    }
+      result = spawnSync('python3', ['-B', 'pack.py', '--list'], { cwd: fixture, encoding: 'utf8' });
+    });
+    return result;
   };
   const manifest = (references) => JSON.stringify({
     manifest_version: 3,
@@ -219,7 +226,11 @@ test('the store package refuses a reference that leaves it', () => {
 
     const climbing = run((fixture) => {
       fs.writeFileSync(path.join(fixture, 'manifest.json'), manifest(['../secret.js']));
-      fs.writeFileSync(path.join(path.dirname(fixture), 'secret.js'), 'SIBLING');
+      const sibling = path.join(path.dirname(fixture), 'secret.js');
+      // The climb has to land inside this case's own directory.
+      assert.ok(sibling.startsWith(fs.realpathSync(tmpRoot) + path.sep));
+      assert.notEqual(path.dirname(sibling), fs.realpathSync(tmpRoot));
+      fs.writeFileSync(sibling, 'SIBLING');
     });
     assert.notEqual(climbing.status, 0);
 
@@ -256,8 +267,7 @@ test('the store package refuses a reference that leaves it', () => {
 });
 
 test('the store package refuses a reference it cannot pack', () => {
-  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'tcv-pack-missing-'));
-  try {
+  withFixtureDir('tcv-pack-missing-', (fixture) => {
     fs.writeFileSync(path.join(fixture, 'manifest.json'), JSON.stringify({
       manifest_version: 3,
       version: '1.0.0',
@@ -299,9 +309,7 @@ test('the store package refuses a reference it cannot pack', () => {
     });
     assert.notEqual(linkedLocale.status, 0);
     assert.match(linkedLocale.stderr, /messages\.json/);
-  } finally {
-    fs.rmSync(fixture, { recursive: true, force: true });
-  }
+  });
 });
 
 async function flushTasks(turns = 4) {
