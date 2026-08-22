@@ -389,7 +389,7 @@ h1 {
         <div class="setting-desc" data-i18n="showGainOverlayDesc">プレイヤーのボリューム横に現在のゲインを表示</div>
       </div>
       <label class="toggle-switch">
-        <input type="checkbox" id="overlayToggle" disabled>
+        <input type="checkbox" id="overlayToggle" checked disabled>
         <span class="switch-slider"></span>
       </label>
     </div>
@@ -400,7 +400,7 @@ h1 {
       <h2 data-i18n="savedChannels" style="margin-bottom:0">Saved Channels</h2>
       <button id="clearAllBtn" class="clear-all-btn" data-i18n="clearAll" disabled>全削除</button>
     </div>
-    <table class="channel-table">
+    <table class="channel-table" style="display:none">
       <thead>
         <tr>
           <th data-i18n="colChannel">Channel</th>
