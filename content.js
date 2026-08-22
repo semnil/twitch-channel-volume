@@ -500,15 +500,19 @@
   }
 
   // ── DOM-based ad detection ────────────────────────────────────────
+  const AD_INDICATOR_SELECTOR =
+    '[data-a-target="video-ad-countdown"], [data-test-selector="ad-banner-default-text"]';
+
   // The indicator appears after the ad's first audio and can stay in the page
   // after the break, so the bridge prefers the player's own cue and falls back
   // to this where no cue arrives.
 
+  function adIndicatorPresent() {
+    return !!document.querySelector(AD_INDICATOR_SELECTOR);
+  }
+
   function checkAdDom() {
-    const node = document.querySelector(
-      '[data-a-target="video-ad-countdown"], [data-test-selector="ad-banner-default-text"]'
-    );
-    const detected = !!node;
+    const detected = adIndicatorPresent();
     // Right after a route change the player being left is still in the page, so
     // an indicator it put there says nothing about the new media. Wait for the
     // page to be without one before believing the next.
@@ -549,7 +553,9 @@
     // it again and the observer reports the new media's own transitions.
     sendCmd({ cmd: 'mediaChanged' });
     requestedAdActive = false;
-    staleAdIndicator = true;
+    // Only an indicator that is up right now belongs to the media being left;
+    // with none there, the next one to appear is the new media's own.
+    staleAdIndicator = adIndicatorPresent();
     sendResetMeasurement();
     sendCmd({ cmd: 'attach' });
     await resolveChannel();

@@ -5156,3 +5156,18 @@ test('content ignores the indicator of the old media until it clears', async () 
   harness.mutate();
   assert.deepEqual(sent().map((command) => command.active), [true]);
 });
+
+test('content takes the first ad of the new media when the old one showed none', async () => {
+  const harness = createContentHarness();
+  const sent = () => harness.commands.filter((command) => command.cmd === 'setAdActive');
+  await flushTasks();
+
+  // Nothing was playing an ad on the media that ends.
+  await harness.navigate('https://www.twitch.tv/videos/200');
+  harness.commands.length = 0;
+
+  // The first change on the new media brings its own ad.
+  harness.setAdNodePresent(true);
+  harness.mutate();
+  assert.deepEqual(sent().map((command) => command.active), [true]);
+});
