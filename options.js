@@ -24,6 +24,7 @@
   let displayUnit = '%';
   let settingsReady = false;
   let loadFailed = false;
+  let channelsRead = false;
   let settingsRevision = 0;
   let channelRevision = 0;
   let currentSettings = {};
@@ -94,6 +95,7 @@
     }
     if (initialChannelRevision === channelRevision) {
       channelVolumes = data[CHANNEL_VOLUMES_KEY] || {};
+      channelsRead = true;
       renderChannels(channelVolumes);
     }
   }
@@ -105,6 +107,10 @@
   }
 
   function renderChannels(all) {
+    // Whether the list is empty is something only a read can say. Until one has
+    // happened the table and its empty-list line stay as the markup ships them,
+    // so a render driven by anything else leaves them alone.
+    if (!channelsRead) return;
     const body = $('channelsBody');
     body.innerHTML = '';
     const ids = Object.keys(all);
@@ -284,6 +290,7 @@
     if (changes[CHANNEL_VOLUMES_KEY]) {
       channelRevision++;
       channelVolumes = changes[CHANNEL_VOLUMES_KEY].newValue || {};
+      channelsRead = true;
       renderChannels(channelVolumes);
     }
     if (changes[SETTINGS_KEY]) {
