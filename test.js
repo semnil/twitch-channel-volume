@@ -712,7 +712,8 @@ function createOptionsHarness({
   settings = {},
   channelVolumes = {},
   deferStorage = false,
-  failStorage = false
+  failStorage = false,
+  failMutation = false
 } = {}) {
   const messages = JSON.parse(
     fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json'), 'utf8')
@@ -742,10 +743,12 @@ function createOptionsHarness({
   }
 
   const body = stubElement('body');
-  // options.html ships these classes: the page stays hidden until the load
-  // renders, and the error line stays out of the layout until a save fails.
+  // What options.html ships: the page stays hidden until the load renders, the
+  // error line stays out of the layout, and the empty-list message stays out
+  // until the render that counts the channels.
   body.className = 'initializing';
   element('settingsError').className = 'settings-error hidden';
+  element('emptyMsg').style.display = 'none';
   const document = {
     body,
     getElementById: element,
@@ -776,7 +779,11 @@ function createOptionsHarness({
       onChanged: { addListener() {} }
     },
     runtime: {
-      async sendMessage(message) { sent.push(structuredClone(message)); return { ok: true }; }
+      async sendMessage(message) {
+        sent.push(structuredClone(message));
+        if (failMutation) throw new Error('service worker unavailable');
+        return { ok: true };
+      }
     }
   };
 
@@ -4167,6 +4174,17 @@ test('the options page ships hidden with the animations of its controls off', ()
   assert.match(html, /body\.initializing[^{]*#unitToggle button\s*\{[^}]*transition:\s*none;/s);
 });
 
+test('the options page offers no destructive action over a list it has not read', () => {
+  const html = fs.readFileSync(path.join(__dirname, 'options.html'), 'utf8');
+  // Both ship in the state the load leaves them in when it never runs: no
+  // "no saved channels" claim, and no way to delete what it did not count.
+  assert.match(html, /<button[^>]+id="clearAllBtn"[^>]*\bdisabled\b/);
+  assert.match(html, /<div[^>]+id="emptyMsg"[^>]*style="display:none"/);
+  // A disabled control that looks live is a control the viewer will press.
+  assert.match(html, /\.clear-all-btn:disabled\s*\{[^}]*opacity:\s*0\.45;/s);
+  assert.match(html, /\.clear-all-btn:hover:not\(:disabled\)\s*\{/);
+});
+
 test('options put the stored values on their controls before showing the page', async () => {
   const harness = createOptionsHarness({
     settings: { targetLufs: -24, adGainDb: -12, displayUnit: 'dB', showGainOverlay: false },
@@ -4183,6 +4201,9 @@ test('options put the stored values on their controls before showing the page', 
   assert.equal(harness.el('adGainValue').textContent, '-12 dB');
   assert.equal(harness.el('overlayToggle').checked, false);
   assert.equal(harness.el('targetLufs').disabled, false);
+  assert.equal(harness.el('clearAllBtn').disabled, false);
+  // The render that counted the channels is what puts the message up.
+  assert.equal(harness.el('emptyMsg').style.display, '');
   assert.equal(harness.body.classList.contains('initializing'), false);
 });
 
@@ -4193,6 +4214,26 @@ test('options show the page even when the load that fills it fails', async () =>
   assert.equal(harness.body.classList.contains('initializing'), false);
   assert.equal(harness.el('targetLufs').disabled, true);
   assert.equal(harness.el('settingsError').classList.contains('hidden'), false);
+  // The values on screen are the markup defaults, and nothing was saved.
+  assert.equal(harness.el('settingsError').textContent, harness.message('settingsLoadFailed'));
+  // Deleting every channel is offered over a list that was never read, and the
+  // page must not answer how many are saved either.
+  assert.equal(harness.el('clearAllBtn').disabled, true);
+  assert.equal(harness.el('emptyMsg').style.display, 'none');
+});
+
+test('options fill and show the page when the channel normalization fails', async () => {
+  const harness = createOptionsHarness({
+    settings: { targetLufs: -24 },
+    failMutation: true
+  });
+  await flushTasks(8);
+  assert.deepEqual(harness.sent.map((message) => message.mutation.operation), ['normalizeChannels']);
+  // The settings read does not depend on it, so the page carries the stored
+  // values rather than staying hidden behind a service worker that is gone.
+  assert.equal(harness.body.classList.contains('initializing'), false);
+  assert.equal(harness.el('targetLufsValue').textContent, '-24 LUFS');
+  assert.equal(harness.el('targetLufs').disabled, false);
 });
 
 test('popup disables Manual and Apply controls while an Auto update is pending', () => {
