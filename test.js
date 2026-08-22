@@ -4473,6 +4473,40 @@ test('popup re-enables its controls in the render that reports the reset result'
   assert.ok(clearedOnFailure < failure, 'pending flag clears before the failure render');
 });
 
+// The images the generator writes are tracked and the README shows three of
+// them, so where it writes, what it draws with, and when it replaces them are
+// all part of what the repository carries. Running it here is not available to
+// check that: CI installs node alone, without Pillow or the font.
+test('store screenshot generator writes the tracked directory, and only whole', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'gen_screenshots.py'), 'utf8');
+
+  // Resolved from the script rather than the caller, so the destination does
+  // not follow whoever ran it.
+  assert.match(
+    source,
+    /^OUT_DIR = os\.path\.join\(os\.path\.dirname\(os\.path\.abspath\(__file__\)\), 'docs', 'screenshots'\)$/m
+  );
+
+  const saves = [...source.matchAll(/^\s*img\.save\((.+)\)$/gm)].map((match) => match[1]);
+  assert.equal(saves.length, 3);
+  for (const argument of saves) {
+    // Scenes write to the directory they are handed, so a run that fails part
+    // way through leaves the tracked files as they were.
+    assert.match(argument, /^os\.path\.join\(out_dir, /, argument);
+    assert.ok(!argument.includes('OUT_DIR'), argument);
+  }
+  assert.match(source, /with tempfile\.TemporaryDirectory\(\) as staging:/);
+  assert.match(source, /shutil\.move\(os\.path\.join\(staging, name\), os\.path\.join\(OUT_DIR, name\)\)/);
+
+  // One named face per weight: a fallback chain would redraw all six wherever
+  // a different font resolved first.
+  const faces = [...source.matchAll(/^FONT_(?:REGULAR|BOLD)_FILE = '(.+)'$/gm)].map((m) => m[1]);
+  assert.equal(faces.length, 2);
+  assert.deepEqual([...new Set(faces)].length, 2);
+  assert.match(source, /raise SystemExit\(/);
+  assert.ok(!source.includes('ImageFont.load_default()'), 'no silent fallback face');
+});
+
 test('store screenshot generator mirrors the stylesheet muted colors', () => {
   const source = fs.readFileSync(path.join(__dirname, 'gen_screenshots.py'), 'utf8');
   const popup = fs.readFileSync(path.join(__dirname, 'popup.html'), 'utf8');

@@ -5,6 +5,8 @@ PIL 直接描画。popup / settings / overlay の 3 シーンを ja/en で出力
 """
 import math
 import os
+import shutil
+import tempfile
 from PIL import Image, ImageDraw, ImageFont
 
 W, H = 640, 400
@@ -41,29 +43,21 @@ PLAYER_GEAR_RADIUS = 5      # プレイヤー操作列の設定アイコン
 FULLSCREEN_SIZE = 12        # プレイヤー操作列の全画面アイコン
 
 
-# 解決した書体。追跡している画像がどの環境で描かれたかは、これで分かる。
-RESOLVED_FONTS = set()
+# 追跡している画像はこの 2 書体で描いたもの。別の書体で描くと 6 枚とも
+# バイト列が変わるため、候補から選ばずこの 2 つだけを使い、無ければ止める。
+FONT_REGULAR_FILE = '/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc'
+FONT_BOLD_FILE = '/System/Library/Fonts/ヒラギノ角ゴシック W6.ttc'
 
 
 def _font(size, bold=False):
-    cands = (
-        ['meiryob.ttc', 'C:/Windows/Fonts/meiryob.ttc',
-         '/System/Library/Fonts/ヒラギノ角ゴシック W6.ttc',
-         '/System/Library/Fonts/Supplemental/Arial Unicode.ttf']
-        if bold else
-        ['meiryo.ttc', 'C:/Windows/Fonts/meiryo.ttc',
-         '/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc',
-         '/System/Library/Fonts/Supplemental/Arial Unicode.ttf']
-    )
-    for c in cands:
-        try:
-            font = ImageFont.truetype(c, size)
-        except Exception:
-            continue
-        RESOLVED_FONTS.add(c)
-        return font
-    RESOLVED_FONTS.add('(PIL default)')
-    return ImageFont.load_default()
+    path = FONT_BOLD_FILE if bold else FONT_REGULAR_FILE
+    try:
+        return ImageFont.truetype(path, size)
+    except OSError:
+        raise SystemExit(
+            f'{path} が見つからない。docs/screenshots/ の画像はこの書体で描いたもので、'
+            '別の書体で生成すると 6 枚とも差し替わる。'
+        )
 
 
 FONT = _font(13)
@@ -196,7 +190,7 @@ STRINGS = {
 }
 
 
-def screenshot_popup(lang):
+def screenshot_popup(lang, out_dir):
     s = STRINGS[lang]
     img = Image.new('RGB', (W, H), PAGE_BG)
     draw = ImageDraw.Draw(img)
@@ -295,11 +289,10 @@ def screenshot_popup(lang):
         draw.text((bx + (bw - ptw) / 2, by + 4), p, fill=DIM2, font=FONT_PRESET)
         bx += bw + 4
 
-    img.save(os.path.join(OUT_DIR, f'popup_{lang}.png'))
-    print(f'Generated docs/screenshots/popup_{lang}.png')
+    img.save(os.path.join(out_dir, f'popup_{lang}.png'))
 
 
-def screenshot_settings(lang):
+def screenshot_settings(lang, out_dir):
     s = STRINGS[lang]
     img = Image.new('RGB', (W, H), PAGE_BG)
     draw = ImageDraw.Draw(img)
@@ -399,11 +392,10 @@ def screenshot_settings(lang):
         draw.text((delete_x, ry - 2), '×', fill=HINT, font=FONT_LG)
         ry += 23
 
-    img.save(os.path.join(OUT_DIR, f'settings_{lang}.png'))
-    print(f'Generated docs/screenshots/settings_{lang}.png')
+    img.save(os.path.join(out_dir, f'settings_{lang}.png'))
 
 
-def screenshot_overlay(lang):
+def screenshot_overlay(lang, out_dir):
     s = STRINGS[lang]
     img = Image.new('RGB', (W, H), (24, 24, 24))
     draw = ImageDraw.Draw(img)
@@ -452,8 +444,7 @@ def screenshot_overlay(lang):
     draw_gear(draw, (W - 62, cy), WHITE, radius=PLAYER_GEAR_RADIUS)
     draw_fullscreen(draw, (W - 34, cy), WHITE)
 
-    img.save(os.path.join(OUT_DIR, f'overlay_{lang}.png'))
-    print(f'Generated docs/screenshots/overlay_{lang}.png')
+    img.save(os.path.join(out_dir, f'overlay_{lang}.png'))
 
 
 def verify_icons():
@@ -504,14 +495,19 @@ def verify_icons():
                 f'draw_fullscreen: 角 ({sx}, {sy}) の垂直アームが描かれていない'
 
 
+# 全 6 枚を作業ディレクトリで描き切ってから追跡先へ移す。レイアウトの assert は
+# 2 枚目以降でも落ちるため、追跡先へ直に書くと新しい 1 枚と古い 5 枚が残る。
 def main():
     verify_icons()
-    print(f'Fonts: {", ".join(sorted(RESOLVED_FONTS))}')
-    os.makedirs(OUT_DIR, exist_ok=True)
-    for lang in ('ja', 'en'):
-        screenshot_popup(lang)
-        screenshot_settings(lang)
-        screenshot_overlay(lang)
+    with tempfile.TemporaryDirectory() as staging:
+        for lang in ('ja', 'en'):
+            screenshot_popup(lang, staging)
+            screenshot_settings(lang, staging)
+            screenshot_overlay(lang, staging)
+        os.makedirs(OUT_DIR, exist_ok=True)
+        for name in sorted(os.listdir(staging)):
+            shutil.move(os.path.join(staging, name), os.path.join(OUT_DIR, name))
+            print(f'Generated docs/screenshots/{name}')
 
 
 if __name__ == '__main__':
