@@ -461,8 +461,7 @@
       attachedVideo.removeEventListener('volumechange', onVolumeChange);
       attachedVideo = null;
       lastVolumeState = '';
-      // The times a cue gave belong to the timeline of the element that is gone.
-      forgetCuedBreak();
+      forgetCues();
       sourceNode = null;
       workletNode = null;
       updateAdState();
@@ -684,6 +683,13 @@
   function forgetCuedBreak() {
     adBreakStartMedia = Infinity;
     adBreakEndMedia = -Infinity;
+  }
+
+  // A cue's times belong to one element's timeline, and whether the media is
+  // cued at all is unknown again once that element changes.
+  function forgetCues() {
+    adCueSeen = false;
+    forgetCuedBreak();
   }
 
   // The cue arrives a little after the break's first audio, and the windows
@@ -969,10 +975,11 @@
         resetMeasurement(data.initialIntegratedLufs, data.epoch);
         break;
       case 'mediaChanged':
-        // New media has its own cues, and the times the old ones gave mean
-        // nothing against its timeline.
-        adCueSeen = false;
-        forgetCuedBreak();
+        // New media answers for itself: the old cues mean nothing against its
+        // timeline, and the indicator is reported against it again by
+        // content.js rather than carried over.
+        forgetCues();
+        domAdActive = false;
         updateAdState();
         break;
       case 'resume':

@@ -4976,3 +4976,48 @@ test('page bridge keeps the start of the break the first cue gave', async () => 
   harness.emitMeasurementBlock(1.0);
   assert.equal(adState().active, true);
 });
+
+test('page bridge lets the indicator speak again after the element is replaced', async () => {
+  const harness = createPageBridgeHarness();
+  const adState = () => harness.messages.filter((message) => message.event === 'ad').at(-1);
+  await harness.startMeasurement();
+  harness.setPlayhead(100);
+  harness.emitPlayerCue({ rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2 });
+  assert.equal(adState().active, true);
+
+  // A new element carries a timeline nothing has cued against yet.
+  await harness.replaceVideo();
+  assert.equal(adState().active, false);
+  await harness.dispatchCommand('setAdActive', { active: true });
+  assert.equal(adState().active, true);
+});
+
+test('page bridge does not carry the indicator of the old media into the new one', async () => {
+  const harness = createPageBridgeHarness();
+  const adState = () => harness.messages.filter((message) => message.event === 'ad').at(-1);
+  await harness.startMeasurement();
+  await harness.dispatchCommand('setAdActive', { active: true });
+  assert.equal(adState().active, true);
+
+  // The indicator can still be in the page when the next media starts.
+  await harness.dispatchCommand('mediaChanged');
+  assert.equal(adState().active, false);
+});
+
+test('content asserts the ad indicator again on the new media', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  harness.setAdNodePresent(true);
+  harness.mutate();
+  assert.equal(harness.commands.filter((command) => command.cmd === 'setAdActive').length, 1);
+
+  harness.commands.length = 0;
+  await harness.navigate('https://www.twitch.tv/videos/200');
+  // The bridge was told to forget the old media, so an indicator that is still
+  // in the page has to be reported against the new one.
+  const sent = harness.commands
+    .filter((command) => command.cmd === 'mediaChanged' || command.cmd === 'setAdActive');
+  assert.deepEqual(sent.map((command) => command.cmd), ['mediaChanged', 'setAdActive']);
+  assert.equal(sent[1].active, true);
+});
+
