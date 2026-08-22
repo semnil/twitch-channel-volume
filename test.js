@@ -675,6 +675,7 @@ function stubElement(id) {
     title: '',
     textContent: '',
     offsetWidth: 0,
+    style: {},
     attributes: {},
     classList: {
       add(...names) { names.forEach((name) => classes.add(name)); },
@@ -697,6 +698,8 @@ function stubElement(id) {
       element.textContent += node.textContent || '';
       return node;
     },
+    // The stub holds text, never child nodes, so a lookup inside it finds none.
+    querySelectorAll() { return []; },
     getAttribute(name) { return name in element.attributes ? element.attributes[name] : null; },
     setAttribute(name, value) { element.attributes[name] = value; },
     addEventListener(type, listener) { (listeners[type] ||= []).push(listener); }
@@ -766,6 +769,7 @@ function createOptionsHarness({ settings = {}, channelVolumes = {} } = {}) {
     chrome,
     document,
     console: { warn() {}, error() {}, info() {} },
+    requestAnimationFrame(callback) { callback(); },
     setTimeout(callback) { queueMicrotask(callback); return 1; },
     structuredClone
   });
