@@ -1267,17 +1267,11 @@ function i18nElementsInOrder(source) {
       key: key[1],
       tag,
       id: named.get('id') || '',
-      classes: (named.get('class') || '').trim(),
+      classes: (named.get('class') || '').split(IS_HTML_SPACE_RUN).filter(Boolean),
       textOnly: child !== -1 && new RegExp(`^</${tag}(?=[${HTML_SPACE}/>])`, 'i').test(inside.slice(child))
     });
   }
   return marked;
-}
-
-// The element a key is on, named the way the page names it.
-function i18nElementLabel({ key, tag, id, classes }) {
-  const suffix = classes ? `.${classes.split(IS_HTML_SPACE_RUN).join('.')}` : '';
-  return `${key} ${tag}${id ? `#${id}` : ''}${suffix}`;
 }
 
 function i18nKeysInOrder(source) {
@@ -1384,53 +1378,55 @@ test('every data-i18n in the pages is one the extractor reads', () => {
 });
 
 test('the pages mark the elements they are meant to mark', () => {
-  // A snapshot of the key and the element that carries it: an attribute that
-  // disappears, moves onto another element or gains a different key changes
-  // this list. Keeping it here is what makes the extractor's blind spots fail
-  // instead of pass.
+  // A snapshot of the key and the element that carries it — tag, id, and the
+  // class tokens kept apart, since the page reads them apart. An attribute
+  // that disappears, moves onto another element or gains a different key
+  // changes this list. Keeping it here is what makes the extractor's blind
+  // spots fail instead of pass.
   const marked = (name) =>
-    i18nElementsInOrder(fs.readFileSync(path.join(__dirname, name), 'utf8')).map(i18nElementLabel);
+    i18nElementsInOrder(fs.readFileSync(path.join(__dirname, name), 'utf8'))
+      .map(({ key, tag, id, classes }) => [key, tag, id, classes]);
 
   assert.deepEqual(marked('popup.html'), [
-    'channelNotDetected div#channelName.channel-name.empty',
-    'adDetected span#adFlag.ad-badge.hidden',
-    'resetMeasurement span.sr-only',
-    'resetMeasurementFailed div#resetMeasurementError.reset-measurement-error.hidden',
-    'audioUnavailable div#audioError.audio-error.hidden',
-    'labelIntegrated div.label',
-    'labelSuggested div.label',
-    'labelCurrent span',
-    'labelFallback span#fallbackBadge.fallback-badge.hidden',
-    'autoApplyLoudness div#autoApplyLabel.auto-label',
-    'autoSaveFailed div#autoError.auto-error.hidden',
-    'applyToChannel button#applyBtn.apply-btn',
-    'hintNoLufs span#applyHint.apply-hint',
-    'manualVolume span.label'
+    ['channelNotDetected', 'div', 'channelName', ['channel-name', 'empty']],
+    ['adDetected', 'span', 'adFlag', ['ad-badge', 'hidden']],
+    ['resetMeasurement', 'span', '', ['sr-only']],
+    ['resetMeasurementFailed', 'div', 'resetMeasurementError', ['reset-measurement-error', 'hidden']],
+    ['audioUnavailable', 'div', 'audioError', ['audio-error', 'hidden']],
+    ['labelIntegrated', 'div', '', ['label']],
+    ['labelSuggested', 'div', '', ['label']],
+    ['labelCurrent', 'span', '', []],
+    ['labelFallback', 'span', 'fallbackBadge', ['fallback-badge', 'hidden']],
+    ['autoApplyLoudness', 'div', 'autoApplyLabel', ['auto-label']],
+    ['autoSaveFailed', 'div', 'autoError', ['auto-error', 'hidden']],
+    ['applyToChannel', 'button', 'applyBtn', ['apply-btn']],
+    ['hintNoLufs', 'span', 'applyHint', ['apply-hint']],
+    ['manualVolume', 'span', '', ['label']]
   ]);
 
   assert.deepEqual(marked('options.html'), [
-    'settings h2',
-    'settingsSaveFailed div#settingsError.settings-error.hidden',
-    'targetLufs div.setting-label',
-    'targetLufsDesc div.setting-desc',
-    'allChannelsAutoApply div#allChannelsAutoLabel.setting-label',
-    'allChannelsAutoApplyDesc div.setting-desc',
-    'typeLive span#defaultAutoLiveLabel.type-switch-label',
-    'typeVod span#defaultAutoVodLabel.type-switch-label',
-    'typeClip span#defaultAutoClipLabel.type-switch-label',
-    'adGain div.setting-label',
-    'adGainDesc div.setting-desc',
-    'displayUnit div.setting-label',
-    'displayUnitDesc div.setting-desc',
-    'showGainOverlay div.setting-label',
-    'showGainOverlayDesc div.setting-desc',
-    'savedChannels h2',
-    'clearAll button#clearAllBtn.clear-all-btn',
-    'colChannel th',
-    'typeLive th.right',
-    'typeVod th.right',
-    'typeClip th.right',
-    'noSavedChannels div#emptyMsg.empty-msg'
+    ['settings', 'h2', '', []],
+    ['settingsSaveFailed', 'div', 'settingsError', ['settings-error', 'hidden']],
+    ['targetLufs', 'div', '', ['setting-label']],
+    ['targetLufsDesc', 'div', '', ['setting-desc']],
+    ['allChannelsAutoApply', 'div', 'allChannelsAutoLabel', ['setting-label']],
+    ['allChannelsAutoApplyDesc', 'div', '', ['setting-desc']],
+    ['typeLive', 'span', 'defaultAutoLiveLabel', ['type-switch-label']],
+    ['typeVod', 'span', 'defaultAutoVodLabel', ['type-switch-label']],
+    ['typeClip', 'span', 'defaultAutoClipLabel', ['type-switch-label']],
+    ['adGain', 'div', '', ['setting-label']],
+    ['adGainDesc', 'div', '', ['setting-desc']],
+    ['displayUnit', 'div', '', ['setting-label']],
+    ['displayUnitDesc', 'div', '', ['setting-desc']],
+    ['showGainOverlay', 'div', '', ['setting-label']],
+    ['showGainOverlayDesc', 'div', '', ['setting-desc']],
+    ['savedChannels', 'h2', '', []],
+    ['clearAll', 'button', 'clearAllBtn', ['clear-all-btn']],
+    ['colChannel', 'th', '', []],
+    ['typeLive', 'th', '', ['right']],
+    ['typeVod', 'th', '', ['right']],
+    ['typeClip', 'th', '', ['right']],
+    ['noSavedChannels', 'div', 'emptyMsg', ['empty-msg']]
   ]);
 });
 
@@ -1440,11 +1436,8 @@ test('the pages mark only elements that hold text', () => {
   // names the element; this is what makes carrying a key illegal there.
   for (const name of ['popup.html', 'options.html']) {
     const source = fs.readFileSync(path.join(__dirname, name), 'utf8');
-    for (const element of i18nElementsInOrder(source)) {
-      assert.ok(
-        element.textOnly,
-        `${name} marks ${i18nElementLabel(element)}, which holds more than text`
-      );
+    for (const { key, tag, textOnly } of i18nElementsInOrder(source)) {
+      assert.ok(textOnly, `${name} marks ${key} on <${tag}>, which holds more than text`);
     }
   }
 });
