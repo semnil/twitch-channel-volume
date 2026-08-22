@@ -495,18 +495,46 @@ def verify_icons():
                 f'draw_fullscreen: 角 ({sx}, {sy}) の垂直アームが描かれていない'
 
 
+def replace_all(staging, out_dir):
+    """staging の全ファイルで out_dir を置き換える。1 つでも失敗したら元へ戻す。
+
+    描画が最後まで通っても置換は 6 回に分かれるため、途中で止まると新しい
+    ものと前回のものが並ぶ。戻せるように、上書きする分を先に控える。
+    """
+    names = sorted(os.listdir(staging))
+    os.makedirs(out_dir, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=out_dir) as backup:
+        saved = [n for n in names if os.path.exists(os.path.join(out_dir, n))]
+        for name in saved:
+            shutil.copy2(os.path.join(out_dir, name), os.path.join(backup, name))
+        moved = []
+        try:
+            for name in names:
+                shutil.move(os.path.join(staging, name), os.path.join(out_dir, name))
+                moved.append(name)
+        except BaseException:
+            for name in moved:
+                if name in saved:
+                    shutil.copy2(os.path.join(backup, name), os.path.join(out_dir, name))
+                else:
+                    os.remove(os.path.join(out_dir, name))
+            raise
+    return names
+
+
 # 全 6 枚を作業ディレクトリで描き切ってから追跡先へ移す。レイアウトの assert は
 # 2 枚目以降でも落ちるため、追跡先へ直に書くと新しい 1 枚と古い 5 枚が残る。
+# 作業ディレクトリを追跡先の隣に置くのは、移動が同一ファイルシステム内の
+# rename になるようにするため。
 def main():
     verify_icons()
-    with tempfile.TemporaryDirectory() as staging:
+    os.makedirs(OUT_DIR, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=OUT_DIR) as staging:
         for lang in ('ja', 'en'):
             screenshot_popup(lang, staging)
             screenshot_settings(lang, staging)
             screenshot_overlay(lang, staging)
-        os.makedirs(OUT_DIR, exist_ok=True)
-        for name in sorted(os.listdir(staging)):
-            shutil.move(os.path.join(staging, name), os.path.join(OUT_DIR, name))
+        for name in replace_all(staging, OUT_DIR):
             print(f'Generated docs/screenshots/{name}')
 
 

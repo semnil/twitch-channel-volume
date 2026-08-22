@@ -4473,6 +4473,84 @@ test('popup re-enables its controls in the render that reports the reset result'
   assert.ok(clearedOnFailure < failure, 'pending flag clears before the failure render');
 });
 
+// Importing the module resolves the font, so this answers both of the things
+// the run below needs: Pillow, and the one face the generator will accept.
+const generatorImport = spawnSync('python3', ['-B', '-c',
+  "import importlib.util, sys;" +
+  "spec = importlib.util.spec_from_file_location('g', 'gen_screenshots.py');" +
+  "m = importlib.util.module_from_spec(spec);" +
+  "spec.loader.exec_module(m)"
+], { cwd: __dirname, encoding: 'utf8' });
+const generatorSkip = generatorImport.status === 0
+  ? false
+  : 'gen_screenshots.py cannot be imported here: ' +
+    ((generatorImport.stderr || '').trim().split('\n').pop() || 'python3 failed');
+
+// Drawing all six before replacing any is only half of it: the replacement is
+// six moves, and a run that stops among them leaves some of the tracked images
+// from this run and the rest from the last one.
+const INJECT_MOVE_FAILURE = [
+  'import hashlib, importlib.util, os, shutil, sys, tempfile',
+  'fail_at = int(sys.argv[1])',
+  'repo = os.getcwd()',
+  'def digests(d):',
+  "    return {n: hashlib.sha256(open(os.path.join(d, n), 'rb').read()).hexdigest()",
+  '            for n in sorted(os.listdir(d))}',
+  'with tempfile.TemporaryDirectory() as sandbox:',
+  "    script = os.path.join(sandbox, 'gen_screenshots.py')",
+  "    source = open(os.path.join(repo, 'gen_screenshots.py'), encoding='utf-8').read()",
+  '    # The run has to draw something other than what is on disk, or a partial',
+  '    # replacement cannot be told from a finished one.',
+  "    source = source.replace('WHITE = (255, 255, 255)', 'WHITE = (254, 254, 254)', 1)",
+  "    open(script, 'w', encoding='utf-8').write(source)",
+  "    out = os.path.join(sandbox, 'docs', 'screenshots')",
+  '    os.makedirs(out)',
+  "    tracked = os.path.join(repo, 'docs', 'screenshots')",
+  '    for name in os.listdir(tracked):',
+  '        shutil.copy2(os.path.join(tracked, name), os.path.join(out, name))',
+  '    before = digests(out)',
+  "    spec = importlib.util.spec_from_file_location('gen_under_test', script)",
+  '    gen = importlib.util.module_from_spec(spec)',
+  '    spec.loader.exec_module(gen)',
+  "    calls = {'n': 0}",
+  '    real_move = shutil.move',
+  '    def flaky_move(src, dst, *a, **k):',
+  "        calls['n'] += 1",
+  "        if calls['n'] == fail_at:",
+  "            raise OSError('injected failure')",
+  '        return real_move(src, dst, *a, **k)',
+  '    gen.shutil.move = flaky_move',
+  '    try:',
+  '        gen.main()',
+  '    except OSError:',
+  '        pass',
+  '    else:',
+  "        print('the injected failure never fired')",
+  '        raise SystemExit(2)',
+  '    gen.shutil.move = real_move',
+  '    after = digests(out)',
+  "    moved = calls['n'] - 1",
+  '    changed = [n for n in before if before[n] != after.get(n)]',
+  '    added = [n for n in after if n not in before]',
+  "    print('moves before the failure: %d, changed: %d, added: %d'",
+  '          % (moved, len(changed), len(added)))',
+  '    if moved < 1:',
+  "        print('nothing had been moved yet, so the run proves nothing')",
+  '        raise SystemExit(3)',
+  '    raise SystemExit(1 if changed or added else 0)'
+].join('\n');
+
+test('store screenshot generator leaves the tracked images alone when a replacement fails',
+  { skip: generatorSkip }, () => {
+    for (const failAt of ['2', '4', '6']) {
+      const run = spawnSync('python3', ['-B', '-c', INJECT_MOVE_FAILURE, failAt],
+        { cwd: __dirname, encoding: 'utf8' });
+      const report = (run.stdout || '').trim();
+      assert.equal(run.status, 0, 'failure at move ' + failAt + ': ' + report + (run.stderr || ''));
+      assert.match(report, /moves before the failure: [1-9]/, report);
+    }
+  });
+
 // The images the generator writes are tracked and the README shows three of
 // them, so where it writes, what it draws with, and when it replaces them are
 // all part of what the repository carries. Running it here is not available to
@@ -4495,8 +4573,15 @@ test('store screenshot generator writes the tracked directory, and only whole', 
     assert.match(argument, /^os\.path\.join\(out_dir, /, argument);
     assert.ok(!argument.includes('OUT_DIR'), argument);
   }
-  assert.match(source, /with tempfile\.TemporaryDirectory\(\) as staging:/);
-  assert.match(source, /shutil\.move\(os\.path\.join\(staging, name\), os\.path\.join\(OUT_DIR, name\)\)/);
+  // Beside the destination, so each move is a rename within one filesystem.
+  assert.match(source, /with tempfile\.TemporaryDirectory\(dir=OUT_DIR\) as staging:/);
+  // main hands the staging directory over rather than moving anything itself.
+  assert.match(source, /for name in replace_all\(staging, OUT_DIR\):/);
+  const replaceAll = source.slice(source.indexOf('def replace_all('), source.indexOf('def main('));
+  assert.match(replaceAll, /except BaseException:/);
+  assert.match(replaceAll, /shutil\.copy2\(os\.path\.join\(backup, name\), os\.path\.join\(out_dir, name\)\)/);
+  assert.match(replaceAll, /os\.remove\(os\.path\.join\(out_dir, name\)\)/);
+  assert.match(replaceAll, /raise$/m);
 
   // One named face per weight: a fallback chain would redraw all six wherever
   // a different font resolved first.

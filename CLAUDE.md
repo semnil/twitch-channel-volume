@@ -185,7 +185,7 @@ options.html / options.js
 | `pack.py` | Chrome Web Store 用 zip 生成 (manifest からの参照グラフで選択、`--list` で選択結果のみ出力) |
 | `PRIVACY_POLICY.md` / `PRIVACY_POLICY_JA.md` | プライバシーポリシー (審査・README リンク用, EN/JA) |
 | `docs/security-audit.md` | セキュリティ監査レポート |
-| `docs/screenshots/` | `gen_screenshots.py` の出力。README とストア掲載の両方が使う (拡張機能には同梱しない)。追跡しているのは macOS のヒラギノで描いたもの。生成器はその 2 書体だけを使い、無ければ止まる (別の書体で描くと 6 枚とも差し替わるため)。6 枚を作業ディレクトリで描き切ってから移すので、途中で失敗しても新旧が混ざらない |
+| `docs/screenshots/` | `gen_screenshots.py` の出力。README とストア掲載の両方が使う (拡張機能には同梱しない)。追跡しているのは macOS のヒラギノで描いたもの。生成器はその 2 書体だけを使い、無ければ止まる (別の書体で描くと 6 枚とも差し替わるため)。6 枚を作業ディレクトリで描き切ってから移し、移動が 1 つでも失敗したら上書きした分を戻すので、描画・置換のどちらで止まっても追跡先は前回のまま |
 | `test.js` | ユニットテスト (`node test.js`) — utils と store に加え、content.js / page-bridge.js / popup.js / options.js / background.js を VM 上の harness で走らせる |
 
 ## Key design decisions
