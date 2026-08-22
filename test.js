@@ -4745,6 +4745,8 @@ test('page bridge extends a break when the next creative is cued', async () => {
   harness.emitPlayerCue({ rollType: 'midroll', startTime: 315.238, endTime: 346.47, duration: 31.232 });
   // The break did not restart, so nothing is rolled back a second time.
   assert.equal(harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback').length, 0);
+  harness.emitMeasurementBlock(1.0);
+  assert.equal(harness.messages.filter((message) => message.event === 'ad').at(-1).active, true);
 
   harness.emitMeasurementBlock(1.0);
   assert.equal(harness.messages.filter((message) => message.event === 'ad').at(-1).active, true);
@@ -4791,29 +4793,6 @@ test('page bridge ends the break by the cue even when the indicator stays', asyn
   harness.setPlayhead(115.3);
   harness.emitMeasurementBlock(1.0);
   assert.equal(harness.messages.filter((message) => message.event === 'ad').at(-1).active, false);
-});
-
-test('page bridge stops trusting cues after a reset', async () => {
-  const harness = createPageBridgeHarness();
-  const adState = () => harness.messages.filter((message) => message.event === 'ad').at(-1);
-  await harness.startMeasurement();
-  harness.setPlayhead(100);
-  harness.emitPlayerCue({ rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2 });
-  assert.equal(adState().active, true);
-
-  // The reset drops the break along with the history it belonged to.
-  await harness.dispatchCommand('resetMeasurement');
-  assert.equal(adState().active, false);
-
-  // The next media may be a VOD, whose ads are cued nowhere, so the indicator
-  // is the only signal again and it carries its own delay.
-  for (let i = 0; i < 60; i++) harness.emitMeasurementBlock(0.01 + i * 0.0004);
-  harness.logs.length = 0;
-  await harness.dispatchCommand('setAdActive', { active: true });
-  const rollback = harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback');
-  assert.equal(rollback.length, 1);
-  assert.equal(rollback[0][1].requested, AD_START_ROLLBACK);
-  assert.equal(adState().active, true);
 });
 
 test('page bridge applies the ad gain to the element a client-side ad plays in', async () => {
@@ -4896,3 +4875,88 @@ test('page bridge measures on when the Worker constructor cannot be wrapped', as
   await harness.dispatchCommand('setAdActive', { active: true });
   assert.equal(harness.messages.filter((message) => message.event === 'ad').at(-1).active, true);
 });
+
+test('page bridge does not open the break before the cue says it starts', async () => {
+  const harness = createPageBridgeHarness();
+  const adState = () => harness.messages.filter((message) => message.event === 'ad').at(-1);
+  await harness.startMeasurement();
+  const content = Array.from({ length: 60 }, (_, i) => 0.01 + i * 0.0004);
+  for (const ms of content) harness.emitMeasurementBlock(ms);
+
+  // A cue can name a break the playhead has not reached yet.
+  harness.setPlayhead(99.5);
+  harness.logs.length = 0;
+  harness.emitPlayerCue({ rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2 });
+  assert.equal(harness.messages.filter((message) => message.event === 'ad').length, 0);
+  harness.emitMeasurementBlock(1.0);
+  assert.equal(harness.messages.filter((message) => message.event === 'ad').length, 0);
+  assert.equal(harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback').length, 0);
+
+  // It opens where the cue said it would, and takes out only the window that
+  // spans the start.
+  harness.setPlayhead(100.05);
+  harness.emitMeasurementBlock(1.0);
+  assert.equal(adState().active, true);
+  const rollback = harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback');
+  assert.equal(rollback.length, 1);
+  assert.equal(rollback[0][1].requested, 1);
+});
+
+test('page bridge does not reopen a finished break when the playhead moves back', async () => {
+  const harness = createPageBridgeHarness();
+  const adState = () => harness.messages.filter((message) => message.event === 'ad').at(-1);
+  await harness.startMeasurement();
+  harness.setPlayhead(100);
+  harness.emitPlayerCue({ rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2 });
+  harness.setPlayhead(115.3);
+  harness.emitMeasurementBlock(1.0);
+  assert.equal(adState().active, false);
+
+  harness.setPlayhead(50);
+  harness.emitMeasurementBlock(1.0);
+  assert.equal(adState().active, false);
+
+  // Nor when it moves back into the range the break had.
+  harness.setPlayhead(110);
+  harness.emitMeasurementBlock(1.0);
+  assert.equal(adState().active, false);
+});
+
+test('page bridge keeps the start of the break the first cue gave', async () => {
+  const harness = createPageBridgeHarness();
+  const adState = () => harness.messages.filter((message) => message.event === 'ad').at(-1);
+  await harness.startMeasurement();
+  harness.setPlayhead(100);
+  harness.emitPlayerCue({ rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2 });
+  assert.equal(adState().active, true);
+
+  // The next creative of the pod can be cued just before it starts.
+  harness.setPlayhead(109.5);
+  harness.emitPlayerCue({ rollType: 'midroll', startTime: 110, endTime: 130, duration: 20 });
+  harness.emitMeasurementBlock(1.0);
+  assert.equal(adState().active, true);
+});
+
+test('page bridge stops trusting cues after a reset', async () => {
+  const harness = createPageBridgeHarness();
+  const adState = () => harness.messages.filter((message) => message.event === 'ad').at(-1);
+  await harness.startMeasurement();
+  harness.setPlayhead(100);
+  harness.emitPlayerCue({ rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2 });
+  assert.equal(adState().active, true);
+
+  // The reset drops the break along with the history it belonged to.
+  await harness.dispatchCommand('resetMeasurement');
+  assert.equal(adState().active, false);
+
+  // The next media may be a VOD, whose ads are cued nowhere, so the indicator
+  // is the only signal again and it carries its own delay.
+  for (let i = 0; i < 60; i++) harness.emitMeasurementBlock(0.01 + i * 0.0004);
+  harness.logs.length = 0;
+  await harness.dispatchCommand('setAdActive', { active: true });
+  const rollback = harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback');
+  assert.equal(rollback.length, 1);
+  assert.equal(rollback[0][1].requested, AD_START_ROLLBACK);
+  assert.equal(adState().active, true);
+});
+

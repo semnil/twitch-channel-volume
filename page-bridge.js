@@ -81,8 +81,9 @@
   let adGainOffset = 1.0;
   let adActive = false;
   let domAdActive = false;
-  // The media time the player's cue gave for the end of the break it is
-  // playing, and whether any cue has been accepted for this media.
+  // The media times the player's cues gave for the break it is playing, and
+  // whether any cue has been accepted for this media.
+  let adBreakStartMedia = Infinity;
   let adBreakEndMedia = -Infinity;
   let adCueSeen = false;
   let attachTimer = null;
@@ -343,7 +344,7 @@
     // New media has its own cues, and a media time from the old one means
     // nothing against it.
     adCueSeen = false;
-    adBreakEndMedia = -Infinity;
+    forgetCuedBreak();
     updateAdState();
     if (!Number.isFinite(initialIntegratedLufs)) return;
     const initialMeanSquare = Math.pow(10, (initialIntegratedLufs + 0.691) / 10);
@@ -465,9 +466,11 @@
       attachedVideo.removeEventListener('volumechange', onVolumeChange);
       attachedVideo = null;
       lastVolumeState = '';
-      adBreakEndMedia = -Infinity;
+      // The times a cue gave belong to the timeline of the element that is gone.
+      forgetCuedBreak();
       sourceNode = null;
       workletNode = null;
+      updateAdState();
       // The element that replaces it needs the loop that first attached.
       scheduleAttach();
     }
@@ -674,10 +677,28 @@
   const AD_CUE_LEAD_SEC = 1;
 
   // The cue names the break in the media timeline of the element that is being
-  // measured, so the break runs until the playhead passes the end it gave.
+  // measured, so the break runs from the start it gave until the playhead
+  // passes the end.
   function playerBreakActive() {
     const position = attachedVideo?.currentTime;
-    return Number.isFinite(position) && position < adBreakEndMedia;
+    return Number.isFinite(position)
+      && position >= adBreakStartMedia
+      && position < adBreakEndMedia;
+  }
+
+  function forgetCuedBreak() {
+    adBreakStartMedia = Infinity;
+    adBreakEndMedia = -Infinity;
+  }
+
+  // The cue arrives a little after the break's first audio, and the windows
+  // appended over that distance are the ones holding it.
+  function adStartRollbackBlocks() {
+    const position = attachedVideo?.currentTime;
+    if (!adCueSeen || !Number.isFinite(position) || !Number.isFinite(adBreakStartMedia)) {
+      return AD_START_ROLLBACK_BLOCKS;
+    }
+    return 1 + Math.floor(Math.max(0, position - adBreakStartMedia) / BLOCK_SEC);
   }
 
   // The player's cue names the break with its first audio and ends it on time;
@@ -705,12 +726,18 @@
     });
   }
 
-  function updateAdState(rollbackBlocks = AD_START_ROLLBACK_BLOCKS) {
+  function updateAdState() {
     const wanted = adWanted();
     if (wanted === adActive) return;
     adActive = wanted;
-    if (adActive) rollBackAdStart(rollbackBlocks);
-    else armBoundarySkip('ad-end');
+    if (adActive) {
+      rollBackAdStart(adStartRollbackBlocks());
+    } else {
+      // The break the cue named is behind the playhead; moving back into it
+      // must not open it again.
+      forgetCuedBreak();
+      armBoundarySkip('ad-end');
+    }
     applyEffectiveGain();
     syncAdElementGains();
     postAd(adActive);
@@ -719,9 +746,7 @@
   function setDomAdActive(active) {
     if (domAdActive === !!active) return;
     domAdActive = !!active;
-    // The indicator appears after the ad's first audio, so the windows appended
-    // in between are removed.
-    updateAdState(AD_START_ROLLBACK_BLOCKS);
+    updateAdState();
   }
 
   // ── Ad breaks: the player's own cues ────────────────────────────────
@@ -743,6 +768,9 @@
     if (position < startTime - AD_CUE_LEAD_SEC || position >= endTime) return;
     adCueSeen = true;
     if (endTime <= adBreakEndMedia) return;
+    // The start belongs to the cue that opened the break; the ones that follow
+    // it in the same pod only push the end out.
+    if (adBreakEndMedia === -Infinity) adBreakStartMedia = startTime;
     adBreakEndMedia = endTime;
     console.info('[TCV] ad cue from the player', {
       rollType: cue.rollType,
@@ -750,8 +778,7 @@
       endTime: Number(endTime.toFixed(3)),
       videoTime: Number(position.toFixed(3))
     });
-    // Windows appended between the break's first audio and this cue hold it.
-    updateAdState(1 + Math.floor(Math.max(0, position - startTime) / BLOCK_SEC));
+    updateAdState();
   }
 
   function installWorkerHook() {
