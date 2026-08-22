@@ -95,6 +95,18 @@ test('every packaged path is one the extension loads', () => {
   }
 });
 
+test('the scratch roots are ignored at the root and no deeper', () => {
+  const ignored = fs.readFileSync(path.join(__dirname, '.gitignore'), 'utf8')
+    .split('\n')
+    .map((line) => line.trim());
+  for (const name of SCRATCH_DIRS) {
+    // The walk above skips these by root path, so a directory of the same name
+    // that the extension ships has to stay visible to git as well.
+    assert.ok(ignored.includes(`/${name}/`), `${name} is ignored at the root`);
+    assert.ok(!ignored.includes(`${name}/`), `${name} is not ignored deeper in the tree`);
+  }
+});
+
 test('the forbidden-name walk skips the scratch roots and nothing else', () => {
   // Named here because the fixture below is built from this set: dropping an
   // entry would otherwise pass by leaving nothing to skip.
