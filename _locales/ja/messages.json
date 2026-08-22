@@ -47,6 +47,9 @@
   "settingsSaveFailed": {
     "message": "設定を保存できませんでした。保存済みの値へ戻しました"
   },
+  "settingsLoadFailed": {
+    "message": "保存済みの設定を読み込めませんでした。ページを再読み込みしてください"
+  },
   "channelUpdateFailed": {
     "message": "保存済みチャンネルを更新できませんでした。もう一度お試しください"
   },

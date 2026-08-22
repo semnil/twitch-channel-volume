@@ -13,8 +13,12 @@ body {
   background: #1a1a2e;
 }
 body.initializing { visibility: hidden; }
-body.initializing .toggle-switch .switch-slider,
-body.initializing .toggle-switch .switch-slider::before { transition: none; }
+/* Controls take their stored values in one step while initializing; the
+   revealed popup never shows a markup default. */
+body.initializing,
+body.initializing *,
+body.initializing *::before,
+body.initializing *::after { transition: none !important; }
 
 .header {
   padding: 12px 16px 8px;

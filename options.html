@@ -12,6 +12,13 @@ body {
   background: #0f0f23;
   min-height: 100vh;
 }
+body.initializing { visibility: hidden; }
+/* Controls take their stored values in one step while initializing; the
+   revealed page never shows a markup default. */
+body.initializing,
+body.initializing *,
+body.initializing *::before,
+body.initializing *::after { transition: none !important; }
 
 .container {
   max-width: 760px;
@@ -206,9 +213,13 @@ h1 {
   border-radius: 4px;
   transition: color 0.15s, background 0.15s;
 }
-.ch-del:hover {
+.ch-del:hover:not(:disabled) {
   color: #ff6b9d;
   background: #2a2a4a;
+}
+.ch-del:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 
 .clear-all-btn {
@@ -221,9 +232,13 @@ h1 {
   cursor: pointer;
   transition: color 0.15s, border-color 0.15s;
 }
-.clear-all-btn:hover {
+.clear-all-btn:hover:not(:disabled) {
   color: #ff6b9d;
   border-color: #ff6b9d;
+}
+.clear-all-btn:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 
 .empty-msg {
@@ -301,7 +316,7 @@ h1 {
 }
 </style>
 </head>
-<body>
+<body class="initializing">
 <div class="container">
   <h1>Twitch Channel Volume</h1>
 
@@ -378,7 +393,7 @@ h1 {
         <div class="setting-desc" data-i18n="showGainOverlayDesc">プレイヤーのボリューム横に現在のゲインを表示</div>
       </div>
       <label class="toggle-switch">
-        <input type="checkbox" id="overlayToggle" disabled>
+        <input type="checkbox" id="overlayToggle" checked disabled>
         <span class="switch-slider"></span>
       </label>
     </div>
@@ -387,9 +402,9 @@ h1 {
   <div class="section">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
       <h2 data-i18n="savedChannels" style="margin-bottom:0">Saved Channels</h2>
-      <button id="clearAllBtn" class="clear-all-btn" data-i18n="clearAll">全削除</button>
+      <button id="clearAllBtn" class="clear-all-btn" data-i18n="clearAll" disabled>全削除</button>
     </div>
-    <table class="channel-table">
+    <table class="channel-table" style="display:none">
       <thead>
         <tr>
           <th data-i18n="colChannel">Channel</th>
@@ -401,7 +416,7 @@ h1 {
       </thead>
       <tbody id="channelsBody"></tbody>
     </table>
-    <div id="emptyMsg" class="empty-msg" data-i18n="noSavedChannels">保存済みチャンネルなし</div>
+    <div id="emptyMsg" class="empty-msg" style="display:none" data-i18n="noSavedChannels">保存済みチャンネルなし</div>
   </div>
 </div>
 

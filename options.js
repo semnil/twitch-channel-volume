@@ -7,8 +7,10 @@
 
   function $(id) { return document.getElementById(id); }
 
-  function showSettingsError(visible) {
-    $('settingsError').classList.toggle('hidden', !visible);
+  function showSettingsError(visible, key = 'settingsSaveFailed') {
+    const line = $('settingsError');
+    if (visible) line.textContent = msg(key);
+    line.classList.toggle('hidden', !visible);
   }
 
   function applyI18n() {
@@ -21,6 +23,8 @@
 
   let displayUnit = '%';
   let settingsReady = false;
+  let loadFailed = false;
+  let channelsRead = false;
   let settingsRevision = 0;
   let channelRevision = 0;
   let currentSettings = {};
@@ -38,7 +42,8 @@
       'defaultAutoLiveToggle',
       'defaultAutoVodToggle',
       'defaultAutoClipToggle',
-      'overlayToggle'
+      'overlayToggle',
+      'clearAllBtn'
     ]) {
       $(id).disabled = disabled;
     }
@@ -90,6 +95,7 @@
     }
     if (initialChannelRevision === channelRevision) {
       channelVolumes = data[CHANNEL_VOLUMES_KEY] || {};
+      channelsRead = true;
       renderChannels(channelVolumes);
     }
   }
@@ -101,6 +107,10 @@
   }
 
   function renderChannels(all) {
+    // Whether the list is empty is something only a read can say. Until one has
+    // happened the table and its empty-list line stay as the markup ships them,
+    // so a render driven by anything else leaves them alone.
+    if (!channelsRead) return;
     const body = $('channelsBody');
     body.innerHTML = '';
     const ids = Object.keys(all);
@@ -122,7 +132,7 @@
         <td class="${live.className}">${live.text}</td>
         <td class="${vod.className}">${vod.text}</td>
         <td class="${clip.className}">${clip.text}</td>
-        <td style="text-align:right;"><button class="ch-del" data-id="${esc(id)}" title="${esc(msg('delete'))}">&times;</button></td>
+        <td style="text-align:right;"><button class="ch-del" data-id="${esc(id)}"${settingsReady ? '' : ' disabled'} title="${esc(msg('delete'))}">&times;</button></td>
       `;
       body.appendChild(tr);
     }
@@ -213,6 +223,8 @@
   }
 
   async function removeChannel(id) {
+    // The rows a load never finished are not rows to delete from.
+    if (!settingsReady) return;
     try {
       await mutateChannelVolumes({ operation: 'deleteChannel', channelId: id });
     } catch (_) {
@@ -221,6 +233,7 @@
   }
 
   async function clearAll() {
+    if (!settingsReady) return;
     if (!confirm(msg('clearAllConfirm'))) return;
     try {
       await mutateChannelVolumes({ operation: 'clearChannels' });
@@ -272,9 +285,15 @@
   $('clearAllBtn').addEventListener('click', clearAll);
 
   chrome.storage.onChanged.addListener((changes) => {
+    // The page that could not read its own settings is telling the viewer to
+    // reload it. What another tab writes after that would stand on a page whose
+    // own read never landed, so none of it is taken. A change that arrived
+    // before the failure is already on screen and stays there.
+    if (loadFailed) return;
     if (changes[CHANNEL_VOLUMES_KEY]) {
       channelRevision++;
       channelVolumes = changes[CHANNEL_VOLUMES_KEY].newValue || {};
+      channelsRead = true;
       renderChannels(channelVolumes);
     }
     if (changes[SETTINGS_KEY]) {
@@ -284,13 +303,26 @@
     }
   });
 
+  function revealOptions() {
+    // Commit the values the load wrote while the transitions are off, then show
+    // the page on the next frame.
+    void document.body.offsetWidth;
+    requestAnimationFrame(() => {
+      document.body.classList.remove('initializing');
+    });
+  }
+
   applyI18n();
   setSettingsControlsDisabled(true);
   loadAll().then(() => {
     settingsReady = true;
     setSettingsControlsDisabled(false);
+    // The rows were built while the load was still out, so their delete buttons
+    // carry the state it had then.
+    renderChannels(channelVolumes);
   }).catch((error) => {
-    showSettingsError(true);
+    loadFailed = true;
+    showSettingsError(true, 'settingsLoadFailed');
     console.error('[TCV] failed to load settings', error);
-  });
+  }).finally(revealOptions);
 })();
