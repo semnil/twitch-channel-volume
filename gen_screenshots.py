@@ -507,16 +507,18 @@ def replace_all(staging, out_dir):
         saved = [n for n in names if os.path.exists(os.path.join(out_dir, n))]
         for name in saved:
             shutil.copy2(os.path.join(out_dir, name), os.path.join(backup, name))
-        moved = []
+        # 名前は移動を試みる前に控える。移動し終えた直後に割り込まれると、
+        # 後から控える形では戻す対象から漏れる。
+        attempted = []
         try:
             for name in names:
+                attempted.append(name)
                 shutil.move(os.path.join(staging, name), os.path.join(out_dir, name))
-                moved.append(name)
         except BaseException:
-            for name in moved:
+            for name in attempted:
                 if name in saved:
                     shutil.copy2(os.path.join(backup, name), os.path.join(out_dir, name))
-                else:
+                elif os.path.exists(os.path.join(out_dir, name)):
                     os.remove(os.path.join(out_dir, name))
             raise
     return names

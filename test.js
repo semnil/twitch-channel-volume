@@ -4492,6 +4492,8 @@ const generatorSkip = generatorImport.status === 0
 const INJECT_MOVE_FAILURE = [
   'import hashlib, importlib.util, os, shutil, sys, tempfile',
   'fail_at = int(sys.argv[1])',
+  'when = sys.argv[2]',
+  "seeded = sys.argv[3] == '1'",
   'repo = os.getcwd()',
   'def digests(d):',
   "    return {n: hashlib.sha256(open(os.path.join(d, n), 'rb').read()).hexdigest()",
@@ -4506,8 +4508,9 @@ const INJECT_MOVE_FAILURE = [
   "    out = os.path.join(sandbox, 'docs', 'screenshots')",
   '    os.makedirs(out)',
   "    tracked = os.path.join(repo, 'docs', 'screenshots')",
-  '    for name in os.listdir(tracked):',
-  '        shutil.copy2(os.path.join(tracked, name), os.path.join(out, name))',
+  '    if seeded:',
+  '        for name in os.listdir(tracked):',
+  '            shutil.copy2(os.path.join(tracked, name), os.path.join(out, name))',
   '    before = digests(out)',
   "    spec = importlib.util.spec_from_file_location('gen_under_test', script)",
   '    gen = importlib.util.module_from_spec(spec)',
@@ -4516,38 +4519,58 @@ const INJECT_MOVE_FAILURE = [
   '    real_move = shutil.move',
   '    def flaky_move(src, dst, *a, **k):',
   "        calls['n'] += 1",
-  "        if calls['n'] == fail_at:",
-  "            raise OSError('injected failure')",
-  '        return real_move(src, dst, *a, **k)',
+  "        hit = calls['n'] == fail_at",
+  "        if hit and when == 'before':",
+  "            raise OSError('injected before the move')",
+  '        result = real_move(src, dst, *a, **k)',
+  '        if hit:',
+  '            # The rename is done and the caller has not recorded it yet.',
+  "            raise KeyboardInterrupt('interrupted after the move')",
+  '        return result',
   '    gen.shutil.move = flaky_move',
   '    try:',
   '        gen.main()',
-  '    except OSError:',
-  '        pass',
+  '    except BaseException as error:',
+  '        escaped = str(error)',
   '    else:',
   "        print('the injected failure never fired')",
   '        raise SystemExit(2)',
   '    gen.shutil.move = real_move',
   '    after = digests(out)',
-  "    moved = calls['n'] - 1",
+  '    # The interrupted move renamed in one mode and not in the other.',
+  "    done = calls['n'] - 1 if when == 'before' else calls['n']",
   '    changed = [n for n in before if before[n] != after.get(n)]',
   '    added = [n for n in after if n not in before]',
-  "    print('moves before the failure: %d, changed: %d, added: %d'",
-  '          % (moved, len(changed), len(added)))',
-  '    if moved < 1:',
-  "        print('nothing had been moved yet, so the run proves nothing')",
+  "    print('%s move %d: moves completed %d, changed %d, added %d'",
+  '          % (when, fail_at, done, len(changed), len(added)))',
+  '    if done < 1:',
+  "        print('nothing had been moved, so the run proves nothing')",
   '        raise SystemExit(3)',
+  '    # A rollback that raises on its own way out buries what actually failed.',
+  "    if 'injected' not in escaped and 'interrupted' not in escaped:",
+  "        print('the failure that escaped was not the injected one: ' + escaped)",
+  '        raise SystemExit(4)',
   '    raise SystemExit(1 if changed or added else 0)'
 ].join('\n');
 
 test('store screenshot generator leaves the tracked images alone when a replacement fails',
   { skip: generatorSkip }, () => {
-    for (const failAt of ['2', '4', '6']) {
-      const run = spawnSync('python3', ['-B', '-c', INJECT_MOVE_FAILURE, failAt],
-        { cwd: __dirname, encoding: 'utf8' });
-      const report = (run.stdout || '').trim();
-      assert.equal(run.status, 0, 'failure at move ' + failAt + ': ' + report + (run.stderr || ''));
-      assert.match(report, /moves before the failure: [1-9]/, report);
+    // 'before' needs an earlier move to have landed; 'after' lands the one it
+    // interrupts, so the first is already worth injecting into.
+    for (const [when, positions] of [['before', ['2', '4', '6']], ['after', ['1', '2', '4', '6']]]) {
+      for (const failAt of positions) {
+        // Once with the six already there, once on a first run with nothing to
+        // restore - rollback removes what it put down instead of copying back.
+        for (const seeded of ['1', '0']) {
+          const run = spawnSync('python3',
+            ['-B', '-c', INJECT_MOVE_FAILURE, failAt, when, seeded],
+            { cwd: __dirname, encoding: 'utf8' });
+          const report = (run.stdout || '').trim();
+          assert.equal(run.status, 0, when + ' move ' + failAt +
+            (seeded === '1' ? ' over the tracked six' : ' on a first run') +
+            ': ' + report + (run.stderr || ''));
+        }
+      }
     }
   });
 
@@ -4579,6 +4602,10 @@ test('store screenshot generator writes the tracked directory, and only whole', 
   assert.match(source, /for name in replace_all\(staging, OUT_DIR\):/);
   const replaceAll = source.slice(source.indexOf('def replace_all('), source.indexOf('def main('));
   assert.match(replaceAll, /except BaseException:/);
+  // Recorded before the move is attempted: a run interrupted once the rename
+  // has happened still has that name to put back.
+  assert.ok(replaceAll.indexOf('attempted.append(name)') <
+    replaceAll.indexOf('shutil.move('), 'the name is recorded before the move');
   assert.match(replaceAll, /shutil\.copy2\(os\.path\.join\(backup, name\), os\.path\.join\(out_dir, name\)\)/);
   assert.match(replaceAll, /os\.remove\(os\.path\.join\(out_dir, name\)\)/);
   assert.match(replaceAll, /raise$/m);
