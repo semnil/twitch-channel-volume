@@ -85,6 +85,8 @@
   // whether any cue has been accepted for this media.
   let adBreakStartMedia = Infinity;
   let adBreakEndMedia = -Infinity;
+  // The cue said another creative of the pod follows the one it named.
+  let adPodPending = false;
   let adCueSeen = false;
   let attachTimer = null;
   const attachFailedFor = new WeakSet();
@@ -669,20 +671,24 @@
   }
 
   const AD_CUE_LEAD_SEC = 1;
+  // The cue for the next creative of a pod arrives shortly after the one before
+  // it ended, and the break is held that long rather than closing between them.
+  const AD_POD_GAP_SEC = 0.4;
 
   // The cue names the break in the media timeline of the element that is being
   // measured, so the break runs from the start it gave until the playhead
   // passes the end.
   function playerBreakActive() {
     const position = attachedVideo?.currentTime;
-    return Number.isFinite(position)
-      && position >= adBreakStartMedia
-      && position < adBreakEndMedia;
+    if (!Number.isFinite(position) || position < adBreakStartMedia) return false;
+    if (position < adBreakEndMedia) return true;
+    return adPodPending && position < adBreakEndMedia + AD_POD_GAP_SEC;
   }
 
   function forgetCuedBreak() {
     adBreakStartMedia = Infinity;
     adBreakEndMedia = -Infinity;
+    adPodPending = false;
   }
 
   // A cue's times belong to one element's timeline, and whether the media is
@@ -768,6 +774,9 @@
     // belongs to the element being measured is the one holding its playhead.
     if (position < startTime - AD_CUE_LEAD_SEC || position >= endTime) return;
     adCueSeen = true;
+    adPodPending = Number.isFinite(cue.podPosition)
+      && Number.isFinite(cue.podCount)
+      && cue.podPosition < cue.podCount - 1;
     if (endTime <= adBreakEndMedia) return;
     // The start belongs to the cue that opened the break; the ones that follow
     // it in the same pod only push the end out.
@@ -777,7 +786,8 @@
       rollType: cue.rollType,
       startTime: Number(startTime.toFixed(3)),
       endTime: Number(endTime.toFixed(3)),
-      videoTime: Number(position.toFixed(3))
+      videoTime: Number(position.toFixed(3)),
+      pod: `${cue.podPosition}/${cue.podCount}`
     });
     updateAdState();
   }

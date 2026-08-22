@@ -5021,3 +5021,72 @@ test('content asserts the ad indicator again on the new media', async () => {
   assert.equal(sent[1].active, true);
 });
 
+test('page bridge holds the break across the gap between two creatives', async () => {
+  const harness = createPageBridgeHarness();
+  const adState = () => harness.messages.filter((message) => message.event === 'ad').at(-1);
+  await harness.startMeasurement();
+  harness.setPlayhead(300);
+  harness.emitPlayerCue({
+    rollType: 'midroll', startTime: 299.967, endTime: 315.184, duration: 15.217,
+    podPosition: 0, podCount: 2
+  });
+  assert.equal(adState().active, true);
+
+  // A measurement block lands between the end of the first creative and the cue
+  // for the next one.
+  harness.setPlayhead(315.2);
+  harness.emitMeasurementBlock(1.0);
+  assert.equal(adState().active, true);
+
+  harness.logs.length = 0;
+  harness.setPlayhead(315.39);
+  harness.emitPlayerCue({
+    rollType: 'midroll', startTime: 315.238, endTime: 346.47, duration: 31.232,
+    podPosition: 1, podCount: 2
+  });
+  // The break never ended, so nothing is rolled back a second time.
+  assert.equal(harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback').length, 0);
+  harness.emitMeasurementBlock(1.0);
+  assert.equal(adState().active, true);
+
+  // The last creative of the pod does end it.
+  harness.setPlayhead(346.5);
+  harness.emitMeasurementBlock(1.0);
+  assert.equal(adState().active, false);
+});
+
+test('page bridge ends a pod of one at the end its cue gave', async () => {
+  const harness = createPageBridgeHarness();
+  const adState = () => harness.messages.filter((message) => message.event === 'ad').at(-1);
+  await harness.startMeasurement();
+  harness.setPlayhead(0);
+  harness.emitPlayerCue({
+    rollType: 'preroll', startTime: 0, endTime: 15.217, duration: 15.217,
+    podPosition: 0, podCount: 1
+  });
+  assert.equal(adState().active, true);
+
+  harness.setPlayhead(15.3);
+  harness.emitMeasurementBlock(1.0);
+  assert.equal(adState().active, false);
+});
+
+test('page bridge does not wait forever for a creative that is never cued', async () => {
+  const harness = createPageBridgeHarness();
+  const adState = () => harness.messages.filter((message) => message.event === 'ad').at(-1);
+  await harness.startMeasurement();
+  harness.setPlayhead(300);
+  harness.emitPlayerCue({
+    rollType: 'midroll', startTime: 299.967, endTime: 315.184, duration: 15.217,
+    podPosition: 0, podCount: 2
+  });
+
+  harness.setPlayhead(315.3);
+  harness.emitMeasurementBlock(1.0);
+  assert.equal(adState().active, true);
+
+  // The next cue never comes; the break does not hang on it.
+  harness.setPlayhead(315.7);
+  harness.emitMeasurementBlock(1.0);
+  assert.equal(adState().active, false);
+});
