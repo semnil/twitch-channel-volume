@@ -534,11 +534,11 @@
     currentAutoApplyLoudness = false;
     lastLufs = { momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity };
     lastSavedAt = 0;
-    // New media: the break the player cued for the old one no longer applies,
-    // and the indicator has to be reported against the new media.
+    // New media: the break the player cued for the old one no longer applies.
+    // The bridge drops the indicator state with it, so the cache here matches
+    // it again and the observer reports the new media's own transitions.
     sendCmd({ cmd: 'mediaChanged' });
     requestedAdActive = false;
-    checkAdDom();
     sendResetMeasurement();
     sendCmd({ cmd: 'attach' });
     await resolveChannel();
