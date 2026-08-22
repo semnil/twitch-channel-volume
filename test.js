@@ -4353,11 +4353,38 @@ test('the failed-read message describes the read, not the values on screen', asy
   await flushTasks(8);
   assert.equal(harness.el('targetLufsValue').textContent, '-24 LUFS');
   assert.equal(harness.el('settingsError').textContent, harness.message('settingsLoadFailed'));
+  // The change carried no channels, so the page still has none to answer with.
+  assert.equal(harness.el('emptyMsg').style.display, 'none');
+  assert.equal(harness.el('select:.channel-table').style.display, 'none');
+  assert.equal(harness.el('clearAllBtn').disabled, true);
 
   const ja = JSON.parse(fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json')));
   const en = JSON.parse(fs.readFileSync(path.join(__dirname, '_locales/en/messages.json')));
   assert.equal(ja.settingsLoadFailed.message, '保存済みの設定を読み込めませんでした。ページを再読み込みしてください');
   assert.equal(en.settingsLoadFailed.message, 'Could not load the saved settings. Please reload the page.');
+});
+
+test('a channel change that lands during the read is what the page shows', async () => {
+  const harness = createOptionsHarness({
+    channelVolumes: { 123: { name: 'stalechannel', login: 'stalechannel', gainLive: 1.5 } },
+    deferStorage: true
+  });
+  await flushTasks(8);
+  harness.fireStorageChanged({
+    [u.CHANNEL_VOLUMES_KEY]: {
+      newValue: { 456: { name: 'freshchannel', login: 'freshchannel', gainLive: 2 } }
+    }
+  });
+  await flushTasks(4);
+  assert.ok(harness.el('channelsBody').textContent.includes('freshchannel'));
+  assert.equal(harness.el('select:.channel-table').style.display, '');
+
+  harness.releaseStorage();
+  await flushTasks(8);
+  // The read was issued before the change was written, so what it returns is
+  // the older list and may not replace what the change already put up.
+  assert.ok(harness.el('channelsBody').textContent.includes('freshchannel'));
+  assert.ok(!harness.el('channelsBody').textContent.includes('stalechannel'));
 });
 
 test('a page that could not read keeps what another tab writes off its screen', async () => {
@@ -4368,9 +4395,9 @@ test('a page that could not read keeps what another tab writes off its screen', 
     [u.SETTINGS_KEY]: { newValue: { targetLufs: -24, displayUnit: 'dB', showGainOverlay: false } }
   });
   await flushTasks(4);
-  // The message says the values are the defaults and the page should be
-  // reloaded; a settings write from another tab carries no channels, so taking
-  // it would put stored values under that message and answer for the list.
+  // The message asks for the page to be reloaded, so nothing that arrives in
+  // the meantime is put on it: a settings write from another tab carries no
+  // channels, and its values would stand on a page whose read never landed.
   assert.equal(harness.el('targetLufsValue').textContent, '');
   assert.equal(harness.el('settingsError').textContent, harness.message('settingsLoadFailed'));
   assert.equal(harness.el('emptyMsg').style.display, 'none');
