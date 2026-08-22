@@ -418,11 +418,15 @@
     }
   }
 
+  function heldAsAdElement(video) {
+    return adElementChains.some((chain) => chain.video === video);
+  }
+
   function findVideo() {
     const all = document.querySelectorAll('video');
     let best = null;
     for (const v of all) {
-      if (attachFailedFor.has(v)) continue;
+      if (attachFailedFor.has(v) || heldAsAdElement(v)) continue;
       if (!v.src && v.readyState === 0) continue;
       if (!best || (v.clientWidth * v.clientHeight) > (best.clientWidth * best.clientHeight)) {
         best = v;
@@ -430,7 +434,7 @@
     }
     if (best) return best;
     for (const v of all) {
-      if (!attachFailedFor.has(v)) return v;
+      if (!attachFailedFor.has(v) && !heldAsAdElement(v)) return v;
     }
     return null;
   }
@@ -596,6 +600,7 @@
     // The playhead passing the end the cue gave is what ends a break, so the
     // state is re-read on every block.
     updateAdState();
+    if (adActive || adElementChains.length) syncAdElementGains();
     // Credit is spent on windows, so a reset that empties the sub-block buffer
     // does not consume it before a window exists.
     const skipBoundary = boundarySkipBlocks > 0 && gateWindow !== null;
@@ -707,6 +712,7 @@
     if (adActive) rollBackAdStart(rollbackBlocks);
     else armBoundarySkip('ad-end');
     applyEffectiveGain();
+    syncAdElementGains();
     postAd(adActive);
   }
 
@@ -766,6 +772,68 @@
   }
 
   installWorkerHook();
+
+  // ── Ad breaks: the element a client-side ad plays in ────────────────
+  // A VOD ad is a second element playing at its own volume while the element
+  // being measured is paused, so the ad gain has to reach it and cancel the
+  // difference between the two volumes.
+
+  const adElementChains = [];
+
+  function attachAdElement(video) {
+    if (!ctx || ctx.state !== 'running' || attachFailedFor.has(video)) return null;
+    try {
+      const source = ctx.createMediaElementSource(video);
+      const node = ctx.createGain();
+      node.gain.value = 1;
+      source.connect(node);
+      node.connect(ctx.destination);
+      const chain = { video, source, node };
+      adElementChains.push(chain);
+      console.info('[TCV] ad element attached', {
+        volume: video.volume,
+        playerVolume: attachedVideo ? attachedVideo.volume : null
+      });
+      return chain;
+    } catch (err) {
+      attachFailedFor.add(video);
+      console.warn('[TCV] ad element could not be attached', err);
+      return null;
+    }
+  }
+
+  function adElementGain(video) {
+    const reference = attachedVideo?.volume;
+    const own = video.volume;
+    const match = (Number.isFinite(reference) && own > 0) ? reference / own : 1;
+    return baselineGain * adGainOffset * match;
+  }
+
+  function syncAdElementGains() {
+    if (!ctx) return;
+    for (let i = adElementChains.length - 1; i >= 0; i--) {
+      const chain = adElementChains[i];
+      if (chain.video.isConnected) continue;
+      try { chain.source.disconnect(); } catch (_) {}
+      try { chain.node.disconnect(); } catch (_) {}
+      adElementChains.splice(i, 1);
+    }
+    // Only a client-side ad leaves the measured element paused while another
+    // element plays; a stitched ad stays in the element already attached.
+    const clientSideAd = adActive && attachedVideo?.paused === true;
+    if (clientSideAd) {
+      for (const video of document.querySelectorAll('video')) {
+        if (video === attachedVideo) continue;
+        if (video.paused || video.muted || video.volume === 0) continue;
+        if (heldAsAdElement(video)) continue;
+        attachAdElement(video);
+      }
+    }
+    for (const chain of adElementChains) {
+      const value = clientSideAd ? adElementGain(chain.video) : 1;
+      chain.node.gain.setTargetAtTime(value, ctx.currentTime, 0.02);
+    }
+  }
 
   // ── Fetch hook: GraphQL ─────────────────────────────────────────────
 

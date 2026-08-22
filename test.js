@@ -885,6 +885,7 @@ function createPageBridgeHarness({
     connect() {},
     disconnect() { this.disconnected = true; }
   });
+  const gainNodes = [];
   const sourcedElements = [];
   class AudioWorkletNode {
     constructor() {
@@ -923,6 +924,7 @@ function createPageBridgeHarness({
         this.outputGain = node;
         gainNode = node;
       }
+      gainNodes.push(node);
       return node;
     }
     createIIRFilter() { return audioNode(); }
@@ -1031,6 +1033,7 @@ function createPageBridgeHarness({
     createWorker(url, options) { return new context.window.Worker(url, options); },
     workerCalls,
     workerListeners,
+    gainNodes,
     sourcedElements,
     videos,
     emitPlayerCue(cue) {
@@ -1039,6 +1042,17 @@ function createPageBridgeHarness({
       for (const entry of workerListeners) {
         if (entry.type === 'message') entry.listener({ data: { arg: cue } });
       }
+    },
+    setPaused(value) { video.paused = value; },
+    currentVideo: () => video,
+    addVideo(props = {}) {
+      const extra = makeVideo({ src: 'https://ads.example/creative.mp4', ...props });
+      videos.push(extra);
+      return extra;
+    },
+    removeVideo(element) {
+      element.isConnected = false;
+      videos.splice(videos.indexOf(element), 1);
     },
     async replaceVideo() {
       // A replacement is a different element, which is why a source can be made
@@ -4800,6 +4814,73 @@ test('page bridge stops trusting cues after a reset', async () => {
   assert.equal(rollback.length, 1);
   assert.equal(rollback[0][1].requested, AD_START_ROLLBACK);
   assert.equal(adState().active, true);
+});
+
+test('page bridge applies the ad gain to the element a client-side ad plays in', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  await harness.dispatchCommand('setGain', { value: 2 });
+  await harness.dispatchCommand('setAdGain', { value: 0.5 });
+  harness.setVolume(0.5);
+  const before = harness.gainNodes.length;
+
+  // The measured element pauses and the ad plays in its own element, at its own
+  // volume rather than the player's.
+  harness.setPaused(true);
+  const silent = harness.addVideo({ volume: 1, muted: true });
+  const adVideo = harness.addVideo({ volume: 1 });
+  await harness.dispatchCommand('setAdActive', { active: true });
+
+  assert.ok(harness.sourcedElements.includes(adVideo));
+  // An element with nothing to hear is left where it is.
+  assert.equal(harness.sourcedElements.includes(silent), false);
+  assert.equal(harness.gainNodes.length, before + 1);
+  const node = harness.gainNodes.at(-1);
+  // 2 (channel) x 0.5 (ad) x 0.5/1 (the player's volume against the element's).
+  assert.ok(Math.abs(node.gain.value - 0.5) < 1e-9, `gain ${node.gain.value}`);
+
+  // The break ends and the element is handed back untouched.
+  await harness.dispatchCommand('setAdActive', { active: false });
+  assert.ok(Math.abs(node.gain.value - 1) < 1e-9);
+
+  // Once it leaves the page the chain goes with it.
+  harness.removeVideo(adVideo);
+  harness.emitMeasurementBlock(0.01);
+  assert.equal(node.disconnected, true);
+});
+
+test('page bridge leaves another element alone while the measured one plays', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  const before = harness.gainNodes.length;
+
+  // A stitched ad stays in the element already attached, and the page shows a
+  // muted preview of the stream beside it.
+  const preview = harness.addVideo({ volume: 1, muted: true });
+  const other = harness.addVideo({ volume: 1 });
+  harness.setPlayhead(100);
+  harness.emitPlayerCue({ rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2 });
+  harness.emitMeasurementBlock(0.01);
+
+  assert.equal(harness.sourcedElements.includes(preview), false);
+  assert.equal(harness.sourcedElements.includes(other), false);
+  assert.equal(harness.gainNodes.length, before);
+});
+
+test('page bridge does not measure an element it holds for an ad', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.setPaused(true);
+  const adVideo = harness.addVideo({ volume: 1 });
+  await harness.dispatchCommand('setAdActive', { active: true });
+  assert.ok(harness.sourcedElements.includes(adVideo));
+
+  // The player swaps its element while the ad element is still on the page.
+  harness.removeVideo(harness.currentVideo());
+  harness.addVideo({ src: 'https://example.test/next' });
+  harness.logs.length = 0;
+  await harness.dispatchCommand('attach');
+  assert.equal(harness.logs.filter((entry) => entry[0] === '[TCV] attached to video').length, 1);
 });
 
 test('page bridge measures on when the Worker constructor cannot be wrapped', async () => {
