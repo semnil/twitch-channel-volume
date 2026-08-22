@@ -132,7 +132,7 @@
         <td class="${live.className}">${live.text}</td>
         <td class="${vod.className}">${vod.text}</td>
         <td class="${clip.className}">${clip.text}</td>
-        <td style="text-align:right;"><button class="ch-del" data-id="${esc(id)}" title="${esc(msg('delete'))}">&times;</button></td>
+        <td style="text-align:right;"><button class="ch-del" data-id="${esc(id)}"${settingsReady ? '' : ' disabled'} title="${esc(msg('delete'))}">&times;</button></td>
       `;
       body.appendChild(tr);
     }
@@ -223,6 +223,8 @@
   }
 
   async function removeChannel(id) {
+    // The rows a load never finished are not rows to delete from.
+    if (!settingsReady) return;
     try {
       await mutateChannelVolumes({ operation: 'deleteChannel', channelId: id });
     } catch (_) {
@@ -231,6 +233,7 @@
   }
 
   async function clearAll() {
+    if (!settingsReady) return;
     if (!confirm(msg('clearAllConfirm'))) return;
     try {
       await mutateChannelVolumes({ operation: 'clearChannels' });
@@ -314,6 +317,9 @@
   loadAll().then(() => {
     settingsReady = true;
     setSettingsControlsDisabled(false);
+    // The rows were built while the load was still out, so their delete buttons
+    // carry the state it had then.
+    renderChannels(channelVolumes);
   }).catch((error) => {
     loadFailed = true;
     showSettingsError(true, 'settingsLoadFailed');

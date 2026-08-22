@@ -213,9 +213,13 @@ h1 {
   border-radius: 4px;
   transition: color 0.15s, background 0.15s;
 }
-.ch-del:hover {
+.ch-del:hover:not(:disabled) {
   color: #ff6b9d;
   background: #2a2a4a;
+}
+.ch-del:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 
 .clear-all-btn {
