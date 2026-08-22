@@ -155,7 +155,9 @@
       kind,
       lufs,
       reference: LUFS_REFERENCE_VOLUME_1,
-      ...(Number.isSafeInteger(windows) && windows > 0 ? { windows } : {}),
+      // The count is whatever the bridge reported, already held to a
+      // non-negative integer where it arrives; 0 means it named none.
+      ...(windows ? { windows } : {}),
       ...(Number.isFinite(autoGain) ? { autoGain } : {}),
       channel: channelMetadata(snapshot)
     });
@@ -807,12 +809,6 @@
                 delete entry.lastLufs;
                 delete entry.lastMeasuredAt;
               }
-              // The window count describes the value that just went, so it goes
-              // with it rather than weighing the next seed.
-              const savedWindows = { ...(entry.lastLufsWindows || {}) };
-              delete savedWindows[kind];
-              if (Object.keys(savedWindows).length) entry.lastLufsWindows = savedWindows;
-              else delete entry.lastLufsWindows;
               currentChannelEntry = entry;
             }
             sendResetMeasurement();
