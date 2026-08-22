@@ -89,6 +89,10 @@ test('the store package drops the directories the tree walk skips', () => {
 });
 
 test('the scratch directories are skipped, unpacked, and untracked alike', () => {
+  // Named here, because every assertion below iterates this set: dropping an
+  // entry would otherwise pass by having nothing left to check.
+  assert.deepEqual([...SCRATCH_DIRS].sort(), ['.claude', 'work']);
+
   const source = fs.readFileSync(path.join(__dirname, 'pack.py'), 'utf8');
   const declaration = source.match(/EXCLUDE_DIRS = \{([^}]*)\}/s);
   assert.ok(declaration, 'pack.py still declares EXCLUDE_DIRS');
