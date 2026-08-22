@@ -305,7 +305,7 @@ function gatingWindows(subBlocks) {
 
 // Entering an ad removes up to this many of the most recent windows: the DOM
 // marker appears after the ad's first audio.
-const AD_START_ROLLBACK = 50;
+const AD_START_ROLLBACK = 5;
 const ROLLBACK_LOG_SAMPLES = 8;
 
 function assertLufsClose(actual, expected) {
@@ -2880,17 +2880,13 @@ test('page bridge removes the windows appended before an ad was detected', async
   const rollback = harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback');
   assert.equal(rollback.length, 1);
   assert.equal(rollback[0][1].removed, AD_START_ROLLBACK);
-  assert.equal(rollback[0][1].truncated, true);
-  // Oldest first, thinned to the two ends when there are too many to print.
+  assert.equal(rollback[0][1].exhausted, true);
+  // Oldest first, and the values are the windows that were actually removed.
   const removedWindows = gatingWindows(emittedAll)
     .slice(-AD_START_ROLLBACK)
     .map((window) => Number(u.meanSquareToLufs(window).toFixed(2)));
-  const half = ROLLBACK_LOG_SAMPLES / 2;
   // The log object comes from the script's realm, so copy before comparing.
-  assert.deepEqual(
-    Array.from(rollback[0][1].windowLufs),
-    [...removedWindows.slice(0, half), ...removedWindows.slice(-half)]
-  );
+  assert.deepEqual(Array.from(rollback[0][1].windowLufs), removedWindows);
 
   // Nothing is removed twice, and the seeded sample is never removed.
   const seeded = createPageBridgeHarness();
@@ -2920,6 +2916,27 @@ test('page bridge starts a fresh gating window after the video is replaced', asy
   assert.ok(Math.abs(harness.messages.at(-1).integrated - u.meanSquareToLufs(0.01)) < 1e-12);
 });
 
+test('page bridge does not take the recent content level out with the ad', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  const ms = (lufs) => Math.pow(10, (lufs + 0.691) / 10);
+  const emitted = [
+    ...Array(60).fill(ms(-30)),
+    ...Array(50).fill(ms(-15)),
+    ...Array(AD_START_ROLLBACK).fill(ms(-10))
+  ];
+  for (const value of emitted) harness.emitMeasurementBlock(value);
+
+  await harness.dispatchCommand('setAdActive', { active: true });
+  harness.emitMeasurementBlock(ms(-10));
+
+  // Only the windows holding ad audio go. Reaching further back would take the
+  // content that set the gate's population with them.
+  const expected = u.gatedIntegratedLufs(gatingWindows(emitted).slice(0, -AD_START_ROLLBACK));
+  assert.ok(expected > -20, 'the recent loud content drives the result');
+  assertLufsClose(harness.messages.at(-1).integrated, expected);
+});
+
 test('page bridge rolls back after the ring buffer has started evicting', async () => {
   const harness = createPageBridgeHarness();
   await harness.startMeasurement();
@@ -2930,7 +2947,7 @@ test('page bridge rolls back after the ring buffer has started evicting', async 
 
   for (let i = 0; i < AD_START_ROLLBACK; i++) harness.emitMeasurementBlock(1.0);
   const contaminated = harness.messages.at(-1).integrated;
-  assert.ok(contaminated > u.meanSquareToLufs(quiet) + 0.3);
+  assert.ok(contaminated > u.meanSquareToLufs(quiet) + 0.03);
 
   await harness.dispatchCommand('setAdActive', { active: true });
   harness.emitMeasurementBlock(1.0);

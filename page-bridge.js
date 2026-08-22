@@ -92,10 +92,10 @@
   let boundarySkipLufs = [];
   let lastVolumeState = '';
   // The ad marker appears in the DOM after the ad's first audio, so the windows
-  // appended just before it are removed again. Removing more than the ad
-  // covers costs nothing: dropping content windows leaves the mean where it
-  // was, while leaving ad windows in moves it.
-  const AD_START_ROLLBACK_BLOCKS = 50;
+  // appended just before it are removed again. The count covers the observed
+  // marker delay and no more: content windows removed beyond it take their own
+  // level out of the gate's population, which moves the result.
+  const AD_START_ROLLBACK_BLOCKS = 5;
   const ROLLBACK_LOG_SAMPLES = 8;
   let windowsSinceReset = 0;
   const ABSOLUTE_GATE_MEAN_SQUARE = Math.pow(10, (-70 + 0.691) / 10);
