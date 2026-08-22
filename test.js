@@ -212,6 +212,22 @@ test('the store package refuses a reference it cannot pack', () => {
     });
     assert.notEqual(linked.status, 0);
     assert.match(linked.stderr, /content\.js/);
+
+    // The locale files are found rather than referenced, and get the same rule.
+    fs.unlinkSync(path.join(fixture, 'content.js'));
+    fs.writeFileSync(path.join(fixture, 'content.js'), '//');
+    fs.mkdirSync(path.join(fixture, '_locales', 'ja'), { recursive: true });
+    fs.writeFileSync(path.join(fixture, 'messages-elsewhere.json'), '{}');
+    fs.symlinkSync(
+      path.join(fixture, 'messages-elsewhere.json'),
+      path.join(fixture, '_locales', 'ja', 'messages.json')
+    );
+    const linkedLocale = spawnSync('python3', ['-B', 'pack.py', '--list'], {
+      cwd: fixture,
+      encoding: 'utf8'
+    });
+    assert.notEqual(linkedLocale.status, 0);
+    assert.match(linkedLocale.stderr, /messages\.json/);
   } finally {
     fs.rmSync(fixture, { recursive: true, force: true });
   }

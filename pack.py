@@ -80,9 +80,12 @@ def selected_files(root):
     locales = os.path.join(root, LOCALE_DIR)
     if os.path.isdir(locales) and not os.path.islink(locales):
         for locale in sorted(os.listdir(locales)):
-            full = os.path.join(locales, locale, LOCALE_FILE)
-            if os.path.isfile(full) and not os.path.islink(full):
-                yield full, os.path.join(LOCALE_DIR, locale, LOCALE_FILE)
+            relative = os.path.join(LOCALE_DIR, locale, LOCALE_FILE)
+            full = os.path.join(root, relative)
+            if os.path.islink(full):
+                raise SystemExit(f'referenced file is missing or not a regular file: {relative}')
+            if os.path.isfile(full):
+                yield full, relative
 
 
 def pack():
