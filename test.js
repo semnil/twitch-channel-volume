@@ -601,6 +601,125 @@ function createContentHarness({
   };
 }
 
+function stubElement(id) {
+  const classes = new Set();
+  const listeners = {};
+  const element = {
+    id,
+    listeners,
+    disabled: false,
+    checked: false,
+    value: '',
+    title: '',
+    textContent: '',
+    offsetWidth: 0,
+    attributes: {},
+    classList: {
+      add(...names) { names.forEach((name) => classes.add(name)); },
+      remove(...names) { names.forEach((name) => classes.delete(name)); },
+      contains(name) { return classes.has(name); },
+      toggle(name, force) {
+        const on = force === undefined ? !classes.has(name) : !!force;
+        if (on) classes.add(name); else classes.delete(name);
+        return on;
+      }
+    },
+    get className() { return [...classes].join(' '); },
+    set className(value) {
+      classes.clear();
+      String(value).split(/\s+/).filter(Boolean).forEach((name) => classes.add(name));
+    },
+    get innerHTML() { return element.textContent; },
+    set innerHTML(value) { element.textContent = String(value); },
+    appendChild(node) {
+      element.textContent += node.textContent || '';
+      return node;
+    },
+    getAttribute(name) { return name in element.attributes ? element.attributes[name] : null; },
+    setAttribute(name, value) { element.attributes[name] = value; },
+    addEventListener(type, listener) { (listeners[type] ||= []).push(listener); }
+  };
+  return element;
+}
+
+
+function createOptionsHarness({ settings = {}, channelVolumes = {} } = {}) {
+  const messages = JSON.parse(
+    fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json'), 'utf8')
+  );
+  const elements = new Map();
+  const unitButtons = ['%', 'dB'].map((unit) => {
+    const button = stubElement(`unit-${unit}`);
+    button.setAttribute('data-unit', unit);
+    return button;
+  });
+  const i18nNodes = i18nKeysInOrder(
+    fs.readFileSync(path.join(__dirname, 'options.html'), 'utf8')
+  ).map((key) => {
+    const node = stubElement('');
+    node.setAttribute('data-i18n', key);
+    return node;
+  });
+  const sent = [];
+  const stored = {
+    [u.SETTINGS_KEY]: { targetLufs: -18, adGainDb: -6, displayUnit: '%', showGainOverlay: true, ...settings },
+    [u.CHANNEL_VOLUMES_KEY]: channelVolumes
+  };
+
+  function element(id) {
+    if (!elements.has(id)) elements.set(id, stubElement(id));
+    return elements.get(id);
+  }
+
+  const document = {
+    body: stubElement('body'),
+    getElementById: element,
+    createElement: () => stubElement(''),
+    createTextNode: (text) => ({ textContent: text }),
+    querySelector: () => stubElement(''),
+    querySelectorAll(selector) {
+      if (selector === '[data-i18n]') return i18nNodes;
+      if (selector === '#unitToggle button') return unitButtons;
+      return [];
+    }
+  };
+
+  const chrome = {
+    storage: {
+      local: { async get(keys) { return readStoredKeys(stored, keys); } },
+      onChanged: { addListener() {} }
+    },
+    runtime: {
+      async sendMessage(message) { sent.push(structuredClone(message)); return { ok: true }; }
+    }
+  };
+
+  const context = vm.createContext({
+    ...u,
+    msg: (key, substitutions) => {
+      const text = messages[key] ? messages[key].message : key;
+      return substitutions && substitutions.length ? text.replace('$VALUE$', substitutions[0]) : text;
+    },
+    chrome,
+    document,
+    console: { warn() {}, error() {}, info() {} },
+    setTimeout(callback) { queueMicrotask(callback); return 1; },
+    structuredClone
+  });
+  vm.runInContext(
+    fs.readFileSync(path.join(__dirname, 'options.js'), 'utf8'),
+    context,
+    { filename: 'options.js' }
+  );
+
+  return {
+    el: element,
+    i18nNodes,
+    sent,
+    message: (key) => (messages[key] ? messages[key].message : key)
+  };
+}
+
 function createPopupHarness({
   state = {},
   displayUnit = '%',
@@ -629,47 +748,6 @@ function createPopupHarness({
     ...state
   };
 
-  function stubElement(id) {
-    const classes = new Set();
-    const listeners = {};
-    const element = {
-      id,
-      listeners,
-      disabled: false,
-      checked: false,
-      value: '',
-      title: '',
-      textContent: '',
-      offsetWidth: 0,
-      attributes: {},
-      classList: {
-        add(...names) { names.forEach((name) => classes.add(name)); },
-        remove(...names) { names.forEach((name) => classes.delete(name)); },
-        contains(name) { return classes.has(name); },
-        toggle(name, force) {
-          const on = force === undefined ? !classes.has(name) : !!force;
-          if (on) classes.add(name); else classes.delete(name);
-          return on;
-        }
-      },
-      get className() { return [...classes].join(' '); },
-      set className(value) {
-        classes.clear();
-        String(value).split(/\s+/).filter(Boolean).forEach((name) => classes.add(name));
-      },
-      get innerHTML() { return element.textContent; },
-      set innerHTML(value) { element.textContent = String(value); },
-      appendChild(node) {
-        element.textContent += node.textContent || '';
-        return node;
-      },
-      getAttribute(name) { return name in element.attributes ? element.attributes[name] : null; },
-      setAttribute(name, value) { element.attributes[name] = value; },
-      addEventListener(type, listener) { (listeners[type] ||= []).push(listener); }
-    };
-    return element;
-  }
-
   function element(id) {
     if (!elements.has(id)) elements.set(id, stubElement(id));
     return elements.get(id);
@@ -681,13 +759,23 @@ function createPopupHarness({
     presetButtons.push(button);
   }
 
+  const i18nNodes = i18nKeysInOrder(
+    fs.readFileSync(path.join(__dirname, 'popup.html'), 'utf8')
+  ).map((key) => {
+    const node = stubElement('');
+    node.setAttribute('data-i18n', key);
+    return node;
+  });
+
   const document = {
     body: stubElement('body'),
     getElementById: element,
     createElement: () => stubElement(''),
     createTextNode: (text) => ({ textContent: text }),
     querySelectorAll(selector) {
-      return selector === '.presets button' ? presetButtons : [];
+      if (selector === '.presets button') return presetButtons;
+      if (selector === '[data-i18n]') return i18nNodes;
+      return [];
     }
   };
 
@@ -739,6 +827,7 @@ function createPopupHarness({
   return {
     el: element,
     presets: presetButtons,
+    i18nNodes,
     sent,
     message: (key, substitutions) => {
       const text = messages[key] ? messages[key].message : key;
@@ -1049,7 +1138,7 @@ const REGEX_MAY_FOLLOW = new Set([
   'await', 'break', 'case', 'catch', 'class', 'const', 'continue', 'debugger',
   'default', 'delete', 'do', 'else', 'enum', 'export', 'extends', 'finally',
   'for', 'function', 'if', 'implements', 'import', 'in', 'instanceof',
-  'interface', 'let', 'new', 'package', 'private', 'protected', 'public',
+  'interface', 'let', 'new', 'of', 'package', 'private', 'protected', 'public',
   'return', 'static', 'switch', 'throw', 'try', 'typeof', 'var', 'void',
   'while', 'with', 'yield'
 ]);
@@ -1204,8 +1293,10 @@ function msgCallSites(tokens) {
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
     if (token.type !== 'name' || token.value !== 'msg') continue;
-    const declaration = i > 0 && tokens[i - 1].type === 'name' && tokens[i - 1].value === 'function';
-    if (declaration) continue;
+    const before = tokens[i - 1];
+    // `function msg(` declares it; `x.msg(` or `x?.msg(` calls something else.
+    if (before && before.type === 'name' && before.value === 'function') continue;
+    if (before && before.type === 'punct' && (before.value === '.' || before.value === '?')) continue;
     const open = tokens[i + 1];
     if (!open || open.type !== 'punct' || open.value !== '(') continue;
     const argument = tokens[i + 2];
@@ -1249,19 +1340,26 @@ function htmlStartTags(markup) {
   return tags;
 }
 
-function messageKeysInHtml(source) {
-  const markup = source
+function htmlMarkup(source) {
+  return source
     .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .replace(/<script[\s\S]*?<\/script>/gi, '');
-  const found = new Set();
-  for (const tag of htmlStartTags(markup)) {
+    // Raw text: what is inside reads as characters, not as tags.
+    .replace(/<(style|script|textarea|title)\b[\s\S]*?<\/\1>/gi, '');
+}
+
+function i18nKeysInOrder(source) {
+  const keys = [];
+  for (const tag of htmlStartTags(htmlMarkup(source))) {
     for (const attribute of tag.matchAll(/([a-zA-Z][\w-]*)\s*=\s*("([^"]*)"|'([^']*)')/g)) {
       if (attribute[1] !== 'data-i18n') continue;
-      found.add(attribute[3] !== undefined ? attribute[3] : attribute[4]);
+      keys.push(attribute[3] !== undefined ? attribute[3] : attribute[4]);
     }
   }
-  return found;
+  return keys;
+}
+
+function messageKeysInHtml(source) {
+  return new Set(i18nKeysInOrder(source));
 }
 
 // The manifest names a message as the whole value of a field.
@@ -1285,11 +1383,19 @@ function messageKeysIn(name, source) {
   return messageKeysInJs(source);
 }
 
-const LOCALIZED_SOURCES = [
-  'manifest.json', 'popup.html', 'popup.js', 'options.html', 'options.js',
-  'content.js', 'utils.js', 'background.js', 'page-bridge.js',
-  'channel-store.js', 'settings-store.js'
-];
+// Whatever the package carries can read a message, so the scan follows the
+// same selection rather than a list that has to be remembered.
+function localizedSources() {
+  const listed = spawnSync('python3', ['-B', 'pack.py', '--list'], {
+    cwd: __dirname,
+    encoding: 'utf8'
+  });
+  assert.equal(listed.status, 0, listed.stderr);
+  const packaged = listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+  const sources = packaged.filter((name) => /\.(js|html|json)$/.test(name) && !name.startsWith('_locales'));
+  assert.ok(sources.includes('manifest.json') && sources.includes('popup.js'), packaged.join(' '));
+  return sources;
+}
 
 test('the message-key scan reads call sites, not text that looks like one', () => {
   const js = [
@@ -1341,16 +1447,33 @@ test('the message-key scan reads call sites, not text that looks like one', () =
   );
 });
 
+test('both pages localize every element their markup marks', async () => {
+  // The scan can name the static keys; what applyI18n does with the one it
+  // reads at runtime is only visible by running it.
+  for (const [label, harness] of [
+    ['popup', createPopupHarness()],
+    ['options', createOptionsHarness()]
+  ]) {
+    await flushTasks(8);
+    const nodes = harness.i18nNodes;
+    assert.ok(nodes.length > 5, `${label} marks elements for translation`);
+    for (const node of nodes) {
+      const key = node.getAttribute('data-i18n');
+      assert.equal(node.textContent, harness.message(key), `${label} ${key}`);
+    }
+  }
+});
+
 test('the sources hold no msg call this scan cannot classify', () => {
   const needingReview = [];
-  for (const name of LOCALIZED_SOURCES.filter((file) => file.endsWith('.js'))) {
+  for (const name of localizedSources().filter((file) => file.endsWith('.js'))) {
     const source = fs.readFileSync(path.join(__dirname, name), 'utf8');
     assert.equal(unclassifiedTokens(source), 0, `${name} holds a token the scan cannot classify`);
     for (let i = 0; i < msgCallsNeedingReview(source); i++) needingReview.push(name);
   }
   // applyI18n passes the key it read from a data-i18n attribute, which the
   // markup scan already counts. Any other runtime key has to land here first.
-  assert.deepEqual(needingReview, ['popup.js', 'options.js']);
+  assert.deepEqual(needingReview.sort(), ['options.js', 'popup.js']);
 });
 
 test('every message key is read somewhere and both locales carry it', () => {
@@ -1359,7 +1482,7 @@ test('every message key is read somewhere and both locales carry it', () => {
   assert.deepEqual(Object.keys(ja).sort(), Object.keys(en).sort());
 
   const referenced = new Set();
-  for (const name of LOCALIZED_SOURCES) {
+  for (const name of localizedSources()) {
     const source = fs.readFileSync(path.join(__dirname, name), 'utf8');
     for (const key of messageKeysIn(name, source)) referenced.add(key);
   }
