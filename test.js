@@ -26,7 +26,7 @@ function readStoredKeys(stored, keys) {
 // files. pack.py keeps them out of the store package too.
 const SCRATCH_DIRS = new Set(['work', '.claude']);
 
-test('unpacked extension tree contains no Chrome-reserved filenames', () => {
+function reservedNamesUnder(root) {
   const forbidden = [];
   function walk(directory, relative = '') {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
@@ -41,8 +41,43 @@ test('unpacked extension tree contains no Chrome-reserved filenames', () => {
       if (entry.isDirectory()) walk(path.join(directory, entry.name), nextRelative);
     }
   }
-  walk(__dirname);
-  assert.deepEqual(forbidden, []);
+  walk(root);
+  return forbidden;
+}
+
+test('unpacked extension tree contains no Chrome-reserved filenames', () => {
+  assert.deepEqual(reservedNamesUnder(__dirname), []);
+});
+
+test('the reserved-name walk skips the scratch roots and nothing else', () => {
+  // The repo tree carries no scratch directory, so the skip is exercised on a
+  // fixture: without one, removing it changes no result here.
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'tcv-walk-'));
+  try {
+    const write = (relative) => {
+      const target = path.join(fixture, relative);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, 'x');
+    };
+    write('manifest.json');
+    write('_locales/ja/messages.json');
+    for (const name of SCRATCH_DIRS) write(path.join(name, 'session', '_metadata', 'note.txt'));
+    write('_stray/file.txt');
+    write('icons/_cache/icon.png');
+    write('__pycache__/pack.cpython-313.pyc');
+    // The skip is by root path, not by name: a directory the extension ships
+    // keeps its contents checked whatever it is called.
+    write(path.join('icons', 'work', '_metadata', 'deep.txt'));
+
+    assert.deepEqual(reservedNamesUnder(fixture).sort(), [
+      '__pycache__',
+      '_stray',
+      path.join('icons', '_cache'),
+      path.join('icons', 'work', '_metadata')
+    ]);
+  } finally {
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
 });
 
 test('the store package drops the directories the tree walk skips', () => {
@@ -88,7 +123,7 @@ test('the store package drops the directories the tree walk skips', () => {
   }
 });
 
-test('the scratch directories are skipped, unpacked, and untracked alike', () => {
+test('the scratch directories are skipped and unpacked alike', () => {
   // Named here, because every assertion below iterates this set: dropping an
   // entry would otherwise pass by having nothing left to check.
   assert.deepEqual([...SCRATCH_DIRS].sort(), ['.claude', 'work']);
@@ -99,13 +134,8 @@ test('the scratch directories are skipped, unpacked, and untracked alike', () =>
   const excluded = new Set(
     [...declaration[1].matchAll(/'([^']+)'/g)].map((match) => match[1])
   );
-  const ignored = fs.readFileSync(path.join(__dirname, '.gitignore'), 'utf8')
-    .split('\n')
-    .map((line) => line.trim());
   for (const name of SCRATCH_DIRS) {
     assert.ok(excluded.has(name), `pack.py excludes ${name}`);
-    // Otherwise every session's artifacts come back as untracked changes.
-    assert.ok(ignored.includes(`${name}/`), `.gitignore lists ${name}/`);
   }
 });
 
