@@ -372,19 +372,24 @@ def screenshot_settings(lang):
 
     # Header row: CHANNEL | Live | VOD | Clip
     hy = cy + 31
-    col_live, col_vod, col_clip = sx + 300, sx + 405, sx + 500
+    col_live, col_vod, col_clip = sx + 270, sx + 370, sx + 465
     draw.text((sx + 20, hy), s['col_channel'], fill=HINT, font=FONT_SM)
     for cxh, t in ((col_live, 'LIVE'), (col_vod, 'VOD'), (col_clip, 'CLIP')):
         draw.text((cxh, hy), t, fill=HINT, font=FONT_SM)
     draw.line([(sx + 20, hy + 18), (sx + sw - 20, hy + 18)], fill=BORDER)
 
     ry = hy + 23
+    delete_x = sx + sw - 36
     for name, live, vod, clip in s['channels']:
         draw.text((sx + 20, ry), name, fill=TEAL, font=FONT)
         for cxh, v in ((col_live, live), (col_vod, vod), (col_clip, clip)):
             color = TEAL if v.startswith('Auto') else (PINK if v != '—' else HINT)
             draw.text((cxh, ry), v, fill=color, font=FONT_BOLD)
-        draw.text((sx + sw - 36, ry - 2), '×', fill=HINT, font=FONT_LG)
+            end = cxh + draw.textlength(v, font=FONT_BOLD)
+            limit = delete_x if cxh == col_clip else next(
+                c for c in (col_vod, col_clip) if c > cxh)
+            assert end + 8 <= limit, f'{lang}: {v!r} runs into the next column'
+        draw.text((delete_x, ry - 2), '×', fill=HINT, font=FONT_LG)
         ry += 23
 
     img.save(os.path.join(OUT_DIR, f'settings_{lang}.png'))
