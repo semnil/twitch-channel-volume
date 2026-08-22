@@ -1143,18 +1143,23 @@ test('resolvePreferredGain ignores an Auto gain measured at an unknown volume', 
 // whether a translation is mentioned at all.
 
 // Raw text and escapable raw text: what is inside is characters, not markup.
-// (HTML parsing spec, tokenizer: RAWTEXT, RCDATA and PLAINTEXT states.)
+// (HTML parsing spec, tokenizer: RAWTEXT, RCDATA and PLAINTEXT states.) The
+// pages are held to the first two by the test below; the rest are listed so
+// that a page which grows one is read the way a browser reads it.
 const RAW_TEXT_ELEMENTS = [
   'script', 'style', 'textarea', 'title', 'iframe', 'xmp',
-  'noembed', 'noframes', 'noscript', 'plaintext'
+  'noembed', 'noframes', 'noscript'
 ];
+// PLAINTEXT has no end tag: everything after it is text, to end of file.
+const PLAINTEXT_OPENS = /<plaintext\b/i;
 
 function htmlMarkup(source) {
   let markup = source.replace(/<!--[\s\S]*?-->/g, '');
   for (const name of RAW_TEXT_ELEMENTS) {
     markup = markup.replace(new RegExp(`<${name}\\b[\\s\\S]*?</${name}>`, 'gi'), '');
   }
-  return markup;
+  const plaintext = markup.search(PLAINTEXT_OPENS);
+  return plaintext === -1 ? markup : markup.slice(0, plaintext);
 }
 
 function htmlStartTags(markup) {
@@ -1185,7 +1190,7 @@ function i18nKeysInOrder(source) {
   const keys = [];
   for (const tag of htmlStartTags(htmlMarkup(source))) {
     for (const attribute of tag.matchAll(/([a-zA-Z][\w-]*)\s*=\s*("([^"]*)"|'([^']*)')/g)) {
-      if (attribute[1] !== 'data-i18n') continue;
+      if (attribute[1].toLowerCase() !== 'data-i18n') continue;
       keys.push(attribute[3] !== undefined ? attribute[3] : attribute[4]);
     }
   }
@@ -1220,6 +1225,23 @@ function packagedSources() {
   return packaged;
 }
 
+test('the pages stay inside the markup the extractor reads', () => {
+  for (const name of ['popup.html', 'options.html']) {
+    const source = fs.readFileSync(path.join(__dirname, name), 'utf8');
+    // Raw text swallows what follows it. <title> and the stylesheet and script
+    // tags are the two the pages use, and both are read as raw text.
+    for (const element of ['textarea', 'iframe', 'xmp', 'noembed', 'noframes', 'noscript', 'plaintext']) {
+      assert.doesNotMatch(source, new RegExp(`<${element}\\b`, 'i'), `${name} uses <${element}>`);
+    }
+    // Every mention is the attribute itself, spelled the way the extractor
+    // reads it: lower case, quoted, inside a start tag.
+    for (const mention of source.matchAll(/data-i18n/gi)) {
+      const spelling = source.slice(mention.index, mention.index + 'data-i18n="'.length);
+      assert.equal(spelling, 'data-i18n="', `${name} spells an attribute as ${spelling}`);
+    }
+  }
+});
+
 test('every data-i18n in the pages is one the extractor reads', () => {
   // The extractor handles quoted attributes in start tags. Anything else
   // spelling `data-i18n` — unquoted, inside raw text, split across a tag it
@@ -1227,7 +1249,7 @@ test('every data-i18n in the pages is one the extractor reads', () => {
   // the attribute over.
   for (const name of ['popup.html', 'options.html']) {
     const source = fs.readFileSync(path.join(__dirname, name), 'utf8');
-    const mentions = (source.match(/data-i18n/g) || []).length;
+    const mentions = (source.match(/data-i18n/gi) || []).length;
     assert.equal(i18nKeysInOrder(source).length, mentions, `${name} spells data-i18n somewhere the extractor does not read`);
   }
 });
