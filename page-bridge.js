@@ -121,6 +121,12 @@
   const AD_START_ROLLBACK_BLOCKS = 5;
   const ROLLBACK_LOG_SAMPLES = 8;
   let windowsSinceReset = 0;
+  // A window the boundary skip dropped was never appended, so a rollback that
+  // spans it has nothing there to take back. The indices of the dropped ones
+  // say how many of the windows the rollback spans are already out.
+  const SKIPPED_WINDOW_HISTORY = 64;
+  let windowsObserved = 0;
+  let skippedWindows = [];
   const ABSOLUTE_GATE_MEAN_SQUARE = Math.pow(10, (-70 + 0.691) / 10);
   const RELATIVE_GATE_FACTOR = Math.pow(10, -10 / 10);
   const integratedBlocks = new Array(MAX_INTEGRATED_BLOCKS);
@@ -343,6 +349,8 @@
     integratedBlockLength = 0;
     absoluteGatedRoot = null;
     windowsSinceReset = 0;
+    windowsObserved = 0;
+    skippedWindows = [];
     if (!Number.isFinite(initialIntegratedLufs)) return;
     const initialMeanSquare = Math.pow(10, (initialIntegratedLufs + 0.691) / 10);
     if (!Number.isFinite(initialMeanSquare)) return;
@@ -602,10 +610,13 @@
     if (adActive || adElementChains.length) syncAdElementGains();
     // Credit is spent on windows, so a reset that empties the sub-block buffer
     // does not consume it before a window exists.
+    if (gateWindow !== null) windowsObserved++;
     const skipBoundary = boundarySkipBlocks > 0 && gateWindow !== null;
     if (skipBoundary && !adActive) {
       boundarySkipBlocks--;
       boundarySkipDropped++;
+      skippedWindows.push(windowsObserved);
+      if (skippedWindows.length > SKIPPED_WINDOW_HISTORY) skippedWindows.shift();
       boundarySkipLufs.push(Number(msToLufs(gateWindow).toFixed(2)));
       if (boundarySkipLufs.length > BOUNDARY_SKIP_BLOCKS) boundarySkipLufs.shift();
       if (boundarySkipBlocks === 0) {
@@ -715,16 +726,31 @@
     return adCueSeen ? playerBreakActive() : domAdActive;
   }
 
+  // The windows the boundary skip dropped inside the span the rollback covers.
+  function skippedWithinSpan(requested) {
+    const spanStart = windowsObserved - requested;
+    let overlap = 0;
+    for (let i = skippedWindows.length - 1; i >= 0 && skippedWindows[i] > spanStart; i--) {
+      overlap++;
+    }
+    return overlap;
+  }
+
   function rollBackAdStart(blocks) {
     const requested = Math.max(0, blocks);
-    const removed = removeRecentIntegratedBlocks(requested);
+    // Asking for a window the boundary skip already kept out takes a content
+    // window in its place, and that window's level leaves the gate with it.
+    const skipped = skippedWithinSpan(requested);
+    const wanted = Math.max(0, requested - skipped);
+    const removed = removeRecentIntegratedBlocks(wanted);
     const half = ROLLBACK_LOG_SAMPLES / 2;
     const truncated = removed.length > ROLLBACK_LOG_SAMPLES;
     console.info('[TCV] ad start rollback', {
       removed: removed.length,
       requested,
+      skipped,
       // At the budget the removal stopped short of the ad's own start.
-      exhausted: requested > 0 && removed.length === requested,
+      exhausted: wanted > 0 && removed.length === wanted,
       windowsSinceReset,
       windowLufs: truncated
         ? [...removed.slice(0, half), ...removed.slice(-half)]

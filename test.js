@@ -5284,6 +5284,71 @@ test('page bridge removes the windows appended between the ad and its cue', asyn
   assertLufsClose(harness.messages.at(-1).integrated, u.gatedIntegratedLufs(kept));
 });
 
+test('page bridge asks the rollback only for the windows the gate took', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  // A short measurement, where taking four windows instead of one leaves the
+  // gate with the quietest window alone.
+  const content = [0.0001, 0.0001, 0.0001, 0.0001, 0.1, 0.1, 0.1, 0.1];
+  for (const ms of content) harness.emitMeasurementBlock(ms);
+  const windows = gatingWindows(content);
+  assert.equal(windows.length, 5);
+
+  // Muting arms a boundary skip, and the ad's first audio lands inside it, so
+  // three of the windows the rollback spans were never appended.
+  harness.setMuted(true);
+  for (let i = 0; i < 3; i++) harness.emitMeasurementBlock(1.0);
+
+  harness.setPlayhead(100.35);
+  harness.logs.length = 0;
+  harness.emitPlayerCue({
+    rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2,
+    podPosition: 0, podCount: 1
+  });
+  const rollback = harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback');
+  assert.equal(rollback.length, 1);
+  assert.equal(rollback[0][1].requested, 4);
+  assert.equal(rollback[0][1].skipped, 3);
+  assert.equal(rollback[0][1].removed, 1);
+
+  harness.emitMeasurementBlock(1.0);
+  const kept = u.gatedIntegratedLufs(windows.slice(0, -1));
+  const overRemoved = u.gatedIntegratedLufs(windows.slice(0, -4));
+  assert.ok(kept - overRemoved > 10, `${kept} vs ${overRemoved}`);
+  assertLufsClose(harness.messages.at(-1).integrated, kept);
+});
+
+test('page bridge counts only the skipped windows the rollback reaches', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  const content = [0.0001, 0.0001, 0.0001, 0.0001, 0.1, 0.1, 0.1, 0.1];
+  for (const ms of content) harness.emitMeasurementBlock(ms);
+  const windows = gatingWindows(content);
+
+  // The skip runs out four windows before the cue arrives, so the two windows
+  // the rollback spans are ad audio that was appended.
+  harness.setMuted(true);
+  for (let i = 0; i < 6; i++) harness.emitMeasurementBlock(1.0);
+
+  harness.setPlayhead(100.15);
+  harness.logs.length = 0;
+  harness.emitPlayerCue({
+    rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2,
+    podPosition: 0, podCount: 1
+  });
+  const rollback = harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback');
+  assert.equal(rollback.length, 1);
+  assert.equal(rollback[0][1].requested, 2);
+  assert.equal(rollback[0][1].skipped, 0);
+  assert.equal(rollback[0][1].removed, 2);
+
+  harness.emitMeasurementBlock(1.0);
+  const kept = u.gatedIntegratedLufs(windows);
+  const adLeftIn = u.gatedIntegratedLufs([...windows, 1.0]);
+  assert.ok(adLeftIn - kept > 3, `${kept} vs ${adLeftIn}`);
+  assertLufsClose(harness.messages.at(-1).integrated, kept);
+});
+
 test('page bridge extends a break when the next creative is cued', async () => {
   const harness = createPageBridgeHarness();
   await harness.startMeasurement();
