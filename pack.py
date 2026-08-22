@@ -4,26 +4,50 @@ import os
 import json
 import sys
 
-EXCLUDE_FILES = {
-    'CLAUDE.md', 'gen_icons.py', 'gen_screenshots.py', 'pack.py', 'test.js',
-    '.gitignore', '.webstoreignore', 'README.md',
-    'CHANGES.md', 'CHANGES_ja.md', 'LICENSE',
-    'PRIVACY_POLICY.md', 'PRIVACY_POLICY_JA.md',
-    '.git', '.DS_Store'
-}
-EXCLUDE_DIRS = {'.claude', '.git', '.github', '__pycache__', 'screenshots', 'docs',
-                'work', 'node_modules'}
+# The package is an allowlist: the manifest, the scripts and pages the
+# extension loads, the icons and the locale files. Anything else in the tree —
+# notes, dotfiles, scratch directories, symlinks — is not part of it.
+ROOT_FILES = {'manifest.json'}
+ROOT_SUFFIXES = ('.js', '.html')
+EXCLUDE_FILES = {'test.js'}
+ICON_DIR = 'icons'
+ICON_SUFFIX = '.png'
+LOCALE_DIR = '_locales'
+LOCALE_FILE = 'messages.json'
+
+
+def _files_in(directory):
+    if not os.path.isdir(directory) or os.path.islink(directory):
+        return []
+    names = []
+    for name in sorted(os.listdir(directory)):
+        full = os.path.join(directory, name)
+        if os.path.isfile(full) and not os.path.islink(full):
+            names.append(name)
+    return names
 
 
 def selected_files(root):
     """Yield (path, arcname) for every file the package carries."""
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIRS]
-        for fname in sorted(filenames):
-            if fname in EXCLUDE_FILES or fname.endswith('.zip'):
-                continue
-            full = os.path.join(dirpath, fname)
-            yield full, os.path.relpath(full, root)
+    for name in _files_in(root):
+        if name in EXCLUDE_FILES:
+            continue
+        if name in ROOT_FILES or name.endswith(ROOT_SUFFIXES):
+            yield os.path.join(root, name), name
+
+    icons = os.path.join(root, ICON_DIR)
+    for name in _files_in(icons):
+        if name.endswith(ICON_SUFFIX):
+            yield os.path.join(icons, name), os.path.join(ICON_DIR, name)
+
+    locales = os.path.join(root, LOCALE_DIR)
+    if os.path.isdir(locales) and not os.path.islink(locales):
+        for locale in sorted(os.listdir(locales)):
+            if LOCALE_FILE in _files_in(os.path.join(locales, locale)):
+                yield (
+                    os.path.join(locales, locale, LOCALE_FILE),
+                    os.path.join(LOCALE_DIR, locale, LOCALE_FILE)
+                )
 
 
 def pack():

@@ -158,7 +158,7 @@ options.html / options.js
 | `icons/` | 16/48/128 px PNG (Twitch purple 3-bar meter) |
 | `gen_icons.py` | アイコン生成 (Python Pillow) |
 | `gen_screenshots.py` | ストア審査用スクリーンショット生成 (PIL 直接描画, 640×400 ja/en) |
-| `pack.py` | Chrome Web Store 用 zip 生成 |
+| `pack.py` | Chrome Web Store 用 zip 生成 (allowlist 選択、`--list` で選択結果のみ出力) |
 | `PRIVACY_POLICY.md` / `PRIVACY_POLICY_JA.md` | プライバシーポリシー (審査・README リンク用, EN/JA) |
 | `docs/security-audit.md` | セキュリティ監査レポート |
 | `test.js` | ユニットテスト (`node test.js`) — utils 全般 |
@@ -194,6 +194,7 @@ options.html / options.js
 - **計測リセットの世代番号**: content.js は resetMeasurement を送るたびに世代番号を進め、page-bridge はその番号を以降の lufs 通知へ付与する。content.js は現在の世代より古い通知を破棄するため、リセット送信前に page-bridge が算出したブロックが保存済み LUFS を復活させない
 - **Live/VOD/Clip 別ゲイン**: 配信は時間帯で音作りが変わるため種別ごとに別管理。同チャンネルの過去 VOD のゲインを現 Live にコピーしない
 - **Twitch reserved paths**: `/directory`, `/settings`, `/videos`, `/p`, `/jobs` 等は live channel として誤検出しないよう TWITCH_RESERVED_PATHS で除外
+- **パッケージの選択は allowlist**: `pack.py` は manifest・ルートの `.js` / `.html`・`icons/*.png`・`_locales/<locale>/messages.json` だけを選ぶ。denylist だと未知のルートファイル (`.env`・メモ・シンボリックリンク) が既定で同梱される
 - **CSP 対応**: AudioWorklet モジュールは web_accessible_resources で公開し、content.js が chrome.runtime.getURL で解決して page-bridge に渡す
 - **NaN/Infinity ガード**: 計測値が無限大・NaN の場合は gain 1.0 にフォールバック
 

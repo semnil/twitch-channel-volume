@@ -49,7 +49,31 @@ test('unpacked extension tree contains no Chrome-reserved filenames', () => {
   assert.deepEqual(reservedNamesUnder(__dirname), []);
 });
 
+test('every packaged path is one the extension loads', () => {
+  const listed = spawnSync('python3', ['-B', 'pack.py', '--list'], {
+    cwd: __dirname,
+    encoding: 'utf8'
+  });
+  assert.equal(listed.status, 0, listed.stderr);
+  const packaged = listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+
+  assert.ok(packaged.includes('manifest.json'));
+  assert.ok(!packaged.includes('test.js'));
+  for (const arcname of packaged) {
+    const segments = arcname.split(path.sep);
+    const shipped = segments.length === 1
+      ? (arcname === 'manifest.json' || /\.(js|html)$/.test(arcname))
+      : (segments[0] === 'icons' && segments.length === 2 && arcname.endsWith('.png')) ||
+        (segments[0] === '_locales' && segments.length === 3 && segments[2] === 'messages.json');
+    assert.ok(shipped, `${arcname} is not a path the extension loads`);
+  }
+});
+
 test('the reserved-name walk skips the scratch roots and nothing else', () => {
+  // Named here because the fixture below is built from this set: dropping an
+  // entry would otherwise pass by leaving nothing to skip.
+  assert.deepEqual([...SCRATCH_DIRS].sort(), ['.claude', 'work']);
+
   // The repo tree carries no scratch directory, so the skip is exercised on a
   // fixture: without one, removing it changes no result here.
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'tcv-walk-'));
@@ -80,11 +104,9 @@ test('the reserved-name walk skips the scratch roots and nothing else', () => {
   }
 });
 
-test('the store package drops the directories the tree walk skips', () => {
-  // Skipping a directory in the walk has to mean it never reaches the store
-  // zip, otherwise the walk stops reporting what the package still carries.
-  // pack.py runs for real here: its declaration alone would still pass with
-  // the filter that reads it deleted.
+test('the store package carries only the files the extension loads', () => {
+  // pack.py runs for real here: a declaration read out of its source would
+  // still pass with the selection that uses it deleted.
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'tcv-pack-'));
   try {
     const write = (relative, body = 'x') => {
@@ -103,6 +125,14 @@ test('the store package drops the directories the tree walk skips', () => {
     write('test.js');
     write('twitch-channel-volume-1.0.0.zip');
     write('.git', 'gitdir: /elsewhere');
+    // Files nobody listed anywhere: an allowlist is what keeps them out.
+    write('.env', 'TOKEN=secret');
+    write('review-notes.txt');
+    write('README.md');
+    write('gen_icons.py');
+    write('icons/source.svg');
+    write('_locales/ja/notes.txt');
+    fs.symlinkSync(path.join(fixture, 'content.js'), path.join(fixture, 'linked.js'));
     for (const name of SCRATCH_DIRS) write(path.join(name, 'session', '_metadata', 'note.txt'));
     fs.copyFileSync(path.join(__dirname, 'pack.py'), path.join(fixture, 'pack.py'));
 
@@ -120,22 +150,6 @@ test('the store package drops the directories the tree walk skips', () => {
     ]);
   } finally {
     fs.rmSync(fixture, { recursive: true, force: true });
-  }
-});
-
-test('the scratch directories are skipped and unpacked alike', () => {
-  // Named here, because every assertion below iterates this set: dropping an
-  // entry would otherwise pass by having nothing left to check.
-  assert.deepEqual([...SCRATCH_DIRS].sort(), ['.claude', 'work']);
-
-  const source = fs.readFileSync(path.join(__dirname, 'pack.py'), 'utf8');
-  const declaration = source.match(/EXCLUDE_DIRS = \{([^}]*)\}/s);
-  assert.ok(declaration, 'pack.py still declares EXCLUDE_DIRS');
-  const excluded = new Set(
-    [...declaration[1].matchAll(/'([^']+)'/g)].map((match) => match[1])
-  );
-  for (const name of SCRATCH_DIRS) {
-    assert.ok(excluded.has(name), `pack.py excludes ${name}`);
   }
 });
 
