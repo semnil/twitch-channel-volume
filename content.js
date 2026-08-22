@@ -198,11 +198,6 @@
     });
   }
 
-  function deleteChannel(channelId) {
-    if (!channelId || !isContextValid()) return Promise.resolve();
-    return sendChannelMutation({ operation: 'deleteChannel', channelId });
-  }
-
   // ── Page-bridge command helpers ────────────────────────────────────
 
   function sendCmd(payload) {
@@ -826,13 +821,6 @@
         sendCmd({ cmd: 'resume' });
         sendResponse({ ok: true });
         return;
-      case 'deleteChannel':
-        deleteChannel(req.channelId).then(() => {
-          sendResponse({ ok: true });
-        }).catch(() => {
-          sendResponse({ ok: false, reason: 'storage update failed' });
-        });
-        return true;
     }
     return false;
   });
