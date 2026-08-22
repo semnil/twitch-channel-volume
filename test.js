@@ -1039,26 +1039,98 @@ test('resolvePreferredGain ignores an Auto gain measured at an unknown volume', 
   assert.equal(u.resolvePreferredGain(manual, 'live', false, -Infinity, -18).gain, 2.0);
 });
 
+// A message is read through one of these three; a quoted string on its own is
+// not one: `'settings'` is also a path Twitch reserves.
+const MESSAGE_KEY_PATTERNS = [
+  /\bmsg\(\s*'([A-Za-z0-9_]+)'/g,
+  /data-i18n="([A-Za-z0-9_]+)"/g,
+  /__MSG_([A-Za-z0-9_]+)__/g
+];
+
+function messageKeysIn(text) {
+  const found = new Set();
+  for (const pattern of MESSAGE_KEY_PATTERNS) {
+    for (const match of text.matchAll(pattern)) found.add(match[1]);
+  }
+  return found;
+}
+
+// Commented-out code reads like a call site and has no reader at runtime, so
+// the comments come out before the scan. Strings are tracked because a `//`
+// inside one is text, not the start of a comment.
+function stripComments(source, kind) {
+  if (kind === 'json') return source;
+  if (kind === 'html') {
+    return source.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  }
+  let out = '';
+  let quote = '';
+  for (let i = 0; i < source.length; i++) {
+    const character = source[i];
+    const next = source[i + 1];
+    if (quote) {
+      out += character;
+      if (character === '\\') {
+        out += next || '';
+        i++;
+      } else if (character === quote) {
+        quote = '';
+      }
+      continue;
+    }
+    if (character === "'" || character === '"' || character === '`') {
+      quote = character;
+      out += character;
+      continue;
+    }
+    if (character === '/' && next === '/') {
+      while (i < source.length && source[i] !== '\n') i++;
+      out += '\n';
+      continue;
+    }
+    if (character === '/' && next === '*') {
+      i += 2;
+      while (i < source.length && !(source[i] === '*' && source[i + 1] === '/')) i++;
+      i++;
+      continue;
+    }
+    out += character;
+  }
+  return out;
+}
+
+test('the message-key scan reads call sites, not text that looks like one', () => {
+  const js = [
+    "const live = msg('typeLive');",
+    "// const old = msg('orphanLine');",
+    "/* msg('orphanBlock') */",
+    "const url = 'https://www.twitch.tv/settings'; // msg('orphanTail')",
+    "const kept = 'https://example.test/a//b' + msg('typeVod');"
+  ].join('\n');
+  assert.deepEqual([...messageKeysIn(stripComments(js, 'js'))].sort(), ['typeLive', 'typeVod']);
+
+  const html = [
+    '<h2 data-i18n="settings">Settings</h2>',
+    '<!-- <h2 data-i18n="orphanHtml">Old</h2> -->',
+    '<style>/* data-i18n="orphanCss" */</style>'
+  ].join('\n');
+  assert.deepEqual([...messageKeysIn(stripComments(html, 'html'))].sort(), ['settings']);
+});
+
 test('every message key is read somewhere and both locales carry it', () => {
   const ja = JSON.parse(fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json'), 'utf8'));
   const en = JSON.parse(fs.readFileSync(path.join(__dirname, '_locales/en/messages.json'), 'utf8'));
   assert.deepEqual(Object.keys(ja).sort(), Object.keys(en).sort());
 
-  const sources = [
+  const referenced = new Set();
+  for (const name of [
     'manifest.json', 'popup.html', 'popup.js', 'options.html', 'options.js',
     'content.js', 'utils.js', 'background.js', 'page-bridge.js',
     'channel-store.js', 'settings-store.js'
-  ].map((name) => fs.readFileSync(path.join(__dirname, name), 'utf8')).join('\n');
-
-  // Only the three ways a message is actually read count. A quoted string on
-  // its own does not: `'settings'` is also a path Twitch reserves.
-  const referenced = new Set();
-  for (const pattern of [
-    /\bmsg\(\s*'([A-Za-z0-9_]+)'/g,
-    /data-i18n="([A-Za-z0-9_]+)"/g,
-    /__MSG_([A-Za-z0-9_]+)__/g
   ]) {
-    for (const match of sources.matchAll(pattern)) referenced.add(match[1]);
+    const kind = name.endsWith('.json') ? 'json' : (name.endsWith('.html') ? 'html' : 'js');
+    const source = stripComments(fs.readFileSync(path.join(__dirname, name), 'utf8'), kind);
+    for (const key of messageKeysIn(source)) referenced.add(key);
   }
 
   const declared = Object.keys(ja);
