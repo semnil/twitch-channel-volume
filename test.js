@@ -332,6 +332,7 @@ function measured(lastLufs) {
 function createPageBridgeHarness() {
   const messages = [];
   const logs = [];
+  const workletModules = [];
   const listeners = {};
   const location = { href: 'https://www.twitch.tv/videos/100' };
   const videoListeners = {};
@@ -369,7 +370,7 @@ function createPageBridgeHarness() {
       this.currentTime = 0;
       this.state = 'running';
       this.destination = {};
-      this.audioWorklet = { addModule: async () => {} };
+      this.audioWorklet = { addModule: async (url) => { workletModules.push(url); } };
     }
     createGain() {
       return {
@@ -426,6 +427,7 @@ function createPageBridgeHarness() {
     location,
     messages,
     logs,
+    workletModules,
     fetch: (...args) => window.fetch(...args),
     resolveFetch(response) { resolveFetch(response); },
     async startMeasurement() {
@@ -2843,6 +2845,28 @@ test('gatedIntegratedLufs: constant signal close to single-block LUFS', () => {
   const blocks = Array(50).fill(ms);
   const result = u.gatedIntegratedLufs(blocks);
   assert.ok(Math.abs(result - (-0.691)) < 1e-6);
+});
+
+test('page bridge loads the packaged worklet module only', async () => {
+  const harness = createPageBridgeHarness();
+  const packaged = 'chrome-extension://test/audio-worklet.js';
+
+  // page-bridge.js runs in the page's own world, so any script in the page can
+  // send an init command before content.js does.
+  await harness.dispatchCommand('init', { workletUrl: 'https://ad.example/worklet.js' });
+  await harness.dispatchCommand('init', { workletUrl: 'chrome-extension://test/evil.js' });
+  assert.deepEqual(harness.workletModules, []);
+
+  // The rejected commands must not cost the extension its own measurement.
+  await harness.dispatchCommand('init', { workletUrl: packaged });
+  await harness.dispatchCommand('attach');
+  assert.deepEqual(harness.workletModules, [packaged]);
+  harness.emitMeasurementBlock(0.05);
+  assert.equal(typeof harness.messages.at(-1).integrated, 'number');
+
+  // A later forged command cannot swap the module that is already loaded.
+  await harness.dispatchCommand('init', { workletUrl: 'https://ad.example/worklet.js' });
+  assert.deepEqual(harness.workletModules, [packaged]);
 });
 
 test('page bridge Integrated LUFS is invariant to gating window order', async () => {

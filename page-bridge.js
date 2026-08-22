@@ -329,6 +329,28 @@
     appendIntegratedBlock(initialMeanSquare);
   }
 
+  let workletPromise = null;
+  async function loadWorklet() {
+    if (workletReady || !workletUrl || !ctx) return;
+    if (workletPromise) return workletPromise;
+    workletPromise = (async () => {
+      try {
+        await ctx.audioWorklet.addModule(workletUrl);
+        workletReady = true;
+        console.info('[TCV] worklet module loaded');
+        // If we already attached before the worklet finished loading, wire
+        // up the measurement chain retroactively.
+        if (attachedVideo && sourceNode && !workletNode) {
+          buildMeasurementChain(ctx);
+        }
+      } catch (err) {
+        console.warn('[TCV] worklet load failed', err);
+        workletPromise = null;
+      }
+    })();
+    return workletPromise;
+  }
+
   let ctxPromise = null;
   async function ensureContext() {
     if (ctxPromise) return ctxPromise;
@@ -339,20 +361,7 @@
       gain = ctx.createGain();
       gain.gain.value = baselineGain;
       gain.connect(ctx.destination);
-      if (workletUrl) {
-        try {
-          await ctx.audioWorklet.addModule(workletUrl);
-          workletReady = true;
-          console.info('[TCV] worklet module loaded');
-          // If we already attached before the worklet finished loading, wire
-          // up the measurement chain retroactively.
-          if (attachedVideo && sourceNode && !workletNode) {
-            buildMeasurementChain(ctx);
-          }
-        } catch (err) {
-          console.warn('[TCV] worklet load failed', err);
-        }
-      }
+      await loadWorklet();
       return ctx;
     })();
     return ctxPromise;
@@ -686,11 +695,20 @@
     const data = event.data;
     if (!data || data.type !== MSG_IN) return;
     switch (data.cmd) {
-      case 'init':
-        workletUrl = data.workletUrl || '';
+      case 'init': {
+        // Any script sharing this window can send a command, so the module
+        // URL is taken only when it names the packaged worklet.
+        const url = data.workletUrl;
+        if (typeof url === 'string'
+          && url.startsWith('chrome-extension://')
+          && url.endsWith('/audio-worklet.js')) {
+          workletUrl = url;
+        }
         await ensureContext();
+        await loadWorklet();
         postReady({ event: 'init-done' });
         break;
+      }
       case 'attach': {
         scheduleAttach();
         break;
