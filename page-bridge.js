@@ -755,7 +755,7 @@
       skipped,
       // The span reached back as far as it was asked to, so at the budget the
       // removal stopped short of the ad's own start.
-      exhausted: wanted > 0 && covered === requested,
+      exhausted: covered === requested,
       windowsSinceReset,
       windowLufs: truncated
         ? [...removed.slice(0, half), ...removed.slice(-half)]

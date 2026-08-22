@@ -5378,6 +5378,37 @@ test('page bridge counts only the skipped windows the rollback reaches', async (
   assertLufsClose(harness.messages.at(-1).integrated, kept);
 });
 
+test('page bridge counts a span it fully covered even with nothing to remove', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  const content = [0.0001, 0.0001, 0.0001, 0.0001, 0.1, 0.1, 0.1, 0.1];
+  for (const ms of content) harness.emitMeasurementBlock(ms);
+  const windows = gatingWindows(content);
+
+  // Muting drops every window the rollback is about to span, so there is
+  // nothing left in the ring for it to take.
+  harness.setMuted(true);
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(1.0);
+
+  harness.setPlayhead(100.35);
+  harness.logs.length = 0;
+  harness.emitPlayerCue({
+    rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2,
+    podPosition: 0, podCount: 1
+  });
+  const rollback = harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback');
+  assert.equal(rollback.length, 1);
+  assert.equal(rollback[0][1].requested, 4);
+  assert.equal(rollback[0][1].skipped, 4);
+  assert.equal(rollback[0][1].removed, 0);
+  // The span reached its first window; removing none of them is the answer,
+  // not a removal that stopped short.
+  assert.equal(rollback[0][1].exhausted, true);
+
+  harness.emitMeasurementBlock(1.0);
+  assertLufsClose(harness.messages.at(-1).integrated, u.gatedIntegratedLufs(windows));
+});
+
 // A slider drag re-arms the boundary skip on every block, so every window over
 // the drag is dropped rather than appended, and the cue that follows names a
 // break that started where the drag did.
