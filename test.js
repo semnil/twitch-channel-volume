@@ -951,12 +951,17 @@ function expectedIntegrated(subBlocks, seedMeanSquare) {
 }
 
 // Saved measurements carry the reference they were taken at.
-function measured(lastLufs) {
+function measured(lastLufs, windows) {
   return {
     lastLufs,
     lastLufsRef: Object.fromEntries(
       Object.keys(lastLufs).map((kind) => [kind, u.LUFS_REFERENCE_VOLUME_1])
-    )
+    ),
+    ...(windows === undefined ? {} : {
+      lastLufsWindows: Object.fromEntries(
+        Object.keys(lastLufs).map((kind) => [kind, windows])
+      )
+    })
   };
 }
 
@@ -2430,10 +2435,12 @@ test('content leaves the seed unweighed where the count was never stored', async
   const harness = createContentHarness({
     channelVolumes: {
       // Saved before the window count was stored alongside the measurement.
+      // The count another kind carries is not this kind's.
       'vod-owner:100': {
         name: '100',
         lastLufs: { vod: -21 },
-        lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 }
+        lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 },
+        lastLufsWindows: { live: 900 }
       }
     }
   });
@@ -2788,6 +2795,39 @@ test('channel store keeps the window count with the value it was measured over',
   assert.equal(stored.channelVolumes['777'].lastLufsWindows, undefined);
 });
 
+test('channel store keeps the window count of the value that wins an id merge', async () => {
+  for (const lastWriter of ['login:test', '777']) {
+    let stored = { channelVolumes: {} };
+    const storage = {
+      async get(keys) { return readStoredKeys(stored, keys); },
+      async set(update) { stored = { ...stored, ...structuredClone(update) }; }
+    };
+    const write = channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 100);
+    const writes = [
+      ['login:test', -19, 1800],
+      ['777', -25, 300]
+    ];
+    // The later write wins the field, and its count and reference go with it.
+    if (lastWriter === 'login:test') writes.reverse();
+    for (const [channelId, lufs, windows] of writes) {
+      await write({
+        operation: 'saveMeasurement', channelId, kind: 'live', lufs, windows,
+        reference: u.LUFS_REFERENCE_VOLUME_1, channel: { name: 'Test' }
+      });
+    }
+    await write({
+      operation: 'mergeChannelIds', fromId: 'login:test', toId: '777', kind: 'live',
+      channel: { name: 'Test', login: 'test' }
+    });
+
+    const merged = stored.channelVolumes['777'];
+    const [, winnerLufs, winnerWindows] = writes[1];
+    assert.equal(merged.lastLufs.live, winnerLufs, lastWriter);
+    assert.equal(merged.lastLufsWindows.live, winnerWindows, lastWriter);
+    assert.equal(merged.lastLufsRef.live, u.LUFS_REFERENCE_VOLUME_1, lastWriter);
+  }
+});
+
 test('channel store refuses a window count that is not a positive integer', async () => {
   for (const windows of [0, -1, 1.5, '600', NaN, Infinity, null]) {
     assert.throws(() => channelStore.applyChannelVolumesMutation({}, {
@@ -2800,7 +2840,7 @@ test('channel store refuses a window count that is not a positive integer', asyn
 test('content seeds the measurement once the owner ID resolves', async () => {
   const harness = createContentHarness({
     href: 'https://www.twitch.tv/videos/100',
-    channelVolumes: { '777': { name: 'Streamer', ...measured({ vod: -16 }) } }
+    channelVolumes: { '777': { name: 'Streamer', ...measured({ vod: -16 }, 900) } }
   });
   await flushTasks();
 
@@ -2808,6 +2848,7 @@ test('content seeds the measurement once the owner ID resolves', async () => {
   const startup = harness.commands.filter((command) => command.cmd === 'resetMeasurement');
   assert.equal(startup.length, 1);
   assert.equal(startup[0].initialIntegratedLufs, undefined);
+  assert.equal(startup[0].initialIntegratedWindows, undefined);
   harness.commands.length = 0;
 
   await harness.dispatchMessage({
@@ -2825,6 +2866,8 @@ test('content seeds the measurement once the owner ID resolves', async () => {
   const afterOwner = harness.commands.filter((command) => command.cmd === 'resetMeasurement');
   assert.equal(afterOwner.length, 1);
   assert.equal(afterOwner[0].initialIntegratedLufs, -16);
+  // The weight travels with every seed, not only the one sent at startup.
+  assert.equal(afterOwner[0].initialIntegratedWindows, 900);
   const state = await harness.dispatchRuntime({ cmd: 'getState' });
   assert.equal(state.channel.id, '777');
 });
