@@ -11,9 +11,9 @@ LUFS の索引更新、保存済み LUFS による計測初期化、測定値リ
 | 権限 | `manifest.json` は `storage` と `twitch.tv` のみを要求する | `node test.js` の manifest とプライバシーポリシーの一致テスト |
 | コマンド入力 | page-bridge は MAIN world でページとイベントを共有し、init を含む全コマンドをページが送れる。AudioWorklet モジュール URL はコマンドから取らず、page-bridge 自身のスタックフレームが示す拡張 origin から組み立てる。origin を取れないときはモジュールを読み込まない | `node test.js` の page bridge init テスト (別拡張 origin・非拡張 origin・読込済みの差し替え・origin 不明時) |
 | リセット対象 | popup が表示中のチャンネル ID と種別を送り、content script が現在値との完全一致を検証する | チャンネル ID・種別が不一致の要求は `channel mismatch` で拒否 |
-| 保存値 | Service Worker の単一キューで対象種別の `lastLufs` と `lastLufsRef` を削除し、gain・Auto 設定・`autoGainRef`・他種別の LUFS を維持する | `node test.js` の mutation・競合テスト |
+| 保存値 | Service Worker の単一キューで対象種別の `lastLufs` と、それを説明する `lastLufsRef` / `lastLufsWindows` を削除し、gain・Auto 設定・`autoGainRef`・他種別の LUFS を維持する | `node test.js` の mutation・競合テスト |
 | 競合 | リセット要求前の保存を完了してから削除し、削除処理中に到着した計測値は保存しない。リセット送信前に page-bridge が算出したブロックは計測世代番号で破棄する | 保存待ちを挿入した content script テスト、旧世代の計測を投入した content script / page bridge テスト |
-| 入力値 | 保存済み LUFS は有限値の場合だけ計算初期値に使い、絶対ゲート未満の値は Integrated に寄与しない | NaN、Infinity、文字列、ゲート境界の page bridge テスト |
+| 入力値 | 保存済み LUFS は有限値の場合だけ計算初期値に使い、絶対ゲート未満の値は Integrated に寄与しない。シードの重みに使う窓数はリングバッファの容量 (1 時間) で頭打ちにし、正の整数でない値は下限として扱う。Storage へ書ける窓数は正の整数だけ | NaN、Infinity、文字列、ゲート境界の page bridge テスト、容量超過のシードを投入する page bridge テスト、0・負数・小数・文字列の窓数を送る channel store テスト |
 | 失敗時 | 保存値の削除に失敗した場合は実行中の計測を初期化せず、popup にローカライズ済みエラーを表示する | 保存失敗を注入した content script テスト |
 | ページ由来の通知 | `attach-failed` / `attached` は真偽状態としてのみ扱い、付随する `reason` 文字列は console 診断にだけ出し、UI へも Storage へも渡さない。popup が出す文言は `_locales` の固定メッセージ | `attach-failed` / `attached` を投入した content script テスト、popup を実行して文言と無効化を検査するテスト、両ロケールの文言テスト |
 | 無効な状態での書き込み | 音声経路が無い間は手動ゲイン・Auto 設定・測定値リセットの mutation を content script が拒否する (popup 側の無効化はポーリング周期の窓があるため) | `attach-failed` 後に `setGain` / `setAutoApplyLoudness` / `resetMeasurement` を送り、応答と保存値を検査するテスト |
