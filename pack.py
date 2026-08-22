@@ -17,6 +17,30 @@ QUOTED = re.compile(r'[\'"]([^\'"]+)[\'"]')
 REMOTE = ('http:', 'https:', '//', 'data:', 'chrome-extension:')
 
 
+def _resolve(root, relative):
+    """Absolute path of a packaged file, or None when it leaves the package.
+
+    The path is rejected when it is absolute, climbs out with .., or reaches
+    its target through a symbolic link at any point — the final name or a
+    parent directory alike.
+    """
+    if os.path.isabs(relative):
+        return None
+    normalized = os.path.normpath(relative)
+    real_root = os.path.realpath(root)
+    full = os.path.join(real_root, normalized)
+    if os.path.realpath(full) != full:
+        return None
+    return full
+
+
+def _packaged(root, relative):
+    full = _resolve(root, relative)
+    if full is None:
+        raise SystemExit(f'reference leaves the package: {relative}')
+    return full
+
+
 def _read(root, relative):
     with open(os.path.join(root, relative), encoding='utf-8') as handle:
         return handle.read()
@@ -68,8 +92,8 @@ def selected_files(root):
         relative = os.path.normpath(pending.pop(0))
         if relative in selected:
             continue
-        full = os.path.join(root, relative)
-        if os.path.islink(full) or not os.path.isfile(full):
+        full = _packaged(root, relative)
+        if not os.path.isfile(full):
             raise SystemExit(f'referenced file is missing or not a regular file: {relative}')
         selected.append(relative)
         pending.extend(_references_within(root, relative))
@@ -78,12 +102,10 @@ def selected_files(root):
         yield os.path.join(root, relative), relative
 
     locales = os.path.join(root, LOCALE_DIR)
-    if os.path.isdir(locales) and not os.path.islink(locales):
+    if os.path.isdir(locales):
         for locale in sorted(os.listdir(locales)):
             relative = os.path.join(LOCALE_DIR, locale, LOCALE_FILE)
-            full = os.path.join(root, relative)
-            if os.path.islink(full):
-                raise SystemExit(f'referenced file is missing or not a regular file: {relative}')
+            full = _packaged(root, relative)
             if os.path.isfile(full):
                 yield full, relative
 

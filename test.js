@@ -184,6 +184,77 @@ test('the store package carries only the files the extension loads', () => {
   }
 });
 
+test('the store package refuses a reference that leaves it', () => {
+  // A path that resolves outside the package would carry a file nobody
+  // reviewed into the store zip under a name that looks local.
+  const tmpRoot = fs.realpathSync(os.tmpdir());
+  const outside = fs.mkdtempSync(path.join(tmpRoot, 'tcv-outside-'));
+  fs.writeFileSync(path.join(outside, 'secret.js'), 'SECRET');
+  fs.writeFileSync(path.join(outside, 'messages.json'), '{}');
+
+  const run = (build) => {
+    const fixture = fs.mkdtempSync(path.join(tmpRoot, 'tcv-escape-'));
+    try {
+      fs.copyFileSync(path.join(__dirname, 'pack.py'), path.join(fixture, 'pack.py'));
+      build(fixture);
+      return spawnSync('python3', ['-B', 'pack.py', '--list'], { cwd: fixture, encoding: 'utf8' });
+    } finally {
+      fs.rmSync(fixture, { recursive: true, force: true });
+    }
+  };
+  const manifest = (references) => JSON.stringify({
+    manifest_version: 3,
+    version: '1.0.0',
+    content_scripts: [{ js: references }]
+  });
+
+  try {
+    // A symlinked parent directory: only the last name looks local.
+    const throughParent = run((fixture) => {
+      fs.writeFileSync(path.join(fixture, 'manifest.json'), manifest(['linked/secret.js']));
+      fs.symlinkSync(outside, path.join(fixture, 'linked'));
+    });
+    assert.notEqual(throughParent.status, 0);
+    assert.match(throughParent.stderr, /linked\/secret\.js/);
+
+    const climbing = run((fixture) => {
+      fs.writeFileSync(path.join(fixture, 'manifest.json'), manifest(['../secret.js']));
+      fs.writeFileSync(path.join(path.dirname(fixture), 'secret.js'), 'SIBLING');
+    });
+    assert.notEqual(climbing.status, 0);
+
+    // Absolute and pointing at a path with no link anywhere in it: the only
+    // thing standing between it and the zip is the rule against absolute paths.
+    assert.equal(fs.realpathSync(outside), outside);
+    const absolute = run((fixture) => {
+      fs.writeFileSync(
+        path.join(fixture, 'manifest.json'),
+        manifest([path.join(outside, 'secret.js')])
+      );
+    });
+    assert.notEqual(absolute.status, 0);
+    assert.match(absolute.stderr, /secret\.js/);
+
+    // The locale directories are listed rather than referenced, and one of
+    // them can be a link just as easily.
+    const linkedLocaleDir = run((fixture) => {
+      fs.writeFileSync(path.join(fixture, 'manifest.json'), manifest([]));
+      fs.mkdirSync(path.join(fixture, '_locales'));
+      fs.symlinkSync(outside, path.join(fixture, '_locales', 'ja'));
+    });
+    assert.notEqual(linkedLocaleDir.status, 0);
+    assert.match(linkedLocaleDir.stderr, /_locales\/ja\/messages\.json/);
+
+    const linkedLocaleRoot = run((fixture) => {
+      fs.writeFileSync(path.join(fixture, 'manifest.json'), manifest([]));
+      fs.symlinkSync(outside, path.join(fixture, '_locales'));
+    });
+    assert.notEqual(linkedLocaleRoot.status, 0);
+  } finally {
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
 test('the store package refuses a reference it cannot pack', () => {
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'tcv-pack-missing-'));
   try {

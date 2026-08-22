@@ -194,7 +194,7 @@ options.html / options.js
 - **計測リセットの世代番号**: content.js は resetMeasurement を送るたびに世代番号を進め、page-bridge はその番号を以降の lufs 通知へ付与する。content.js は現在の世代より古い通知を破棄するため、リセット送信前に page-bridge が算出したブロックが保存済み LUFS を復活させない
 - **Live/VOD/Clip 別ゲイン**: 配信は時間帯で音作りが変わるため種別ごとに別管理。同チャンネルの過去 VOD のゲインを現 Live にコピーしない
 - **Twitch reserved paths**: `/directory`, `/settings`, `/videos`, `/p`, `/jobs` 等は live channel として誤検出しないよう TWITCH_RESERVED_PATHS で除外
-- **パッケージの選択は参照グラフ**: `pack.py` は manifest から辿れるもの (content_scripts / web_accessible_resources / service_worker / options_page / action.default_popup / icons) と、その HTML の `<script src>`・worker の `importScripts`、および `_locales/<locale>/messages.json` だけを選ぶ。参照されないファイルは拡張子に関わらず入らず、参照先が欠けている・シンボリックリンクの場合は失敗させる (壊れた zip を黙って作らない)
+- **パッケージの選択は参照グラフ**: `pack.py` は manifest から辿れるもの (content_scripts / web_accessible_resources / service_worker / options_page / action.default_popup / icons) と、その HTML の `<script src>`・worker の `importScripts`、および `_locales/<locale>/messages.json` だけを選ぶ。参照されないファイルは拡張子に関わらず入らない。パスは 1 箇所の resolver を通し、絶対パス・`..`・途中のディレクトリを含むシンボリックリンクで実体がパッケージ外へ出るものは失敗させる (壊れた zip も、外部ファイルを同梱した zip も黙って作らない)
 - **CSP 対応**: AudioWorklet モジュールは web_accessible_resources で公開し、content.js が chrome.runtime.getURL で解決して page-bridge に渡す
 - **NaN/Infinity ガード**: 計測値が無限大・NaN の場合は gain 1.0 にフォールバック
 

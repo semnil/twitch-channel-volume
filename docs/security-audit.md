@@ -17,4 +17,4 @@ LUFS の索引更新、保存済み LUFS による計測初期化、測定値リ
 | ページ由来の通知 | `attach-failed` / `attached` は真偽状態としてのみ扱い、付随する `reason` 文字列は console 診断にだけ出し、UI へも Storage へも渡さない。popup が出す文言は `_locales` の固定メッセージ | `attach-failed` / `attached` を投入した content script テスト、popup を実行して文言と無効化を検査するテスト、両ロケールの文言テスト |
 | 無効な状態での書き込み | 音声経路が無い間は手動ゲイン・Auto 設定・測定値リセットの mutation を content script が拒否する (popup 側の無効化はポーリング周期の窓があるため) | `attach-failed` 後に `setGain` / `setAutoApplyLoudness` / `resetMeasurement` を送り、応答と保存値を検査するテスト |
 | 別要素の計測値 | 音声経路が無い間に届いた lufs は保存にも Auto 追従にも使わない。復帰時は計測を初期化する | `attach-failed` 後に lufs を投入し、保存値と `setGain` の不発を検査するテスト |
-| パッケージの内容 | zip に入るのは manifest から参照が辿れるファイルと `_locales/<locale>/messages.json` だけで、参照されないファイル (`.env`・メモ・未参照の `.js` / `.html`) は選択されない。参照先が欠けている・シンボリックリンクの場合は生成を失敗させる | `pack.py --list` を fixture ツリーで実行し、選択結果と失敗を検査するテスト |
+| パッケージの内容 | zip に入るのは manifest から参照が辿れるファイルと `_locales/<locale>/messages.json` だけで、参照されないファイル (`.env`・メモ・未参照の `.js` / `.html`) は選択されない。参照先が欠けている場合と、絶対パス・`..`・シンボリックリンク (末尾の名前と親ディレクトリの両方) で実体がパッケージ外を指す場合は生成を失敗させる | `pack.py --list` を fixture ツリーで実行し、選択結果と 5 種の境界外参照の失敗を検査するテスト |
