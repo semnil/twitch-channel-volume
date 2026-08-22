@@ -1,5 +1,6 @@
 *.zip
 __pycache__/
 .DS_Store
-.claude/
+/.claude/
 node_modules/
+/work/
