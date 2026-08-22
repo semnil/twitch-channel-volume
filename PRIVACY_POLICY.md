@@ -32,7 +32,7 @@ Twitch Channel Volume is a Chrome extension that remembers and auto-applies volu
 
 - **What**: GraphQL responses issued by Twitch itself (to obtain a channel's owner ID / broadcaster ID), the ad cues the player posts to its own page (to learn when an ad break starts and ends), and the presence of the player's ad indicator in the page.
 - **Purpose**: Obtain a persistent channel identifier and detect ad breaks.
-- **Storage**: GraphQL responses and ad cues are not stored. Only the required values are extracted and used: channel IDs, and the start, end and roll type (pre-roll / mid-roll) of an ad break. Ad identifiers, advertiser names and tracking URLs carried by a cue are not read.
+- **Storage**: GraphQL responses and ad cues are not stored. Only the required values are extracted and used: channel IDs, and the start, end, roll type (pre-roll / mid-roll) and position within the pod of an ad break. Ad identifiers, advertiser names and tracking URLs carried by a cue are not read.
 
 ## Data NOT Collected
 

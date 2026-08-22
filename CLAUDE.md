@@ -34,6 +34,8 @@ page-bridge.js (MAIN world content script, document_start)
 │   └── プレイヤーが投げる CM の cue (`rollType` と media 時刻の `startTime` / `endTime`) を読む。
 │       受理するのは再生位置がその区間 (開始 1 秒前から終了まで) に入っている cue だけ
 │       (CM 中はもう 1 つのプレイヤーが別の時間軸で自分の CM を cue する)
+│   └── pod の途中を告げる cue (`podPosition` < `podCount` - 1) のあとは、次の cue が
+│       届くまで 0.4 秒だけ CM を閉じずに保つ
 ├── CM 要素: 本編要素が停止したまま別要素が鳴っているとき (VOD の CM で観測) は、その
 │   要素にも GainNode を挟み baseline * adGainOffset * (本編 volume / 当該 volume) を適用
 ├── GainNode は ad active 時に baseline * adGainOffset (dB → gain) を適用
@@ -60,8 +62,8 @@ content.js (ISOLATED world content script, document_idle)
 ├── Gain overlay: `.volume-slider__slider-container` の **次の兄弟** として span を挿入。 mute wrapper と slider container はプレイヤーコントロール内の flex 行に並ぶ sibling 構造のため、 slider container の右隣に span が並ぶ。 表示/非表示は親 `[data-a-target="player-controls"][data-a-visible]` の切り替えに自動追従する (= プレイヤーコントロール内に埋め込んでいるため)。 gain ≠ 1.0 かつ音声経路がある間のみ、表示は `%` 固定 / displayUnit に依存しない
 ├── 保存済み LUFS による計測の初期化は、起動時・SPA 遷移時に加えて owner ID 解決後にも行う。再初期化の要否は alias 解決後のチャンネル ID と種別で判定する
 ├── 計測リセットは世代番号を進めて送り、それより古い世代の lufs 通知は破棄する
-├── SPA 遷移では `mediaChanged` を先に送る (計測リセットは同一 media でも起きるため、
-│   cue の破棄はこちらだけが行う)
+├── SPA 遷移では `mediaChanged` を先に送り、`requestedAdActive` を落として DOM 指標を
+│   取り直す (計測リセットは同一 media でも起きるため、cue の破棄はこちらだけが行う)
 ├── DOM ad detection (`[data-a-target="video-ad-countdown"]`) は ad gain を駆動する
 ├── SPA navigation: history.pushState/replaceState hook + popstate + MutationObserver
 ├── channelVolumes の更新は Service Worker の単一キューへ委譲し、onChanged でクロスタブ同期
@@ -194,7 +196,10 @@ options.html / options.js
 - **設定のフィールド単位保存**: options は初期ロード完了後に操作を有効化し、変更した設定フィールドだけを background.js → settings-store.js の単一キューへ送る。複数の設定タブが異なる項目を古い表示状態から変更しても、`autoLoudnessSettings` 全体を置換せず最新値へマージする
 - **CM 区間検出**: 独立した 2 つの指標を使う
   - プレイヤーの cue: メディアエンジンは worker で動き、再生する CM ごとに cue をページへ post する。`Worker` コンストラクタを包んで message リスナーを足し、`rollType` と `startTime` / `endTime` を持つ cue を読む。この 2 つは attach している要素の media 時刻で、CM の終わりと一致する。CM 中はプレイヤーがもう 1 つ動いて自分の CM を別の時間軸で cue するため、再生位置がその区間に入っている cue だけを受け取る。**受理の範囲と CM 判定は別**で、受理は開始 1 秒前から、CM 中の判定は開始以降 — 早く届いた cue が本編に CM Gain を掛けない。CM を通り過ぎたら区間を捨てるので、再生位置が戻っても同じ CM は開かない
-  - cue の保持期間: cue は media に属する。計測リセット (popup の操作や owner ID 確定でも走る) では捨てず、SPA 遷移の `mediaChanged` と要素の差し替えでだけ捨てる
+  - cue の保持期間: cue は media と要素に属する。計測リセット (popup の操作や owner ID 確定でも走る) では捨てず、次の 2 つでだけ捨てる。**どちらも「その事象が無効にするものを全部」捨てる** — 片側だけ消すと、cue も DOM 指標も効かない状態や、前の media の指標が新しい media の CM として残る状態になる
+    - 要素の差し替え: cue の時刻と「この media は cue されるか」(`adCueSeen`) の両方
+    - `mediaChanged` (SPA 遷移): 上に加えて DOM 指標の状態。content.js 側も `requestedAdActive` を落として現在の DOM から報告し直す
+  - pod の途切れ: 1 回の CM に複数の creative が入ると、前の creative の終わりと次の cue の間に再生位置が進む。cue の `podPosition` / `podCount` が pod の途中を示している間は、終わりを 0.4 秒だけ待って CM を閉じない。次の cue が来なければそこで閉じる
   - DOM: `[data-a-target="video-ad-countdown"]` / `[data-test-selector="ad-banner-default-text"]` の有無
 - **2 つの指標の使い分け**: cue は CM の最初の音声とほぼ同時に届き、CM の終わりも正確に示す。DOM 指標は CM の最初の音声より遅れて現れ、CM 後も DOM に残ることがある。したがって cue を 1 つでも受け取った media では cue だけで開閉し、cue の来ない media (VOD のクライアント側挿入の CM) では DOM 指標へ戻る
 - **CM 要素**: VOD の CM は本編要素を停止させたまま別の `<video>` で再生され、その要素は本編要素の volume を無視して自前の volume で鳴る。本編要素が停止していて別の要素が鳴っているときは、その要素にも `MediaElementSource` + `GainNode` を挟み、`baseline * adGainOffset * (本編 volume / 当該要素の volume)` を掛ける。CM が終わればゲインを 1.0 へ戻し、要素が DOM から消えたら切り離す。計測はこの要素からは採らない
@@ -251,7 +256,7 @@ python3 pack.py --list
 - popup は `DISPLAY_UPDATE_INTERVAL_MS` ごとに getState をポーリングし LUFS / Suggested / Current カードを更新。Auto gain も同じ周期を上限として更新する。Manual slider は Auto ON の間だけ適用中 gain へ同期し、Auto OFF の通常ポーリングでは更新しない。Auto OFF では初回表示・「チャンネルに適用」・Auto 切替・表示単位変更・ユーザー操作時だけ同期する。計測自体は popup の開閉に依存せず、Twitch ページが開いている限り常時走る
 - 拡張機能の再ロードで chrome.runtime が無効化された場合、popup は `reloadPageNeeded` を表示して F5 を促す
 - 計測パイプラインの診断: DevTools Console で `[TCV]` ログを確認。`waiting for <video>` → `attached to video` → `measurement chain ready` → `first measurement block received` の順に出る。`createMediaElementSource failed` で止まる場合は他拡張競合 (技術的限界)。この状態は popup の通知と `getState` の audioUnavailable に出る。以降のリトライは `no attachable <video>; the player audio is held elsewhere` を出す (`waiting for <video>` は要素そのものが無いときだけ)。`audio context unavailable` / `audio context resume failed` / `audio context stayed suspended after resume` も同じ経路の診断
-- CM 境界・音量変更の診断: `[TCV] ad detected in DOM` (DOM 検出と `video.currentTime`)、`[TCV] ad cue from the player` (cue の `rollType` と media 時刻の区間、受け取った時点の再生位置)、`[TCV] ad element attached` (CM 要素へ繋いだときの当該 volume と本編 volume)、`[TCV] gate boundary` / `[TCV] gate resumed` (境界の理由・volume・muted・再生位置と、除外した窓数・直近 4 窓の LUFS)、`[TCV] ad start rollback` (要求した窓数・取り消した窓数と各窓の LUFS) を Console で追う。別の理由で打ち切られた skip はその時点までの除外数を次の `gate boundary` の `superseded` / `droppedBefore` に載せる
+- CM 境界・音量変更の診断: `[TCV] ad detected in DOM` (DOM 検出と `video.currentTime`)、`[TCV] ad cue from the player` (cue の `rollType`・media 時刻の区間・受け取った時点の再生位置・pod 内の位置)、`[TCV] ad element attached` (CM 要素へ繋いだときの当該 volume と本編 volume)、`[TCV] gate boundary` / `[TCV] gate resumed` (境界の理由・volume・muted・再生位置と、除外した窓数・直近 4 窓の LUFS)、`[TCV] ad start rollback` (要求した窓数・取り消した窓数と各窓の LUFS) を Console で追う。別の理由で打ち切られた skip はその時点までの除外数を次の `gate boundary` の `superseded` / `droppedBefore` に載せる
 
 ## Existing extensions (reference)
 

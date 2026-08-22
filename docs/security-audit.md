@@ -26,7 +26,7 @@ LUFS の索引更新、保存済み LUFS による計測初期化、測定値リ
 |---|---|---|
 | worker への関与 | `Worker` コンストラクタを包み message リスナーを足すだけで、worker はページが渡した引数 (URL・options) のまま生成する。worker のスクリプトは読まない | `node test.js` の worker hook テストが引数の同一性とリスナー数を照合する |
 | 失敗時 | `window.Worker` へ代入できない場合も含めて囲い、失敗しても計測は動き続ける。CM 検出は DOM 指標だけになる | 差し替え不能な `Worker` を注入した page bridge の起動 |
-| 受け取る値 | cue のうち読むのは `rollType` と `startTime` / `endTime` のみ。広告 ID・広告主・トラッキング URL は参照しない | cue テストが渡す payload と、受理条件のミューテーション |
+| 受け取る値 | cue のうち読むのは `rollType`、`startTime` / `endTime`、`podPosition` / `podCount` のみ。広告 ID・広告主・トラッキング URL は参照しない | cue テストが渡す payload と、受理条件のミューテーション |
 | 他プレイヤーの混入 | CM 中はページがもう 1 つプレイヤーを動かし、自分の時間軸で cue を投げる。再生位置がその区間に入っている cue だけを受理する | 実測した別プレイヤーの cue を投入するテスト |
 | CM 要素 | 本編要素が停止していて、鳴っている別要素があるときだけ `MediaElementSource` を作る。ミュート・音量 0 の要素には触れない。CM が終わればゲイン 1.0 へ戻し、DOM から消えたら切り離す | CM 要素テスト (ゲイン値・ミュート要素・終了後・DOM 退場) |
 | 計測対象 | CM 要素からは計測を採らず、attach ループもその要素を選ばない | attach ループが CM 要素を飛ばすことを検査するテスト |
