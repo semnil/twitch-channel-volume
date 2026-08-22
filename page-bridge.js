@@ -121,9 +121,14 @@
   const AD_START_ROLLBACK_BLOCKS = 5;
   const ROLLBACK_LOG_SAMPLES = 8;
   let windowsSinceReset = 0;
+  let windowsObserved = 0;
   const ABSOLUTE_GATE_MEAN_SQUARE = Math.pow(10, (-70 + 0.691) / 10);
   const RELATIVE_GATE_FACTOR = Math.pow(10, -10 / 10);
   const integratedBlocks = new Array(MAX_INTEGRATED_BLOCKS);
+  // The gating window each appended block came from. A window the boundary skip
+  // dropped was never appended, so a rollback spanning it has nothing there to
+  // take back; the stamps say which of the windows a span covers are in the ring.
+  const integratedBlockWindows = new Array(MAX_INTEGRATED_BLOCKS);
   let integratedBlockStart = 0;
   let integratedBlockLength = 0;
   let absoluteGatedRoot = null;
@@ -228,15 +233,17 @@
     };
   }
 
-  function appendIntegratedBlock(ms) {
+  function appendIntegratedBlock(ms, gatingWindow) {
     let removed;
     if (integratedBlockLength < MAX_INTEGRATED_BLOCKS) {
       const index = (integratedBlockStart + integratedBlockLength) % MAX_INTEGRATED_BLOCKS;
       integratedBlocks[index] = ms;
+      integratedBlockWindows[index] = gatingWindow;
       integratedBlockLength++;
     } else {
       removed = integratedBlocks[integratedBlockStart];
       integratedBlocks[integratedBlockStart] = ms;
+      integratedBlockWindows[integratedBlockStart] = gatingWindow;
       integratedBlockStart = (integratedBlockStart + 1) % MAX_INTEGRATED_BLOCKS;
     }
     if (removed >= ABSOLUTE_GATE_MEAN_SQUARE) {
@@ -313,7 +320,7 @@
   }
 
   function updateIntegratedLufs(ms) {
-    appendIntegratedBlock(ms);
+    appendIntegratedBlock(ms, windowsObserved);
     windowsSinceReset++;
     return integratedLufs();
   }
@@ -343,12 +350,13 @@
     integratedBlockLength = 0;
     absoluteGatedRoot = null;
     windowsSinceReset = 0;
+    windowsObserved = 0;
     if (!Number.isFinite(initialIntegratedLufs)) return;
     const initialMeanSquare = Math.pow(10, (initialIntegratedLufs + 0.691) / 10);
     if (!Number.isFinite(initialMeanSquare)) return;
     // Values below the absolute gate reach the ring buffer but not the index,
     // so they never contribute to Integrated.
-    appendIntegratedBlock(initialMeanSquare);
+    appendIntegratedBlock(initialMeanSquare, windowsObserved);
   }
 
   let ctxPromise = null;
@@ -602,6 +610,7 @@
     if (adActive || adElementChains.length) syncAdElementGains();
     // Credit is spent on windows, so a reset that empties the sub-block buffer
     // does not consume it before a window exists.
+    if (gateWindow !== null) windowsObserved++;
     const skipBoundary = boundarySkipBlocks > 0 && gateWindow !== null;
     if (skipBoundary && !adActive) {
       boundarySkipBlocks--;
@@ -715,16 +724,38 @@
     return adCueSeen ? playerBreakActive() : domAdActive;
   }
 
+  // The windows from firstWindow onward that are in the ring. Newest first, so
+  // it stops at the first window the span does not reach.
+  function appendedWindowsSince(firstWindow) {
+    let count = 0;
+    while (count < integratedBlockLength) {
+      const index = (integratedBlockStart + integratedBlockLength - 1 - count) % MAX_INTEGRATED_BLOCKS;
+      if (integratedBlockWindows[index] < firstWindow) break;
+      count++;
+    }
+    return count;
+  }
+
   function rollBackAdStart(blocks) {
     const requested = Math.max(0, blocks);
-    const removed = removeRecentIntegratedBlocks(requested);
+    // Asking for a window the boundary skip already kept out takes a content
+    // window in its place, and that window's level leaves the gate with it.
+    // The span is named by its first window, so every window it covers is
+    // accounted for however many of them the gate dropped.
+    const firstWindow = Math.max(1, windowsObserved - requested + 1);
+    const covered = Math.max(0, windowsObserved - firstWindow + 1);
+    const wanted = appendedWindowsSince(firstWindow);
+    const skipped = covered - wanted;
+    const removed = removeRecentIntegratedBlocks(wanted);
     const half = ROLLBACK_LOG_SAMPLES / 2;
     const truncated = removed.length > ROLLBACK_LOG_SAMPLES;
     console.info('[TCV] ad start rollback', {
       removed: removed.length,
       requested,
-      // At the budget the removal stopped short of the ad's own start.
-      exhausted: requested > 0 && removed.length === requested,
+      skipped,
+      // The span reached back as far as it was asked to, so at the budget the
+      // removal stopped short of the ad's own start.
+      exhausted: covered === requested,
       windowsSinceReset,
       windowLufs: truncated
         ? [...removed.slice(0, half), ...removed.slice(-half)]

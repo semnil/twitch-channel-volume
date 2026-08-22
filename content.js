@@ -61,11 +61,6 @@
     sendCmd({ cmd: 'setAdGain', value: dbToGain(currentAdGainDb) });
   }
 
-  function channelKeyForKind(kind, id, slug) {
-    if (kind === 'clip') return `clip:${slug}`;
-    return id;
-  }
-
   function defaultAutoApplyForKind(kind) {
     if (kind === 'vod') return defaultAutoApplyLoudnessVod;
     if (kind === 'clip') return defaultAutoApplyLoudnessClip;

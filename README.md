@@ -62,6 +62,7 @@ Install from the [Chrome Web Store](https://chromewebstore.google.com/detail/twi
 - **Auto-follow defaults**: Independent defaults for Live / VOD / Clip (all off by default)
 - **CM Gain**: Extra gain applied during ad breaks (default −6 dB)
 - **Display unit**: % or dB
+- **Gain overlay**: Shows the applied gain next to the player's volume slider (on by default)
 - **Saved channels**: Table view showing the last applied Auto gain, with delete / clear-all
 
 ## Development
@@ -81,8 +82,11 @@ python3 pack.py
 ```
 
 Do not run `python3 -m py_compile` in the unpacked extension directory: it creates
-`__pycache__`, which Chrome rejects. `node test.js` also checks the complete tree
-for reserved underscore-prefixed paths before loading the extension.
+`__pycache__`, which Chrome rejects. `node test.js` also checks the tree the
+package is built from — the repository without `.git`, `node_modules` and the
+root-level scratch directories `work` and `.claude` — for reserved
+underscore-prefixed paths before loading the extension. The scan covers files
+the package itself leaves out, such as `docs/`.
 
 ## Why not just use a compressor?
 

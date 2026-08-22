@@ -1021,7 +1021,8 @@ function createPageBridgeHarness({
     addEventListener(type, listener) { workerListeners.push({ type, listener }); }
   }
   let measurementPort;
-  let resolveFetch;
+  const fetchCalls = [];
+  const pendingFetches = [];
   let resolveWorkletLoad;
   let mediaSourceCalls = 0;
   let gainNode;
@@ -1089,8 +1090,9 @@ function createPageBridgeHarness({
     addEventListener(type, listener) {
       (listeners[type] ||= []).push(listener);
     },
-    fetch() {
-      return new Promise((resolve) => { resolveFetch = resolve; });
+    fetch(...args) {
+      fetchCalls.push(args);
+      return new Promise((resolve) => { pendingFetches.push(resolve); });
     },
     postMessage(message) {
       messages.push(structuredClone(message));
@@ -1139,7 +1141,11 @@ function createPageBridgeHarness({
     logs,
     workletModules,
     fetch: (...args) => window.fetch(...args),
-    resolveFetch(response) { resolveFetch(response); },
+    fetchCalls,
+    resolveFetch(response) {
+      assert.ok(pendingFetches.length, 'no request is waiting for a response');
+      for (const resolve of pendingFetches.splice(0)) resolve(response);
+    },
     async startMeasurement() {
       await dispatchCommand('init');
       await dispatchCommand('attach');
@@ -1448,8 +1454,9 @@ test('the extractor reads a page the way a browser does', () => {
 test('the pages stay inside the markup the extractor reads', () => {
   for (const name of ['popup.html', 'options.html']) {
     const source = fs.readFileSync(path.join(__dirname, name), 'utf8');
-    // Raw text swallows what follows it. <title> and the stylesheet and script
-    // tags are the two the pages use, and both are read as raw text.
+    // Raw text swallows what follows it. The extractor is written around the
+    // raw text elements the pages do use - <title>, <style> and <script> - so
+    // no other one belongs in them.
     for (const element of ['textarea', 'iframe', 'xmp', 'noembed', 'noframes', 'noscript', 'plaintext']) {
       assert.doesNotMatch(source, new RegExp(`<${element}\\b`, 'i'), `${name} uses <${element}>`);
     }
@@ -1610,6 +1617,19 @@ test('privacy policies list exactly the manifest permissions', () => {
     );
     assert.deepEqual([...declared].sort(), [...hosts].sort(), `${file} host rows`);
   }
+});
+
+test('the page is given the worklet module and nothing else', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, 'manifest.json'), 'utf8'));
+  // The audit report cites this test for what the extension exposes to the page.
+  assert.deepEqual(
+    manifest.web_accessible_resources.flatMap((entry) => entry.resources),
+    ['audio-worklet.js']
+  );
+  assert.deepEqual(
+    manifest.web_accessible_resources.flatMap((entry) => entry.matches).sort(),
+    ['*://*.twitch.tv/*', '*://clips.twitch.tv/*']
+  );
 });
 
 test('suggestedGain stays at unity until a gated measurement exists', () => {
@@ -3117,6 +3137,54 @@ test('content rejects Manual gain changes while an Auto mutation is pending', as
     true
   );
   assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].gainVod, 0.5);
+});
+
+test('the fetch hook hands back the response the page asked for', async () => {
+  const harness = createPageBridgeHarness();
+  harness.messages.length = 0;
+  let cloned = 0;
+  const plainInit = { method: 'GET', headers: {} };
+  const untouched = harness.fetch('https://www.twitch.tv/api/something', plainInit);
+  // The page's request goes out once, with the arguments the page gave.
+  assert.equal(harness.fetchCalls.length, 1);
+  assert.equal(harness.fetchCalls[0].length, 2);
+  assert.equal(harness.fetchCalls[0][0], 'https://www.twitch.tv/api/something');
+  assert.equal(harness.fetchCalls[0][1], plainInit);
+  const plain = {
+    clone() {
+      cloned++;
+      return { async json() { return {}; } };
+    }
+  };
+  harness.resolveFetch(plain);
+  // A response the hook has no interest in is neither read nor replaced.
+  assert.equal(await untouched, plain);
+  await flushTasks();
+  assert.equal(cloned, 0);
+  assert.deepEqual(harness.messages.filter((message) => message.event === 'owner'), []);
+
+  const gqlInit = { method: 'POST', body: '{"operationName":"StreamMetadata"}' };
+  const read = harness.fetch('https://gql.twitch.tv/gql', gqlInit);
+  // The one it reads goes out once too, and not again to read it.
+  assert.equal(harness.fetchCalls.length, 2);
+  assert.equal(harness.fetchCalls[1].length, 2);
+  assert.equal(harness.fetchCalls[1][0], 'https://gql.twitch.tv/gql');
+  assert.equal(harness.fetchCalls[1][1], gqlInit);
+  const answered = {
+    clone() {
+      return {
+        async json() {
+          return { data: { user: { id: '123', login: 'owner', displayName: 'Owner' } } };
+        }
+      };
+    }
+  };
+  harness.resolveFetch(answered);
+  // The one it does read reaches the page as the very same response.
+  assert.equal(await read, answered);
+  await flushTasks();
+  assert.equal(harness.messages.filter((message) => message.event === 'owner').length, 1);
+  assert.equal(harness.fetchCalls.length, 2);
 });
 
 test('GraphQL owner fallback keeps the request-time VOD identity across navigation', async () => {
@@ -4669,10 +4737,19 @@ test('page bridge counts rollback budget from the last reset only', async () => 
   harness.messages.length = 0;
   for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(1.0);
 
+  harness.logs.length = 0;
   await harness.dispatchCommand('setAdActive', { active: true });
   harness.emitMeasurementBlock(1.0);
   // One window existed since the reset; the seeded sample is not one of them.
   assert.ok(Math.abs(harness.messages.at(-1).integrated - (-20)) < 1e-12);
+
+  // The span stops at the first window there is, so it never reaches as far
+  // back as the budget asked for.
+  const rollback = harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback');
+  assert.equal(rollback.length, 1);
+  assert.equal(rollback[0][1].requested, AD_START_ROLLBACK);
+  assert.equal(rollback[0][1].removed, 1);
+  assert.equal(rollback[0][1].exhausted, false);
 });
 
 test('page bridge rolls back once per ad, not once per detection', async () => {
@@ -5234,6 +5311,149 @@ test('page bridge removes the windows appended between the ad and its cue', asyn
   harness.emitMeasurementBlock(1.0);
   const kept = gatingWindows(content).slice(0, -4);
   assertLufsClose(harness.messages.at(-1).integrated, u.gatedIntegratedLufs(kept));
+});
+
+test('page bridge asks the rollback only for the windows the gate took', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  // A short measurement, where taking four windows instead of one leaves the
+  // gate with the quietest window alone.
+  const content = [0.0001, 0.0001, 0.0001, 0.0001, 0.1, 0.1, 0.1, 0.1];
+  for (const ms of content) harness.emitMeasurementBlock(ms);
+  const windows = gatingWindows(content);
+  assert.equal(windows.length, 5);
+
+  // Muting arms a boundary skip, and the ad's first audio lands inside it, so
+  // three of the windows the rollback spans were never appended.
+  harness.setMuted(true);
+  for (let i = 0; i < 3; i++) harness.emitMeasurementBlock(1.0);
+
+  harness.setPlayhead(100.35);
+  harness.logs.length = 0;
+  harness.emitPlayerCue({
+    rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2,
+    podPosition: 0, podCount: 1
+  });
+  const rollback = harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback');
+  assert.equal(rollback.length, 1);
+  assert.equal(rollback[0][1].requested, 4);
+  assert.equal(rollback[0][1].skipped, 3);
+  assert.equal(rollback[0][1].removed, 1);
+
+  harness.emitMeasurementBlock(1.0);
+  const kept = u.gatedIntegratedLufs(windows.slice(0, -1));
+  const overRemoved = u.gatedIntegratedLufs(windows.slice(0, -4));
+  assert.ok(kept - overRemoved > 10, `${kept} vs ${overRemoved}`);
+  assertLufsClose(harness.messages.at(-1).integrated, kept);
+});
+
+test('page bridge counts only the skipped windows the rollback reaches', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  const content = [0.0001, 0.0001, 0.0001, 0.0001, 0.1, 0.1, 0.1, 0.1];
+  for (const ms of content) harness.emitMeasurementBlock(ms);
+  const windows = gatingWindows(content);
+
+  // The skip runs out four windows before the cue arrives, so the two windows
+  // the rollback spans are ad audio that was appended.
+  harness.setMuted(true);
+  for (let i = 0; i < 6; i++) harness.emitMeasurementBlock(1.0);
+
+  harness.setPlayhead(100.15);
+  harness.logs.length = 0;
+  harness.emitPlayerCue({
+    rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2,
+    podPosition: 0, podCount: 1
+  });
+  const rollback = harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback');
+  assert.equal(rollback.length, 1);
+  assert.equal(rollback[0][1].requested, 2);
+  assert.equal(rollback[0][1].skipped, 0);
+  assert.equal(rollback[0][1].removed, 2);
+
+  harness.emitMeasurementBlock(1.0);
+  const kept = u.gatedIntegratedLufs(windows);
+  const adLeftIn = u.gatedIntegratedLufs([...windows, 1.0]);
+  assert.ok(adLeftIn - kept > 3, `${kept} vs ${adLeftIn}`);
+  assertLufsClose(harness.messages.at(-1).integrated, kept);
+});
+
+test('page bridge counts a span it fully covered even with nothing to remove', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  const content = [0.0001, 0.0001, 0.0001, 0.0001, 0.1, 0.1, 0.1, 0.1];
+  for (const ms of content) harness.emitMeasurementBlock(ms);
+  const windows = gatingWindows(content);
+
+  // Muting drops every window the rollback is about to span, so there is
+  // nothing left in the ring for it to take.
+  harness.setMuted(true);
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(1.0);
+
+  harness.setPlayhead(100.35);
+  harness.logs.length = 0;
+  harness.emitPlayerCue({
+    rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2,
+    podPosition: 0, podCount: 1
+  });
+  const rollback = harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback');
+  assert.equal(rollback.length, 1);
+  assert.equal(rollback[0][1].requested, 4);
+  assert.equal(rollback[0][1].skipped, 4);
+  assert.equal(rollback[0][1].removed, 0);
+  // The span reached its first window; removing none of them is the answer,
+  // not a removal that stopped short.
+  assert.equal(rollback[0][1].exhausted, true);
+
+  harness.emitMeasurementBlock(1.0);
+  assertLufsClose(harness.messages.at(-1).integrated, u.gatedIntegratedLufs(windows));
+});
+
+// A slider drag re-arms the boundary skip on every block, so every window over
+// the drag is dropped rather than appended, and the cue that follows names a
+// break that started where the drag did.
+async function draggedThroughAdStart(dragged) {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  const content = [0.000001, 0.000001, 0.000001, 0.000001, 1, 1, 1, 1];
+  for (const ms of content) harness.emitMeasurementBlock(ms);
+  for (let i = 0; i < dragged; i++) {
+    // A repeat of the value it already had does not re-arm the skip.
+    harness.setVolume(1 - (i % 8 + 1) / 100);
+    harness.emitMeasurementBlock(1.0);
+  }
+
+  harness.setPlayhead(100 + dragged * 0.1 + 0.01);
+  harness.logs.length = 0;
+  harness.emitPlayerCue({
+    rollType: 'midroll', startTime: 100, endTime: 200, duration: 100,
+    podPosition: 0, podCount: 1
+  });
+  harness.emitMeasurementBlock(1.0);
+  return { harness, windows: gatingWindows(content) };
+}
+
+test('page bridge counts every window a long drag kept out of the ring', async () => {
+  // However long the drag, the rollback takes only the window the ad's own
+  // audio reached. The two lengths straddle the size a bounded record of the
+  // dropped windows holds, where the oldest of them is the one that goes
+  // missing and a content window is taken in its place.
+  for (const dragged of [64, 65]) {
+    const where = `over ${dragged} windows`;
+    const { harness, windows } = await draggedThroughAdStart(dragged);
+    const rollback = harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback');
+    assert.equal(rollback.length, 1, where);
+    assert.equal(rollback[0][1].requested, dragged + 1, where);
+    assert.equal(rollback[0][1].skipped, dragged, where);
+    assert.equal(rollback[0][1].removed, 1, where);
+
+    // Only the window the ad's own audio reached goes; the one before it is
+    // the level the gate's population rests on.
+    const kept = u.gatedIntegratedLufs(windows.slice(0, -1));
+    const overRemoved = u.gatedIntegratedLufs(windows.slice(0, -2));
+    assert.ok(kept - overRemoved > 1, `${kept} vs ${overRemoved}`);
+    assertLufsClose(harness.messages.at(-1).integrated, kept);
+  }
 });
 
 test('page bridge extends a break when the next creative is cued', async () => {
