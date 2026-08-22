@@ -33,7 +33,7 @@ player's ad indicator in the DOM stands in.
                                                   (per 100 ms mean-square)
 ```
 
-The measurement path applies the BS.1770-4 K-weighting (high-shelf pre-filter + RLB high-pass) and accumulates mean-square in an AudioWorklet. The main thread aggregates 400 ms momentary and 3 s short-term LUFS. Integrated LUFS starts from the saved value for the current channel and media kind, weighing it by the number of gated windows it was measured over so the level a session ended on still holds while the new measurement fills in. A one-hour ring buffer and balanced energy index preserve the absolute and relative two-stage gate while updating each block in logarithmic time instead of rescanning the retained history.
+The measurement path applies the BS.1770-4 K-weighting (high-shelf pre-filter + RLB high-pass) and accumulates mean-square in an AudioWorklet. The main thread aggregates 400 ms momentary and 3 s short-term LUFS. Integrated LUFS starts from the saved value for the current channel and media kind, weighing it by the number of windows it stands on - at least thirty seconds and at most three minutes - so the level a session ended on still holds while the new measurement fills in. A one-hour ring buffer and balanced energy index preserve the absolute and relative two-stage gate while updating each block in logarithmic time instead of rescanning the retained history.
 
 ## Install
 
