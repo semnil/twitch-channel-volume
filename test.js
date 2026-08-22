@@ -1489,6 +1489,99 @@ test('content drops the stalled-measurement notice when the audio path goes', as
   assert.equal(state.measurementUnavailable, false);
 });
 
+test('content ignores measurements taken while the player audio is out of reach', async () => {
+  const harness = createContentHarness({ autoApply: true, autoGain: 0.8 });
+  await flushTasks();
+  await harness.dispatchMessage(ATTACH_FAILED);
+  harness.commands.length = 0;
+
+  // Whatever element the bridge reached, it is not the one the viewer hears.
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    momentary: -14,
+    shortTerm: -14,
+    integrated: -14
+  });
+  await flushTasks(8);
+
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.lufs.integrated, -Infinity);
+  assert.equal(harness.commands.some((command) => command.cmd === 'setGain'), false);
+  assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].lastLufs, undefined);
+});
+
+test('content restarts the measurement when the audio path comes back', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  await harness.dispatchMessage(ATTACH_FAILED);
+  harness.commands.length = 0;
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'attached',
+    measuring: true,
+    takenElsewhere: false
+  });
+  await flushTasks(8);
+  // The bridge's window still holds blocks from the element it fell back to.
+  assert.equal(harness.commands.filter((command) => command.cmd === 'resetMeasurement').length, 1);
+
+  harness.commands.length = 0;
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'attached',
+    measuring: true,
+    takenElsewhere: false
+  });
+  await flushTasks(8);
+  // Only the recovery restarts it; a repeated report is not a new attachment.
+  assert.equal(harness.commands.filter((command) => command.cmd === 'resetMeasurement').length, 0);
+});
+
+test('content refuses a measurement reset while the player audio is unavailable', async () => {
+  const harness = createContentHarness({
+    channelVolumes: {
+      'vod-owner:100': { name: '100', gainVod: 0.5, ...measured({ vod: -21 }) }
+    }
+  });
+  await flushTasks();
+  const { channel } = await harness.dispatchRuntime({ cmd: 'getState' });
+  await harness.dispatchMessage(ATTACH_FAILED);
+
+  const response = await harness.dispatchRuntime({
+    cmd: 'resetMeasurement',
+    channelId: channel.id,
+    kind: channel.kind
+  });
+  assert.equal(response.ok, false);
+  assert.equal(response.reason, 'audio unavailable');
+  // The saved level survives: nothing could rebuild it from here.
+  assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].lastLufs.vod, -21);
+});
+
+test('content passes on which failure the bridge reported', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+
+  await harness.dispatchMessage(ATTACH_FAILED);
+  assert.equal(
+    (await harness.dispatchRuntime({ cmd: 'getState' })).audioUnavailableCause,
+    'element-taken'
+  );
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'attach-failed',
+    cause: 'audio-context',
+    reason: 'audio context unavailable'
+  });
+  assert.equal(
+    (await harness.dispatchRuntime({ cmd: 'getState' })).audioUnavailableCause,
+    'audio-context'
+  );
+});
+
 test('content refuses gain and Auto writes while the player audio is unavailable', async () => {
   const harness = createContentHarness();
   await flushTasks();
@@ -3209,7 +3302,7 @@ test('popup declares the player audio notice with its localized text', () => {
   const ja = JSON.parse(fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json')));
   const en = JSON.parse(fs.readFileSync(path.join(__dirname, '_locales/en/messages.json')));
   for (const [locale, messages] of [['ja', ja], ['en', en]]) {
-    for (const key of ['audioUnavailable', 'measurementUnavailable']) {
+    for (const key of ['audioUnavailable', 'audioContextUnavailable', 'measurementUnavailable']) {
       assert.ok(messages[key]?.message, `${locale} declares ${key}`);
     }
   }
@@ -3285,6 +3378,21 @@ test('popup restores its controls when the bridge attaches', async () => {
   assert.equal(harness.el('resetMeasurementBtn').disabled, false);
   assert.equal(harness.el('applyBtn').disabled, false);
   assert.ok(!harness.el('current').className.includes('unknown'));
+});
+
+test('popup names the failure it was told about', async () => {
+  const harness = createPopupHarness({
+    state: { audioUnavailable: true, audioUnavailableCause: 'audio-context' }
+  });
+  await flushTasks(8);
+  assert.equal(
+    harness.el('audioError').textContent,
+    harness.message('audioContextUnavailable')
+  );
+
+  harness.setState({ audioUnavailableCause: 'element-taken' });
+  await harness.poll();
+  assert.equal(harness.el('audioError').textContent, harness.message('audioUnavailable'));
 });
 
 test('popup separates a stalled measurement from unreachable audio', async () => {
@@ -4062,7 +4170,9 @@ test('page bridge keeps retrying past a held element and reports it is still the
   const harness = createPageBridgeHarness({ mediaElementSourceTaken: true, extraFreeVideo: true });
   await harness.dispatchCommand('init', { workletUrl: 'chrome-extension://test/audio-worklet.js' });
   await harness.dispatchCommand('attach');
-  assert.equal(harness.messages.filter((message) => message.event === 'attach-failed').length, 1);
+  const failures = harness.messages.filter((message) => message.event === 'attach-failed');
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].cause, 'element-taken');
   assert.equal(harness.messages.some((message) => message.event === 'attached'), false);
 
   // The retry loop is still armed, so the next tick reaches the free element.
@@ -4120,6 +4230,8 @@ test('page bridge reports a context it could not create and builds a new one aft
   const failures = harness.messages.filter((message) => message.event === 'attach-failed');
   assert.equal(failures.length, 1);
   assert.equal(failures[0].reason, 'audio context unavailable');
+  // A context that would not start is not another script holding the element.
+  assert.equal(failures[0].cause, 'audio-context');
   // One report per state, not one per retry.
   await harness.runTimers();
   assert.equal(harness.messages.filter((message) => message.event === 'attach-failed').length, 1);

@@ -30,11 +30,13 @@ page-bridge.js (MAIN world content script, document_start)
 
 content.js (ISOLATED world content script, document_idle)
 ├── postMessage listener: page-bridge.js から LUFS / owner / CM 状態 / attach 結果を受信
-├── attach 結果の保持: attach-failed で audioUnavailable、attached は
-│   takenElsewhere (他が握る要素がまだページにある) と measuring (計測経路の有無) で
-│   audioUnavailable / measurementUnavailable を決める。bridge 再読込時は解除して
-│   attach を送り直す。audioUnavailable の間はゲインオーバーレイを外し、
-│   手動ゲイン・Auto 設定の mutation を拒否する
+├── attach 結果の保持: attach-failed で audioUnavailable と cause (element-taken /
+│   audio-context)、attached は takenElsewhere (他が握る要素がまだページにある) と
+│   measuring (計測経路の有無) で audioUnavailable / measurementUnavailable を決める。
+│   bridge 再読込時は解除して attach を送り直す
+├── audioUnavailable の間は lufs 通知を破棄し (別要素の計測値を保存・Auto 適用しない)、
+│   ゲインオーバーレイを外し、手動ゲイン・Auto 設定・測定値リセットの mutation を拒否する。
+│   解除された時点で計測を初期化する (bridge の窓に別要素のブロックが残っているため)
 ├── URL 分類 (classifyTwitchUrl): live / vod / clip / none
 ├── Channel resolution:
 │   ├── live: URL の login 名 (`login:<name>`) / GraphQL user.id 解決後は数値 ID
@@ -104,6 +106,7 @@ popup.html / popup.js
 ├── Auto 保存失敗時はローカライズ済みエラーを表示して最新状態を再取得
 ├── Auto 保存中は Apply / Manual 操作を無効化し、content 側でも手動 gain mutation を拒否
 ├── audioUnavailable / measurementUnavailable の間はチャンネル行の下に理由と対処を出す
+│   (文言は cause 別に 3 種: 要素を他に握られた / AudioContext を作れない / 計測経路のみ不可)
 │   (チャンネル未解決のページでは出さない)。audioUnavailable では Apply / Manual /
 │   Auto トグル / 測定値リセットを無効化し、3 カードを unknown 表示にする。
 │   ゲイン保存の失敗表示はこの通知より優先し、ヒント行は空にする
@@ -182,7 +185,8 @@ options.html / options.js
 - **保存済み値の基準**: 音量 1.0 基準で測った値だけが基準名を持つ。保存済み LUFS は `lastLufsRef`、保存済み Auto gain は `autoGainRef` と、それぞれ自分のフィールドの更新番号でマージされる (共用すると ID 統合で値と基準の組が入れ替わる)。基準の無い値 (拡張更新前の保存) は計測の初期サンプルに使わず、基準の無い Auto gain も起動時に適用しない。手動ゲインは視聴者自身の設定なので従来どおり適用する
 - **計測値が無い間の Suggested gain**: ゲート通過値が 1 つも無い間は `suggestedGain` が 1.0 を返し、ゲインを上げる提案をしない
 - **createMediaElementSource**: `<video>` に対し 1 回のみ呼び出し可能。他拡張 (FrankerFaceZ Compressor 等) が先に取ると失敗する。失敗した video は `WeakSet` で除外し、他の video にフォールバック。attach できなかった video では GainNode もプレイヤーの音声経路に入らないため、`attach-failed` を content.js が受けて popup に理由と対処を表示し、適用中ゲインの表示 (オーバーレイ) を取り下げる。フォールバック先へ attach できても、握られた要素がページに残る限り音量はその要素で鳴り続けるため、`attached` の `takenElsewhere` で通知を維持する
-- **AudioContext を作れない場合**: 生成が失敗した試行はキャッシュせず、次の attach で作り直す。失敗の通知は状態が変わったときだけ 1 回送る (リトライごとには送らない)
+- **AudioContext を作れない場合**: 生成が失敗した試行はキャッシュせず、次の attach で作り直す。失敗の通知は状態が変わったときだけ 1 回送る (リトライごとには送らない)。`cause: 'audio-context'` を付けて他拡張との競合と区別し、popup は再読み込みを促す別文言を出す
+- **音声経路が無い間の計測値**: `attach-failed` 後や `takenElsewhere` の間に届く lufs は、視聴者が聞いている要素のものではないため破棄する (保存も Auto 追従もしない)。復帰した時点で計測を初期化する — bridge のリングバッファには別要素のブロックが残っている
 - **計測経路だけ落ちた場合**: worklet の読込・接続に失敗しても GainNode は経路内にあるため、`attached` の `measuring: false` で計測のみ不可と伝え、音量調整が効く旨を含む別の文言を出す
 - **attach のリトライ**: video 要素は document_start 時点では存在しないため、`scheduleAttach()` で 1s 間隔のループ。`clearStaleAttachment()` が DOM から消えた video を検出して再 attach を許可 (Twitch SPA で video が入れ替わるケース対応)。SPA navigation 時にも content.js が `attach` を再送
 - **measurement chain の接続点**: `attach()` は `ensureContext()` を await し、その await が `audioWorklet.addModule()` の解決まで含むため、attach 時点で worklet の可否は確定している。読込に失敗した attach は `measuring: false` を報告し、以降その attachment に計測経路は付かない

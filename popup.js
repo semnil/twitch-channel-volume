@@ -11,6 +11,7 @@
   let currentChannel = { id: '', kind: 'none' };
   let currentAutoApplyLoudness = false;
   let audioUnavailable = false;
+  let audioUnavailableCause = '';
   let measurementUnavailable = false;
   let autoUpdatePending = false;
   let measurementResetPending = false;
@@ -34,6 +35,15 @@
     document.querySelectorAll('.presets button').forEach((btn) => {
       btn.disabled = manualDisabled;
     });
+  }
+
+  // Each failure has its own remedy: another script holding the element, an
+  // audio context that would not start, a measurement path that never came up.
+  function noticeKey() {
+    if (!audioUnavailable) return 'measurementUnavailable';
+    return audioUnavailableCause === 'audio-context'
+      ? 'audioContextUnavailable'
+      : 'audioUnavailable';
   }
 
   // The gain reaches the player only while the bridge holds its audio.
@@ -130,15 +140,13 @@
     currentChannel = ch;
     currentAutoApplyLoudness = !!state.autoApplyLoudness;
     audioUnavailable = !!state.audioUnavailable;
+    audioUnavailableCause = state.audioUnavailableCause || '';
     measurementUnavailable = !audioUnavailable && !!state.measurementUnavailable;
     // Both notices name the player of a channel, so neither is shown on a page
     // where no channel was resolved.
     const notice = ch.id && (audioUnavailable || measurementUnavailable);
     $('audioError').classList.toggle('hidden', !notice);
-    if (notice) {
-      $('audioError').textContent =
-        msg(audioUnavailable ? 'audioUnavailable' : 'measurementUnavailable');
-    }
+    if (notice) $('audioError').textContent = msg(noticeKey());
     const nameEl = $('channelName');
     if (ch.name) {
       nameEl.textContent = ch.name;

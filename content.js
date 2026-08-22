@@ -27,6 +27,7 @@
   let adActive = false;
   let requestedAdActive = false;
   let audioUnavailable = false;
+  let audioUnavailableCause = '';
   let measurementUnavailable = false;
   let preferenceRevision = 0;
   let channelMutationQueue = Promise.resolve();
@@ -418,6 +419,7 @@
         // startup IIFE handles init/attach unconditionally; this case only
         // matters for hot-reloads where the bridge restarts mid-session.
         audioUnavailable = false;
+        audioUnavailableCause = '';
         measurementUnavailable = false;
         injectWorklet();
         resetMeasurementForCurrentChannel();
@@ -428,23 +430,33 @@
       case 'init-done':
         initResolve && initResolve();
         break;
-      case 'attached':
+      case 'attached': {
         // Attaching to a different element leaves the held one playing
         // untouched, so the bridge reports whether one is still on the page.
+        const recovered = audioUnavailable && !data.takenElsewhere;
         audioUnavailable = !!data.takenElsewhere;
+        audioUnavailableCause = audioUnavailable ? 'element-taken' : '';
         measurementUnavailable = !audioUnavailable && data.measuring === false;
+        // The blocks measured until now came from an element the player was
+        // not using, and they stay in the bridge's window.
+        if (recovered) resetMeasurementForCurrentChannel();
         updateGainOverlay();
         break;
+      }
       case 'attach-failed':
         // The gain node reaches the player only through the media element
         // source, so a failed attach stops gain and measurement alike.
         audioUnavailable = true;
+        audioUnavailableCause = data.cause === 'audio-context' ? 'audio-context' : 'element-taken';
         measurementUnavailable = false;
-        console.warn('[TCV] player audio unavailable', data.reason);
+        console.warn('[TCV] player audio unavailable', data.cause, data.reason);
         updateGainOverlay();
         break;
       case 'lufs':
         if (measurementResetPending) break;
+        // A measurement taken while the player's audio is out of reach belongs
+        // to some other element; saving it would overwrite the channel's level.
+        if (audioUnavailable) break;
         if (Number.isFinite(data.epoch) && data.epoch < measurementEpoch) break;
         lastLufs = {
           momentary: Number.isFinite(data.momentary) ? data.momentary : -Infinity,
@@ -592,6 +604,7 @@
           gain: currentGain,
           adActive,
           audioUnavailable,
+          audioUnavailableCause,
           measurementUnavailable,
           targetLufs,
           adGainDb: currentAdGainDb,
@@ -709,6 +722,11 @@
         const kind = ['live', 'vod', 'clip'].includes(req.kind) ? req.kind : '';
         if (!currentChannel.id || req.channelId !== currentChannel.id || kind !== currentChannel.kind) {
           sendResponse({ ok: false, reason: 'channel mismatch' });
+          return;
+        }
+        if (audioUnavailable) {
+          // Deleting the saved level here leaves nothing able to rebuild it.
+          sendResponse({ ok: false, reason: 'audio unavailable' });
           return;
         }
         if (measurementResetPending) {

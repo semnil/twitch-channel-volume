@@ -505,7 +505,11 @@
     if (!c) {
       if (!contextFailureReported) {
         contextFailureReported = true;
-        postReady({ event: 'attach-failed', reason: 'audio context unavailable' });
+        postReady({
+          event: 'attach-failed',
+          cause: 'audio-context',
+          reason: 'audio context unavailable'
+        });
       }
       return;
     }
@@ -516,7 +520,11 @@
       attachFailedFor.add(video);
       takenVideos.push(video);
       console.warn('[TCV] createMediaElementSource failed (possibly already attached by another extension)', err);
-      postReady({ event: 'attach-failed', reason: String(err?.message || err) });
+      postReady({
+        event: 'attach-failed',
+        cause: 'element-taken',
+        reason: String(err?.message || err)
+      });
       return;
     }
     sourceNode.connect(gain);

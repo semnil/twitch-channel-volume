@@ -32,6 +32,9 @@
   "audioUnavailable": {
     "message": "This player's audio is unavailable, so volume control and measurement do not run. Disable other extensions that use the same audio, then reload the page."
   },
+  "audioContextUnavailable": {
+    "message": "Audio processing could not start on this page, so volume control and measurement do not run. Reload the page."
+  },
   "measurementUnavailable": {
     "message": "Loudness measurement cannot start. Volume control still works. Reload the page."
   },
