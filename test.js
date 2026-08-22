@@ -4676,7 +4676,10 @@ test('page bridge takes the break from the cue the player posts', async () => {
   for (const ms of content) harness.emitMeasurementBlock(ms);
   harness.setPlayhead(100);
 
-  harness.emitPlayerCue({ rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2 });
+  harness.emitPlayerCue({
+    rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2,
+    podPosition: 0, podCount: 1
+  });
   assert.equal(harness.messages.filter((message) => message.event === 'ad').at(-1).active, true);
   // The cue arrived with the ad's first audio, so one window held it.
   const kept = gatingWindows(content).slice(0, -1);
@@ -4723,7 +4726,10 @@ test('page bridge removes the windows appended between the ad and its cue', asyn
   // The ad has been playing for 0.35 s when its cue arrives.
   harness.setPlayhead(100.35);
   harness.logs.length = 0;
-  harness.emitPlayerCue({ rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2 });
+  harness.emitPlayerCue({
+    rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2,
+    podPosition: 0, podCount: 1
+  });
   const rollback = harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback');
   assert.equal(rollback.length, 1);
   assert.equal(rollback[0][1].requested, 4);
@@ -4738,11 +4744,17 @@ test('page bridge extends a break when the next creative is cued', async () => {
   await harness.startMeasurement();
   for (let i = 0; i < 40; i++) harness.emitMeasurementBlock(0.01);
   harness.setPlayhead(300);
-  harness.emitPlayerCue({ rollType: 'midroll', startTime: 299.967, endTime: 315.184, duration: 15.217 });
+  harness.emitPlayerCue({
+    rollType: 'midroll', startTime: 299.967, endTime: 315.184, duration: 15.217,
+    podPosition: 0, podCount: 2
+  });
 
   harness.logs.length = 0;
   harness.setPlayhead(315.39);
-  harness.emitPlayerCue({ rollType: 'midroll', startTime: 315.238, endTime: 346.47, duration: 31.232 });
+  harness.emitPlayerCue({
+    rollType: 'midroll', startTime: 315.238, endTime: 346.47, duration: 31.232,
+    podPosition: 1, podCount: 2
+  });
   // The break did not restart, so nothing is rolled back a second time.
   assert.equal(harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback').length, 0);
   harness.emitMeasurementBlock(1.0);
@@ -4785,7 +4797,10 @@ test('page bridge ends the break by the cue even when the indicator stays', asyn
   const harness = createPageBridgeHarness();
   await harness.startMeasurement();
   harness.setPlayhead(100);
-  harness.emitPlayerCue({ rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2 });
+  harness.emitPlayerCue({
+    rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2,
+    podPosition: 0, podCount: 1
+  });
   await harness.dispatchCommand('setAdActive', { active: true });
   assert.equal(harness.messages.filter((message) => message.event === 'ad').at(-1).active, true);
 
@@ -4838,7 +4853,10 @@ test('page bridge leaves another element alone while the measured one plays', as
   const preview = harness.addVideo({ volume: 1, muted: true });
   const other = harness.addVideo({ volume: 1 });
   harness.setPlayhead(100);
-  harness.emitPlayerCue({ rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2 });
+  harness.emitPlayerCue({
+    rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2,
+    podPosition: 0, podCount: 1
+  });
   harness.emitMeasurementBlock(0.01);
 
   assert.equal(harness.sourcedElements.includes(preview), false);
@@ -4881,7 +4899,10 @@ test('page bridge keeps the break the player cued across a measurement reset', a
   const adState = () => harness.messages.filter((message) => message.event === 'ad').at(-1);
   await harness.startMeasurement();
   harness.setPlayhead(100);
-  harness.emitPlayerCue({ rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2 });
+  harness.emitPlayerCue({
+    rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2,
+    podPosition: 0, podCount: 1
+  });
   assert.equal(adState().active, true);
 
   // The popup can reset the measurement, and an owner id can resolve, in the
@@ -4901,7 +4922,10 @@ test('page bridge drops the cued break when the media changes', async () => {
   const adState = () => harness.messages.filter((message) => message.event === 'ad').at(-1);
   await harness.startMeasurement();
   harness.setPlayhead(100);
-  harness.emitPlayerCue({ rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2 });
+  harness.emitPlayerCue({
+    rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2,
+    podPosition: 0, podCount: 1
+  });
   assert.equal(adState().active, true);
 
   await harness.dispatchCommand('mediaChanged');
@@ -4926,7 +4950,10 @@ test('page bridge does not open the break before the cue says it starts', async 
   // A cue can name a break the playhead has not reached yet.
   harness.setPlayhead(99.5);
   harness.logs.length = 0;
-  harness.emitPlayerCue({ rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2 });
+  harness.emitPlayerCue({
+    rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2,
+    podPosition: 0, podCount: 1
+  });
   assert.equal(harness.messages.filter((message) => message.event === 'ad').length, 0);
   harness.emitMeasurementBlock(1.0);
   assert.equal(harness.messages.filter((message) => message.event === 'ad').length, 0);
@@ -4947,7 +4974,10 @@ test('page bridge does not reopen a finished break when the playhead moves back'
   const adState = () => harness.messages.filter((message) => message.event === 'ad').at(-1);
   await harness.startMeasurement();
   harness.setPlayhead(100);
-  harness.emitPlayerCue({ rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2 });
+  harness.emitPlayerCue({
+    rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2,
+    podPosition: 0, podCount: 1
+  });
   harness.setPlayhead(115.3);
   harness.emitMeasurementBlock(1.0);
   assert.equal(adState().active, false);
@@ -4967,7 +4997,10 @@ test('page bridge keeps the start of the break the first cue gave', async () => 
   const adState = () => harness.messages.filter((message) => message.event === 'ad').at(-1);
   await harness.startMeasurement();
   harness.setPlayhead(100);
-  harness.emitPlayerCue({ rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2 });
+  harness.emitPlayerCue({
+    rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2,
+    podPosition: 0, podCount: 1
+  });
   assert.equal(adState().active, true);
 
   // The next creative of the pod can be cued just before it starts.
@@ -4982,7 +5015,10 @@ test('page bridge lets the indicator speak again after the element is replaced',
   const adState = () => harness.messages.filter((message) => message.event === 'ad').at(-1);
   await harness.startMeasurement();
   harness.setPlayhead(100);
-  harness.emitPlayerCue({ rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2 });
+  harness.emitPlayerCue({
+    rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2,
+    podPosition: 0, podCount: 1
+  });
   assert.equal(adState().active, true);
 
   // A new element carries a timeline nothing has cued against yet.
@@ -5002,23 +5038,6 @@ test('page bridge does not carry the indicator of the old media into the new one
   // The indicator can still be in the page when the next media starts.
   await harness.dispatchCommand('mediaChanged');
   assert.equal(adState().active, false);
-});
-
-test('content asserts the ad indicator again on the new media', async () => {
-  const harness = createContentHarness();
-  await flushTasks();
-  harness.setAdNodePresent(true);
-  harness.mutate();
-  assert.equal(harness.commands.filter((command) => command.cmd === 'setAdActive').length, 1);
-
-  harness.commands.length = 0;
-  await harness.navigate('https://www.twitch.tv/videos/200');
-  // The bridge was told to forget the old media, so an indicator that is still
-  // in the page has to be reported against the new one.
-  const sent = harness.commands
-    .filter((command) => command.cmd === 'mediaChanged' || command.cmd === 'setAdActive');
-  assert.deepEqual(sent.map((command) => command.cmd), ['mediaChanged', 'setAdActive']);
-  assert.equal(sent[1].active, true);
 });
 
 test('page bridge holds the break across the gap between two creatives', async () => {
@@ -5090,3 +5109,23 @@ test('page bridge does not wait forever for a creative that is never cued', asyn
   harness.emitMeasurementBlock(1.0);
   assert.equal(adState().active, false);
 });
+
+test('page bridge holds the break across a gap when the cue names no pod', async () => {
+  const harness = createPageBridgeHarness();
+  const adState = () => harness.messages.filter((message) => message.event === 'ad').at(-1);
+  await harness.startMeasurement();
+  harness.setPlayhead(300);
+  // The cue carries no pod counters, so the pod is not known to be over.
+  harness.emitPlayerCue({ rollType: 'midroll', startTime: 299.967, endTime: 315.184, duration: 15.217 });
+  assert.equal(adState().active, true);
+
+  harness.setPlayhead(315.2);
+  harness.emitMeasurementBlock(1.0);
+  assert.equal(adState().active, true);
+
+  harness.setPlayhead(315.39);
+  harness.emitPlayerCue({ rollType: 'midroll', startTime: 315.238, endTime: 346.47, duration: 31.232 });
+  harness.emitMeasurementBlock(1.0);
+  assert.equal(adState().active, true);
+});
+

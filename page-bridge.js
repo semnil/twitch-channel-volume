@@ -774,9 +774,11 @@
     // belongs to the element being measured is the one holding its playhead.
     if (position < startTime - AD_CUE_LEAD_SEC || position >= endTime) return;
     adCueSeen = true;
-    adPodPending = Number.isFinite(cue.podPosition)
+    // Only a cue that says it is the last of its pod closes it; anything else
+    // leaves the break open for a creative that may still be cued.
+    adPodPending = !(Number.isFinite(cue.podPosition)
       && Number.isFinite(cue.podCount)
-      && cue.podPosition < cue.podCount - 1;
+      && cue.podPosition >= cue.podCount - 1);
     if (endTime <= adBreakEndMedia) return;
     // The start belongs to the cue that opened the break; the ones that follow
     // it in the same pod only push the end out.
