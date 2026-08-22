@@ -217,7 +217,7 @@ function mergeProvisionalEntry(all, mutation) {
   for (const mergeKind of CHANNEL_MUTATION_KINDS) {
     copyNewerField(merged, mergedVersions, source, target, storeGainFieldForKind(mergeKind));
     copyNewerField(merged, mergedVersions, source, target, storeAutoFieldForKind(mergeKind));
-    copyNewerField(merged, mergedVersions, source, target, storeAutoGainFieldForKind(mergeKind));
+    copyNewerAutoGain(merged, mergedAutoRef, mergedVersions, source, target, mergeKind);
   }
   if (Object.keys(mergedAutoRef).length) merged.autoGainRef = mergedAutoRef;
   else delete merged.autoGainRef;
@@ -332,6 +332,7 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
         }
         entry[storeAutoGainFieldForKind(mutation.kind)] = mutation.autoGain;
         setFieldVersion(entry, storeAutoGainFieldForKind(mutation.kind), mutation.sequence);
+        applyMeasurementReference(entry, mutation, 'autoGainRef');
       }
       all[mutation.channelId] = entry;
       break;

@@ -1093,6 +1093,8 @@ test('channel store rejects a reference it cannot store', async () => {
 });
 
 test('channel store merges an Auto gain and its reference together', async () => {
+  // A login row normalizes into the numeric one on the next write, so this uses
+  // a VOD provisional id to reach the merge itself.
   const merge = async (seed, writes) => {
     let stored = { channelVolumes: structuredClone(seed) };
     const storage = {
@@ -1102,59 +1104,70 @@ test('channel store merges an Auto gain and its reference together', async () =>
     const write = channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 100);
     for (const mutation of writes) await write(mutation);
     await write({
-      operation: 'mergeChannelIds', fromId: 'login:x', toId: '777', kind: 'live',
-      channel: { name: 'X', login: 'x' }
+      operation: 'mergeChannelIds', fromId: 'vod-owner:100', toId: '777', kind: 'vod',
+      channel: { name: 'X' }
     });
     return stored.channelVolumes['777'];
   };
+  const seed = { 777: { name: 'X' }, 'vod-owner:100': { name: 'X' } };
 
   // A measurement written on the other row cannot vouch for a gain that was
   // saved before references existed.
   const borrowed = await merge(
-    { 777: { name: 'X', autoGainLive: 1.5 }, 'login:x': { name: 'X' } },
+    { 777: { name: 'X', autoGainVod: 1.5 }, 'vod-owner:100': { name: 'X' } },
     [{
-      operation: 'saveMeasurement', channelId: 'login:x', kind: 'live', lufs: -18,
+      operation: 'saveMeasurement', channelId: 'vod-owner:100', kind: 'vod', lufs: -18,
       reference: u.LUFS_REFERENCE_VOLUME_1
     }]
   );
-  assert.equal(borrowed.autoGainLive, 1.5);
+  assert.equal(borrowed.autoGainVod, 1.5);
   assert.equal(borrowed.autoGainRef, undefined);
-  assert.equal(u.resolvePreferredGain(borrowed, 'live', true, -Infinity, -18).gain, 1.0);
+  assert.equal(u.resolvePreferredGain(borrowed, 'vod', true, -Infinity, -18).gain, 1.0);
 
   // Nor can an unreferenced measurement strip a gain that has its own.
-  const kept = await merge(
-    { 777: { name: 'X' }, 'login:x': { name: 'X' } },
-    [
-      {
-        operation: 'saveMeasurement', channelId: '777', kind: 'live', lufs: -20,
-        reference: u.LUFS_REFERENCE_VOLUME_1
-      },
-      {
-        operation: 'saveAutoGain', channelId: '777', kind: 'live', autoGain: 2.5,
-        reference: u.LUFS_REFERENCE_VOLUME_1
-      },
-      { operation: 'saveMeasurement', channelId: 'login:x', kind: 'live', lufs: -21 }
-    ]
-  );
-  assert.equal(kept.autoGainLive, 2.5);
-  assert.equal(kept.autoGainRef.live, u.LUFS_REFERENCE_VOLUME_1);
-  assert.equal(u.resolvePreferredGain(kept, 'live', true, -Infinity, -18).gain, 2.5);
+  const kept = await merge(seed, [
+    {
+      operation: 'saveAutoGain', channelId: '777', kind: 'vod', autoGain: 2.5,
+      reference: u.LUFS_REFERENCE_VOLUME_1
+    },
+    { operation: 'saveMeasurement', channelId: 'vod-owner:100', kind: 'vod', lufs: -21 }
+  ]);
+  assert.equal(kept.autoGainVod, 2.5);
+  assert.equal(kept.autoGainRef.vod, u.LUFS_REFERENCE_VOLUME_1);
+  assert.equal(u.resolvePreferredGain(kept, 'vod', true, -Infinity, -18).gain, 2.5);
 
   // When the newer gain is the unreferenced one, the reference goes with the
   // value it described rather than staying on the row.
-  const replaced = await merge(
-    { 777: { name: 'X' }, 'login:x': { name: 'X' } },
-    [
-      {
-        operation: 'saveAutoGain', channelId: '777', kind: 'live', autoGain: 2.5,
-        reference: u.LUFS_REFERENCE_VOLUME_1
-      },
-      { operation: 'saveAutoGain', channelId: 'login:x', kind: 'live', autoGain: 1.5 }
-    ]
-  );
-  assert.equal(replaced.autoGainLive, 1.5);
+  const replaced = await merge(seed, [
+    {
+      operation: 'saveAutoGain', channelId: '777', kind: 'vod', autoGain: 2.5,
+      reference: u.LUFS_REFERENCE_VOLUME_1
+    },
+    { operation: 'saveAutoGain', channelId: 'vod-owner:100', kind: 'vod', autoGain: 1.5 }
+  ]);
+  assert.equal(replaced.autoGainVod, 1.5);
   assert.equal(replaced.autoGainRef, undefined);
-  assert.equal(u.resolvePreferredGain(replaced, 'live', true, -Infinity, -18).gain, 1.0);
+  assert.equal(u.resolvePreferredGain(replaced, 'vod', true, -Infinity, -18).gain, 1.0);
+});
+
+test('channel store references an Auto gain saved with its measurement', async () => {
+  for (const kind of ['live', 'vod', 'clip']) {
+    let stored = { channelVolumes: {} };
+    const storage = {
+      async get(keys) { return readStoredKeys(stored, keys); },
+      async set(update) { stored = { ...stored, ...structuredClone(update) }; }
+    };
+    const write = channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 100);
+    // Auto writes the gain alongside the measurement that produced it.
+    await write({
+      operation: 'saveMeasurement', channelId: 'login:test', kind, lufs: -23, autoGain: 1.778,
+      reference: u.LUFS_REFERENCE_VOLUME_1
+    });
+    const entry = stored.channelVolumes['login:test'];
+    assert.equal(entry.lastLufsRef[kind], u.LUFS_REFERENCE_VOLUME_1);
+    assert.equal(entry.autoGainRef[kind], u.LUFS_REFERENCE_VOLUME_1);
+    assert.equal(u.resolvePreferredGain(entry, kind, true, -Infinity, -18).gain, 1.778);
+  }
 });
 
 test('channel store carries the reference onto the surviving row either way', async () => {
