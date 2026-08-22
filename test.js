@@ -1040,39 +1040,61 @@ test('resolvePreferredGain ignores an Auto gain measured at an unknown volume', 
 });
 
 // A message is read at a call site, not wherever its characters appear. The
-// sources are tokenized so that a string, a template chunk or a regex holding
-// `msg('key')` stays what it is: text.
+// scanners below take keys from token and attribute positions, and refuse to
+// guess: a construct they cannot classify fails the test that uses them.
+
+// `/` starts a regular expression after these, and divides after a value.
+// `this`, `true`, `false`, `null` and `super` are values, so they are not here.
 const REGEX_MAY_FOLLOW = new Set([
-  'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void',
-  'case', 'do', 'else', 'yield', 'await'
+  'await', 'break', 'case', 'catch', 'class', 'const', 'continue', 'debugger',
+  'default', 'delete', 'do', 'else', 'enum', 'export', 'extends', 'finally',
+  'for', 'function', 'if', 'implements', 'import', 'in', 'instanceof',
+  'interface', 'let', 'new', 'package', 'private', 'protected', 'public',
+  'return', 'static', 'switch', 'throw', 'try', 'typeof', 'var', 'void',
+  'while', 'with', 'yield'
 ]);
+const CONTROL_HEADS = new Set(['if', 'for', 'while', 'switch', 'catch', 'with']);
 
 function jsTokens(source) {
   const tokens = [];
   const nameChar = (character) => /[A-Za-z0-9_$]/.test(character);
   let previous = null;
-  const push = (token) => { tokens.push(token); previous = token; };
-  // Depth of the enclosing braces for each template whose interpolation is open.
+  const push = (token) => { tokens.push(token); previous = token; return token; };
   const templates = [];
+  const parens = [];
   let depth = 0;
   let i = 0;
 
-  // Reads to the end of a template chunk: either the template closes, or an
-  // interpolation opens and the expression inside it is tokenized as code.
   const readTemplateChunk = () => {
     let value = '';
     while (i < source.length) {
       const character = source[i];
       if (character === '\\') { value += source[i + 1] || ''; i += 2; continue; }
-      if (character === '`') { i++; push({ type: 'string', value }); templates.pop(); return; }
+      if (character === '`') { i++; push({ type: 'string', quoted: false, value }); templates.pop(); return; }
       if (character === '$' && source[i + 1] === '{') {
         i += 2;
-        push({ type: 'string', value });
+        push({ type: 'string', quoted: false, value });
         return;
       }
       value += source[i];
       i++;
     }
+  };
+
+  // Everything a `/` can follow, decided rather than guessed. A `}` leaves it
+  // open — block or object literal — so it is reported instead of assumed.
+  const slashStarts = () => {
+    if (!previous) return 'regex';
+    if (previous.type === 'punct') {
+      if (previous.value === ')') return previous.controlHead ? 'regex' : 'division';
+      if (previous.value === ']') return 'division';
+      if (previous.value === '}') return 'unclassified';
+      return 'regex';
+    }
+    if (previous.type === 'name') {
+      return REGEX_MAY_FOLLOW.has(previous.value) ? 'regex' : 'division';
+    }
+    return 'division';
   };
 
   while (i < source.length) {
@@ -1111,21 +1133,26 @@ function jsTokens(source) {
         i++;
       }
       i++;
-      push({ type: 'string', value });
+      push({ type: 'string', quoted: true, value });
       continue;
     }
-    if (character === '/' && (
-      !previous ||
-      (previous.type === 'punct' && !')]'.includes(previous.value)) ||
-      (previous.type === 'name' && REGEX_MAY_FOLLOW.has(previous.value))
-    )) {
+    if (character === '/') {
+      const role = slashStarts();
+      if (role === 'unclassified') {
+        push({ type: 'unclassified', value: '/' });
+        i++;
+        continue;
+      }
+      if (role === 'division') {
+        push({ type: 'punct', value: '/' });
+        i++;
+        continue;
+      }
       i++;
       while (i < source.length && source[i] !== '/') {
         if (source[i] === '\\') { i += 2; continue; }
         if (source[i] === '[') {
-          while (i < source.length && source[i] !== ']') {
-            i += source[i] === '\\' ? 2 : 1;
-          }
+          while (i < source.length && source[i] !== ']') i += source[i] === '\\' ? 2 : 1;
         }
         i++;
       }
@@ -1140,6 +1167,18 @@ function jsTokens(source) {
       push({ type: 'name', value });
       continue;
     }
+    if (character === '(') {
+      const controlHead = !!previous && previous.type === 'name' && CONTROL_HEADS.has(previous.value);
+      parens.push(controlHead);
+      push({ type: 'punct', value: '(' });
+      i++;
+      continue;
+    }
+    if (character === ')') {
+      push({ type: 'punct', value: ')', controlHead: parens.pop() === true });
+      i++;
+      continue;
+    }
     if (character === '{') depth++;
     if (character === '}') depth--;
     push({ type: 'punct', value: character });
@@ -1148,30 +1187,80 @@ function jsTokens(source) {
   return tokens;
 }
 
-// `msg` `(` '<key>' — the key has to be a literal, so a key assembled at
-// runtime reads as unread here rather than passing unchecked.
+// A call site is `msg` `(` '<key>' and then the end of that argument. Anything
+// else built onto the key — a template chunk, a concatenation — is not a key
+// this scan can name, and shows up in msgCallsNeedingReview instead.
 function messageKeysInJs(source) {
   const tokens = jsTokens(source);
   const found = new Set();
-  for (let i = 0; i + 2 < tokens.length; i++) {
-    if (tokens[i].type === 'name' && tokens[i].value === 'msg' &&
-        tokens[i + 1].type === 'punct' && tokens[i + 1].value === '(' &&
-        tokens[i + 2].type === 'string') {
-      found.add(tokens[i + 2].value);
-    }
+  for (const site of msgCallSites(tokens)) {
+    if (site.key !== null) found.add(site.key);
   }
   return found;
 }
 
-// Markup only: comments, stylesheets and inline scripts are not where an
-// attribute lives, and a CSS `content` string can spell one out.
+function msgCallSites(tokens) {
+  const sites = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token.type !== 'name' || token.value !== 'msg') continue;
+    const declaration = i > 0 && tokens[i - 1].type === 'name' && tokens[i - 1].value === 'function';
+    if (declaration) continue;
+    const open = tokens[i + 1];
+    if (!open || open.type !== 'punct' || open.value !== '(') continue;
+    const argument = tokens[i + 2];
+    const after = tokens[i + 3];
+    const literal = argument && argument.type === 'string' && argument.quoted &&
+      after && after.type === 'punct' && (after.value === ',' || after.value === ')');
+    sites.push({ key: literal ? argument.value : null });
+  }
+  return sites;
+}
+
+function msgCallsNeedingReview(source) {
+  return msgCallSites(jsTokens(source)).filter((site) => site.key === null).length;
+}
+
+function unclassifiedTokens(source) {
+  return jsTokens(source).filter((token) => token.type === 'unclassified').length;
+}
+
+// Attribute positions in start tags. A value that spells out an attribute is a
+// value: quotes are tracked so the tag ends where the markup says it does.
+function htmlStartTags(markup) {
+  const tags = [];
+  for (let i = 0; i < markup.length; i++) {
+    if (markup[i] !== '<' || !/[a-zA-Z]/.test(markup[i + 1] || '')) continue;
+    let quote = '';
+    let j = i + 1;
+    for (; j < markup.length; j++) {
+      const character = markup[j];
+      if (quote) {
+        if (character === quote) quote = '';
+      } else if (character === '"' || character === "'") {
+        quote = character;
+      } else if (character === '>') {
+        break;
+      }
+    }
+    tags.push(markup.slice(i, j));
+    i = j;
+  }
+  return tags;
+}
+
 function messageKeysInHtml(source) {
   const markup = source
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/<style[\s\S]*?<\/style>/gi, '')
     .replace(/<script[\s\S]*?<\/script>/gi, '');
   const found = new Set();
-  for (const match of markup.matchAll(/\sdata-i18n="([A-Za-z0-9_]+)"/g)) found.add(match[1]);
+  for (const tag of htmlStartTags(markup)) {
+    for (const attribute of tag.matchAll(/([a-zA-Z][\w-]*)\s*=\s*("([^"]*)"|'([^']*)')/g)) {
+      if (attribute[1] !== 'data-i18n') continue;
+      found.add(attribute[3] !== undefined ? attribute[3] : attribute[4]);
+    }
+  }
   return found;
 }
 
@@ -1196,27 +1285,50 @@ function messageKeysIn(name, source) {
   return messageKeysInJs(source);
 }
 
+const LOCALIZED_SOURCES = [
+  'manifest.json', 'popup.html', 'popup.js', 'options.html', 'options.js',
+  'content.js', 'utils.js', 'background.js', 'page-bridge.js',
+  'channel-store.js', 'settings-store.js'
+];
+
 test('the message-key scan reads call sites, not text that looks like one', () => {
   const js = [
     "const live = msg('typeLive');",
     "const inTemplate = `${esc(msg('typeVod'))}`;",
+    "const withArgs = msg('applyToChannelWithValue', [gain]);",
     "// const commented = msg('orphanLine');",
     "/* msg('orphanBlock') */",
     "const text = \"msg('orphanString')\";",
     "const quasi = `msg('orphanQuasi')`;",
     "const pattern = /msg\\('orphanRegex'\\)/;",
-    "const url = 'https://www.twitch.tv/settings'; // msg('orphanTail')",
-    "const computed = msg(['type', 'Clip'].join(''));"
+    "function f(x) { throw /msg('orphanThrow')/.test(x); }",
+    "const url = 'https://www.twitch.tv/settings'; // msg('orphanTail')"
   ].join('\n');
-  assert.deepEqual([...messageKeysInJs(js)].sort(), ['typeLive', 'typeVod']);
-  // The tokenizer has to keep reading past a regex that follows a keyword.
   assert.deepEqual(
-    [...messageKeysInJs("function f(x) { return /^a$/.test(x) ? msg('typeLive') : ''; }")],
-    ['typeLive']
+    [...messageKeysInJs(js)].sort(),
+    ['applyToChannelWithValue', 'typeLive', 'typeVod']
   );
+
+  // Keys built at runtime are not keys this scan can name, and it says so
+  // rather than taking the leading string for the whole argument.
+  for (const call of [
+    "msg(`openOnTwitch${suffix}`)",
+    "msg('openOnTwitch' + suffix)",
+    "msg(key)",
+    "msg(['type', 'Clip'].join(''))"
+  ]) {
+    assert.deepEqual([...messageKeysInJs(call)], [], call);
+    assert.equal(msgCallsNeedingReview(call), 1, call);
+  }
+  assert.equal(msgCallsNeedingReview("const live = msg('typeLive');"), 0);
+  // Division after a value, a regex after a keyword or a control head.
+  assert.equal(unclassifiedTokens('const a = (b - c) / d;'), 0);
+  assert.deepEqual([...messageKeysInJs("if (a) /x/.test(b); const t = msg('typeLive');")], ['typeLive']);
 
   const html = [
     '<h2 data-i18n="settings">Settings</h2>',
+    '<h2 title=\'x data-i18n="orphanAttr"\'>Settings</h2>',
+    '<p>data-i18n="orphanText"</p>',
     '<!-- <h2 data-i18n="orphanHtml">Old</h2> -->',
     '<style>.x::after { content: "data-i18n=\\"orphanCss\\""; }</style>',
     '<script>const s = \'data-i18n="orphanScript"\';</script>'
@@ -1229,17 +1341,25 @@ test('the message-key scan reads call sites, not text that looks like one', () =
   );
 });
 
+test('the sources hold no msg call this scan cannot classify', () => {
+  const needingReview = [];
+  for (const name of LOCALIZED_SOURCES.filter((file) => file.endsWith('.js'))) {
+    const source = fs.readFileSync(path.join(__dirname, name), 'utf8');
+    assert.equal(unclassifiedTokens(source), 0, `${name} holds a token the scan cannot classify`);
+    for (let i = 0; i < msgCallsNeedingReview(source); i++) needingReview.push(name);
+  }
+  // applyI18n passes the key it read from a data-i18n attribute, which the
+  // markup scan already counts. Any other runtime key has to land here first.
+  assert.deepEqual(needingReview, ['popup.js', 'options.js']);
+});
+
 test('every message key is read somewhere and both locales carry it', () => {
   const ja = JSON.parse(fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json'), 'utf8'));
   const en = JSON.parse(fs.readFileSync(path.join(__dirname, '_locales/en/messages.json'), 'utf8'));
   assert.deepEqual(Object.keys(ja).sort(), Object.keys(en).sort());
 
   const referenced = new Set();
-  for (const name of [
-    'manifest.json', 'popup.html', 'popup.js', 'options.html', 'options.js',
-    'content.js', 'utils.js', 'background.js', 'page-bridge.js',
-    'channel-store.js', 'settings-store.js'
-  ]) {
+  for (const name of LOCALIZED_SOURCES) {
     const source = fs.readFileSync(path.join(__dirname, name), 'utf8');
     for (const key of messageKeysIn(name, source)) referenced.add(key);
   }
