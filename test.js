@@ -1039,6 +1039,27 @@ test('resolvePreferredGain ignores an Auto gain measured at an unknown volume', 
   assert.equal(u.resolvePreferredGain(manual, 'live', false, -Infinity, -18).gain, 2.0);
 });
 
+test('every message key is read somewhere and both locales carry it', () => {
+  const ja = JSON.parse(fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json'), 'utf8'));
+  const en = JSON.parse(fs.readFileSync(path.join(__dirname, '_locales/en/messages.json'), 'utf8'));
+  assert.deepEqual(Object.keys(ja).sort(), Object.keys(en).sort());
+
+  const sources = [
+    'manifest.json', 'popup.html', 'popup.js', 'options.html', 'options.js',
+    'content.js', 'utils.js', 'background.js', 'page-bridge.js',
+    'channel-store.js', 'settings-store.js'
+  ].map((name) => fs.readFileSync(path.join(__dirname, name), 'utf8')).join('\n');
+
+  // `msg('key')`, `data-i18n="key"`, and the manifest's `__MSG_key__`. Quoted
+  // so a key that is a prefix of another does not read as used.
+  const unread = Object.keys(ja).filter((key) => !(
+    sources.includes(`'${key}'`) ||
+    sources.includes(`"${key}"`) ||
+    sources.includes(`__MSG_${key}__`)
+  ));
+  assert.deepEqual(unread, []);
+});
+
 test('privacy policies list exactly the manifest permissions', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, 'manifest.json'), 'utf8'));
   // The audit report cites this test for what the extension asks for.

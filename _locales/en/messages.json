@@ -53,9 +53,6 @@
   "openOnTwitch": {
     "message": "Open on a Twitch tab"
   },
-  "openOnStream": {
-    "message": "Use while a stream or video is playing"
-  },
   "reloadPageNeeded": {
     "message": "Cannot connect to the extension. Please reload the page (F5)."
   },
@@ -101,12 +98,6 @@
   "manualVolume": {
     "message": "Manual Volume"
   },
-  "labelMomentary": {
-    "message": "Momentary"
-  },
-  "labelShortTerm": {
-    "message": "Short-term"
-  },
   "labelIntegrated": {
     "message": "Integrated"
   },
@@ -124,9 +115,6 @@
   },
   "colChannel": {
     "message": "Channel"
-  },
-  "colVolume": {
-    "message": "Volume"
   },
   "showGainOverlay": {
     "message": "Show gain overlay"

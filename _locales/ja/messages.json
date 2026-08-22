@@ -53,9 +53,6 @@
   "openOnTwitch": {
     "message": "Twitch タブで開いてください"
   },
-  "openOnStream": {
-    "message": "配信または動画を再生中に使用してください"
-  },
   "reloadPageNeeded": {
     "message": "拡張機能と接続できません。ページを再読み込みしてください (F5)"
   },
@@ -101,12 +98,6 @@
   "manualVolume": {
     "message": "Manual Volume"
   },
-  "labelMomentary": {
-    "message": "Momentary"
-  },
-  "labelShortTerm": {
-    "message": "Short-term"
-  },
   "labelIntegrated": {
     "message": "Integrated"
   },
@@ -124,9 +115,6 @@
   },
   "colChannel": {
     "message": "Channel"
-  },
-  "colVolume": {
-    "message": "Volume"
   },
   "showGainOverlay": {
     "message": "ゲイン表示"
