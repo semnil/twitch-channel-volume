@@ -527,13 +527,24 @@ test('auto-apply fields are independent for Live, VOD, and Clip', () => {
   assert.equal(u.autoGainFieldForKind('clip'), 'autoGainClip');
 });
 
-test('Saved Channels prefers the last Auto gain without overwriting the manual fallback', () => {
-  const entry = { gainVod: 0.5, autoGainVod: 0.8 };
-  assert.equal(u.extractGainForKind(entry, 'vod'), 0.5);
-  assert.equal(u.extractAutoGainForKind(entry, 'vod'), 0.8);
-  assert.equal(u.extractAutoDisplayGain(entry, 'vod'), 0.8);
+test('Saved Channels shows the gain that would be applied', () => {
+  const referenced = {
+    gainVod: 0.5, autoGainVod: 0.8, lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 }
+  };
+  assert.equal(u.extractGainForKind(referenced, 'vod'), 0.5);
+  assert.equal(u.extractAutoGainForKind(referenced, 'vod'), 0.8);
+  assert.equal(u.extractAutoDisplayGain(referenced, 'vod'), 0.8);
   assert.equal(u.extractAutoDisplayGain({ gainVod: 0.5 }, 'vod'), 0.5);
-  assert.equal(u.formatAutoGain(u.extractAutoDisplayGain(entry, 'vod'), 'dB'), 'Auto (-1.9 dB)');
+
+  // An Auto gain measured at an unknown volume is not applied, so the table
+  // must not offer it: display and resolvePreferredGain answer the same.
+  const unreferenced = { autoApplyLoudnessVod: true, gainVod: 0.5, autoGainVod: 0.8 };
+  assert.equal(u.extractAutoDisplayGain(unreferenced, 'vod'), 0.5);
+  assert.equal(
+    u.resolvePreferredGain(unreferenced, 'vod', false, -Infinity, -18).gain,
+    u.extractAutoDisplayGain(unreferenced, 'vod')
+  );
+  assert.equal(u.formatAutoGain(u.extractAutoDisplayGain(referenced, 'vod'), 'dB'), 'Auto (-1.9 dB)');
   const optionsSource = fs.readFileSync(path.join(__dirname, 'options.js'), 'utf8');
   assert.match(optionsSource, /formatAutoGain\(\s*extractAutoDisplayGain\(entry, kind\)/s);
 });
@@ -975,6 +986,28 @@ test('content requests one ad state change per transition', async () => {
   assert.deepEqual(requests, [{ type: '__twitch_channel_volume_cmd__', cmd: 'setAdActive', active: false }]);
 });
 
+test('content stores a measurement the next session can seed from', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    momentary: -21,
+    shortTerm: -21,
+    integrated: -21
+  });
+  await flushTasks();
+  const saved = harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'];
+  assert.equal(saved.lastLufs.vod, -21);
+  assert.equal(saved.lastLufsRef.vod, u.LUFS_REFERENCE_VOLUME_1);
+
+  // What was written is what the next session reads back as a seed.
+  const next = createContentHarness({ channelVolumes: structuredClone(harness.stored[u.CHANNEL_VOLUMES_KEY]) });
+  await flushTasks();
+  const resets = next.commands.filter((command) => command.cmd === 'resetMeasurement');
+  assert.equal(resets.at(-1).initialIntegratedLufs, -21);
+});
+
 test('content does not seed from a measurement taken at an unknown volume', async () => {
   const harness = createContentHarness({
     channelVolumes: {
@@ -990,6 +1023,119 @@ test('content does not seed from a measurement taken at an unknown volume', asyn
   // The value is still there to reset.
   const state = await harness.dispatchRuntime({ cmd: 'getState' });
   assert.equal(state.hasSavedMeasurement, true);
+});
+
+test('channel store records what an Auto gain was measured against', async () => {
+  for (const kind of ['live', 'vod', 'clip']) {
+    let stored = { channelVolumes: {} };
+    const storage = {
+      async get(keys) { return readStoredKeys(stored, keys); },
+      async set(update) { stored = { ...stored, ...structuredClone(update) }; }
+    };
+    const write = channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 100);
+    await write({
+      operation: 'saveAutoGain', channelId: 'login:test', kind, autoGain: 2.5,
+      reference: u.LUFS_REFERENCE_VOLUME_1
+    });
+    const entry = stored.channelVolumes['login:test'];
+    assert.equal(entry.lastLufsRef[kind], u.LUFS_REFERENCE_VOLUME_1);
+    assert.equal(u.resolvePreferredGain(entry, kind, true, -Infinity, -18).gain, 2.5);
+
+    let fresh = { channelVolumes: {} };
+    const freshStorage = {
+      async get(keys) { return readStoredKeys(fresh, keys); },
+      async set(update) { fresh = { ...fresh, ...structuredClone(update) }; }
+    };
+    const writeFresh = channelStore.createChannelVolumesWriter(freshStorage, 'channelVolumes', () => 100);
+    await writeFresh({
+      operation: 'saveAuto', channelId: 'login:test', kind, enabled: true, autoGain: 1.5,
+      reference: u.LUFS_REFERENCE_VOLUME_1
+    });
+    const enabled = fresh.channelVolumes['login:test'];
+    assert.equal(enabled.lastLufsRef[kind], u.LUFS_REFERENCE_VOLUME_1);
+    assert.equal(u.resolvePreferredGain(enabled, kind, false, -Infinity, -18).gain, 1.5);
+
+    await write({ operation: 'clearMeasurement', channelId: 'login:test', kind });
+    assert.equal(stored.channelVolumes['login:test'].lastLufsRef[kind], u.LUFS_REFERENCE_VOLUME_1);
+  }
+});
+
+test('channel store rejects a reference it cannot store', async () => {
+  let stored = { channelVolumes: {} };
+  const storage = {
+    async get(keys) { return readStoredKeys(stored, keys); },
+    async set(update) { stored = { ...stored, ...structuredClone(update) }; }
+  };
+  const write = channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 100);
+  for (const reference of [42, {}, 'x'.repeat(33)]) {
+    await assert.rejects(() => write({
+      operation: 'saveMeasurement', channelId: 'login:test', kind: 'live', lufs: -19, reference
+    }));
+  }
+  assert.equal(stored.channelVolumes['login:test'], undefined);
+});
+
+test('channel store carries the reference onto the surviving row either way', async () => {
+  const build = async (lastId, lastReferenced) => {
+    let stored = { channelVolumes: { 'login:test': { name: 'Test' }, 777: { name: 'Test' } } };
+    const storage = {
+      async get(keys) { return readStoredKeys(stored, keys); },
+      async set(update) { stored = { ...stored, ...structuredClone(update) }; }
+    };
+    const write = channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 100);
+    const firstId = lastId === '777' ? 'login:test' : '777';
+    await write({
+      operation: 'saveMeasurement', channelId: firstId, kind: 'live', lufs: -19,
+      ...(lastReferenced ? {} : { reference: u.LUFS_REFERENCE_VOLUME_1 })
+    });
+    await write({
+      operation: 'saveMeasurement', channelId: lastId, kind: 'live', lufs: -23,
+      ...(lastReferenced ? { reference: u.LUFS_REFERENCE_VOLUME_1 } : {})
+    });
+    await write({
+      operation: 'mergeChannelIds', fromId: 'login:test', toId: '777', kind: 'live',
+      channel: { name: 'Test', login: 'test' }
+    });
+    return stored.channelVolumes['777'];
+  };
+
+  // A reference that outlived its value still travels with the winning row.
+  {
+    let stored = { channelVolumes: { 'login:test': { name: 'Test' } } };
+    const storage = {
+      async get(keys) { return readStoredKeys(stored, keys); },
+      async set(update) { stored = { ...stored, ...structuredClone(update) }; }
+    };
+    const write = channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 100);
+    await write({
+      operation: 'saveMeasurement', channelId: 'login:test', kind: 'live', lufs: -19,
+      reference: u.LUFS_REFERENCE_VOLUME_1
+    });
+    await write({
+      operation: 'saveAutoGain', channelId: 'login:test', kind: 'live', autoGain: 2.5,
+      reference: u.LUFS_REFERENCE_VOLUME_1
+    });
+    await write({ operation: 'clearMeasurement', channelId: 'login:test', kind: 'live' });
+    await write({
+      operation: 'mergeChannelIds', fromId: 'login:test', toId: '777', kind: 'live',
+      channel: { name: 'Test', login: 'test' }
+    });
+    const merged = stored.channelVolumes['777'];
+    assert.equal(merged.lastLufs, undefined);
+    assert.equal(merged.lastLufsRef.live, u.LUFS_REFERENCE_VOLUME_1);
+    assert.equal(u.resolvePreferredGain(merged, 'live', true, -Infinity, -18).gain, 2.5);
+  }
+
+  // The later write wins the merge; its reference, or its lack of one, wins too.
+  for (const lastId of ['login:test', '777']) {
+    const referenced = await build(lastId, true);
+    assert.equal(referenced.lastLufs.live, -23);
+    assert.equal(referenced.lastLufsRef.live, u.LUFS_REFERENCE_VOLUME_1);
+
+    const unreferenced = await build(lastId, false);
+    assert.equal(unreferenced.lastLufs.live, -23);
+    assert.equal(unreferenced.lastLufsRef, undefined);
+  }
 });
 
 test('channel store keeps the measurement reference with the value it describes', async () => {
@@ -1012,9 +1158,29 @@ test('channel store keeps the measurement reference with the value it describes'
   assert.equal(stored.channelVolumes['777'].lastLufs.live, -19);
   assert.equal(stored.channelVolumes['777'].lastLufsRef.live, u.LUFS_REFERENCE_VOLUME_1);
 
+  // A reset drops the measurement and keeps the reference: the Auto gain it
+  // vouches for is still on file and still applied.
+  await write({
+    operation: 'saveAutoGain', channelId: '777', kind: 'live', autoGain: 2.5,
+    reference: u.LUFS_REFERENCE_VOLUME_1
+  });
   await write({ operation: 'clearMeasurement', channelId: '777', kind: 'live' });
-  assert.equal(stored.channelVolumes['777'].lastLufs, undefined);
+  const afterReset = stored.channelVolumes['777'];
+  assert.equal(afterReset.lastLufs, undefined);
+  assert.equal(afterReset.lastLufsRef.live, u.LUFS_REFERENCE_VOLUME_1);
+  assert.equal(afterReset.autoGainLive, 2.5);
+  assert.equal(u.resolvePreferredGain(afterReset, 'live', true, -Infinity, -18).gain, 2.5);
+
+  // A writer that names no reference drops it, so the value it wrote is not
+  // taken for a volume-referenced one.
+  await write({
+    operation: 'saveMeasurement', channelId: '777', kind: 'live', lufs: -21
+  });
   assert.equal(stored.channelVolumes['777'].lastLufsRef, undefined);
+  assert.equal(
+    u.resolvePreferredGain(stored.channelVolumes['777'], 'live', true, -Infinity, -18).gain,
+    1.0
+  );
 });
 
 test('content seeds the measurement once the owner ID resolves', async () => {

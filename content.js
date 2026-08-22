@@ -128,7 +128,7 @@
       channelId,
       kind,
       enabled: !!enabled,
-      ...(Number.isFinite(autoGain) ? { autoGain } : {}),
+      ...(Number.isFinite(autoGain) ? { autoGain, reference: LUFS_REFERENCE_VOLUME_1 } : {}),
       channel: { name: name || channelId, url: url || '' }
     });
   }
@@ -159,6 +159,7 @@
       channelId,
       kind,
       autoGain,
+      reference: LUFS_REFERENCE_VOLUME_1,
       channel: channelMetadata(snapshot)
     });
   }

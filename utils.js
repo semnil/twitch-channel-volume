@@ -69,7 +69,7 @@ function extractAutoGainForKind(entry, kind) {
 }
 
 function extractAutoDisplayGain(entry, kind) {
-  return extractAutoGainForKind(entry, kind) ?? extractGainForKind(entry, kind);
+  return referencedAutoGainForKind(entry, kind) ?? extractGainForKind(entry, kind);
 }
 
 function autoApplyFieldForKind(kind) {

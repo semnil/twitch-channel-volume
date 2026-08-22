@@ -157,11 +157,26 @@ function copyNewerLufs(mergedLufs, mergedRef, mergedVersions, source, target, ki
   const winnerRef = (sourceWins ? source.lastLufsRef : target.lastLufsRef) || {};
   if (winnerHasValue) mergedLufs[kind] = winnerValue;
   else delete mergedLufs[kind];
-  // The reference travels with the value it describes.
-  if (winnerHasValue && winnerRef[kind] !== undefined) mergedRef[kind] = winnerRef[kind];
+  // The reference describes the kind's stored numbers, which outlive the
+  // measurement itself: a reset drops the value and keeps the Auto gain.
+  if (winnerRef[kind] !== undefined) mergedRef[kind] = winnerRef[kind];
   else delete mergedRef[kind];
   if (winnerVersion) mergedVersions[versionField] = winnerVersion;
   else delete mergedVersions[versionField];
+}
+
+// A writer that names no reference drops the one on file: the numbers it just
+// wrote were produced without it.
+function applyMeasurementReference(entry, mutation) {
+  if (mutation.reference !== undefined &&
+      (typeof mutation.reference !== 'string' || mutation.reference.length > 32)) {
+    throw new TypeError('reference must be a short string');
+  }
+  const refs = { ...(entry.lastLufsRef || {}) };
+  if (mutation.reference === undefined) delete refs[mutation.kind];
+  else refs[mutation.kind] = mutation.reference;
+  if (Object.keys(refs).length) entry.lastLufsRef = refs;
+  else delete entry.lastLufsRef;
 }
 
 function mergeProvisionalEntry(all, mutation) {
@@ -277,6 +292,7 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
         }
         entry[storeAutoGainFieldForKind(mutation.kind)] = mutation.autoGain;
         setFieldVersion(entry, storeAutoGainFieldForKind(mutation.kind), mutation.sequence);
+        applyMeasurementReference(entry, mutation);
       }
       all[mutation.channelId] = entry;
       break;
@@ -287,16 +303,8 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
       if (!Number.isFinite(mutation.lufs)) throw new TypeError('lufs must be finite');
       const entry = cloneEntry(all[mutation.channelId], mutation.channel?.name || mutation.channelId);
       copyMetadata(entry, mutation.channel);
-      if (mutation.reference !== undefined &&
-          (typeof mutation.reference !== 'string' || mutation.reference.length > 32)) {
-        throw new TypeError('reference must be a short string');
-      }
       entry.lastLufs = { ...(entry.lastLufs || {}), [mutation.kind]: mutation.lufs };
-      const savedRef = { ...(entry.lastLufsRef || {}) };
-      if (mutation.reference === undefined) delete savedRef[mutation.kind];
-      else savedRef[mutation.kind] = mutation.reference;
-      if (Object.keys(savedRef).length) entry.lastLufsRef = savedRef;
-      else delete entry.lastLufsRef;
+      applyMeasurementReference(entry, mutation);
       entry.lastMeasuredAt = now;
       setFieldVersion(entry, `lastLufs.${mutation.kind}`, mutation.sequence);
       if (mutation.autoGain !== undefined) {
@@ -315,10 +323,7 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
       const entry = cloneEntry(all[mutation.channelId], mutation.channelId);
       const lastLufs = { ...(entry.lastLufs || {}) };
       delete lastLufs[mutation.kind];
-      const clearedRef = { ...(entry.lastLufsRef || {}) };
-      delete clearedRef[mutation.kind];
-      if (Object.keys(clearedRef).length) entry.lastLufsRef = clearedRef;
-      else delete entry.lastLufsRef;
+      // The reference stays: the saved Auto gain it vouches for is untouched.
       if (Object.keys(lastLufs).length) entry.lastLufs = lastLufs;
       else {
         delete entry.lastLufs;
@@ -338,6 +343,7 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
       copyMetadata(entry, mutation.channel);
       entry[storeAutoGainFieldForKind(mutation.kind)] = mutation.autoGain;
       setFieldVersion(entry, storeAutoGainFieldForKind(mutation.kind), mutation.sequence);
+      applyMeasurementReference(entry, mutation);
       all[mutation.channelId] = entry;
       break;
     }
