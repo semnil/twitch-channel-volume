@@ -12,7 +12,7 @@ Twitch Channel Volume is a Chrome extension that remembers and auto-applies volu
 
 ### Channel Volume Settings
 
-- **What**: Twitch channel identifiers (the numeric owner ID / broadcaster ID once the page has provided it; the login name, video ID or clip slug until then), display names, page URLs, the gain values you set per kind (Live / VOD / Clip), and a cache of the most recent loudness measurement with the time it was taken, the number of measurement windows behind it, and a note that it is expressed as if the player's own volume were at full. Alongside these, the extension keeps the mapping from a provisional identifier to the numeric one and a counter that orders field updates.
+- **What**: Twitch channel identifiers (the numeric owner ID / broadcaster ID once the page has provided it; the login name, video ID or clip slug until then), display names, page URLs, the gain values you set per kind (Live / VOD / Clip), whether auto-follow is switched on for that channel in each of them, and a cache of the most recent loudness measurement with the time it was taken, the number of measurement windows behind it, and a note that it is expressed as if the player's own volume were at full. Alongside these, the extension keeps the mapping from a provisional identifier to the numeric one and a counter that orders field updates.
 - **Purpose**: Used to automatically apply your preferred volume when you open a stream, VOD, or clip from a saved channel.
 - **Storage**: Saved locally in `chrome.storage.local` on your device. Never transmitted to any external server.
 
