@@ -284,6 +284,15 @@
     }
   });
 
+  function revealOptions() {
+    // Commit the values the load wrote while the transitions are off, then show
+    // the page on the next frame.
+    void document.body.offsetWidth;
+    requestAnimationFrame(() => {
+      document.body.classList.remove('initializing');
+    });
+  }
+
   applyI18n();
   setSettingsControlsDisabled(true);
   loadAll().then(() => {
@@ -292,5 +301,5 @@
   }).catch((error) => {
     showSettingsError(true);
     console.error('[TCV] failed to load settings', error);
-  });
+  }).finally(revealOptions);
 })();
