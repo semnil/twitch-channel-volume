@@ -225,9 +225,13 @@ h1 {
   cursor: pointer;
   transition: color 0.15s, border-color 0.15s;
 }
-.clear-all-btn:hover {
+.clear-all-btn:hover:not(:disabled) {
   color: #ff6b9d;
   border-color: #ff6b9d;
+}
+.clear-all-btn:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 
 .empty-msg {
@@ -391,7 +395,7 @@ h1 {
   <div class="section">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
       <h2 data-i18n="savedChannels" style="margin-bottom:0">Saved Channels</h2>
-      <button id="clearAllBtn" class="clear-all-btn" data-i18n="clearAll">全削除</button>
+      <button id="clearAllBtn" class="clear-all-btn" data-i18n="clearAll" disabled>全削除</button>
     </div>
     <table class="channel-table">
       <thead>
@@ -405,7 +409,7 @@ h1 {
       </thead>
       <tbody id="channelsBody"></tbody>
     </table>
-    <div id="emptyMsg" class="empty-msg" data-i18n="noSavedChannels">保存済みチャンネルなし</div>
+    <div id="emptyMsg" class="empty-msg" style="display:none" data-i18n="noSavedChannels">保存済みチャンネルなし</div>
   </div>
 </div>
 

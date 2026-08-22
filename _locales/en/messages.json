@@ -47,6 +47,9 @@
   "settingsSaveFailed": {
     "message": "Could not save the setting. The saved value was restored."
   },
+  "settingsLoadFailed": {
+    "message": "Could not load the saved settings. The values shown are the defaults. Please reload the page."
+  },
   "channelUpdateFailed": {
     "message": "Could not update saved channels. Please try again."
   },

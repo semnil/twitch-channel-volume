@@ -7,8 +7,10 @@
 
   function $(id) { return document.getElementById(id); }
 
-  function showSettingsError(visible) {
-    $('settingsError').classList.toggle('hidden', !visible);
+  function showSettingsError(visible, key = 'settingsSaveFailed') {
+    const line = $('settingsError');
+    if (visible) line.textContent = msg(key);
+    line.classList.toggle('hidden', !visible);
   }
 
   function applyI18n() {
@@ -38,7 +40,8 @@
       'defaultAutoLiveToggle',
       'defaultAutoVodToggle',
       'defaultAutoClipToggle',
-      'overlayToggle'
+      'overlayToggle',
+      'clearAllBtn'
     ]) {
       $(id).disabled = disabled;
     }
@@ -299,7 +302,7 @@
     settingsReady = true;
     setSettingsControlsDisabled(false);
   }).catch((error) => {
-    showSettingsError(true);
+    showSettingsError(true, 'settingsLoadFailed');
     console.error('[TCV] failed to load settings', error);
   }).finally(revealOptions);
 })();
