@@ -283,9 +283,9 @@
 
   chrome.storage.onChanged.addListener((changes) => {
     // The page that could not read its own settings is telling the viewer to
-    // reload it, and it never read the channels at all. Taking what another tab
-    // writes would put values under that message and answer for a list that was
-    // never read.
+    // reload it. What another tab writes after that would stand on a page whose
+    // own read never landed, so none of it is taken. A change that arrived
+    // before the failure is already on screen and stays there.
     if (loadFailed) return;
     if (changes[CHANNEL_VOLUMES_KEY]) {
       channelRevision++;
