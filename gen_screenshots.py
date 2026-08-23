@@ -575,6 +575,21 @@ def main(out_dir=OUT_DIR):
             print(f'Generated {os.path.join(shown(out_dir), name)}')
 
 
+def trailing_bytes(path):
+    """PNG の IEND より後ろにあるバイト数。"""
+    data = open(path, 'rb').read()
+    if not data.startswith(b'\x89PNG\r\n\x1a\n'):
+        return 0
+    at = 8
+    while at + 8 <= len(data):
+        length = int.from_bytes(data[at:at + 4], 'big')
+        kind = data[at + 4:at + 8]
+        at += 12 + length
+        if kind == b'IEND':
+            return max(0, len(data) - at)
+    return 0
+
+
 def check():
     """描き直した 6 枚と追跡中の画像を画素で比べる。書き込みはしない。"""
     verify_icons()
@@ -594,21 +609,29 @@ def check():
                 opened = Image.open(tracked)
                 # convert() が返す Image はフレーム数を忘れるので先に読む。
                 frames = getattr(opened, 'n_frames', 1)
-                old = opened.convert('RGBA')
+                size = opened.size
+                # 大きさは開いた時点で分かる。違うならデコードしない —
+                # 宣言だけ巨大な画像をここで展開しないため。
+                old = opened.convert('RGBA') if size == new.size else None
             except (OSError, Image.DecompressionBombError) as err:
                 # 読めないものは「いま描くもの」ではない。1 枚で止めると残りの
                 # 比較も orphan の報告も出ない。爆弾ヘッダは OSError の外から
                 # 来るので両方を捕らえる。
                 stale.append(f'{name}: 画像として読めない ({err})')
                 continue
+            trailing = trailing_bytes(tracked)
             if frames != 1:
                 # 下の比較はファイルが開いたフレームしか読まないので、第 1
                 # フレームが一致する APNG はそこを通ってしまう。
                 stale.append(f'{name}: {frames} フレームある (描くのは 1 枚)')
-            elif new.size != old.size:
-                # 大きさは先に見る。ImageChops.difference は大きさが違っても
-                # 投げず、小さい方に切り詰めた差を返すため。
-                stale.append(f'{name}: 大きさが違う ({old.size} → {new.size})')
+            elif size != new.size:
+                # ImageChops.difference は大きさが違っても投げず、小さい方に
+                # 切り詰めた差を返すため、画素より先に見る。
+                stale.append(f'{name}: 大きさが違う ({size} → {new.size})')
+            elif trailing:
+                # デコーダは IEND で読むのをやめるので、その後ろのバイトは
+                # 画素にも大きさにもフレーム数にも現れない。
+                stale.append(f'{name}: IEND の後ろに {trailing} バイトある')
             elif new.tobytes() != old.tobytes():
                 # 画素をそのまま比べる。difference().getbbox() は既定で alpha
                 # だけを見るので、色が違っても alpha が同じなら None を返す。
@@ -620,7 +643,19 @@ def check():
                          if name.lower().endswith('.png')
                          and os.path.isfile(os.path.join(OUT_DIR, name))
                          ) if os.path.isdir(OUT_DIR) else []
-    orphans = [f'{here}/{name}' for name in tracked_now if name not in drawn]
+    # 綴りだけ違う名前は「誰も描いていない」ではない。ケース非依存の
+    # ファイルシステムでは画素比較を通ってしまうので、消せとは言わずに
+    # 名前を直せと言う。
+    by_spelling = {name.lower(): name for name in drawn}
+    orphans, misspelled = [], []
+    for name in tracked_now:
+        if name in drawn:
+            continue
+        drawn_as = by_spelling.get(name.lower())
+        if drawn_as:
+            misspelled.append((name, drawn_as))
+        else:
+            orphans.append(f'{here}/{name}')
 
     for line in stale:
         print(line, file=sys.stderr)
@@ -631,7 +666,12 @@ def check():
     if orphans:
         # 生成は自分が描く 6 枚しか触らないので、これは手で消すしかない。
         print('削除する: ' + ' '.join(orphans), file=sys.stderr)
-    if stale or orphans:
+    for name, drawn_as in misspelled:
+        print(f'{here}/{name}: 綴りが違う ({drawn_as} として描いている)', file=sys.stderr)
+    if misspelled:
+        print('名前を直す: ' + ' '.join(f'{here}/{name} → {drawn_as}'
+                                    for name, drawn_as in misspelled), file=sys.stderr)
+    if stale or orphans or misspelled:
         return 1
     print(f'{len(drawn)} 枚ともいま描くものと同じ。')
     return 0

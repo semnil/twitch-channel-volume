@@ -5488,17 +5488,63 @@ test('--check reads a bomb header as unreadable, and goes on', { skip: generator
       ' + chunk(b"IDAT", zlib.compress(b"\\x00")) + chunk(b"IEND", b""))',
       path.join(sandbox, 'docs/screenshots/overlay_ja.png')],
     { encoding: 'utf8' }).status, 0, 'the probe wrote a bomb header');
-    fs.copyFileSync(path.join(sandbox, 'docs/screenshots/popup_ja.png'),
-      path.join(sandbox, 'docs/screenshots/popup_de.png'));
+    // The second fault sits on an image that sorts after the first, so only
+    // the loop carrying on can report it — an orphan would be found either
+    // way, since that scan runs after the loop has ended.
+    assert.equal(spawnSync('python3', ['-B', '-c',
+      'import sys; from PIL import Image;' +
+      'i = Image.open(sys.argv[1]).convert("RGB");' +
+      'r, g, b = i.getpixel((320, 200));' +
+      'i.putpixel((320, 200), (r ^ 1, g, b));' +
+      'i.save(sys.argv[1])', path.join(sandbox, 'docs/screenshots/settings_ja.png')],
+    { encoding: 'utf8' }).status, 0, 'the probe changed a later image');
 
     const run = runCheck(sandbox);
     assert.equal(run.status, 1, 'a bomb header is reported: ' + (run.stderr || run.stdout));
     assert.match(run.stderr, /overlay_ja\.png: 画像として読めない/);
-    assert.match(run.stderr, /popup_de\.png/, 'and the report goes on to the rest');
+    assert.match(run.stderr, /settings_ja\.png: いま描くものと違う/,
+      'and the comparison goes on to the images after it');
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
   }
 });
+
+test('--check turns down bytes the decoder never reaches', { skip: generatorSkip }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    // The decoder stops at IEND, so anything after it shows up in neither the
+    // pixels nor the size nor the frame count.
+    const target = path.join(sandbox, 'docs/screenshots/popup_ja.png');
+    fs.writeFileSync(target, Buffer.concat([fs.readFileSync(target),
+      fs.readFileSync(path.join(sandbox, 'docs/screenshots/overlay_ja.png'))]));
+
+    const run = runCheck(sandbox);
+    assert.equal(run.status, 1, 'appended bytes are reported: ' + (run.stderr || run.stdout));
+    assert.match(run.stderr, /popup_ja\.png: IEND の後ろに \d+ バイトある/);
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test('--check asks for a rename, not a deletion, when only the spelling differs',
+  { skip: generatorSkip }, () => {
+    const sandbox = screenshotSandbox();
+    try {
+      // On a case-insensitive filesystem the pixel comparison opens this file
+      // and passes, so calling it an image nothing draws would have the reader
+      // delete the one that is drawn.
+      fs.renameSync(path.join(sandbox, 'docs/screenshots/popup_ja.png'),
+        path.join(sandbox, 'docs/screenshots/popup_ja.PNG'));
+
+      const run = runCheck(sandbox);
+      assert.equal(run.status, 1, 'the spelling is reported: ' + (run.stderr || run.stdout));
+      assert.match(run.stderr, /popup_ja\.PNG: 綴りが違う \(popup_ja\.png として描いている\)/);
+      assert.match(run.stderr, /名前を直す: .*popup_ja\.PNG → popup_ja\.png/);
+      assert.doesNotMatch(run.stderr, /削除する/, 'and it is not on the list to delete');
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
 
 test('--check turns down a size the code no longer draws', { skip: generatorSkip }, () => {
   const sandbox = screenshotSandbox();
