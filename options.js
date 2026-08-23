@@ -5,7 +5,6 @@
 
   const CHANNEL_MUTATION_MESSAGE = '__twitch_channel_volume_channel_mutation__';
   // How long the page waits for a load that never answers before it says so.
-  // A load that arrives takes tens of milliseconds after DOMContentLoaded.
   const LOAD_TIMEOUT_MS = 3000;
 
   function $(id) { return document.getElementById(id); }
