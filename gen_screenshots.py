@@ -577,6 +577,15 @@ def main(out_dir=OUT_DIR):
             print(f'Generated {os.path.join(shown(out_dir), name)}')
 
 
+def is_directory(path):
+    """それ自体がディレクトリか。リンクはリンクとして数える。
+
+    os.path.isdir はリンクの先を見るので、ディレクトリを指す .png リンクが
+    「中断した走行の作業ディレクトリ」と同じ扱いで一覧から落ちる。
+    """
+    return stat.S_ISDIR(os.lstat(path).st_mode)
+
+
 def not_a_plain_file(path):
     """追跡物がファイルそのものでないところ。無ければ None。
 
@@ -727,7 +736,7 @@ def check():
     # ディレクトリ) を追跡物として数えない。
     tracked_now = sorted(name for name in os.listdir(OUT_DIR)
                          if name.lower().endswith('.png')
-                         and not os.path.isdir(os.path.join(OUT_DIR, name))
+                         and not is_directory(os.path.join(OUT_DIR, name))
                          ) if os.path.isdir(OUT_DIR) else []
     # 綴りだけ違う名前は「誰も描いていない」ではない。ケース非依存の
     # ファイルシステムでは画素比較を通ってしまうので、消せとは言わずに

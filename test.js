@@ -5887,15 +5887,22 @@ test('--check turns down a tracked image that is a link to one', { skip: generat
     const shots = path.join(sandbox, 'docs/screenshots');
     fs.renameSync(path.join(shots, 'popup_ja.png'), path.join(shots, 'popup_ja.source'));
     fs.symlinkSync('popup_ja.source', path.join(shots, 'popup_ja.png'));
-    // And one that points nowhere, under a name nothing draws: a filter that
-    // asks whether the target is a file leaves this one out of the report.
+    // And two under names nothing draws: one that points nowhere, which a
+    // filter asking whether the target is a file leaves out of the report, and
+    // one that points at a directory, which a filter asking whether the target
+    // is a directory leaves out the same way.
     fs.symlinkSync('gone.png', path.join(shots, 'popup_de.png'));
+    fs.symlinkSync('../../tools', path.join(shots, 'overlay_de.png'));
+    fs.mkdirSync(path.join(shots, 'tmpabc123.png'));
 
     const run = runCheck(sandbox);
     assert.equal(run.status, 1, 'the link is reported: ' + (run.stderr || run.stdout));
     assert.match(run.stderr,
       /popup_ja\.png: シンボリックリンク \(popup_ja\.source を指している\)/);
     assert.match(run.stderr, /popup_de\.png: 誰も描いていない/);
+    assert.match(run.stderr, /overlay_de\.png: 誰も描いていない/);
+    assert.doesNotMatch(run.stderr, /tmpabc123\.png/,
+      'while a directory of that name is still what an interrupted run left');
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
   }
