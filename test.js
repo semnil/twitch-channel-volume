@@ -4209,7 +4209,7 @@ test('settings initialization preserves existing Auto defaults', () => {
   assert.deepEqual(result, existing);
 });
 
-test('background mutation listener keeps async response open and reports failures', async () => {
+function createBackgroundHarness() {
   let stored = {
     channelVolumes: {
       'login:fixture_channel': { name: 'Fixture_Channel', gainLive: 0.7 },
@@ -4228,6 +4228,8 @@ test('background mutation listener keeps async response open and reports failure
   let failNextSet = false;
   let messageListener;
   let installedListener;
+  const errors = [];
+  const warnings = [];
   const storage = {
     async get(keys) { return readStoredKeys(stored, keys); },
     async set(update) {
@@ -4239,7 +4241,10 @@ test('background mutation listener keeps async response open and reports failure
     }
   };
   const context = vm.createContext({
-    console: { error() {} },
+    console: {
+      error(...args) { errors.push(args); },
+      warn(...args) { warnings.push(args); }
+    },
     chrome: {
       storage: { local: storage },
       runtime: {
@@ -4260,49 +4265,106 @@ test('background mutation listener keeps async response open and reports failure
     { filename: 'background.js' }
   );
 
-  installedListener();
-  await flushTasks();
-  assert.equal(stored.channelVolumes['login:fixture_channel'], undefined);
-  assert.equal(stored.channelVolumes['123456789'].gainLive, 0.7);
-  assert.equal(stored.channelVolumes['123456789'].gainVod, 0.8);
-  assert.equal(stored.channelVolumes['123456789'].url, 'https://www.twitch.tv/fixture_channel');
+  return {
+    get stored() { return stored; },
+    errors,
+    warnings,
+    failNextSet() { failNextSet = true; },
+    async install() {
+      installedListener();
+      await flushTasks();
+    },
+    // What the listener answered, and whether it held the channel open to do it.
+    dispatch(message) {
+      return new Promise((resolve) => {
+        let responded = false;
+        const keepOpen = messageListener(message, {}, (response) => {
+          responded = true;
+          resolve({ keepOpen, response });
+        });
+        if (keepOpen !== true && !responded) resolve({ keepOpen, response: undefined });
+      });
+    },
+    async send(mutation, type = channelStore.CHANNEL_MUTATION_MESSAGE) {
+      const { keepOpen, response } = await this.dispatch({ type, mutation });
+      assert.equal(keepOpen, true);
+      return response;
+    }
+  };
+}
 
-  const send = (mutation, type = channelStore.CHANNEL_MUTATION_MESSAGE) => new Promise((resolve) => {
-    const keepOpen = messageListener({
-      type,
-      mutation
-    }, {}, resolve);
-    assert.equal(keepOpen, true);
-  });
+test('background mutation listener keeps async response open and reports failures', async () => {
+  const harness = createBackgroundHarness();
+  const send = (mutation, type) => harness.send(mutation, type);
+  const stored = () => harness.stored;
+
+  await harness.install();
+  assert.equal(stored().channelVolumes['login:fixture_channel'], undefined);
+  assert.equal(stored().channelVolumes['123456789'].gainLive, 0.7);
+  assert.equal(stored().channelVolumes['123456789'].gainVod, 0.8);
+  assert.equal(stored().channelVolumes['123456789'].url, 'https://www.twitch.tv/fixture_channel');
 
   const successResponse = await send({
     operation: 'saveAuto', channelId: 'login:test', kind: 'live', enabled: true
   });
   assert.equal(successResponse.ok, true);
-  assert.equal(stored.channelVolumes['login:test'].autoApplyLoudnessLive, true);
+  assert.equal(stored().channelVolumes['login:test'].autoApplyLoudnessLive, true);
 
-  failNextSet = true;
+  harness.failNextSet();
   const failureResponse = await send({
     operation: 'saveAuto', channelId: 'login:test', kind: 'live', enabled: false
   });
   assert.equal(failureResponse.ok, false);
   assert.equal(failureResponse.reason, 'storage-update-failed');
-  assert.equal(stored.channelVolumes['login:test'].autoApplyLoudnessLive, true);
+  assert.equal(stored().channelVolumes['login:test'].autoApplyLoudnessLive, true);
 
   const settingsResponse = await send({
     operation: 'patchSettings', patch: { displayUnit: 'dB' }
   }, settingsStore.SETTINGS_MUTATION_MESSAGE);
   assert.equal(settingsResponse.ok, true);
   assert.equal(settingsResponse.settings.displayUnit, 'dB');
-  assert.equal(stored.autoLoudnessSettings.autoApplyLoudnessLiveDefault, true);
+  assert.equal(stored().autoLoudnessSettings.autoApplyLoudnessLiveDefault, true);
 
-  failNextSet = true;
+  harness.failNextSet();
   const settingsFailureResponse = await send({
     operation: 'patchSettings', patch: { autoApplyLoudnessLiveDefault: false }
   }, settingsStore.SETTINGS_MUTATION_MESSAGE);
   assert.equal(settingsFailureResponse.ok, false);
   assert.equal(settingsFailureResponse.reason, 'settings-update-failed');
-  assert.equal(stored.autoLoudnessSettings.autoApplyLoudnessLiveDefault, true);
+  assert.equal(stored().autoLoudnessSettings.autoApplyLoudnessLiveDefault, true);
+});
+
+test('background tells a refused mutation from a failed write', async () => {
+  const harness = createBackgroundHarness();
+
+  for (const mutation of [
+    { operation: 'noSuchOperation' },
+    { operation: 'saveGain', channelId: 'login:test', kind: 'live', gain: 'loud' }
+  ]) {
+    const response = await harness.send(mutation);
+    assert.equal(response.ok, false);
+    // A caller that reads `storage-update-failed` retries or reports storage;
+    // neither answers a mutation the store will refuse every time.
+    assert.equal(response.reason, 'invalid-mutation');
+  }
+
+  const settingsResponse = await harness.send(
+    { operation: 'patchSettings', patch: { displayUnit: 'furlongs' } },
+    settingsStore.SETTINGS_MUTATION_MESSAGE
+  );
+  assert.equal(settingsResponse.ok, false);
+  assert.equal(settingsResponse.reason, 'invalid-mutation');
+
+  const logged = harness.errors.map(([message]) => message);
+  assert.deepEqual(logged, [
+    '[TCV] channelVolumes mutation rejected as invalid',
+    '[TCV] channelVolumes mutation rejected as invalid',
+    '[TCV] settings mutation rejected as invalid'
+  ]);
+  assert.equal(
+    String(harness.errors[1][1]?.message),
+    'gain must be finite and within [0, 6]'
+  );
 });
 
 test('options disables settings until load and saves only field mutations', () => {

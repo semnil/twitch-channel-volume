@@ -11,11 +11,22 @@ const writeChannelVolumes = channelStore.createChannelVolumesWriter(
 );
 const writeSettings = settingsStore.createSettingsWriter(chrome.storage.local);
 
+// The stores refuse a malformed mutation with a TypeError, and the storage
+// area fails with everything else. Only the second is about storage.
+function refusedMutation(error) {
+  return error instanceof TypeError;
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === channelStore.CHANNEL_MUTATION_MESSAGE) {
     writeChannelVolumes(message.mutation).then(() => {
       sendResponse({ ok: true });
     }).catch((error) => {
+      if (refusedMutation(error)) {
+        console.error('[TCV] channelVolumes mutation rejected as invalid', error);
+        sendResponse({ ok: false, reason: 'invalid-mutation' });
+        return;
+      }
       console.error('[TCV] channelVolumes mutation failed', error);
       sendResponse({ ok: false, reason: 'storage-update-failed' });
     });
@@ -23,6 +34,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     writeSettings(message.mutation).then((settings) => {
       sendResponse({ ok: true, settings });
     }).catch((error) => {
+      if (refusedMutation(error)) {
+        console.error('[TCV] settings mutation rejected as invalid', error);
+        sendResponse({ ok: false, reason: 'invalid-mutation' });
+        return;
+      }
       console.error('[TCV] settings mutation failed', error);
       sendResponse({ ok: false, reason: 'settings-update-failed' });
     });
