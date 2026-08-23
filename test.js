@@ -6004,6 +6004,36 @@ test('--check turns down a size the code no longer draws', { skip: generatorSkip
   }
 });
 
+test('--check turns down a tracked directory that is a link to one', { skip: generatorSkip
+  || (process.platform === 'win32' && 'symlinks need a privilege this does not ask for') }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    // lstat on each image reads the last name in the path, so the six under a
+    // linked directory all pass. What a repository records for that is six
+    // deletions and one link.
+    fs.renameSync(path.join(sandbox, 'docs/screenshots'),
+      path.join(sandbox, 'docs/screenshots.source'));
+    fs.symlinkSync('screenshots.source', path.join(sandbox, 'docs/screenshots'));
+
+    const run = runCheck(sandbox);
+    assert.equal(run.status, 1, 'the linked directory is reported: ' + (run.stderr || run.stdout));
+    assert.match(run.stderr,
+      /docs\/screenshots: シンボリックリンク \(screenshots\.source を指している\)/);
+    assert.doesNotMatch(run.stderr, /枚ともいま描くものと同じ/,
+      'and the six images under it are not vouched for');
+
+    // A file by that name is not a directory either, and neither is reported
+    // as an image that differs.
+    fs.unlinkSync(path.join(sandbox, 'docs/screenshots'));
+    fs.writeFileSync(path.join(sandbox, 'docs/screenshots'), '');
+    const asFile = runCheck(sandbox);
+    assert.equal(asFile.status, 1, 'a file by that name is reported too');
+    assert.match(asFile.stderr, /docs\/screenshots: ディレクトリではない/);
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
 test('--check turns down a tracked image that is a link to one', { skip: generatorSkip
   || (process.platform === 'win32' && 'symlinks need a privilege this does not ask for') }, () => {
   const sandbox = screenshotSandbox();
@@ -6310,8 +6340,12 @@ test('store screenshot generator draws icons the bundled font lacks', () => {
   assert.match(check, /for radius in \(HEADER_GEAR_RADIUS, PLAYER_GEAR_RADIUS\):/);
   assert.match(check, /size=FULLSCREEN_SIZE/);
   assert.match(source, /def main\(out_dir=OUT_DIR\):\n    verify_icons\(\)/);
-  // --check draws the same six, so it runs the same self-check first.
-  assert.match(source, /def check\(\):\n    """[^"]*"""\n    verify_icons\(\)/);
+  // --check draws the same six, so it runs the same self-check before it
+  // draws — wherever in the function that lands.
+  const checkBody = source.slice(source.indexOf('def check():'));
+  assert.ok(checkBody.indexOf('verify_icons()') > -1
+    && checkBody.indexOf('verify_icons()') < checkBody.indexOf('draw_all('),
+  '--check runs the self-check before it draws');
 });
 
 test('meanSquareToLufs: known reference', () => {

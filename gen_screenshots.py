@@ -594,6 +594,23 @@ def header_size(kinds):
     return None
 
 
+def not_a_directory(path):
+    """追跡先がディレクトリそのものでないところ。無ければ None。
+
+    画像 1 枚ずつの lstat は末端しか見ない。追跡先ごとリンクへ差し替えると、
+    その下の 6 枚は全て通り、git には 6 枚の削除とリンク 1 つの追加が並ぶ。
+    """
+    if not os.path.lexists(path):
+        # 何も追跡していないのは画像ごとに報告される。
+        return None
+    mode = os.lstat(path).st_mode
+    if stat.S_ISDIR(mode):
+        return None
+    if stat.S_ISLNK(mode):
+        return f'シンボリックリンク ({os.readlink(path)} を指している)'
+    return 'ディレクトリではない'
+
+
 def not_a_plain_file(path):
     """追跡物がファイルそのものでないところ。無ければ None。
 
@@ -690,6 +707,14 @@ def png_shape(path, expected=None):
 
 def check():
     """描き直した 6 枚と追跡中の画像を画素で比べる。書き込みはしない。"""
+    here = os.path.relpath(OUT_DIR, ROOT)
+    kind = not_a_directory(OUT_DIR)
+    if kind:
+        # 描く前に止める。この 1 つが違うと、下の 6 枚が何を通ろうと意味が無い。
+        print(f'{here}: {kind}', file=sys.stderr)
+        print(f'{here} をディレクトリに戻してから '
+              f'`python3 {os.path.basename(__file__)}` で描き直す。', file=sys.stderr)
+        return 1
     verify_icons()
     stale = []
     with tempfile.TemporaryDirectory() as fresh:
@@ -753,7 +778,6 @@ def check():
                 # 画素をそのまま比べる。difference().getbbox() は既定で alpha
                 # だけを見るので、色が違っても alpha が同じなら None を返す。
                 stale.append(f'{name}: いま描くものと違う')
-    here = os.path.relpath(OUT_DIR, ROOT)
     # 描くのは png だけなので、それ以外 (.DS_Store, 中断した走行が残す作業
     # ディレクトリ) を追跡物として数えない。
     tracked_now = sorted(name for name in os.listdir(OUT_DIR)
