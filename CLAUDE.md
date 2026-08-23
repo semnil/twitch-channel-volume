@@ -75,7 +75,7 @@ content.js (ISOLATED world content script, document_idle)
 │   は cue を 1 つも受け取っていない media でだけ ad gain を駆動する
 ├── SPA navigation: history.pushState/replaceState hook + popstate + MutationObserver
 ├── channelVolumes の更新は Service Worker の単一キューへ委譲し、onChanged でクロスタブ同期
-├── popup からの chrome.tabs.sendMessage を `getState` / `setGain` / `setAutoApplyLoudness` / `resetMeasurement` / `resume` で処理 (options は削除・全消去を Service Worker へ直接送る)
+├── popup からの chrome.tabs.sendMessage を `getState` / `setGain` / `setAutoApplyLoudness` / `resetMeasurement` / `resume` で処理し、知らない cmd には `unknown command` を返す (options は削除・全消去を Service Worker へ直接送る)
 └── Storage
     ├── autoLoudnessSettings: { targetLufs, adGainDb, displayUnit, showGainOverlay,
     │     autoApplyLoudnessLiveDefault, autoApplyLoudnessVodDefault, autoApplyLoudnessClipDefault }
@@ -281,6 +281,7 @@ python3 pack.py --list
 - 拡張機能の再ロードで chrome.runtime が無効化された場合、popup は `reloadPageNeeded` を表示して F5 を促す
 - 計測パイプラインの診断: DevTools Console で `[TCV]` ログを確認。`waiting for <video>` → `attached to video` → `measurement chain ready` → `first measurement block received` の順に出る。`createMediaElementSource failed` で止まる場合は他拡張競合 (技術的限界)。この状態は popup の通知と `getState` の audioUnavailable に出る。以降のリトライは `no attachable <video>; the player audio is held elsewhere` を出す (`waiting for <video>` は要素そのものが無いときだけ)。`audio context unavailable` / `audio context resume failed` / `audio context stayed <state> after resume` も同じ経路の診断
 - CM 境界・音量変更の診断: `[TCV] ad detected in DOM` (DOM 検出と `video.currentTime`)、`[TCV] ad cue from the player` (cue の `rollType`・media 時刻の区間・受け取った時点の再生位置・pod 内の位置)、`[TCV] ad element attached` (CM 要素へ繋いだときの当該 volume と本編 volume)、`[TCV] gate boundary` / `[TCV] gate resumed` (境界の理由・volume・muted・再生位置と、除外した窓数・直近 4 窓の LUFS)、`[TCV] ad start rollback` (要求した窓数・境界スキップと重なって引いた窓数・取り消した窓数と各窓の LUFS。`exhausted` は要求した窓数だけ遡れたかで、偽なら計測開始が近く区間がそこで止まっている) を Console で追う。別の理由で打ち切られた skip はその時点までの除外数を次の `gate boundary` の `superseded` / `droppedBefore` に載せる
+- 失敗した操作の診断: 失敗は起きた画面ごとに名前付きで残る。ページ側 (Twitch のタブの Console) は `[TCV] failed to save gain` / `[TCV] failed to save Auto setting` / `[TCV] failed to reset measurement` と、終端のハンドラが出す `[TCV] failed to handle a bridge message` / `[TCV] failed to handle a route change` / `[TCV] failed to start up` / `[TCV] unknown command`。popup 側 (popup の DevTools) は `[TCV] suggested gain request failed` / `[TCV] gain request failed` / `[TCV] Auto setting request failed` / `[TCV] measurement reset request failed` で、content.js が返した reason が付く。options 側 (設定画面の DevTools) は `[TCV] failed to delete the channel` / `[TCV] failed to clear the saved channels`
 
 ## Existing extensions (reference)
 
