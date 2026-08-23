@@ -6254,8 +6254,14 @@ test('--out writes where it is told, and nowhere else', { skip: generatorSkip },
     // loosely: a near miss is an argument error, not a redraw. Neither is a
     // destination handed to the mode that writes nothing, nor a flag standing
     // in for one — `--out --chek` used to create a directory called --chek.
+    // Also: a destination given twice, one that never arrived, an empty one,
+    // and one that is a file — each is the argument being wrong rather than
+    // the images differing, and none of them is a place to write.
+    fs.writeFileSync(path.join(sandbox, 'afile'), '');
     for (const args of [['--chek'], ['--check', '--chek'],
-      ['--check', '--out', elsewhere], ['--out', '--chek']]) {
+      ['--check', '--out', elsewhere], ['--out', '--chek'],
+      ['--out'], ['--out', ''], ['--out', elsewhere, '--out', `${elsewhere}2`],
+      ['--out', path.join(sandbox, 'afile')]]) {
       const refused = spawnSync('python3', ['-B', 'gen_screenshots.py', ...args],
         { cwd: sandbox, encoding: 'utf8' });
       assert.equal(refused.status, 2,
@@ -6263,10 +6269,35 @@ test('--out writes where it is told, and nowhere else', { skip: generatorSkip },
       assert.match(refused.stderr, /usage:/, `${args.join(' ')} is told the shape of the command`);
     }
     assert.ok(!fs.existsSync(path.join(sandbox, '--chek')), 'and none of them made a directory');
+    assert.ok(!fs.existsSync(`${elsewhere}2`), 'nor the second of two destinations');
     for (const [name, bytes] of before) {
       assert.ok(bytes.equals(fs.readFileSync(path.join(sandbox, 'docs/screenshots', name))),
         `${name} is untouched by the refused runs`);
     }
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test('no argument redraws the tracked directory', { skip: generatorSkip }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    // The command CLAUDE.md documents and the one --check names when it
+    // fails. Nothing else here runs the default destination.
+    const target = path.join(sandbox, 'docs/screenshots/popup_ja.png');
+    const marked = spawnSync('python3', ['-B', '-c',
+      'import sys; from PIL import Image;' +
+      'i = Image.open(sys.argv[1]).convert("RGB");' +
+      'r, g, b = i.getpixel((320, 200));' +
+      'i.putpixel((320, 200), (r ^ 1, g, b));' +
+      'i.save(sys.argv[1])', target], { encoding: 'utf8' });
+    assert.equal(marked.status, 0, 'the probe marked one pixel');
+    assert.equal(runCheck(sandbox).status, 1, 'which --check turns down');
+
+    const run = spawnSync('python3', ['-B', 'gen_screenshots.py'],
+      { cwd: sandbox, encoding: 'utf8' });
+    assert.equal(run.status, 0, (run.stderr || '') + (run.stdout || ''));
+    assert.equal(runCheck(sandbox).status, 0, 'and the redraw puts the pixel back');
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
   }

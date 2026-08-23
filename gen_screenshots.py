@@ -902,7 +902,18 @@ def out_dir_from(args):
             if not rest or not rest[0] or rest[0].startswith('-'):
                 print(f'--out には書き込み先のディレクトリが要る\n{USAGE}', file=sys.stderr)
                 sys.exit(2)
+            if target is not None:
+                # 2 つ言われて後ろを採ると、先に名指しされた行き先が診断も
+                # 無く消える。
+                print(f'--out は 1 つだけ\n{USAGE}', file=sys.stderr)
+                sys.exit(2)
             target = os.path.abspath(rest.pop(0))
+            if os.path.exists(target) and not os.path.isdir(target):
+                # 行き先がディレクトリでないのは引数の間違いで、画像の差では
+                # ない。ここで見ないと os.makedirs の traceback が exit 1 に
+                # なり、「差がある」と同じ答えになる。
+                print(f'--out の行き先がディレクトリではない: {target}\n{USAGE}', file=sys.stderr)
+                sys.exit(2)
             continue
         print(f'知らない引数: {arg}\n{USAGE}', file=sys.stderr)
         sys.exit(2)
