@@ -4831,6 +4831,8 @@ const INJECT_MOVE_FAILURE = [
   '    # replacement cannot be told from a finished one.',
   "    source = source.replace('WHITE = (255, 255, 255)', 'WHITE = (254, 254, 254)', 1)",
   "    open(script, 'w', encoding='utf-8').write(source)",
+  '    # The faces are resolved beside the script, so the copy needs them too.',
+  "    os.symlink(os.path.join(repo, 'tools'), os.path.join(sandbox, 'tools'))",
   "    out = os.path.join(sandbox, 'docs', 'screenshots')",
   '    os.makedirs(out)',
   "    tracked = os.path.join(repo, 'docs', 'screenshots')",
@@ -4902,17 +4904,15 @@ test('store screenshot generator leaves the tracked images alone when a replacem
 
 // The images the generator writes are tracked and the README shows three of
 // them, so where it writes, what it draws with, and when it replaces them are
-// all part of what the repository carries. Running it here is not available to
-// check that: CI installs node alone, without Pillow or the font.
+// all part of what the repository carries. CI draws them too and compares the
+// pixels, which is what the shape asserted here has to hold up under.
 test('store screenshot generator writes the tracked directory, and only whole', () => {
   const source = fs.readFileSync(path.join(__dirname, 'gen_screenshots.py'), 'utf8');
 
   // Resolved from the script rather than the caller, so the destination does
   // not follow whoever ran it.
-  assert.match(
-    source,
-    /^OUT_DIR = os\.path\.join\(os\.path\.dirname\(os\.path\.abspath\(__file__\)\), 'docs', 'screenshots'\)$/m
-  );
+  assert.match(source, /^ROOT = os\.path\.dirname\(os\.path\.abspath\(__file__\)\)$/m);
+  assert.match(source, /^OUT_DIR = os\.path\.join\(ROOT, 'docs', 'screenshots'\)$/m);
 
   const saves = [...source.matchAll(/^\s*img\.save\((.+)\)$/gm)].map((match) => match[1]);
   assert.equal(saves.length, 3);
@@ -4923,9 +4923,9 @@ test('store screenshot generator writes the tracked directory, and only whole', 
     assert.ok(!argument.includes('OUT_DIR'), argument);
   }
   // Beside the destination, so each move is a rename within one filesystem.
-  assert.match(source, /with tempfile\.TemporaryDirectory\(dir=OUT_DIR\) as staging:/);
+  assert.match(source, /with tempfile\.TemporaryDirectory\(dir=out_dir\) as staging:/);
   // main hands the staging directory over rather than moving anything itself.
-  assert.match(source, /for name in replace_all\(staging, OUT_DIR\):/);
+  assert.match(source, /for name in replace_all\(staging, out_dir\):/);
   const replaceAll = source.slice(source.indexOf('def replace_all('), source.indexOf('def main('));
   assert.match(replaceAll, /except BaseException:/);
   // Recorded before the move is attempted: a run interrupted once the rename
@@ -4936,13 +4936,50 @@ test('store screenshot generator writes the tracked directory, and only whole', 
   assert.match(replaceAll, /os\.remove\(os\.path\.join\(out_dir, name\)\)/);
   assert.match(replaceAll, /raise$/m);
 
-  // One named face per weight: a fallback chain would redraw all six wherever
-  // a different font resolved first.
-  const faces = [...source.matchAll(/^FONT_(?:REGULAR|BOLD)_FILE = '(.+)'$/gm)].map((m) => m[1]);
+  // One named face per weight, carried in the repository: a fallback chain
+  // would redraw all six wherever a different font resolved first, and a face
+  // outside the repository puts the machine that ran it into the images.
+  const faces = [...source.matchAll(/^FONT_(?:REGULAR|BOLD)_FILE = os\.path\.join\(FONT_DIR, '(.+)'\)$/gm)]
+    .map((m) => m[1]);
   assert.equal(faces.length, 2);
   assert.deepEqual([...new Set(faces)].length, 2);
-  assert.match(source, /raise SystemExit\(/);
+  const fontDir = source.match(/^FONT_DIR = os\.path\.join\(ROOT, '([^']+)', '([^']+)'\)$/m);
+  assert.ok(fontDir, 'FONT_DIR is resolved from the repository root');
+  for (const face of faces) {
+    assert.ok(fs.existsSync(path.join(__dirname, fontDir[1], fontDir[2], face)),
+      `${fontDir[1]}/${fontDir[2]}/${face} is the face the tracked images were drawn with`);
+  }
+  // Pillow picks raqm where it is installed and places the strings differently,
+  // so the runner and this machine would disagree on every image.
+  assert.match(source, /layout_engine=ImageFont\.Layout\.BASIC/);
+  assert.match(source, /sys\.exit\(UNAVAILABLE\)/);
   assert.ok(!source.includes('ImageFont.load_default()'), 'no silent fallback face');
+});
+
+// Only the run itself answers whether the tracked images are the ones this
+// code draws; the shape above cannot. CI installs Pillow and runs the same
+// command as its own step.
+test('tracked store screenshots are what the generator draws', { skip: generatorSkip }, () => {
+  const run = spawnSync('python3', ['-B', 'gen_screenshots.py', '--check'],
+    { cwd: __dirname, encoding: 'utf8' });
+  assert.equal(run.status, 0,
+    ((run.stdout || '') + (run.stderr || '')).trim() || 'gen_screenshots.py --check failed');
+});
+
+test('CI uploads the screenshots the runner drew, not the ones it checked out', () => {
+  const workflow = fs.readFileSync(path.join(__dirname, '.github/workflows/ci.yaml'), 'utf8');
+  assert.match(workflow, /run: python3 gen_screenshots\.py --check/);
+  const redrawInto = workflow.match(/gen_screenshots\.py --out (.+)/);
+  const uploads = workflow.match(/path: (.+)\n\s+if-no-files-found/);
+  assert.ok(redrawInto && uploads, 'the redraw and the upload each name a directory');
+  const dir = (text) => text.trim().replace(/\/$/, '');
+  assert.equal(dir(uploads[1]), dir(redrawInto[1]), 'the upload takes the directory that was redrawn');
+  assert.ok(!redrawInto[1].includes('docs/screenshots'),
+    'the redraw does not write over the tracked images');
+  // A condition without a status function is treated as success-only, so it
+  // would never run after the step it answers to has failed.
+  assert.match(workflow, /if: failure\(\) && steps\.screenshots\.conclusion == 'failure'/);
+  assert.match(workflow, /if: failure\(\) && steps\.redraw\.conclusion == 'success'/);
 });
 
 test('store screenshot generator mirrors the stylesheet muted colors', () => {
@@ -5108,10 +5145,13 @@ test('store screenshot generator draws icons the bundled font lacks', () => {
   // generator checks its own output; keep that check wired into every run.
   assert.match(source, /def verify_icons\(\):/);
   // ... and at those constants, not a size of its own choosing.
-  const check = source.slice(source.indexOf('def verify_icons():'), source.indexOf('def main():'));
+  const check = source.slice(source.indexOf('def verify_icons():'), source.indexOf('def draw_all('));
   assert.match(check, /for radius in \(HEADER_GEAR_RADIUS, PLAYER_GEAR_RADIUS\):/);
   assert.match(check, /size=FULLSCREEN_SIZE/);
-  assert.match(source, /def main\(\):\n    verify_icons\(\)/);
+  assert.match(source, /def main\(out_dir=OUT_DIR\):\n    verify_icons\(\)/);
+  // --check draws the same six, so it runs the same self-check first.
+  const checking = source.slice(source.indexOf('def check():'), source.indexOf('def out_dir_from('));
+  assert.ok(checking.includes('verify_icons()'), '--check verifies the icon helpers too');
 });
 
 test('meanSquareToLufs: known reference', () => {
