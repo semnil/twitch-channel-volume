@@ -5403,6 +5403,52 @@ function runCheck(sandbox) {
     { cwd: sandbox, encoding: 'utf8' });
 }
 
+// Chunk surgery on a tracked image: insert <kind> [payload] before IEND, or
+// copy the IHDR that is already there. Every chunk it writes carries the CRC
+// the spec asks for, so what the walk turns down is the chunk, not the CRC.
+const CHUNK_PROBE = [
+  'import struct, sys, zlib',
+  'op, target = sys.argv[1], sys.argv[2]',
+  'data = open(target, "rb").read()',
+  'walk, at = [], 8',
+  'while at < len(data):',
+  '    size = int.from_bytes(data[at:at + 4], "big")',
+  '    walk.append((data[at + 4:at + 8], data[at:at + 12 + size]))',
+  '    at += 12 + size',
+  'if op == "split-idat":',
+  '    body = b"".join(raw[8:-4] for kind, raw in walk if kind == b"IDAT")',
+  '    cut = len(body) // 2',
+  '    out = bytearray(data[:8])',
+  '    for kind, raw in walk:',
+  '        if kind != b"IDAT":',
+  '            out += raw',
+  '            continue',
+  '        if raw is not next(r for k, r in walk if k == b"IDAT"):',
+  '            continue',
+  '        for piece in (body[:cut], body[cut:]):',
+  '            head = b"IDAT" + piece',
+  '            out += struct.pack(">I", len(piece)) + head',
+  '            out += struct.pack(">I", zlib.crc32(head) & 0xffffffff)',
+  '    open(target, "wb").write(bytes(out))',
+  '    raise SystemExit',
+  'if op == "copy-ihdr":',
+  '    extra = dict(walk)[b"IHDR"]',
+  'else:',
+  '    kind = sys.argv[3].encode()',
+  // argv carries no NUL byte, so the payload spells its separator and the
+  // probe puts the byte back.
+  '    text = sys.argv[4].encode().replace(rb"\\0", b"\\0") if len(sys.argv) > 4 else b""',
+  '    body = kind + text',
+  '    extra = struct.pack(">I", len(body) - 4) + body',
+  '    extra += struct.pack(">I", zlib.crc32(body) & 0xffffffff)',
+  'out = bytearray(data[:8])',
+  'for kind, raw in walk:',
+  '    if kind == b"IEND":',
+  '        out += extra',
+  '    out += raw',
+  'open(target, "wb").write(bytes(out))',
+].join('\n');
+
 test('--check turns down a tracked image that is not what the code draws',
   { skip: generatorSkip }, () => {
     const sandbox = screenshotSandbox();
@@ -5572,6 +5618,77 @@ test('--check turns down a PNG that stops before its own end', { skip: generator
     assert.match(run.stderr, /popup_ja\.png: IEND が無い/);
     assert.match(run.stderr, /settings_ja\.png: IEND チャンクの CRC が合わない/);
     assert.match(run.stderr, /overlay_ja\.png: IEND の長さが 7/);
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test('--check takes the same pixels however the compressor split them',
+  { skip: generatorSkip }, () => {
+    const sandbox = screenshotSandbox();
+    try {
+      // How many IDAT chunks a file holds is the compressor's call, not the
+      // image's: the same pixels come back whether the stream arrives in one
+      // piece or several. A run of them is one entry, so a machine that splits
+      // differently is not a difference in what the code draws.
+      assert.equal(spawnSync('python3', ['-B', '-c', CHUNK_PROBE, 'split-idat',
+        path.join(sandbox, 'docs/screenshots/popup_ja.png')],
+      { encoding: 'utf8' }).status, 0, 'the probe split the IDAT stream');
+      assert.equal(spawnSync('python3', ['-B', '-c',
+        'import sys; from PIL import Image;'
+        + 'print(len(Image.open(sys.argv[1]).convert("RGBA").tobytes()))',
+        path.join(sandbox, 'docs/screenshots/popup_ja.png')],
+      { encoding: 'utf8' }).status, 0, 'and the split file still decodes');
+
+      const run = runCheck(sandbox);
+      assert.equal(run.status, 0, 'a split stream is not a difference: '
+        + (run.stderr || run.stdout));
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+test('--check turns down a chunk type the spec does not allow', { skip: generatorSkip }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    // Both carry a correct CRC and a length the file honours, so the walk that
+    // reads only those two lets them through. The decoder skips what it does
+    // not know, which leaves the pixels, the size and the frame count alike.
+    assert.equal(spawnSync('python3', ['-B', '-c', CHUNK_PROBE, 'insert',
+      path.join(sandbox, 'docs/screenshots/popup_ja.png'), 'a1b2'],
+    { encoding: 'utf8' }).status, 0, 'the probe added a chunk named in digits');
+    assert.equal(spawnSync('python3', ['-B', '-c', CHUNK_PROBE, 'insert',
+      path.join(sandbox, 'docs/screenshots/settings_ja.png'), 'abcd'],
+    { encoding: 'utf8' }).status, 0, 'the probe added a chunk with the reserved bit set');
+
+    const run = runCheck(sandbox);
+    assert.equal(run.status, 1, 'the chunk types are reported: ' + (run.stderr || run.stdout));
+    assert.match(run.stderr, /popup_ja\.png: \d+ バイト目のチャンク型が英字 4 文字ではない/);
+    assert.match(run.stderr, /settings_ja\.png: abcd チャンクの予約ビットが 1/);
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test('--check turns down chunks the drawing never writes', { skip: generatorSkip }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    // A second IHDR and a text chunk are both legal bytes to the decoder: it
+    // reads the first header and skips the rest, so a file carrying either
+    // still opens on the same pixels at the same size.
+    assert.equal(spawnSync('python3', ['-B', '-c', CHUNK_PROBE, 'copy-ihdr',
+      path.join(sandbox, 'docs/screenshots/popup_ja.png')],
+    { encoding: 'utf8' }).status, 0, 'the probe duplicated IHDR');
+    assert.equal(spawnSync('python3', ['-B', '-c', CHUNK_PROBE, 'insert',
+      path.join(sandbox, 'docs/screenshots/settings_ja.png'), 'tEXt', 'Comment\\0smuggled'],
+    { encoding: 'utf8' }).status, 0, 'the probe added a text chunk');
+
+    const run = runCheck(sandbox);
+    assert.equal(run.status, 1, 'the extra chunks are reported: ' + (run.stderr || run.stdout));
+    assert.match(run.stderr,
+      /popup_ja\.png: チャンクの並びが違う \(IHDR IDAT IHDR IEND \/ 描くのは IHDR IDAT IEND\)/);
+    assert.match(run.stderr,
+      /settings_ja\.png: チャンクの並びが違う \(IHDR IDAT tEXt IEND \/ 描くのは IHDR IDAT IEND\)/);
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
   }

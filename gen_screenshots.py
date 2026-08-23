@@ -576,31 +576,42 @@ def main(out_dir=OUT_DIR):
             print(f'Generated {os.path.join(shown(out_dir), name)}')
 
 
-def png_fault(path):
-    """PNG として通らないところ。無ければ None。
+def png_shape(path):
+    """PNG のチャンク型の並びと、通らないところ (無ければ None)。
 
-    デコーダは中身で形式を決め、壊れた末尾を黙って許すので、画素・大きさ・
-    フレーム数のどれにも出ない違いがここに残る。
+    デコーダは中身で形式を決め、壊れた末尾も知らないチャンクも黙って許すので、
+    画素・大きさ・フレーム数のどれにも出ない違いがここに残る。IDAT の本数は
+    圧縮器の刻み方で決まるので 1 つに畳み、並びの比較に持ち込まない。
     """
     data = open(path, 'rb').read()
     if not data.startswith(b'\x89PNG\r\n\x1a\n'):
-        return 'PNG ではない'
+        return [], 'PNG ではない'
+    kinds = []
     at = 8
     while at + 8 <= len(data):
         length = int.from_bytes(data[at:at + 4], 'big')
-        kind = data[at + 4:at + 8].decode('ascii', 'replace')
+        raw = data[at + 4:at + 8]
+        kind = raw.decode('ascii', 'replace')
         end = at + 12 + length
+        # 型は英字 4 文字で、3 文字目の小文字 (予約ビット 1) は仕様が使い道を
+        # 決めていない。どちらも「読めるが PNG ではない」形。
+        if not all(0x41 <= byte <= 0x5a or 0x61 <= byte <= 0x7a for byte in raw):
+            return kinds, f'{at} バイト目のチャンク型が英字 4 文字ではない ({raw!r})'
+        if raw[2] & 0x20:
+            return kinds, f'{kind} チャンクの予約ビットが 1'
         if end > len(data):
-            return f'{kind} チャンクがファイルの外へ出ている'
+            return kinds, f'{kind} チャンクがファイルの外へ出ている'
         if zlib.crc32(data[at + 4:end - 4]) & 0xffffffff != int.from_bytes(data[end - 4:end], 'big'):
-            return f'{kind} チャンクの CRC が合わない'
+            return kinds, f'{kind} チャンクの CRC が合わない'
+        if kind != 'IDAT' or kinds[-1:] != ['IDAT']:
+            kinds.append(kind)
         if kind == 'IEND':
             if length:
-                return f'IEND の長さが {length} (0 のはず)'
+                return kinds, f'IEND の長さが {length} (0 のはず)'
             trailing = len(data) - end
-            return f'IEND の後ろに {trailing} バイトある' if trailing else None
+            return kinds, f'IEND の後ろに {trailing} バイトある' if trailing else None
         at = end
-    return 'IEND が無い'
+    return kinds, 'IEND が無い'
 
 
 def check():
@@ -618,6 +629,9 @@ def check():
             # 変えられた画像が「同じ」になる。いま描いた側は guard の外で開く。
             # そこで失敗するのはこの走行の側の失敗で、追跡物の話ではない。
             new = Image.open(os.path.join(fresh, name)).convert('RGBA')
+            drawn_kinds, drawn_fault = png_shape(os.path.join(fresh, name))
+            if drawn_fault:
+                raise SystemExit(f'いま描いた {name} が PNG として通らない: {drawn_fault}')
             try:
                 opened = Image.open(tracked)
                 # convert() が返す Image はフレーム数を忘れるので先に読む。
@@ -632,7 +646,7 @@ def check():
                 # 来るので両方を捕らえる。
                 stale.append(f'{name}: 画像として読めない ({err})')
                 continue
-            fault = png_fault(tracked)
+            kinds, fault = png_shape(tracked)
             if frames != 1:
                 # 下の比較はファイルが開いたフレームしか読まないので、第 1
                 # フレームが一致する APNG はそこを通ってしまう。
@@ -645,6 +659,11 @@ def check():
                 # デコーダは中身で形式を決め、IEND の欠落や後ろのバイトを
                 # 黙って許すので、ここまでの 3 つには出てこない。
                 stale.append(f'{name}: {fault}')
+            elif kinds != drawn_kinds:
+                # 知らないチャンクも 2 つ目の IHDR もデコーダは読み飛ばすので、
+                # 画素は一致したまま中身が増える。並びは描いた側から採る。
+                stale.append(f'{name}: チャンクの並びが違う '
+                             f'({" ".join(kinds)} / 描くのは {" ".join(drawn_kinds)})')
             elif new.tobytes() != old.tobytes():
                 # 画素をそのまま比べる。difference().getbbox() は既定で alpha
                 # だけを見るので、色が違っても alpha が同じなら None を返す。
