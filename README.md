@@ -93,6 +93,12 @@ python3 -B -c "import ast,pathlib; [ast.parse(p.read_text()) for p in pathlib.Pa
 # Regenerate icons (requires Pillow)
 python3 gen_icons.py
 
+# Redraw the screenshots above (requires Pillow; the faces are in tools/fonts)
+python3 gen_screenshots.py
+
+# Compare the tracked screenshots with what the code draws, without writing
+python3 gen_screenshots.py --check
+
 # Build Chrome Web Store zip
 python3 pack.py
 ```

@@ -2,18 +2,35 @@
 
 PIL 直接描画。popup / settings / overlay の 3 シーンを ja/en で出力する。
 配色・UI 文字列は popup.html / options.html / _locales の実値に一致させる。
+
+`--check` は一時ディレクトリへ描き直して追跡中の画像と画素比較し、書き込まない。
+差があれば exit 1、この環境では描けない (Pillow / 書体が無い) なら exit 3。
+`--out <dir>` は docs/screenshots ではなくそのディレクトリへ書く。知らない引数と
+値の無い `--out` は exit 2 で、どちらも何も描かない。
 """
 import math
 import os
 import shutil
+import sys
 import tempfile
-from PIL import Image, ImageDraw, ImageFont
+
+UNAVAILABLE = 3
+
+try:
+    from PIL import Image, ImageDraw, ImageFont
+    # Pillow は raqm があればそちらを選び、入っている環境と入っていない環境で
+    # 字の置き方が変わる。追跡中の画像と比べるので、ここで固定する。
+    BASIC_LAYOUT = ImageFont.Layout.BASIC
+except (AttributeError, ImportError) as err:
+    print(f'{err}. Pillow を入れると描ける。', file=sys.stderr)
+    sys.exit(UNAVAILABLE)
 
 W, H = 640, 400
 
+ROOT = os.path.dirname(os.path.abspath(__file__))
 # 拡張機能には同梱しない資料用の画像なので docs/ 側に置く。実行した
 # ディレクトリではなくこのファイルの位置から解決する。
-OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'docs', 'screenshots')
+OUT_DIR = os.path.join(ROOT, 'docs', 'screenshots')
 
 # ── Colors (popup.html / options.html の実値) ───────────────────────
 PAGE_BG = (15, 15, 35)    # #0f0f23 options body
@@ -45,19 +62,21 @@ FULLSCREEN_SIZE = 12        # プレイヤー操作列の全画面アイコン
 
 # 追跡している画像はこの 2 書体で描いたもの。別の書体で描くと 6 枚とも
 # バイト列が変わるため、候補から選ばずこの 2 つだけを使い、無ければ止める。
-FONT_REGULAR_FILE = '/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc'
-FONT_BOLD_FILE = '/System/Library/Fonts/ヒラギノ角ゴシック W6.ttc'
+# リポジトリに置いてあるので、CI の runner も同じ字形で描ける。
+FONT_DIR = os.path.join(ROOT, 'tools', 'fonts')
+FONT_REGULAR_FILE = os.path.join(FONT_DIR, 'MPLUS1p-Regular.ttf')
+FONT_BOLD_FILE = os.path.join(FONT_DIR, 'MPLUS1p-Bold.ttf')
 
 
 def _font(size, bold=False):
     path = FONT_BOLD_FILE if bold else FONT_REGULAR_FILE
     try:
-        return ImageFont.truetype(path, size)
+        return ImageFont.truetype(path, size, layout_engine=BASIC_LAYOUT)
     except OSError:
-        raise SystemExit(
-            f'{path} が見つからない。docs/screenshots/ の画像はこの書体で描いたもので、'
-            '別の書体で生成すると 6 枚とも差し替わる。'
-        )
+        print(f'{os.path.relpath(path, ROOT)} が読めない。docs/screenshots/ の画像は'
+              'この書体で描いたもので、別の書体で生成すると 6 枚とも差し替わる。',
+              file=sys.stderr)
+        sys.exit(UNAVAILABLE)
 
 
 FONT = _font(13)
@@ -156,7 +175,7 @@ STRINGS = {
         ],
         'stream_title': '【雑談】ゲーム配信のあとに少しだけ',
         'viewers': '1,234 人が視聴中',
-        'overlay_note': '↑ ゲイン表示',
+        'overlay_note': '↓ ゲイン表示',
     },
     'en': {
         'channel': 'Sample Stream',
@@ -185,7 +204,7 @@ STRINGS = {
         ],
         'stream_title': 'Just chatting after the game',
         'viewers': '1,234 watching',
-        'overlay_note': '↑ Gain overlay',
+        'overlay_note': '↓ Gain overlay',
     },
 }
 
@@ -524,21 +543,120 @@ def replace_all(staging, out_dir):
     return names
 
 
+def shown(path):
+    """リポジトリの中なら相対、外ならそのまま。"""
+    try:
+        inside = os.path.commonpath([ROOT, os.path.abspath(path)]) == ROOT
+    except ValueError:
+        # Windows: ドライブが違うと共通部分が無く ValueError になる。
+        inside = False
+    return os.path.relpath(path, ROOT) if inside else os.path.abspath(path)
+
+
+def draw_all(target):
+    """6 枚を target へ描く。"""
+    for lang in ('ja', 'en'):
+        screenshot_popup(lang, target)
+        screenshot_settings(lang, target)
+        screenshot_overlay(lang, target)
+    return sorted(os.listdir(target))
+
+
 # 全 6 枚を作業ディレクトリで描き切ってから追跡先へ移す。レイアウトの assert は
 # 2 枚目以降でも落ちるため、追跡先へ直に書くと新しい 1 枚と古い 5 枚が残る。
 # 作業ディレクトリを追跡先の隣に置くのは、移動が同一ファイルシステム内の
 # rename になるようにするため。
-def main():
+def main(out_dir=OUT_DIR):
     verify_icons()
-    os.makedirs(OUT_DIR, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=OUT_DIR) as staging:
-        for lang in ('ja', 'en'):
-            screenshot_popup(lang, staging)
-            screenshot_settings(lang, staging)
-            screenshot_overlay(lang, staging)
-        for name in replace_all(staging, OUT_DIR):
-            print(f'Generated docs/screenshots/{name}')
+    os.makedirs(out_dir, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=out_dir) as staging:
+        draw_all(staging)
+        for name in replace_all(staging, out_dir):
+            print(f'Generated {os.path.join(shown(out_dir), name)}')
+
+
+def check():
+    """描き直した 6 枚と追跡中の画像を画素で比べる。書き込みはしない。"""
+    verify_icons()
+    stale = []
+    with tempfile.TemporaryDirectory() as fresh:
+        drawn = set(draw_all(fresh))
+        for name in sorted(drawn):
+            tracked = os.path.join(OUT_DIR, name)
+            if not os.path.exists(tracked):
+                stale.append(f'{name}: 追跡されていない')
+                continue
+            try:
+                # RGBA で比べる。RGB へ落とすと、色をそのままに alpha だけ
+                # 変えられた画像が「同じ」になる。
+                new, old = (Image.open(os.path.join(fresh, name)).convert('RGBA'),
+                            Image.open(tracked).convert('RGBA'))
+            except OSError as err:
+                # 読めないものは「いま描くもの」ではない。1 枚で止めると残りの
+                # 比較も orphan の報告も出ない。
+                stale.append(f'{name}: 画像として読めない ({err})')
+                continue
+            if new.size != old.size:
+                # 大きさは先に見る。ImageChops.difference は大きさが違っても
+                # 投げず、小さい方に切り詰めた差を返すため。
+                stale.append(f'{name}: 大きさが違う ({old.size} → {new.size})')
+            elif new.tobytes() != old.tobytes():
+                # 画素をそのまま比べる。difference().getbbox() は既定で alpha
+                # だけを見るので、色が違っても alpha が同じなら None を返す。
+                stale.append(f'{name}: いま描くものと違う')
+    here = os.path.relpath(OUT_DIR, ROOT)
+    # 描くのは png だけなので、それ以外 (.DS_Store, 中断した走行が残す作業
+    # ディレクトリ) を追跡物として数えない。
+    tracked_now = sorted(name for name in os.listdir(OUT_DIR)
+                         if name.endswith('.png') and os.path.isfile(os.path.join(OUT_DIR, name))
+                         ) if os.path.isdir(OUT_DIR) else []
+    orphans = [f'{here}/{name}' for name in tracked_now if name not in drawn]
+
+    for line in stale:
+        print(line, file=sys.stderr)
+    if stale:
+        print(f'`python3 {os.path.basename(__file__)}` で描き直してコミットする。', file=sys.stderr)
+    for path in orphans:
+        print(f'{path}: 誰も描いていない', file=sys.stderr)
+    if orphans:
+        # 生成は自分が描く 6 枚しか触らないので、これは手で消すしかない。
+        print('削除する: ' + ' '.join(orphans), file=sys.stderr)
+    if stale or orphans:
+        return 1
+    print(f'{len(drawn)} 枚ともいま描くものと同じ。')
+    return 0
+
+
+USAGE = f'usage: {os.path.basename(__file__)} [--check] [--out <dir>]'
+
+
+def out_dir_from(args):
+    """--out の次の引数。無ければ docs/screenshots。
+
+    綴りを外した引数は書き込みへ落とさない。読むだけのつもりの `--chek` が
+    追跡画像の上書きになると、確かめたかった古さがその場で消える。
+    """
+    target = OUT_DIR
+    rest = list(args)
+    while rest:
+        arg = rest.pop(0)
+        if arg == '--check':
+            continue
+        if arg == '--out':
+            if not rest or not rest[0]:
+                print(f'--out には書き込み先のディレクトリが要る\n{USAGE}', file=sys.stderr)
+                sys.exit(2)
+            target = os.path.abspath(rest.pop(0))
+            continue
+        print(f'知らない引数: {arg}\n{USAGE}', file=sys.stderr)
+        sys.exit(2)
+    return target
 
 
 if __name__ == '__main__':
-    main()
+    # 引数は分岐の前に全部見る。--check と一緒に渡された --out や、綴り違いを
+    # 描画側へ素通ししないため。
+    destination = out_dir_from(sys.argv[1:])
+    if '--check' in sys.argv[1:]:
+        sys.exit(check())
+    main(destination)

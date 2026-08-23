@@ -181,11 +181,12 @@ options.html / options.js
 | `_locales/` | i18n (ja, en) |
 | `icons/` | 16/48/128 px PNG (Twitch purple 3-bar meter) |
 | `gen_icons.py` | アイコン生成 (Python Pillow) |
-| `gen_screenshots.py` | スクリーンショット生成 (PIL 直接描画, 640×400 ja/en → `docs/screenshots/`) |
+| `gen_screenshots.py` | スクリーンショット生成 (PIL 直接描画, 640×400 ja/en → `docs/screenshots/`)。`--check` は書き込まず画素比較 (差は exit 1、描けない環境は exit 3)、`--out <dir>` は書き込み先を差し替える。知らない引数は exit 2 で拒否する (`--chek` が上書きにならないように) |
 | `pack.py` | Chrome Web Store 用 zip 生成 (manifest からの参照グラフで選択、`--list` で選択結果のみ出力) |
 | `PRIVACY_POLICY.md` / `PRIVACY_POLICY_JA.md` | プライバシーポリシー (審査・README リンク用, EN/JA) |
 | `docs/security-audit.md` | セキュリティ監査レポート |
-| `docs/screenshots/` | `gen_screenshots.py` の出力。README とストア掲載の両方が使う (拡張機能には同梱しない)。追跡しているのは macOS のヒラギノで描いたもの。生成器はその 2 書体だけを使い、無ければ止まる (別の書体で描くと 6 枚とも差し替わるため)。6 枚を作業ディレクトリで描き切ってから移し、移動が 1 つでも失敗したら上書きした分を戻すので、描画・置換のどちらで止まっても追跡先は前回のまま |
+| `docs/screenshots/` | `gen_screenshots.py` の出力。README とストア掲載の両方が使う (拡張機能には同梱しない)。追跡しているのは `tools/fonts/` の M PLUS 1p で描いたもの。生成器はその 2 書体だけを使い、無ければ止まる (別の書体で描くと 6 枚とも差し替わるため)。6 枚を作業ディレクトリで描き切ってから移し、移動が 1 つでも失敗したら上書きした分を戻すので、描画・置換のどちらで止まっても追跡先は前回のまま。CI は `--check` で描き直して画素比較する |
+| `tools/fonts/` | 描画に使う M PLUS 1p (Regular / Bold) と OFL.txt。google/fonts の `ofl/mplus1p` から取得 (commit `66a36c8`)。CI と各マシンで同じ画素を得るためにリポジトリへ入れている |
 | `test.js` | ユニットテスト (`node test.js`) — utils と store に加え、content.js / page-bridge.js / popup.js / options.js / background.js を VM 上の harness で走らせる |
 
 ## Key design decisions
@@ -249,6 +250,9 @@ python3 gen_icons.py
 
 # Regenerate store screenshots (docs/screenshots/ へ書く。README が参照する)
 python3 gen_screenshots.py
+
+# 追跡中の画像がいま描くものと同じか確認 (書き込まない。CI と同じコマンド)
+python3 gen_screenshots.py --check
 
 # Run tests
 node test.js
