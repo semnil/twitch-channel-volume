@@ -5877,6 +5877,30 @@ test('--check turns down a size the code no longer draws', { skip: generatorSkip
   }
 });
 
+test('--check turns down a tracked image that is a link to one', { skip: generatorSkip
+  || (process.platform === 'win32' && 'symlinks need a privilege this does not ask for') }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    // Everything that opens the file follows the link, so the pixels match and
+    // the size matches. What git records for a link is where it points, which
+    // is not an image at all.
+    const shots = path.join(sandbox, 'docs/screenshots');
+    fs.renameSync(path.join(shots, 'popup_ja.png'), path.join(shots, 'popup_ja.source'));
+    fs.symlinkSync('popup_ja.source', path.join(shots, 'popup_ja.png'));
+    // And one that points nowhere, under a name nothing draws: a filter that
+    // asks whether the target is a file leaves this one out of the report.
+    fs.symlinkSync('gone.png', path.join(shots, 'popup_de.png'));
+
+    const run = runCheck(sandbox);
+    assert.equal(run.status, 1, 'the link is reported: ' + (run.stderr || run.stdout));
+    assert.match(run.stderr,
+      /popup_ja\.png: シンボリックリンク \(popup_ja\.source を指している\)/);
+    assert.match(run.stderr, /popup_de\.png: 誰も描いていない/);
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
 test('--check names a tracked image nothing draws, and leaves the rest alone',
   { skip: generatorSkip }, () => {
     const sandbox = screenshotSandbox();

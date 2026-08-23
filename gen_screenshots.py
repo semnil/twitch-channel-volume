@@ -11,6 +11,7 @@ PIL 直接描画。popup / settings / overlay の 3 シーンを ja/en で出力
 import math
 import os
 import shutil
+import stat
 import sys
 import tempfile
 import zlib
@@ -576,6 +577,21 @@ def main(out_dir=OUT_DIR):
             print(f'Generated {os.path.join(shown(out_dir), name)}')
 
 
+def not_a_plain_file(path):
+    """追跡物がファイルそのものでないところ。無ければ None。
+
+    生成は通常ファイルしか書かない。開く側の os.path.exists / Image.open /
+    open はどれもリンクの先を読むので、中身が同じリンクは画素まで一致する。
+    git が記録するのはリンクの行き先で、画像ではない。
+    """
+    mode = os.lstat(path).st_mode
+    if stat.S_ISREG(mode):
+        return None
+    if stat.S_ISLNK(mode):
+        return f'シンボリックリンク ({os.readlink(path)} を指している)'
+    return 'ファイルではない'
+
+
 def unpack_pixels(pixels, cap):
     """IDAT が運ぶ zlib ストリームを展開した長さと、通らないところ (無ければ None)。
 
@@ -659,6 +675,10 @@ def check():
             if not os.path.exists(tracked):
                 stale.append(f'{name}: 追跡されていない')
                 continue
+            kind = not_a_plain_file(tracked)
+            if kind:
+                stale.append(f'{name}: {kind}')
+                continue
             # RGBA で比べる。RGB へ落とすと、色をそのままに alpha だけ
             # 変えられた画像が「同じ」になる。いま描いた側は guard の外で開く。
             # そこで失敗するのはこの走行の側の失敗で、追跡物の話ではない。
@@ -707,7 +727,7 @@ def check():
     # ディレクトリ) を追跡物として数えない。
     tracked_now = sorted(name for name in os.listdir(OUT_DIR)
                          if name.lower().endswith('.png')
-                         and os.path.isfile(os.path.join(OUT_DIR, name))
+                         and not os.path.isdir(os.path.join(OUT_DIR, name))
                          ) if os.path.isdir(OUT_DIR) else []
     # 綴りだけ違う名前は「誰も描いていない」ではない。ケース非依存の
     # ファイルシステムでは画素比較を通ってしまうので、消せとは言わずに
