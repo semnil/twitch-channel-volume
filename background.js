@@ -11,10 +11,10 @@ const writeChannelVolumes = channelStore.createChannelVolumesWriter(
 );
 const writeSettings = settingsStore.createSettingsWriter(chrome.storage.local);
 
-// The stores refuse a malformed mutation with a TypeError, and the storage
-// area fails with everything else. Only the second is about storage.
-function refusedMutation(error) {
-  return error instanceof TypeError;
+// The stores name the rejections they raise themselves. A rejection with no
+// name came from the storage area, and only that one is worth retrying.
+function namedFailure(error) {
+  return typeof error?.reason === 'string' ? error.reason : '';
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -22,25 +22,29 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     writeChannelVolumes(message.mutation).then(() => {
       sendResponse({ ok: true });
     }).catch((error) => {
-      if (refusedMutation(error)) {
+      const named = namedFailure(error);
+      if (named === 'invalid-mutation') {
         console.error('[TCV] channelVolumes mutation rejected as invalid', error);
-        sendResponse({ ok: false, reason: 'invalid-mutation' });
-        return;
+      } else if (named === 'stored-state-invalid') {
+        console.error('[TCV] channelVolumes mutation blocked by the stored state', error);
+      } else {
+        console.error('[TCV] channelVolumes mutation failed', error);
       }
-      console.error('[TCV] channelVolumes mutation failed', error);
-      sendResponse({ ok: false, reason: 'storage-update-failed' });
+      sendResponse({ ok: false, reason: named || 'storage-update-failed' });
     });
   } else if (message?.type === settingsStore.SETTINGS_MUTATION_MESSAGE) {
     writeSettings(message.mutation).then((settings) => {
       sendResponse({ ok: true, settings });
     }).catch((error) => {
-      if (refusedMutation(error)) {
+      const named = namedFailure(error);
+      if (named === 'invalid-mutation') {
         console.error('[TCV] settings mutation rejected as invalid', error);
-        sendResponse({ ok: false, reason: 'invalid-mutation' });
-        return;
+      } else if (named === 'stored-state-invalid') {
+        console.error('[TCV] settings mutation blocked by the stored state', error);
+      } else {
+        console.error('[TCV] settings mutation failed', error);
       }
-      console.error('[TCV] settings mutation failed', error);
-      sendResponse({ ok: false, reason: 'settings-update-failed' });
+      sendResponse({ ok: false, reason: named || 'settings-update-failed' });
     });
   } else {
     // Answering here would take the response away from a listener added later,

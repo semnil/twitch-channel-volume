@@ -4209,7 +4209,7 @@ test('settings initialization preserves existing Auto defaults', () => {
   assert.deepEqual(result, existing);
 });
 
-function createBackgroundHarness() {
+function createBackgroundHarness({ aliases, sequence } = {}) {
   let stored = {
     channelVolumes: {
       'login:fixture_channel': { name: 'Fixture_Channel', gainLive: 0.7 },
@@ -4223,7 +4223,9 @@ function createBackgroundHarness() {
       targetLufs: -18,
       displayUnit: '%',
       autoApplyLoudnessLiveDefault: true
-    }
+    },
+    ...(aliases ? { [channelStore.CHANNEL_ALIASES_KEY]: aliases } : {}),
+    ...(sequence === undefined ? {} : { [channelStore.CHANNEL_SEQUENCE_KEY]: sequence })
   };
   let failNextSet = false;
   let messageListener;
@@ -4365,6 +4367,51 @@ test('background tells a refused mutation from a failed write', async () => {
     String(harness.errors[1][1]?.message),
     'gain must be finite and within [0, 6]'
   );
+});
+
+test('channel store names the rejections it raises', () => {
+  assert.throws(
+    () => channelStore.applyChannelVolumesMutation(
+      {}, { operation: 'saveGain', channelId: 'login:test', kind: 'live', gain: 'loud' }, 1
+    ),
+    { reason: 'invalid-mutation', message: 'gain must be finite and within [0, 6]' }
+  );
+  assert.throws(
+    () => channelStore.applyChannelVolumesMutation({}, { operation: 'noSuchOperation' }, 1),
+    { reason: 'invalid-mutation', message: 'unknown channelVolumes mutation' }
+  );
+  assert.throws(
+    () => settingsStore.applySettingsMutation(
+      {}, { operation: 'patchSettings', patch: { displayUnit: 'furlongs' } }
+    ),
+    { reason: 'invalid-mutation', message: 'invalid settings value: displayUnit' }
+  );
+});
+
+test('background separates stored state it cannot use from what the caller sent', async () => {
+  // A cycle on file, and a mutation with nothing wrong with it.
+  const cyclic = createBackgroundHarness({
+    aliases: { 'login:a': 'login:b', 'login:b': 'login:a' }
+  });
+  const cyclicResponse = await cyclic.send({
+    operation: 'saveGain', channelId: 'login:a', kind: 'live', gain: 1.5
+  });
+  assert.equal(cyclicResponse.ok, false);
+  assert.equal(cyclicResponse.reason, 'stored-state-invalid');
+  const [cyclicLog, cyclicError] = cyclic.errors.at(-1);
+  assert.equal(cyclicLog, '[TCV] channelVolumes mutation blocked by the stored state');
+  assert.equal(String(cyclicError?.message), 'channel alias cycle detected');
+
+  // The counter on file has nowhere left to go.
+  const exhausted = createBackgroundHarness({ sequence: Number.MAX_SAFE_INTEGER });
+  const exhaustedResponse = await exhausted.send({
+    operation: 'saveGain', channelId: 'login:test', kind: 'live', gain: 1.5
+  });
+  assert.equal(exhaustedResponse.ok, false);
+  assert.equal(exhaustedResponse.reason, 'stored-state-invalid');
+  const [exhaustedLog, exhaustedError] = exhausted.errors.at(-1);
+  assert.equal(exhaustedLog, '[TCV] channelVolumes mutation blocked by the stored state');
+  assert.equal(String(exhaustedError?.message), 'channel mutation sequence exhausted');
 });
 
 test('background names a message type it does not handle', async () => {

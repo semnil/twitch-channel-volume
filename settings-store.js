@@ -3,6 +3,15 @@
 const SETTINGS_MUTATION_MESSAGE = '__twitch_channel_volume_settings_mutation__';
 const SETTINGS_STORE_KEY = 'autoLoudnessSettings';
 
+// Mirrors invalidChannelMutation in channel-store.js: what the caller sent
+// cannot be applied, as opposed to a failure of the storage area. The names
+// differ because the service worker runs both scripts in one global.
+function invalidSettingsMutation(message) {
+  const error = new TypeError(message);
+  error.reason = 'invalid-mutation';
+  return error;
+}
+
 const SETTINGS_VALIDATORS = {
   targetLufs: (value) => Number.isFinite(value) && value >= -30 && value <= -6,
   adGainDb: (value) => Number.isFinite(value) && value >= -24 && value <= 6,
@@ -15,21 +24,21 @@ const SETTINGS_VALIDATORS = {
 
 function validateSettingsPatch(patch) {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
-    throw new TypeError('settings patch must be an object');
+    throw invalidSettingsMutation('settings patch must be an object');
   }
   const entries = Object.entries(patch);
-  if (entries.length === 0) throw new TypeError('settings patch must not be empty');
+  if (entries.length === 0) throw invalidSettingsMutation('settings patch must not be empty');
   for (const [field, value] of entries) {
     const validate = SETTINGS_VALIDATORS[field];
-    if (!validate) throw new TypeError(`unknown settings field: ${field}`);
-    if (!validate(value)) throw new TypeError(`invalid settings value: ${field}`);
+    if (!validate) throw invalidSettingsMutation(`unknown settings field: ${field}`);
+    if (!validate(value)) throw invalidSettingsMutation(`invalid settings value: ${field}`);
   }
   return { ...patch };
 }
 
 function applySettingsMutation(currentValue, mutation) {
   if (!mutation || typeof mutation !== 'object') {
-    throw new TypeError('settings mutation must be an object');
+    throw invalidSettingsMutation('settings mutation must be an object');
   }
   const current = currentValue && typeof currentValue === 'object'
     ? { ...currentValue }
@@ -41,7 +50,7 @@ function applySettingsMutation(currentValue, mutation) {
     if (Object.keys(current).length > 0) return current;
     return validateSettingsPatch(mutation.defaults);
   }
-  throw new TypeError('unknown settings mutation');
+  throw invalidSettingsMutation('unknown settings mutation');
 }
 
 function createSettingsWriter(storageArea, storageKey = SETTINGS_STORE_KEY) {
