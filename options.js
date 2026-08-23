@@ -4,6 +4,8 @@
   'use strict';
 
   const CHANNEL_MUTATION_MESSAGE = '__twitch_channel_volume_channel_mutation__';
+  // How long the page waits for a load that never answers before it says so.
+  const LOAD_TIMEOUT_MS = 3000;
 
   function $(id) { return document.getElementById(id); }
 
@@ -90,6 +92,9 @@
     const initialSettingsRevision = settingsRevision;
     const initialChannelRevision = channelRevision;
     const data = await chrome.storage.local.get([SETTINGS_KEY, CHANNEL_VOLUMES_KEY]);
+    // The page has already been shown as one whose load did not arrive, so what
+    // arrives afterwards does not get to fill it in behind that.
+    if (loadFailed) return;
     if (initialSettingsRevision === settingsRevision) {
       renderSettings(data[SETTINGS_KEY] || {});
     }
@@ -312,9 +317,17 @@
     });
   }
 
+  function loadDeadline() {
+    return new Promise((resolve, reject) => {
+      setTimeout(() => reject(new Error('settings load timed out')), LOAD_TIMEOUT_MS);
+    });
+  }
+
   applyI18n();
   setSettingsControlsDisabled(true);
-  loadAll().then(() => {
+  // A load that never settles would leave the page hidden for good, so the wait
+  // has an end and it ends the same way a failure does.
+  Promise.race([loadAll(), loadDeadline()]).then(() => {
     settingsReady = true;
     setSettingsControlsDisabled(false);
     // The rows were built while the load was still out, so their delete buttons
