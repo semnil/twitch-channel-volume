@@ -4369,6 +4369,33 @@ test('background tells a refused mutation from a failed write', async () => {
   );
 });
 
+test('the service worker scripts do not share a top-level name', () => {
+  const background = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
+  const call = /importScripts\(([^)]*)\)/.exec(background);
+  assert.ok(call, 'background.js does not call importScripts');
+  const files = [...call[1].matchAll(/'([^']+)'/g)].map(([, name]) => name);
+  assert.ok(files.length >= 2, 'importScripts loads fewer than two scripts');
+
+  // importScripts runs each script in the worker's own global, so a top-level
+  // name declared twice leaves only whichever loaded last. Callers in the
+  // earlier script then reach the later script's version.
+  const declaredIn = new Map();
+  for (const file of files) {
+    const source = fs.readFileSync(path.join(__dirname, file), 'utf8');
+    const declarations =
+      source.matchAll(/^(?:function ([A-Za-z0-9_$]+)|(?:const|let|var) ([A-Za-z0-9_$]+)\s*=)/gm);
+    for (const [, declaredFunction, declaredBinding] of declarations) {
+      const name = declaredFunction || declaredBinding;
+      assert.equal(
+        declaredIn.get(name),
+        undefined,
+        `${name} is declared in both ${declaredIn.get(name)} and ${file}`
+      );
+      declaredIn.set(name, file);
+    }
+  }
+});
+
 test('channel store names the rejections it raises', () => {
   assert.throws(
     () => channelStore.applyChannelVolumesMutation(
