@@ -4181,7 +4181,11 @@ test('options disables settings until load and saves only field mutations', () =
   assert.match(source, /type:\s*SETTINGS_MUTATION_MESSAGE/);
   assert.match(source, /operation:\s*'patchSettings',\s*patch/);
   assert.match(source, /loadAll\(\)[\s\S]*operation:\s*'normalizeChannels'/);
-  assert.match(source, /setSettingsControlsDisabled\(true\);\s*loadAll\(\)/s);
+  assert.ok(
+    source.indexOf('setSettingsControlsDisabled(true);') <
+      source.indexOf('Promise.race([loadAll()'),
+    'the controls are disabled before the load is started'
+  );
   assert.doesNotMatch(source, /chrome\.storage\.local\.set\(\{\s*\[SETTINGS_KEY\]/);
 });
 
@@ -4425,6 +4429,36 @@ test('a channel change that arrived before the read failed stays on the page', a
   // neither the button that empties the list nor the one on the row.
   assert.equal(harness.el('clearAllBtn').disabled, true);
   assert.match(harness.el('channelsBody').textContent, /class="ch-del"[^>]*\bdisabled\b/);
+});
+
+test('a load that never answers ends the same way a failed one does', async () => {
+  const harness = createOptionsHarness({
+    settings: { targetLufs: -24 },
+    channelVolumes: { 123: { name: 'somechannel', login: 'somechannel', gainLive: 1.5 } },
+    deferStorage: true
+  });
+  await flushTasks(8);
+  assert.ok(harness.body.classList.contains('initializing'), 'hidden while the read is out');
+  assert.deepEqual(harness.timers.map((timer) => timer.delay), [3000]);
+
+  harness.fireTimers();
+  await flushTasks(8);
+  // The page is shown as one whose load did not arrive: the markup values, the
+  // failure message, and nothing offered that acts on what it never read.
+  assert.equal(harness.body.classList.contains('initializing'), false);
+  assert.equal(harness.el('settingsError').textContent, harness.message('settingsLoadFailed'));
+  assert.equal(harness.el('targetLufsValue').textContent, '');
+  assert.equal(harness.el('targetLufs').disabled, true);
+  assert.equal(harness.el('clearAllBtn').disabled, true);
+  assert.equal(harness.el('emptyMsg').style.display, 'none');
+  assert.equal(harness.el('select:.channel-table').style.display, 'none');
+
+  harness.releaseStorage();
+  await flushTasks(8);
+  // The read arriving afterwards does not fill the page in behind that.
+  assert.equal(harness.el('targetLufsValue').textContent, '');
+  assert.equal(harness.el('channelsBody').textContent, '');
+  assert.equal(harness.el('targetLufs').disabled, true);
 });
 
 test('a page that could not read keeps what another tab writes off its screen', async () => {
