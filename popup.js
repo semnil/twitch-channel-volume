@@ -253,7 +253,8 @@
       if (!res?.ok) throw new Error(res?.reason || 'Gain update failed');
       gainSaveError = false;
       syncSlider(lastSuggestedGain);
-    } catch (_) {
+    } catch (error) {
+      console.warn('[TCV] suggested gain request failed', error);
       gainSaveError = true;
       sliderSynced = false;
     }
@@ -269,7 +270,8 @@
       const res = await chrome.tabs.sendMessage(tab.id, { cmd: 'setGain', gain });
       if (!res?.ok) throw new Error(res?.reason || 'Gain update failed');
       gainSaveError = false;
-    } catch (_) {
+    } catch (error) {
+      console.warn('[TCV] gain request failed', error);
       gainSaveError = true;
       sliderSynced = false;
     }
@@ -306,7 +308,8 @@
         sliderSynced = true;
       }
       await refresh();
-    } catch (_) {
+    } catch (error) {
+      console.warn('[TCV] Auto setting request failed', error);
       autoUpdatePending = false;
       $('autoError').textContent = msg('autoSaveFailed');
       $('autoError').classList.remove('hidden');
@@ -338,7 +341,8 @@
       hasResettableMeasurement = false;
       measurementResetPending = false;
       await refresh();
-    } catch (_) {
+    } catch (error) {
+      console.warn('[TCV] measurement reset request failed', error);
       measurementResetPending = false;
       $('resetMeasurementError').textContent = msg('resetMeasurementFailed');
       $('resetMeasurementError').classList.remove('hidden');

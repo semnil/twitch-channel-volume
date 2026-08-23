@@ -371,12 +371,20 @@ function assertContrastFloor(css, pairs, floor) {
   }
 }
 
+// The arguments a `[TCV]` log carried, after the label.
+function loggedWarning(harness, label) {
+  const logged = harness.warnings.find(([message]) => message === label);
+  assert.ok(logged, `${label} was not logged`);
+  return logged.slice(1);
+}
+
 function createContentHarness({
   autoApply = false,
   autoGain,
   href = 'https://www.twitch.tv/videos/100',
   channelVolumes,
   deferInitialStorageGet = false,
+  failInitialStorageGet = false,
   deferChannelMutationOperation = '',
   failChannelMutationOperation = ''
 } = {}) {
@@ -386,7 +394,7 @@ function createContentHarness({
   const warnings = [];
   let runtimeMessageListener;
   let runtimeId = 'test-extension';
-  let failNextStorageGet = false;
+  let failNextStorageGet = failInitialStorageGet;
   let initialStorageGetDeferred = deferInitialStorageGet;
   let channelMutationDeferred = !!deferChannelMutationOperation;
   let failingChannelMutationOperation = failChannelMutationOperation;
@@ -492,14 +500,14 @@ function createContentHarness({
       async sendMessage(message) {
         const mutation = message?.mutation;
         if (mutation) {
-          if (mutation.operation === failingChannelMutationOperation) {
-            failingChannelMutationOperation = '';
-            return { ok: false, reason: 'storage-update-failed' };
-          }
           if (channelMutationDeferred &&
               mutation.operation === deferChannelMutationOperation) {
             channelMutationDeferred = false;
             await new Promise((resolve) => { resolveChannelMutation = resolve; });
+          }
+          if (mutation.operation === failingChannelMutationOperation) {
+            failingChannelMutationOperation = '';
+            return { ok: false, reason: 'storage-update-failed' };
           }
           stored[u.CHANNEL_VOLUMES_KEY] = channelStore.applyChannelVolumesMutation(
             stored[u.CHANNEL_VOLUMES_KEY],
@@ -732,6 +740,8 @@ function createOptionsHarness({
     return node;
   });
   const sent = [];
+  const warnings = [];
+  const alerts = [];
   const stored = {
     [u.SETTINGS_KEY]: { targetLufs: -18, adGainDb: -6, displayUnit: '%', showGainOverlay: true, ...settings },
     [u.CHANNEL_VOLUMES_KEY]: channelVolumes
@@ -753,6 +763,24 @@ function createOptionsHarness({
   element('emptyMsg').style.display = 'none';
   element('select:.channel-table').style.display = 'none';
   element('overlayToggle').checked = true;
+  // The stub keeps markup as text. The rows the page builds carry the delete
+  // buttons it wires straight afterwards, so the lookup for them is answered
+  // out of the ids in that text.
+  const channelsBody = element('channelsBody');
+  const deleteButtons = new Map();
+  channelsBody.querySelectorAll = (selector) => {
+    if (selector !== 'button[data-id]') return [];
+    return [...channelsBody.textContent.matchAll(/data-id="([^"]*)"/g)].map(([, id]) => {
+      if (!deleteButtons.has(id)) {
+        const button = stubElement(`ch-del-${id}`);
+        button.setAttribute('data-id', id);
+        deleteButtons.set(id, button);
+      }
+      // One handler per render, as a fresh element would carry.
+      deleteButtons.get(id).listeners.click = [];
+      return deleteButtons.get(id);
+    });
+  };
   const document = {
     body,
     getElementById: element,
@@ -807,7 +835,13 @@ function createOptionsHarness({
     // characters that one would.
     esc: (value) => String(value)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
-    console: { warn() {}, error() {}, info() {} },
+    console: {
+      warn(...args) { warnings.push(args); },
+      error() {},
+      info() {}
+    },
+    alert(message) { alerts.push(message); },
+    confirm() { return true; },
     requestAnimationFrame(callback) { callback(); },
     // Held, not run: the page arms one to end a load that never answers, and
     // a stub that fires it at once ends every load in the suite.
@@ -826,7 +860,19 @@ function createOptionsHarness({
     i18nNodes,
     unitButtons,
     sent,
+    warnings,
+    alerts,
     timers,
+    async fire(id, type) {
+      for (const listener of element(id).listeners[type] || []) await listener({ target: element(id) });
+      await flushTasks(8);
+    },
+    async clickDelete(channelId) {
+      const button = deleteButtons.get(channelId);
+      assert.ok(button, `no delete button for ${channelId}`);
+      for (const listener of button.listeners.click || []) await listener({ target: button });
+      await flushTasks(8);
+    },
     fireTimers() {
       for (const timer of timers.splice(0)) timer.callback();
     },
@@ -846,7 +892,7 @@ function createPopupHarness({
   state = {},
   displayUnit = '%',
   deferAutoSave = false,
-  failGainSave = false
+  failCommand = ''
 } = {}) {
   const messages = JSON.parse(
     fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json'), 'utf8')
@@ -854,6 +900,7 @@ function createPopupHarness({
   const elements = new Map();
   const presetButtons = [];
   const sent = [];
+  const warnings = [];
   const intervals = [];
   let resolveAutoSave;
   let currentState = {
@@ -907,7 +954,7 @@ function createPopupHarness({
       async sendMessage(_tabId, request) {
         sent.push(structuredClone(request));
         if (request.cmd === 'getState') return structuredClone(currentState);
-        if (request.cmd === 'setGain' && failGainSave) {
+        if (request.cmd === failCommand) {
           return { ok: false, reason: 'storage update failed' };
         }
         if (request.cmd === 'setAutoApplyLoudness') {
@@ -939,7 +986,11 @@ function createPopupHarness({
     },
     chrome,
     document,
-    console: { warn() {}, error() {}, info() {} },
+    console: {
+      warn(...args) { warnings.push(args); },
+      error() {},
+      info() {}
+    },
     requestAnimationFrame(callback) { callback(); },
     setInterval(callback) { return intervals.push(callback); },
     structuredClone
@@ -955,6 +1006,7 @@ function createPopupHarness({
     presets: presetButtons,
     i18nNodes,
     sent,
+    warnings,
     message: (key, substitutions) => {
       const text = messages[key] ? messages[key].message : key;
       return substitutions && substitutions.length
@@ -2053,6 +2105,97 @@ test('active content script reports an owner migration storage failure', async (
     ),
     true
   );
+});
+
+test('content names the storage failure behind a rejected gain save', async () => {
+  const harness = createContentHarness({ failChannelMutationOperation: 'saveGain' });
+  await flushTasks();
+
+  const response = await harness.dispatchRuntime({ cmd: 'setGain', gain: 2 });
+  await flushTasks();
+
+  assert.equal(response.ok, false);
+  assert.equal(response.reason, 'storage update failed');
+  // Restoring the saved gain succeeds here, so this log is the only place the
+  // failure that discarded the viewer's setting can still be read.
+  const [payload] = loggedWarning(harness, '[TCV] failed to save gain');
+  assert.equal(payload.channelId, 'vod-owner:100');
+  assert.equal(payload.kind, 'vod');
+  assert.equal(payload.gain, 2);
+  assert.equal(String(payload.saveError?.message), 'storage-update-failed');
+});
+
+test('content names the channel a failed gain save was for', async () => {
+  const harness = createContentHarness({
+    deferChannelMutationOperation: 'saveGain',
+    failChannelMutationOperation: 'saveGain'
+  });
+  await flushTasks();
+
+  const pending = harness.dispatchRuntime({ cmd: 'setGain', gain: 2 });
+  await flushTasks();
+  await harness.navigate('https://www.twitch.tv/videos/200');
+  harness.releaseChannelMutation();
+  const response = await pending;
+  await flushTasks();
+
+  assert.equal(response.ok, false);
+  // The media on screen has moved on; the log is about the one the save was for.
+  const [payload] = loggedWarning(harness, '[TCV] failed to save gain');
+  assert.equal(payload.channelId, 'vod-owner:100');
+  assert.equal(payload.kind, 'vod');
+});
+
+test('content answers a command it does not implement', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+
+  const response = await harness.dispatchRuntime({ cmd: 'setVolumeSomehow' });
+
+  assert.equal(response.ok, false);
+  assert.equal(response.reason, 'unknown command');
+  const [cmd] = loggedWarning(harness, '[TCV] unknown command');
+  assert.equal(cmd, 'setVolumeSomehow');
+});
+
+test('content reports a bridge message it could not finish handling', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  harness.failNextStorageGet();
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '123456789',
+    login: 'fixture_channel',
+    displayName: 'Fixture_Channel',
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '100'
+  });
+
+  const [payload] = loggedWarning(harness, '[TCV] failed to handle a bridge message');
+  assert.equal(payload.event, 'owner');
+  assert.equal(String(payload.error?.message), 'injected storage read failure');
+});
+
+test('content reports a route change it could not finish handling', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  harness.failNextStorageGet();
+
+  await harness.navigate('https://www.twitch.tv/videos/200');
+
+  const [error] = loggedWarning(harness, '[TCV] failed to handle a route change');
+  assert.equal(String(error?.message), 'injected storage read failure');
+});
+
+test('content reports a startup it could not finish', async () => {
+  const harness = createContentHarness({ failInitialStorageGet: true });
+  await flushTasks();
+
+  const [error] = loggedWarning(harness, '[TCV] failed to start up');
+  assert.equal(String(error?.message), 'injected storage read failure');
 });
 
 test('content Auto mode follows LUFS and recalculates when the target changes', async () => {
@@ -4567,6 +4710,35 @@ test('popup keeps the apply label on one line and owns the Current card once', (
   assert.match(source, /function syncSlider\(gain\) \{[\s\S]*?setCardValue\(\$\('current'\)/);
 });
 
+test('options names the reason a destructive change was refused', async () => {
+  const refused = [
+    {
+      act: (harness) => harness.clickDelete('123'),
+      message: '[TCV] failed to delete the channel'
+    },
+    {
+      act: (harness) => harness.fire('clearAllBtn', 'click'),
+      message: '[TCV] failed to clear the saved channels'
+    }
+  ];
+
+  for (const { act, message } of refused) {
+    const harness = createOptionsHarness({
+      failMutation: true,
+      channelVolumes: { 123: { name: 'Broadcaster', login: 'broadcaster', gainLive: 0.8 } }
+    });
+    await flushTasks(8);
+
+    await act(harness);
+
+    // Both paths put the same alert in front of the viewer; the reason the
+    // service worker gave is readable only here.
+    assert.equal(harness.alerts.at(-1), harness.message('channelUpdateFailed'));
+    const [error] = loggedWarning(harness, message);
+    assert.equal(String(error?.message), 'service worker unavailable');
+  }
+});
+
 test('options keeps muted text above the AA contrast floor', () => {
   const html = fs.readFileSync(path.join(__dirname, 'options.html'), 'utf8');
   assertContrastFloor(html, [
@@ -4753,9 +4925,52 @@ test('popup keeps both notices off a page with no channel', async () => {
   assert.equal(harness.el('applyHint').textContent, harness.message('channelNotDetected'));
 });
 
+test('popup names the reason each rejected request came back with', async () => {
+  const rejected = [
+    {
+      failCommand: 'setGain',
+      act: (harness) => harness.fire('applyBtn', 'click'),
+      message: '[TCV] suggested gain request failed'
+    },
+    {
+      failCommand: 'setGain',
+      act: (harness) => harness.firePreset(3, 'click'),
+      message: '[TCV] gain request failed'
+    },
+    {
+      failCommand: 'setAutoApplyLoudness',
+      act: async (harness) => {
+        harness.el('autoApplyToggle').checked = true;
+        await harness.fire('autoApplyToggle', 'change');
+      },
+      message: '[TCV] Auto setting request failed'
+    },
+    {
+      failCommand: 'resetMeasurement',
+      act: (harness) => harness.fire('resetMeasurementBtn', 'click'),
+      message: '[TCV] measurement reset request failed'
+    }
+  ];
+
+  for (const { failCommand, act, message } of rejected) {
+    const harness = createPopupHarness({
+      failCommand,
+      state: { lufs: { momentary: -21, shortTerm: -21, integrated: -21 } }
+    });
+    await flushTasks(8);
+
+    await act(harness);
+
+    // The viewer sees one localized line; the reason content.js worked out is
+    // readable only here.
+    const [error] = loggedWarning(harness, message);
+    assert.equal(String(error?.message), 'storage update failed');
+  }
+});
+
 test('popup keeps a failed save visible while the audio notice stands', async () => {
   const harness = createPopupHarness({
-    failGainSave: true,
+    failCommand: 'setGain',
     state: { lufs: { momentary: -21, shortTerm: -21, integrated: -21 } }
   });
   await flushTasks(8);

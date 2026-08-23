@@ -423,6 +423,17 @@
   // ── Message handler from page-bridge ───────────────────────────────
 
   window.addEventListener('message', async (event) => {
+    try {
+      await handleBridgeMessage(event);
+    } catch (error) {
+      console.warn('[TCV] failed to handle a bridge message', {
+        event: event.data?.event,
+        error
+      });
+    }
+  });
+
+  async function handleBridgeMessage(event) {
     if (event.source !== window) return;
     const data = event.data;
     if (!data || data.type !== MSG_IN) return;
@@ -494,7 +505,7 @@
         adActive = !!data.active;
         break;
     }
-  });
+  }
 
   // ── Save integrated periodically to limit storage churn ───────────
 
@@ -585,26 +596,33 @@
     if (await reapplyForCurrentChannel()) resetMeasurementForCurrentChannel();
   }
 
+  // Every entry point below starts the handling and drops the promise.
+  function handleNavigation() {
+    onNavigate().catch((error) => {
+      console.warn('[TCV] failed to handle a route change', error);
+    });
+  }
+
   // Read the page before the URL moves: an indicator that is up at that point
   // belongs to the media being left, even if nothing has observed it yet.
   const origPush = history.pushState;
   history.pushState = function (...args) {
     checkAdDom();
     const r = origPush.apply(this, args);
-    queueMicrotask(onNavigate);
+    queueMicrotask(handleNavigation);
     return r;
   };
   const origReplace = history.replaceState;
   history.replaceState = function (...args) {
     checkAdDom();
     const r = origReplace.apply(this, args);
-    queueMicrotask(onNavigate);
+    queueMicrotask(handleNavigation);
     return r;
   };
-  window.addEventListener('popstate', onNavigate);
+  window.addEventListener('popstate', handleNavigation);
   // Ahead of the ad observer, so a batch that carries a route change is read
   // against the media that arrived rather than the one that left.
-  new MutationObserver(onNavigate).observe(document, { subtree: true, childList: true });
+  new MutationObserver(handleNavigation).observe(document, { subtree: true, childList: true });
 
   const adObserver = new MutationObserver(() => checkAdDom());
   adObserver.observe(document.documentElement, { subtree: true, childList: true });
@@ -683,24 +701,29 @@
           return;
         }
         applyGain(req.gain);
+        // The media can change while the save is in flight, so what is being
+        // saved and what the failure names both come from this moment.
+        const target = currentChannel;
+        const targetGain = currentGain;
         saveChannelGain(
-          currentChannel.id,
-          currentChannel.name,
-          currentGain,
-          currentChannel.kind,
-          currentChannel.url
+          target.id,
+          target.name,
+          targetGain,
+          target.kind,
+          target.url
         ).then(() => {
           sendResponse({ ok: true });
         }).catch(async (saveError) => {
+          console.warn('[TCV] failed to save gain', {
+            channelId: target.id,
+            kind: target.kind,
+            gain: targetGain,
+            saveError
+          });
           try {
             await reapplyForCurrentChannel();
           } catch (reapplyError) {
-            console.warn('[TCV] failed to restore gain after save failure', {
-              channelId: currentChannel.id,
-              kind: currentChannel.kind,
-              saveError,
-              reapplyError
-            });
+            console.warn('[TCV] failed to restore gain after save failure', reapplyError);
           }
           sendResponse({ ok: false, reason: 'storage update failed' });
         });
@@ -821,8 +844,11 @@
         sendCmd({ cmd: 'resume' });
         sendResponse({ ok: true });
         return;
+      default:
+        console.warn('[TCV] unknown command', req.cmd);
+        sendResponse({ ok: false, reason: 'unknown command' });
+        return;
     }
-    return false;
   });
 
   document.addEventListener('click', () => sendCmd({ cmd: 'resume' }), { once: true, capture: true });
@@ -844,5 +870,7 @@
       new Promise((r) => setTimeout(r, 3000))
     ]);
     sendCmd({ cmd: 'attach' });
-  })();
+  })().catch((error) => {
+    console.warn('[TCV] failed to start up', error);
+  });
 })();

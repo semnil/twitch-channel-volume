@@ -232,7 +232,8 @@
     if (!settingsReady) return;
     try {
       await mutateChannelVolumes({ operation: 'deleteChannel', channelId: id });
-    } catch (_) {
+    } catch (error) {
+      console.warn('[TCV] failed to delete the channel', error);
       alert(msg('channelUpdateFailed'));
     }
   }
@@ -242,7 +243,8 @@
     if (!confirm(msg('clearAllConfirm'))) return;
     try {
       await mutateChannelVolumes({ operation: 'clearChannels' });
-    } catch (_) {
+    } catch (error) {
+      console.warn('[TCV] failed to clear the saved channels', error);
       alert(msg('channelUpdateFailed'));
     }
   }
