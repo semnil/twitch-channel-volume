@@ -6228,6 +6228,15 @@ test('--check says it cannot draw here rather than passing', { skip: generatorSk
 
 test('--out writes where it is told, and nowhere else', { skip: generatorSkip }, () => {
   const sandbox = screenshotSandbox();
+  // Drawing is deterministic, so bytes alone cannot tell a run that wrote the
+  // tracked directory from one that left it alone. This pixel would come back.
+  assert.equal(spawnSync('python3', ['-B', '-c',
+    'import sys; from PIL import Image;' +
+    'i = Image.open(sys.argv[1]).convert("RGB");' +
+    'r, g, b = i.getpixel((320, 200));' +
+    'i.putpixel((320, 200), (r ^ 1, g, b));' +
+    'i.save(sys.argv[1])', path.join(sandbox, 'docs/screenshots/popup_ja.png')],
+  { encoding: 'utf8' }).status, 0, 'the probe marked one pixel');
   const before = fs.readdirSync(path.join(sandbox, 'docs/screenshots')).sort()
     .map((name) => [name, fs.readFileSync(path.join(sandbox, 'docs/screenshots', name))]);
   try {
@@ -6242,13 +6251,21 @@ test('--out writes where it is told, and nowhere else', { skip: generatorSkip },
     }
 
     // The one word that decides between reading and rewriting is not matched
-    // loosely: a near miss is an argument error, not a redraw.
-    const typo = spawnSync('python3', ['-B', 'gen_screenshots.py', '--chek'],
-      { cwd: sandbox, encoding: 'utf8' });
-    assert.equal(typo.status, 2, 'an unknown argument is refused: ' + (typo.stderr || ''));
+    // loosely: a near miss is an argument error, not a redraw. Neither is a
+    // destination handed to the mode that writes nothing, nor a flag standing
+    // in for one — `--out --chek` used to create a directory called --chek.
+    for (const args of [['--chek'], ['--check', '--chek'],
+      ['--check', '--out', elsewhere], ['--out', '--chek']]) {
+      const refused = spawnSync('python3', ['-B', 'gen_screenshots.py', ...args],
+        { cwd: sandbox, encoding: 'utf8' });
+      assert.equal(refused.status, 2,
+        `${args.join(' ')} is refused: ` + (refused.stderr || ''));
+      assert.match(refused.stderr, /usage:/, `${args.join(' ')} is told the shape of the command`);
+    }
+    assert.ok(!fs.existsSync(path.join(sandbox, '--chek')), 'and none of them made a directory');
     for (const [name, bytes] of before) {
       assert.ok(bytes.equals(fs.readFileSync(path.join(sandbox, 'docs/screenshots', name))),
-        `${name} is untouched by the refused run`);
+        `${name} is untouched by the refused runs`);
     }
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });

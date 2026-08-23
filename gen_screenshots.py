@@ -888,21 +888,31 @@ def out_dir_from(args):
     綴りを外した引数は書き込みへ落とさない。読むだけのつもりの `--chek` が
     追跡画像の上書きになると、確かめたかった古さがその場で消える。
     """
-    target = OUT_DIR
+    target = None
+    checking = False
     rest = list(args)
     while rest:
         arg = rest.pop(0)
         if arg == '--check':
+            checking = True
             continue
         if arg == '--out':
-            if not rest or not rest[0]:
+            # フラグの形をした値は値ではない。`--out --chek` は `--chek` と
+            # いうディレクトリを作っていた。
+            if not rest or not rest[0] or rest[0].startswith('-'):
                 print(f'--out には書き込み先のディレクトリが要る\n{USAGE}', file=sys.stderr)
                 sys.exit(2)
             target = os.path.abspath(rest.pop(0))
             continue
         print(f'知らない引数: {arg}\n{USAGE}', file=sys.stderr)
         sys.exit(2)
-    return target
+    if checking and target is not None:
+        # --check は追跡中の画像と比べるだけで書かないので、渡された行き先は
+        # 黙って捨てられる。
+        print(f'--check は追跡中の画像と比べるだけで書き込まない。--out の行き先が無い\n{USAGE}',
+              file=sys.stderr)
+        sys.exit(2)
+    return OUT_DIR if target is None else target
 
 
 if __name__ == '__main__':
