@@ -5415,6 +5415,33 @@ const CHUNK_PROBE = [
   '    size = int.from_bytes(data[at:at + 4], "big")',
   '    walk.append((data[at + 4:at + 8], data[at:at + 12 + size]))',
   '    at += 12 + size',
+  'if op == "trim-idat":',
+  '    body = b"".join(raw[8:-4] for kind, raw in walk if kind == b"IDAT")',
+  '    body = body[:-int(sys.argv[3])]',
+  '    out, written = bytearray(data[:8]), False',
+  '    for kind, raw in walk:',
+  '        if kind != b"IDAT":',
+  '            out += raw',
+  '            continue',
+  '        if written:',
+  '            continue',
+  '        written = True',
+  '        head = b"IDAT" + body',
+  '        out += struct.pack(">I", len(body)) + head',
+  '        out += struct.pack(">I", zlib.crc32(head) & 0xffffffff)',
+  '    open(target, "wb").write(bytes(out))',
+  '    raise SystemExit',
+  'if op == "smuggle-idat":',
+  '    body = b"IDAT" + b"smuggled payload" * 4',
+  '    extra = struct.pack(">I", len(body) - 4) + body',
+  '    extra += struct.pack(">I", zlib.crc32(body) & 0xffffffff)',
+  '    out = bytearray(data[:8])',
+  '    for kind, raw in walk:',
+  '        if kind == b"IEND":',
+  '            out += extra',
+  '        out += raw',
+  '    open(target, "wb").write(bytes(out))',
+  '    raise SystemExit',
   'if op == "split-idat":',
   '    body = b"".join(raw[8:-4] for kind, raw in walk if kind == b"IDAT")',
   '    cut = len(body) // 2',
@@ -5622,6 +5649,32 @@ test('--check turns down a PNG that stops before its own end', { skip: generator
     fs.rmSync(sandbox, { recursive: true, force: true });
   }
 });
+
+test('--check turns down a pixel stream that does not end where the chunks do',
+  { skip: generatorSkip }, () => {
+    const sandbox = screenshotSandbox();
+    try {
+      // The decoder stops once it has the pixels, so a further IDAT carrying
+      // anything at all decodes to the same image at the same size. Folding a
+      // run of IDAT into one entry is what makes the count no defence.
+      assert.equal(spawnSync('python3', ['-B', '-c', CHUNK_PROBE, 'smuggle-idat',
+        path.join(sandbox, 'docs/screenshots/popup_ja.png')],
+      { encoding: 'utf8' }).status, 0, 'the probe added an IDAT with a payload');
+      // And the other way round: dropping the four bytes that close the stream
+      // leaves every scanline in place, so the decoder hands back the image
+      // without a word.
+      assert.equal(spawnSync('python3', ['-B', '-c', CHUNK_PROBE, 'trim-idat',
+        path.join(sandbox, 'docs/screenshots/settings_ja.png'), '4'],
+      { encoding: 'utf8' }).status, 0, 'the probe cut the end off the stream');
+
+      const run = runCheck(sandbox);
+      assert.equal(run.status, 1, 'the spare bytes are reported: ' + (run.stderr || run.stdout));
+      assert.match(run.stderr, /popup_ja\.png: IDAT に zlib ストリームの後ろが \d+ バイトある/);
+      assert.match(run.stderr, /settings_ja\.png: IDAT の zlib ストリームが終わっていない/);
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
 
 test('--check takes the same pixels however the compressor split them',
   { skip: generatorSkip }, () => {

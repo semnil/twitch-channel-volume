@@ -576,17 +576,37 @@ def main(out_dir=OUT_DIR):
             print(f'Generated {os.path.join(shown(out_dir), name)}')
 
 
+def spare_pixel_bytes(pixels):
+    """IDAT が運ぶ zlib ストリームの外にあるバイト。無ければ None。
+
+    デコーダは画素が揃った時点で読むのをやめるので、その後ろは増やし放題で、
+    チャンクの本数を畳んだ並びにも現れない。
+    """
+    if not pixels:
+        return None
+    stream = zlib.decompressobj()
+    try:
+        stream.decompress(b''.join(pixels))
+    except zlib.error as err:
+        return f'IDAT が zlib ストリームとして読めない ({err})'
+    if not stream.eof:
+        return 'IDAT の zlib ストリームが終わっていない'
+    return f'IDAT に zlib ストリームの後ろが {len(stream.unused_data)} バイトある' \
+        if stream.unused_data else None
+
+
 def png_shape(path):
     """PNG のチャンク型の並びと、通らないところ (無ければ None)。
 
     デコーダは中身で形式を決め、壊れた末尾も知らないチャンクも黙って許すので、
     画素・大きさ・フレーム数のどれにも出ない違いがここに残る。IDAT の本数は
-    圧縮器の刻み方で決まるので 1 つに畳み、並びの比較に持ち込まない。
+    圧縮器の刻み方で決まるので 1 つに畳み、代わりに IDAT の中身が zlib
+    ストリーム 1 本ちょうどであることを見る (畳んだ本数の裏でバイトが増える)。
     """
     data = open(path, 'rb').read()
     if not data.startswith(b'\x89PNG\r\n\x1a\n'):
         return [], 'PNG ではない'
-    kinds = []
+    kinds, pixels = [], []
     at = 8
     while at + 8 <= len(data):
         length = int.from_bytes(data[at:at + 4], 'big')
@@ -603,11 +623,16 @@ def png_shape(path):
             return kinds, f'{kind} チャンクがファイルの外へ出ている'
         if zlib.crc32(data[at + 4:end - 4]) & 0xffffffff != int.from_bytes(data[end - 4:end], 'big'):
             return kinds, f'{kind} チャンクの CRC が合わない'
+        if kind == 'IDAT':
+            pixels.append(data[at + 8:end - 4])
         if kind != 'IDAT' or kinds[-1:] != ['IDAT']:
             kinds.append(kind)
         if kind == 'IEND':
             if length:
                 return kinds, f'IEND の長さが {length} (0 のはず)'
+            spare = spare_pixel_bytes(pixels)
+            if spare:
+                return kinds, spare
             trailing = len(data) - end
             return kinds, f'IEND の後ろに {trailing} バイトある' if trailing else None
         at = end
