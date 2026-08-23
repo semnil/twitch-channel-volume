@@ -17,7 +17,7 @@ import tempfile
 UNAVAILABLE = 3
 
 try:
-    from PIL import Image, ImageChops, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw, ImageFont
     # Pillow は raqm があればそちらを選び、入っている環境と入っていない環境で
     # 字の置き方が変わる。追跡中の画像と比べるので、ここで固定する。
     BASIC_LAYOUT = ImageFont.Layout.BASIC
@@ -587,18 +587,22 @@ def check():
                 stale.append(f'{name}: 追跡されていない')
                 continue
             try:
-                new, old = (Image.open(os.path.join(fresh, name)).convert('RGB'),
-                            Image.open(tracked).convert('RGB'))
+                # RGBA で比べる。RGB へ落とすと、色をそのままに alpha だけ
+                # 変えられた画像が「同じ」になる。
+                new, old = (Image.open(os.path.join(fresh, name)).convert('RGBA'),
+                            Image.open(tracked).convert('RGBA'))
             except OSError as err:
                 # 読めないものは「いま描くもの」ではない。1 枚で止めると残りの
                 # 比較も orphan の報告も出ない。
                 stale.append(f'{name}: 画像として読めない ({err})')
                 continue
             if new.size != old.size:
-                # ImageChops.difference は大きさが違っても投げず、小さい方に
-                # 切り詰めた差を返す。はみ出した分は比較から落ちる。
+                # 大きさは先に見る。ImageChops.difference は大きさが違っても
+                # 投げず、小さい方に切り詰めた差を返すため。
                 stale.append(f'{name}: 大きさが違う ({old.size} → {new.size})')
-            elif ImageChops.difference(new, old).getbbox():
+            elif new.tobytes() != old.tobytes():
+                # 画素をそのまま比べる。difference().getbbox() は既定で alpha
+                # だけを見るので、色が違っても alpha が同じなら None を返す。
                 stale.append(f'{name}: いま描くものと違う')
     here = os.path.relpath(OUT_DIR, ROOT)
     # 描くのは png だけなので、それ以外 (.DS_Store, 中断した走行が残す作業

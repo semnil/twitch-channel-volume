@@ -5023,6 +5023,29 @@ test('--check turns down a tracked image that is not what the code draws',
     }
   });
 
+test('--check turns down a tracked image changed only in its alpha',
+  { skip: generatorSkip }, () => {
+    const sandbox = screenshotSandbox();
+    try {
+      const target = path.join(sandbox, 'docs/screenshots/popup_ja.png');
+      // The three colour channels stay where they were, so a comparison that
+      // drops alpha sees two identical images.
+      assert.equal(spawnSync('python3', ['-B', '-c',
+        'import sys; from PIL import Image;' +
+        'i = Image.open(sys.argv[1]).convert("RGBA");' +
+        'r, g, b, _ = i.getpixel((320, 200));' +
+        'i.putpixel((320, 200), (r, g, b, 0));' +
+        'i.save(sys.argv[1])', target], { encoding: 'utf8' }).status, 0,
+      'the probe made one pixel transparent');
+
+      const run = runCheck(sandbox);
+      assert.equal(run.status, 1, 'a transparent pixel is reported: ' + (run.stderr || run.stdout));
+      assert.match(run.stderr, /popup_ja\.png/);
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
 test('--check turns down a size the code no longer draws', { skip: generatorSkip }, () => {
   const sandbox = screenshotSandbox();
   try {
@@ -5036,7 +5059,10 @@ test('--check turns down a size the code no longer draws', { skip: generatorSkip
 
     const run = runCheck(sandbox);
     assert.equal(run.status, 1, 'a cropped image is reported: ' + (run.stderr || run.stdout));
-    assert.match(run.stderr, /settings_en\.png/);
+    // Named as a size rather than as a difference: every pixel that survived
+    // the crop still matches, and reading "違う" would send the reader looking
+    // for the wrong thing.
+    assert.match(run.stderr, /settings_en\.png: 大きさが違う/);
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
   }
@@ -5128,6 +5154,16 @@ test('CI uploads the screenshots the runner drew, not the ones it checked out', 
   // Uploading nothing is the case worth failing on: it means the redraw wrote
   // somewhere else.
   assert.match(workflow, /if-no-files-found: error/);
+});
+
+test('CI has Pillow before it runs the suite that needs it', () => {
+  const workflow = fs.readFileSync(path.join(__dirname, '.github/workflows/ci.yaml'), 'utf8');
+  const installed = workflow.indexOf('pip install pillow==');
+  const suite = workflow.indexOf('run: node test.js');
+  assert.ok(installed > -1 && suite > -1, 'the workflow installs pillow and runs the suite');
+  // The runs that hand the generator a tree it has to turn down skip
+  // themselves where it cannot draw, and a skipped run holds nothing.
+  assert.ok(installed < suite, 'pillow is installed before node test.js');
 });
 
 test('store screenshot generator mirrors the stylesheet muted colors', () => {
