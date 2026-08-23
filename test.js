@@ -2055,6 +2055,23 @@ test('active content script reports an owner migration storage failure', async (
   );
 });
 
+test('content names the storage failure behind a rejected gain save', async () => {
+  const harness = createContentHarness({ failChannelMutationOperation: 'saveGain' });
+  await flushTasks();
+
+  const response = await harness.dispatchRuntime({ cmd: 'setGain', gain: 2 });
+  await flushTasks();
+
+  assert.equal(response.ok, false);
+  assert.equal(response.reason, 'storage update failed');
+  // Restoring the saved gain succeeds here, so this log is the only place the
+  // failure that discarded the viewer's setting can still be read.
+  assert.equal(
+    harness.warnings.some(([message]) => message === '[TCV] failed to save gain'),
+    true
+  );
+});
+
 test('content Auto mode follows LUFS and recalculates when the target changes', async () => {
   const harness = createContentHarness({ autoApply: true, autoGain: 0.8 });
   await flushTasks();

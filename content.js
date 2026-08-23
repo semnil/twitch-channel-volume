@@ -692,15 +692,15 @@
         ).then(() => {
           sendResponse({ ok: true });
         }).catch(async (saveError) => {
+          console.warn('[TCV] failed to save gain', {
+            channelId: currentChannel.id,
+            kind: currentChannel.kind,
+            saveError
+          });
           try {
             await reapplyForCurrentChannel();
           } catch (reapplyError) {
-            console.warn('[TCV] failed to restore gain after save failure', {
-              channelId: currentChannel.id,
-              kind: currentChannel.kind,
-              saveError,
-              reapplyError
-            });
+            console.warn('[TCV] failed to restore gain after save failure', reapplyError);
           }
           sendResponse({ ok: false, reason: 'storage update failed' });
         });
