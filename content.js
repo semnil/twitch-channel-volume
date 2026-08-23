@@ -821,8 +821,11 @@
         sendCmd({ cmd: 'resume' });
         sendResponse({ ok: true });
         return;
+      default:
+        console.warn('[TCV] unknown command', req.cmd);
+        sendResponse({ ok: false, reason: 'unknown command' });
+        return;
     }
-    return false;
   });
 
   document.addEventListener('click', () => sendCmd({ cmd: 'resume' }), { once: true, capture: true });

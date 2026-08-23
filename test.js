@@ -2072,6 +2072,20 @@ test('content names the storage failure behind a rejected gain save', async () =
   );
 });
 
+test('content answers a command it does not implement', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+
+  const response = await harness.dispatchRuntime({ cmd: 'setVolumeSomehow' });
+
+  assert.equal(response.ok, false);
+  assert.equal(response.reason, 'unknown command');
+  assert.equal(
+    harness.warnings.some(([message]) => message === '[TCV] unknown command'),
+    true
+  );
+});
+
 test('content Auto mode follows LUFS and recalculates when the target changes', async () => {
   const harness = createContentHarness({ autoApply: true, autoGain: 0.8 });
   await flushTasks();
