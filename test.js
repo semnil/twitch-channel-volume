@@ -5415,6 +5415,44 @@ const CHUNK_PROBE = [
   '    size = int.from_bytes(data[at:at + 4], "big")',
   '    walk.append((data[at + 4:at + 8], data[at:at + 12 + size]))',
   '    at += 12 + size',
+  'if op == "bad-filter":',
+  '    raw = bytearray(zlib.decompress(b"".join(r[8:-4] for k, r in walk if k == b"IDAT")))',
+  '    raw[0] = 99',
+  '    packed = zlib.compress(bytes(raw), 6)',
+  '    out, written = bytearray(data[:8]), False',
+  '    for kind, raw_chunk in walk:',
+  '        if kind != b"IDAT":',
+  '            out += raw_chunk',
+  '            continue',
+  '        if written:',
+  '            continue',
+  '        written = True',
+  '        head = b"IDAT" + packed',
+  '        out += struct.pack(">I", len(packed)) + head',
+  '        out += struct.pack(">I", zlib.crc32(head) & 0xffffffff)',
+  '    open(target, "wb").write(bytes(out))',
+  '    raise SystemExit',
+  'if op == "fat-text":',
+  '    text = zlib.compress(b"x" * int(sys.argv[3]))',
+  '    body = b"zTXt" + b"Comment\\0\\0" + text',
+  '    extra = struct.pack(">I", len(body) - 4) + body',
+  '    extra += struct.pack(">I", zlib.crc32(body) & 0xffffffff)',
+  '    out = bytearray(data[:8])',
+  '    for kind, raw in walk:',
+  '        if kind == b"IDAT" and extra:',
+  '            out += extra',
+  '            extra = b""',
+  '        out += raw',
+  '    open(target, "wb").write(bytes(out))',
+  '    raise SystemExit',
+  'if op == "header-byte":',
+  '    out = bytearray(data)',
+  '    body = bytearray(out[12:12 + 17])',
+  '    body[4 + int(sys.argv[3])] = int(sys.argv[4])',
+  '    out[12:12 + 17] = body',
+  '    out[29:33] = (zlib.crc32(bytes(body)) & 0xffffffff).to_bytes(4, "big")',
+  '    open(target, "wb").write(bytes(out))',
+  '    raise SystemExit',
   'if op == "pad-stream":',
   '    raw = zlib.decompress(b"".join(r[8:-4] for k, r in walk if k == b"IDAT"))',
   '    packer = zlib.compressobj(6)',
@@ -5552,8 +5590,9 @@ test('--check turns down a second frame riding on the drawn one',
     const sandbox = screenshotSandbox();
     try {
       const target = path.join(sandbox, 'docs/screenshots/popup_ja.png');
-      // Every comparison reads the frame the file opens on, so an animation
-      // whose first frame is the drawn one matches on it.
+      // Decoding reads the frame the file opens on, so an animation whose
+      // first frame is the drawn one matches on it. What an animation cannot
+      // do is arrive without the chunks that drive it.
       assert.equal(spawnSync('python3', ['-B', '-c',
         'import sys; from PIL import Image;' +
         'first = Image.open(sys.argv[1]).convert("RGB");' +
@@ -5564,17 +5603,19 @@ test('--check turns down a second frame riding on the drawn one',
 
       const run = runCheck(sandbox);
       assert.equal(run.status, 1, 'a second frame is reported: ' + (run.stderr || run.stdout));
-      assert.match(run.stderr, /popup_ja\.png: 2 フレームある/);
+      assert.match(run.stderr,
+        /popup_ja\.png: チャンクの並びが違う \(IHDR acTL fcTL IDAT fcTL fdAT IEND \/ 描くのは IHDR IDAT IEND\)/);
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }
   });
 
-test('--check reads a bomb header as unreadable, and goes on', { skip: generatorSkip }, () => {
+test('--check turns down a header that names more pixels than the drawing has',
+  { skip: generatorSkip }, () => {
   const sandbox = screenshotSandbox();
   try {
-    // DecompressionBombError is not an OSError, so a guard written for
-    // unreadable files alone lets it out of the loop with the report.
+    // 200000 x 200000 in a header no decoder should be handed: the size the
+    // file claims is in IHDR, which this reads for itself.
     assert.equal(spawnSync('python3', ['-B', '-c',
       'import struct, sys, zlib;' +
       'chunk = lambda kind, data: struct.pack(">I", len(data)) + kind + data' +
@@ -5597,7 +5638,7 @@ test('--check reads a bomb header as unreadable, and goes on', { skip: generator
 
     const run = runCheck(sandbox);
     assert.equal(run.status, 1, 'a bomb header is reported: ' + (run.stderr || run.stdout));
-    assert.match(run.stderr, /overlay_ja\.png: 画像として読めない/);
+    assert.match(run.stderr, /overlay_ja\.png: 大きさが違う \(\(200000, 200000\) → \(640, 400\)\)/);
     assert.match(run.stderr, /settings_ja\.png: いま描くものと違う/,
       'and the comparison goes on to the images after it');
   } finally {
@@ -5793,6 +5834,92 @@ test('--check turns down a chunk type the spec does not allow', { skip: generato
     fs.rmSync(sandbox, { recursive: true, force: true });
   }
 });
+
+test('--check goes on to the next image when one will not decode', { skip: generatorSkip }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    // A filter type the spec does not define, in a stream that inflates to the
+    // same length under a header that is byte for byte the drawn one: every
+    // check that reads the file itself passes, and the decoder is the one that
+    // says no. The image that fails sorts before the one that follows it.
+    assert.equal(spawnSync('python3', ['-B', '-c', CHUNK_PROBE, 'bad-filter',
+      path.join(sandbox, 'docs/screenshots/overlay_ja.png')],
+    { encoding: 'utf8' }).status, 0, 'the probe wrote an undefined filter type');
+    assert.equal(spawnSync('python3', ['-B', '-c',
+      'import sys; from PIL import Image;' +
+      'i = Image.open(sys.argv[1]).convert("RGB");' +
+      'r, g, b = i.getpixel((320, 200));' +
+      'i.putpixel((320, 200), (r ^ 1, g, b));' +
+      'i.save(sys.argv[1])', path.join(sandbox, 'docs/screenshots/settings_ja.png')],
+    { encoding: 'utf8' }).status, 0, 'the probe changed a later image');
+
+    const run = runCheck(sandbox);
+    assert.equal(run.status, 1, 'the image is reported: ' + (run.stderr || run.stdout));
+    assert.match(run.stderr, /overlay_ja\.png: 画像として読めない/);
+    assert.match(run.stderr, /settings_ja\.png: いま描くものと違う/,
+      'and the comparison goes on to the images after it');
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test('--check reads the chunks before the decoder gets the file', { skip: generatorSkip }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    // 2 MiB of text in a chunk with a correct CRC: Pillow refuses to inflate
+    // it and raises ValueError, which is neither of the two the guard around
+    // the decoding catches. Handing the file over before reading it here took
+    // the whole run down with it — the images after this one, and the scan for
+    // files nothing draws, never ran.
+    assert.equal(spawnSync('python3', ['-B', '-c', CHUNK_PROBE, 'fat-text',
+      path.join(sandbox, 'docs/screenshots/popup_ja.png'), String(2 * 1024 * 1024)],
+    { encoding: 'utf8' }).status, 0, 'the probe added a fat text chunk');
+    assert.equal(spawnSync('python3', ['-B', '-c',
+      'import sys; from PIL import Image;' +
+      'i = Image.open(sys.argv[1]).convert("RGB");' +
+      'r, g, b = i.getpixel((320, 200));' +
+      'i.putpixel((320, 200), (r ^ 1, g, b));' +
+      'i.save(sys.argv[1])', path.join(sandbox, 'docs/screenshots/settings_ja.png')],
+    { encoding: 'utf8' }).status, 0, 'the probe changed a later image');
+    fs.copyFileSync(path.join(sandbox, 'docs/screenshots/overlay_ja.png'),
+      path.join(sandbox, 'docs/screenshots/popup_de.png'));
+
+    const run = runCheck(sandbox);
+    assert.equal(run.status, 1, 'the text chunk is reported: ' + (run.stderr || run.stdout));
+    assert.match(run.stderr,
+      /popup_ja\.png: チャンクの並びが違う \(IHDR zTXt IDAT IEND \/ 描くのは IHDR IDAT IEND\)/);
+    assert.match(run.stderr, /settings_ja\.png: いま描くものと違う/,
+      'and the images after it are still compared');
+    assert.match(run.stderr, /popup_de\.png: 誰も描いていない/,
+      'and the scan for files nothing draws still runs');
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test('--check turns down a header byte the decoder does not mind',
+  { skip: generatorSkip }, () => {
+    const sandbox = screenshotSandbox();
+    try {
+      // The compression method is the eleventh byte of IHDR, and the spec
+      // gives it one value. Pillow reads the image whatever it says, so the
+      // pixels, the size and the chunk order are all as drawn.
+      assert.equal(spawnSync('python3', ['-B', '-c', CHUNK_PROBE, 'header-byte',
+        path.join(sandbox, 'docs/screenshots/popup_ja.png'), '10', '1'],
+      { encoding: 'utf8' }).status, 0, 'the probe rewrote a header byte');
+      assert.equal(spawnSync('python3', ['-B', '-c',
+        'import sys; from PIL import Image;'
+        + 'print(Image.open(sys.argv[1]).size)',
+        path.join(sandbox, 'docs/screenshots/popup_ja.png')],
+      { encoding: 'utf8' }).status, 0, 'and the decoder still opens it');
+
+      const run = runCheck(sandbox);
+      assert.equal(run.status, 1, 'the header is reported: ' + (run.stderr || run.stdout));
+      assert.match(run.stderr, /popup_ja\.png: IHDR チャンクの中身が描くものと違う/);
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
 
 test('--check turns down chunks the drawing never writes', { skip: generatorSkip }, () => {
   const sandbox = screenshotSandbox();

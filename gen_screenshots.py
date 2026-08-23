@@ -586,6 +586,14 @@ def is_directory(path):
     return stat.S_ISDIR(os.lstat(path).st_mode)
 
 
+def header_size(kinds):
+    """IHDR が名乗る大きさ。IHDR が無ければ None。"""
+    for kind, body in kinds:
+        if kind == 'IHDR':
+            return int.from_bytes(body[8:12], 'big'), int.from_bytes(body[12:16], 'big')
+    return None
+
+
 def not_a_plain_file(path):
     """追跡物がファイルそのものでないところ。無ければ None。
 
@@ -627,7 +635,10 @@ def unpack_pixels(pixels, cap):
 
 
 def png_shape(path, expected=None):
-    """PNG のチャンク型の並び、展開した走査線の長さ、通らないところ (無ければ None)。
+    """PNG のチャンクの並び、展開した走査線の長さ、通らないところ (無ければ None)。
+
+    並びは (型, そのチャンクのバイト列) の列。IDAT だけはバイト列を持たない —
+    画素は画素として比べ、圧縮のされ方は問わない。
 
     expected は「描いた側の走査線の長さ」。渡されたときはそこまでしか展開せず、
     一致も要求する。渡されないのは自分が今書いた 1 枚を測るときだけ。
@@ -659,8 +670,12 @@ def png_shape(path, expected=None):
             return kinds, 0, f'{kind} チャンクの CRC が合わない'
         if kind == 'IDAT':
             pixels.append(data[at + 8:end - 4])
-        if kind != 'IDAT' or kinds[-1:] != ['IDAT']:
-            kinds.append(kind)
+            if kinds[-1:] != [('IDAT', None)]:
+                kinds.append((kind, None))
+        else:
+            # 画素以外は描いた側と 1 バイト単位で突き合わせる。IHDR の
+            # 圧縮方式のように、デコーダが読み飛ばしても中身は変わる。
+            kinds.append((kind, data[at:end]))
         if kind == 'IEND':
             if length:
                 return kinds, 0, f'IEND の長さが {length} (0 のはず)'
@@ -695,39 +710,46 @@ def check():
             drawn_kinds, drawn_pixels, drawn_fault = png_shape(os.path.join(fresh, name))
             if drawn_fault:
                 raise SystemExit(f'いま描いた {name} が PNG として通らない: {drawn_fault}')
+            # ここまでは自分でバイトを読むだけで、追跡物をデコーダに渡さない。
+            # 渡してから見ると、Pillow が付き合いきれないと言った時点 (テキスト
+            # チャンクの展開上限など) で走行ごと止まり、後ろの画像も orphan の
+            # 報告も出ない。
+            kinds, _, fault = png_shape(tracked, drawn_pixels)
+            if fault:
+                # デコーダは中身で形式を決め、IEND の欠落や後ろのバイトを
+                # 黙って許すので、画素にも大きさにも出てこない。
+                stale.append(f'{name}: {fault}')
+                continue
+            here_kinds = [kind for kind, _ in kinds]
+            drawn_only = [kind for kind, _ in drawn_kinds]
+            if here_kinds != drawn_only:
+                # 知らないチャンクも 2 つ目の IHDR も APNG の制御チャンクも
+                # デコーダは読み飛ばすか 1 枚目だけ返すので、画素は一致した
+                # まま中身が増える。並びは描いた側から採る。
+                stale.append(f'{name}: チャンクの並びが違う '
+                             f'({" ".join(here_kinds)} / 描くのは {" ".join(drawn_only)})')
+                continue
+            if header_size(kinds) != header_size(drawn_kinds):
+                # 大きさは IHDR に書いてある。デコーダに聞く前に読めるので、
+                # 巨大を名乗るヘッダをここで止められる。
+                stale.append(f'{name}: 大きさが違う '
+                             f'({header_size(kinds)} → {header_size(drawn_kinds)})')
+                continue
+            changed = [kind for (kind, body), (_, drawn_body) in zip(kinds, drawn_kinds)
+                       if body != drawn_body]
+            if changed:
+                # 並びが同じでも中身は違いうる。IHDR の圧縮方式を書き換えても
+                # Pillow は何も言わずに読むので、画素にも大きさにも出ない。
+                stale.append(f'{name}: {" ".join(changed)} チャンクの中身が描くものと違う')
+                continue
             try:
-                opened = Image.open(tracked)
-                # convert() が返す Image はフレーム数を忘れるので先に読む。
-                frames = getattr(opened, 'n_frames', 1)
-                size = opened.size
-                # 大きさは開いた時点で分かる。違うならデコードしない —
-                # 宣言だけ巨大な画像をここで展開しないため。
-                old = opened.convert('RGBA') if size == new.size else None
-            except (OSError, Image.DecompressionBombError) as err:
-                # 読めないものは「いま描くもの」ではない。1 枚で止めると残りの
-                # 比較も orphan の報告も出ない。爆弾ヘッダは OSError の外から
-                # 来るので両方を捕らえる。
+                old = Image.open(tracked).convert('RGBA')
+            except OSError as err:
+                # ここまでを通っても中身は壊れうる (走査線のフィルタ等)。1 枚で
+                # 止めると残りの比較も orphan の報告も出ない。
                 stale.append(f'{name}: 画像として読めない ({err})')
                 continue
-            kinds, _, fault = png_shape(tracked, drawn_pixels)
-            if frames != 1:
-                # 下の比較はファイルが開いたフレームしか読まないので、第 1
-                # フレームが一致する APNG はそこを通ってしまう。
-                stale.append(f'{name}: {frames} フレームある (描くのは 1 枚)')
-            elif size != new.size:
-                # ImageChops.difference は大きさが違っても投げず、小さい方に
-                # 切り詰めた差を返すため、画素より先に見る。
-                stale.append(f'{name}: 大きさが違う ({size} → {new.size})')
-            elif fault:
-                # デコーダは中身で形式を決め、IEND の欠落や後ろのバイトを
-                # 黙って許すので、ここまでの 3 つには出てこない。
-                stale.append(f'{name}: {fault}')
-            elif kinds != drawn_kinds:
-                # 知らないチャンクも 2 つ目の IHDR もデコーダは読み飛ばすので、
-                # 画素は一致したまま中身が増える。並びは描いた側から採る。
-                stale.append(f'{name}: チャンクの並びが違う '
-                             f'({" ".join(kinds)} / 描くのは {" ".join(drawn_kinds)})')
-            elif new.tobytes() != old.tobytes():
+            if new.tobytes() != old.tobytes():
                 # 画素をそのまま比べる。difference().getbbox() は既定で alpha
                 # だけを見るので、色が違っても alpha が同じなら None を返す。
                 stale.append(f'{name}: いま描くものと違う')
