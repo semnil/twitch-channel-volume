@@ -371,6 +371,13 @@ function assertContrastFloor(css, pairs, floor) {
   }
 }
 
+// The arguments a `[TCV]` log carried, after the label.
+function loggedWarning(harness, label) {
+  const logged = harness.warnings.find(([message]) => message === label);
+  assert.ok(logged, `${label} was not logged`);
+  return logged.slice(1);
+}
+
 function createContentHarness({
   autoApply = false,
   autoGain,
@@ -2111,10 +2118,11 @@ test('content names the storage failure behind a rejected gain save', async () =
   assert.equal(response.reason, 'storage update failed');
   // Restoring the saved gain succeeds here, so this log is the only place the
   // failure that discarded the viewer's setting can still be read.
-  assert.equal(
-    harness.warnings.some(([message]) => message === '[TCV] failed to save gain'),
-    true
-  );
+  const [payload] = loggedWarning(harness, '[TCV] failed to save gain');
+  assert.equal(payload.channelId, 'vod-owner:100');
+  assert.equal(payload.kind, 'vod');
+  assert.equal(payload.gain, 2);
+  assert.equal(String(payload.saveError?.message), 'storage-update-failed');
 });
 
 test('content names the channel a failed gain save was for', async () => {
@@ -2132,11 +2140,10 @@ test('content names the channel a failed gain save was for', async () => {
   await flushTasks();
 
   assert.equal(response.ok, false);
-  const logged = harness.warnings.find(([message]) => message === '[TCV] failed to save gain');
-  assert.ok(logged, 'the failed save was not logged');
   // The media on screen has moved on; the log is about the one the save was for.
-  assert.equal(logged[1].channelId, 'vod-owner:100');
-  assert.equal(logged[1].kind, 'vod');
+  const [payload] = loggedWarning(harness, '[TCV] failed to save gain');
+  assert.equal(payload.channelId, 'vod-owner:100');
+  assert.equal(payload.kind, 'vod');
 });
 
 test('content answers a command it does not implement', async () => {
@@ -2147,10 +2154,8 @@ test('content answers a command it does not implement', async () => {
 
   assert.equal(response.ok, false);
   assert.equal(response.reason, 'unknown command');
-  assert.equal(
-    harness.warnings.some(([message]) => message === '[TCV] unknown command'),
-    true
-  );
+  const [cmd] = loggedWarning(harness, '[TCV] unknown command');
+  assert.equal(cmd, 'setVolumeSomehow');
 });
 
 test('content reports a bridge message it could not finish handling', async () => {
@@ -2169,10 +2174,9 @@ test('content reports a bridge message it could not finish handling', async () =
     contentId: '100'
   });
 
-  assert.equal(
-    harness.warnings.some(([message]) => message === '[TCV] failed to handle a bridge message'),
-    true
-  );
+  const [payload] = loggedWarning(harness, '[TCV] failed to handle a bridge message');
+  assert.equal(payload.event, 'owner');
+  assert.equal(String(payload.error?.message), 'injected storage read failure');
 });
 
 test('content reports a route change it could not finish handling', async () => {
@@ -2182,20 +2186,16 @@ test('content reports a route change it could not finish handling', async () => 
 
   await harness.navigate('https://www.twitch.tv/videos/200');
 
-  assert.equal(
-    harness.warnings.some(([message]) => message === '[TCV] failed to handle a route change'),
-    true
-  );
+  const [error] = loggedWarning(harness, '[TCV] failed to handle a route change');
+  assert.equal(String(error?.message), 'injected storage read failure');
 });
 
 test('content reports a startup it could not finish', async () => {
   const harness = createContentHarness({ failInitialStorageGet: true });
   await flushTasks();
 
-  assert.equal(
-    harness.warnings.some(([message]) => message === '[TCV] failed to start up'),
-    true
-  );
+  const [error] = loggedWarning(harness, '[TCV] failed to start up');
+  assert.equal(String(error?.message), 'injected storage read failure');
 });
 
 test('content Auto mode follows LUFS and recalculates when the target changes', async () => {
@@ -4734,13 +4734,8 @@ test('options names the reason a destructive change was refused', async () => {
     // Both paths put the same alert in front of the viewer; the reason the
     // service worker gave is readable only here.
     assert.equal(harness.alerts.at(-1), harness.message('channelUpdateFailed'));
-    assert.equal(
-      harness.warnings.some(([logged, error]) =>
-        logged === message && String(error?.message) === 'service worker unavailable'
-      ),
-      true,
-      `${message} was not logged`
-    );
+    const [error] = loggedWarning(harness, message);
+    assert.equal(String(error?.message), 'service worker unavailable');
   }
 });
 
@@ -4968,13 +4963,8 @@ test('popup names the reason each rejected request came back with', async () => 
 
     // The viewer sees one localized line; the reason content.js worked out is
     // readable only here.
-    assert.equal(
-      harness.warnings.some(([logged, error]) =>
-        logged === message && String(error?.message) === 'storage update failed'
-      ),
-      true,
-      `${message} was not logged`
-    );
+    const [error] = loggedWarning(harness, message);
+    assert.equal(String(error?.message), 'storage update failed');
   }
 });
 
