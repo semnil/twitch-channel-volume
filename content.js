@@ -701,18 +701,23 @@
           return;
         }
         applyGain(req.gain);
+        // The media can change while the save is in flight, so what is being
+        // saved and what the failure names both come from this moment.
+        const target = currentChannel;
+        const targetGain = currentGain;
         saveChannelGain(
-          currentChannel.id,
-          currentChannel.name,
-          currentGain,
-          currentChannel.kind,
-          currentChannel.url
+          target.id,
+          target.name,
+          targetGain,
+          target.kind,
+          target.url
         ).then(() => {
           sendResponse({ ok: true });
         }).catch(async (saveError) => {
           console.warn('[TCV] failed to save gain', {
-            channelId: currentChannel.id,
-            kind: currentChannel.kind,
+            channelId: target.id,
+            kind: target.kind,
+            gain: targetGain,
             saveError
           });
           try {

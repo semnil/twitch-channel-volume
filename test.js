@@ -493,14 +493,14 @@ function createContentHarness({
       async sendMessage(message) {
         const mutation = message?.mutation;
         if (mutation) {
-          if (mutation.operation === failingChannelMutationOperation) {
-            failingChannelMutationOperation = '';
-            return { ok: false, reason: 'storage-update-failed' };
-          }
           if (channelMutationDeferred &&
               mutation.operation === deferChannelMutationOperation) {
             channelMutationDeferred = false;
             await new Promise((resolve) => { resolveChannelMutation = resolve; });
+          }
+          if (mutation.operation === failingChannelMutationOperation) {
+            failingChannelMutationOperation = '';
+            return { ok: false, reason: 'storage-update-failed' };
           }
           stored[u.CHANNEL_VOLUMES_KEY] = channelStore.applyChannelVolumesMutation(
             stored[u.CHANNEL_VOLUMES_KEY],
@@ -2115,6 +2115,28 @@ test('content names the storage failure behind a rejected gain save', async () =
     harness.warnings.some(([message]) => message === '[TCV] failed to save gain'),
     true
   );
+});
+
+test('content names the channel a failed gain save was for', async () => {
+  const harness = createContentHarness({
+    deferChannelMutationOperation: 'saveGain',
+    failChannelMutationOperation: 'saveGain'
+  });
+  await flushTasks();
+
+  const pending = harness.dispatchRuntime({ cmd: 'setGain', gain: 2 });
+  await flushTasks();
+  await harness.navigate('https://www.twitch.tv/videos/200');
+  harness.releaseChannelMutation();
+  const response = await pending;
+  await flushTasks();
+
+  assert.equal(response.ok, false);
+  const logged = harness.warnings.find(([message]) => message === '[TCV] failed to save gain');
+  assert.ok(logged, 'the failed save was not logged');
+  // The media on screen has moved on; the log is about the one the save was for.
+  assert.equal(logged[1].channelId, 'vod-owner:100');
+  assert.equal(logged[1].kind, 'vod');
 });
 
 test('content answers a command it does not implement', async () => {
