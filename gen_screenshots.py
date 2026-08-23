@@ -570,11 +570,19 @@ def draw_all(target):
 # rename になるようにするため。
 def main(out_dir=OUT_DIR):
     verify_icons()
+    bad = out_dir == OUT_DIR and not_a_directory(out_dir)
+    if bad:
+        # 書いた先を追跡先の名前で報告してしまうため、追跡先へ書くときだけ見る
+        # (--out は行き先を名指しで渡されている)。
+        print(f'{bad[0]}: {bad[1]}', file=sys.stderr)
+        print(f'{bad[0]} をディレクトリに戻してから描き直す。', file=sys.stderr)
+        return 1
     os.makedirs(out_dir, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=out_dir) as staging:
         draw_all(staging)
         for name in replace_all(staging, out_dir):
             print(f'Generated {os.path.join(shown(out_dir), name)}')
+    return 0
 
 
 def is_directory(path):
@@ -595,20 +603,25 @@ def header_size(kinds):
 
 
 def not_a_directory(path):
-    """追跡先がディレクトリそのものでないところ。無ければ None。
+    """ROOT から path までにディレクトリでない成分があれば (その相対パス, 理由)。
 
-    画像 1 枚ずつの lstat は末端しか見ない。追跡先ごとリンクへ差し替えると、
-    その下の 6 枚は全て通り、git には 6 枚の削除とリンク 1 つの追加が並ぶ。
+    lstat が答えるのは最後の名前についてだけなので、途中の docs をリンクへ
+    差し替えると、その下は何を見ても通る。git はリンクより下を追跡しない —
+    追跡先ごと、あるいはその親ごと消えたのと同じ形になる。
     """
-    if not os.path.lexists(path):
-        # 何も追跡していないのは画像ごとに報告される。
-        return None
-    mode = os.lstat(path).st_mode
-    if stat.S_ISDIR(mode):
-        return None
-    if stat.S_ISLNK(mode):
-        return f'シンボリックリンク ({os.readlink(path)} を指している)'
-    return 'ディレクトリではない'
+    at = ROOT
+    for part in os.path.relpath(path, ROOT).split(os.sep):
+        at = os.path.join(at, part)
+        if not os.path.lexists(at):
+            # 無いのは「1 枚も追跡していない」で、画像ごとに報告される。
+            return None
+        mode = os.lstat(at).st_mode
+        if stat.S_ISLNK(mode):
+            return (os.path.relpath(at, ROOT),
+                    f'シンボリックリンク ({os.readlink(at)} を指している)')
+        if not stat.S_ISDIR(mode):
+            return os.path.relpath(at, ROOT), 'ディレクトリではない'
+    return None
 
 
 def not_a_plain_file(path):
@@ -708,11 +721,11 @@ def png_shape(path, expected=None):
 def check():
     """描き直した 6 枚と追跡中の画像を画素で比べる。書き込みはしない。"""
     here = os.path.relpath(OUT_DIR, ROOT)
-    kind = not_a_directory(OUT_DIR)
-    if kind:
-        # 描く前に止める。この 1 つが違うと、下の 6 枚が何を通ろうと意味が無い。
-        print(f'{here}: {kind}', file=sys.stderr)
-        print(f'{here} をディレクトリに戻してから '
+    bad = not_a_directory(OUT_DIR)
+    if bad:
+        # 描く前に止める。ここが違うと、下の 6 枚が何を通ろうと意味が無い。
+        print(f'{bad[0]}: {bad[1]}', file=sys.stderr)
+        print(f'{bad[0]} をディレクトリに戻してから '
               f'`python3 {os.path.basename(__file__)}` で描き直す。', file=sys.stderr)
         return 1
     verify_icons()
@@ -853,4 +866,4 @@ if __name__ == '__main__':
     destination = out_dir_from(sys.argv[1:])
     if '--check' in sys.argv[1:]:
         sys.exit(check())
-    main(destination)
+    sys.exit(main(destination))

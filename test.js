@@ -6008,6 +6008,32 @@ test('--check turns down a tracked directory that is a link to one', { skip: gen
   || (process.platform === 'win32' && 'symlinks need a privilege this does not ask for') }, () => {
   const sandbox = screenshotSandbox();
   try {
+    // A link anywhere on the way there hides the same thing: lstat answers for
+    // the last name in the path, so with docs itself a link, everything under
+    // it reads as a directory of images. Neither run may write through it —
+    // both name docs/screenshots in what they print.
+    fs.renameSync(path.join(sandbox, 'docs'), path.join(sandbox, 'docs.source'));
+    fs.symlinkSync('docs.source', path.join(sandbox, 'docs'));
+    const marked = path.join(sandbox, 'docs.source/screenshots/popup_ja.png');
+    assert.equal(spawnSync('python3', ['-B', '-c',
+      'import sys; from PIL import Image;' +
+      'i = Image.open(sys.argv[1]).convert("RGB");' +
+      'r, g, b = i.getpixel((5, 5));' +
+      'i.putpixel((5, 5), (r ^ 1, g, b));' +
+      'i.save(sys.argv[1])', marked], { encoding: 'utf8' }).status, 0, 'the probe marked a pixel');
+    const before = fs.readFileSync(marked);
+
+    const parent = runCheck(sandbox);
+    assert.equal(parent.status, 1, 'the linked parent is reported: ' + (parent.stderr || parent.stdout));
+    assert.match(parent.stderr, /docs: シンボリックリンク \(docs\.source を指している\)/);
+    const redraw = spawnSync('python3', ['-B', 'gen_screenshots.py'],
+      { cwd: sandbox, encoding: 'utf8' });
+    assert.equal(redraw.status, 1, 'and drawing refuses the same way: ' + redraw.stderr);
+    assert.match(redraw.stderr, /docs: シンボリックリンク/);
+    assert.deepEqual(fs.readFileSync(marked), before, 'the refused run wrote nothing');
+
+    fs.unlinkSync(path.join(sandbox, 'docs'));
+    fs.renameSync(path.join(sandbox, 'docs.source'), path.join(sandbox, 'docs'));
     // lstat on each image reads the last name in the path, so the six under a
     // linked directory all pass. What a repository records for that is six
     // deletions and one link.
