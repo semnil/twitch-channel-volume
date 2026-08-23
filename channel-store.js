@@ -7,6 +7,22 @@ const CHANNEL_SEQUENCE_KEY = 'channelVolumeSequence';
 const FIELD_VERSIONS_FIELD = '__fieldVersions';
 const LEGACY_PROVISIONAL_WRITES_FIELD = '__provisionalWrites';
 
+// What the caller sent cannot be applied. Sending it again produces the same
+// answer. settings-store.js mirrors this helper under its own name: the
+// service worker runs both scripts in one global.
+function invalidChannelMutation(message) {
+  const error = new TypeError(message);
+  error.reason = 'invalid-mutation';
+  return error;
+}
+
+// What is on file cannot carry the mutation. The caller sent nothing wrong,
+// and retrying puts the same data through the same state.
+function storedStateInvalid(error) {
+  error.reason = 'stored-state-invalid';
+  return error;
+}
+
 function storeGainFieldForKind(kind) {
   if (kind === 'vod') return 'gainVod';
   if (kind === 'clip') return 'gainClip';
@@ -27,13 +43,13 @@ function storeAutoGainFieldForKind(kind) {
 
 function assertChannelId(value, field = 'channelId') {
   if (typeof value !== 'string' || value.length === 0) {
-    throw new TypeError(`${field} must be a non-empty string`);
+    throw invalidChannelMutation(`${field} must be a non-empty string`);
   }
 }
 
 function assertKind(kind) {
   if (!CHANNEL_MUTATION_KINDS.has(kind)) {
-    throw new TypeError('kind must be live, vod, or clip');
+    throw invalidChannelMutation('kind must be live, vod, or clip');
   }
 }
 
@@ -116,7 +132,9 @@ function knownLoginTargets(all) {
 
 function setFieldVersion(entry, field, sequence) {
   if (sequence === undefined) return;
-  if (!validSequence(sequence)) throw new TypeError('sequence must be a positive safe integer');
+  if (!validSequence(sequence)) {
+    throw invalidChannelMutation('sequence must be a positive safe integer');
+  }
   entry[FIELD_VERSIONS_FIELD] = {
     ...(entry[FIELD_VERSIONS_FIELD] || {}),
     [field]: sequence
@@ -201,7 +219,7 @@ function setMeasurementCompanion(entry, field, kind, value) {
 function applyMeasurementReference(entry, mutation, field) {
   if (mutation.reference !== undefined &&
       (typeof mutation.reference !== 'string' || mutation.reference.length > 32)) {
-    throw new TypeError('reference must be a short string');
+    throw invalidChannelMutation('reference must be a short string');
   }
   setMeasurementCompanion(entry, field, mutation.kind, mutation.reference);
 }
@@ -211,7 +229,7 @@ function applyMeasurementReference(entry, mutation, field) {
 function applyMeasurementWindows(entry, mutation) {
   if (mutation.windows !== undefined &&
       !(Number.isSafeInteger(mutation.windows) && mutation.windows > 0)) {
-    throw new TypeError('windows must be a positive safe integer');
+    throw invalidChannelMutation('windows must be a positive safe integer');
   }
   setMeasurementCompanion(entry, 'lastLufsWindows', mutation.kind, mutation.windows);
 }
@@ -303,7 +321,7 @@ function normalizeKnownChannelEntries(all) {
 
 function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
   if (!mutation || typeof mutation !== 'object') {
-    throw new TypeError('mutation must be an object');
+    throw invalidChannelMutation('mutation must be an object');
   }
   const all = { ...(currentValue || {}) };
 
@@ -312,7 +330,7 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
       assertChannelId(mutation.channelId);
       assertKind(mutation.kind);
       if (!Number.isFinite(mutation.gain) || mutation.gain < 0 || mutation.gain > 6) {
-        throw new TypeError('gain must be finite and within [0, 6]');
+        throw invalidChannelMutation('gain must be finite and within [0, 6]');
       }
       const entry = cloneEntry(all[mutation.channelId], mutation.channel?.name || mutation.channelId);
       copyMetadata(entry, mutation.channel);
@@ -325,7 +343,7 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
       assertChannelId(mutation.channelId);
       assertKind(mutation.kind);
       if (typeof mutation.enabled !== 'boolean') {
-        throw new TypeError('enabled must be a boolean');
+        throw invalidChannelMutation('enabled must be a boolean');
       }
       const entry = cloneEntry(all[mutation.channelId], mutation.channel?.name || mutation.channelId);
       copyMetadata(entry, mutation.channel);
@@ -333,7 +351,7 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
       setFieldVersion(entry, storeAutoFieldForKind(mutation.kind), mutation.sequence);
       if (mutation.autoGain !== undefined) {
         if (!Number.isFinite(mutation.autoGain) || mutation.autoGain < 0 || mutation.autoGain > 6) {
-          throw new TypeError('autoGain must be finite and within [0, 6]');
+          throw invalidChannelMutation('autoGain must be finite and within [0, 6]');
         }
         entry[storeAutoGainFieldForKind(mutation.kind)] = mutation.autoGain;
         setFieldVersion(entry, storeAutoGainFieldForKind(mutation.kind), mutation.sequence);
@@ -345,7 +363,7 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
     case 'saveMeasurement': {
       assertChannelId(mutation.channelId);
       assertKind(mutation.kind);
-      if (!Number.isFinite(mutation.lufs)) throw new TypeError('lufs must be finite');
+      if (!Number.isFinite(mutation.lufs)) throw invalidChannelMutation('lufs must be finite');
       const entry = cloneEntry(all[mutation.channelId], mutation.channel?.name || mutation.channelId);
       copyMetadata(entry, mutation.channel);
       entry.lastLufs = { ...(entry.lastLufs || {}), [mutation.kind]: mutation.lufs };
@@ -355,7 +373,7 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
       setFieldVersion(entry, `lastLufs.${mutation.kind}`, mutation.sequence);
       if (mutation.autoGain !== undefined) {
         if (!Number.isFinite(mutation.autoGain) || mutation.autoGain < 0 || mutation.autoGain > 6) {
-          throw new TypeError('autoGain must be finite and within [0, 6]');
+          throw invalidChannelMutation('autoGain must be finite and within [0, 6]');
         }
         entry[storeAutoGainFieldForKind(mutation.kind)] = mutation.autoGain;
         setFieldVersion(entry, storeAutoGainFieldForKind(mutation.kind), mutation.sequence);
@@ -388,7 +406,7 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
       assertChannelId(mutation.channelId);
       assertKind(mutation.kind);
       if (!Number.isFinite(mutation.autoGain) || mutation.autoGain < 0 || mutation.autoGain > 6) {
-        throw new TypeError('autoGain must be finite and within [0, 6]');
+        throw invalidChannelMutation('autoGain must be finite and within [0, 6]');
       }
       const entry = cloneEntry(all[mutation.channelId], mutation.channel?.name || mutation.channelId);
       copyMetadata(entry, mutation.channel);
@@ -410,7 +428,7 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
     case 'clearChannels':
       return {};
     default:
-      throw new TypeError('unknown channelVolumes mutation');
+      throw invalidChannelMutation('unknown channelVolumes mutation');
   }
 
   return normalizeKnownChannelEntries(all);
@@ -435,7 +453,7 @@ function resolveStoredAlias(channelId, aliases) {
     if (typeof next !== 'string' || next.length === 0 || next === resolved) return resolved;
     resolved = next;
   }
-  throw new TypeError('channel alias cycle detected');
+  throw storedStateInvalid(new TypeError('channel alias cycle detected'));
 }
 
 function resolveMutation(mutation, aliases) {
@@ -494,7 +512,9 @@ function createChannelVolumesWriter(
       );
       const resolvedMutation = resolveMutation(mutation, aliases);
       if (mutationNeedsSequence(resolvedMutation.operation)) {
-        if (sequence >= Number.MAX_SAFE_INTEGER) throw new RangeError('channel mutation sequence exhausted');
+        if (sequence >= Number.MAX_SAFE_INTEGER) {
+          throw storedStateInvalid(new RangeError('channel mutation sequence exhausted'));
+        }
         resolvedMutation.sequence = ++sequence;
       }
       const next = applyChannelVolumesMutation(current, resolvedMutation, clock());
