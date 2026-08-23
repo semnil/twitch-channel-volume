@@ -3,8 +3,8 @@
 PIL 直接描画。popup / settings / overlay の 3 シーンを ja/en で出力する。
 配色・UI 文字列は popup.html / options.html / _locales の実値に一致させる。
 
-`--check` は一時ディレクトリへ描き直して追跡中の画像と画素比較し、書き込まない。
-差があれば exit 1、この環境では描けない (Pillow / 書体が無い) なら exit 3。
+`--check` は一時ディレクトリへ描き直し、追跡物をバイトで確かめてから画素比較する。
+書き込まない。差があれば exit 1、この環境では描けない (Pillow / 書体が無い) なら exit 3。
 `--out <dir>` は docs/screenshots ではなくそのディレクトリへ書く。知らない引数と
 値の無い `--out` は exit 2 で、どちらも何も描かない。
 """
