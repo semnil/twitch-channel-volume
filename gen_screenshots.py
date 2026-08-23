@@ -5,7 +5,8 @@ PIL 直接描画。popup / settings / overlay の 3 シーンを ja/en で出力
 
 `--check` は一時ディレクトリへ描き直して追跡中の画像と画素比較し、書き込まない。
 差があれば exit 1、この環境では描けない (Pillow / 書体が無い) なら exit 3。
-`--out <dir>` は docs/screenshots ではなくそのディレクトリへ書く。
+`--out <dir>` は docs/screenshots ではなくそのディレクトリへ書く。知らない引数と
+値の無い `--out` は exit 2 で、どちらも何も描かない。
 """
 import math
 import os
@@ -17,7 +18,10 @@ UNAVAILABLE = 3
 
 try:
     from PIL import Image, ImageChops, ImageDraw, ImageFont
-except ImportError as err:
+    # Pillow は raqm があればそちらを選び、入っている環境と入っていない環境で
+    # 字の置き方が変わる。追跡中の画像と比べるので、ここで固定する。
+    BASIC_LAYOUT = ImageFont.Layout.BASIC
+except (AttributeError, ImportError) as err:
     print(f'{err}. Pillow を入れると描ける。', file=sys.stderr)
     sys.exit(UNAVAILABLE)
 
@@ -67,9 +71,7 @@ FONT_BOLD_FILE = os.path.join(FONT_DIR, 'MPLUS1p-Bold.ttf')
 def _font(size, bold=False):
     path = FONT_BOLD_FILE if bold else FONT_REGULAR_FILE
     try:
-        # Pillow は raqm があればそちらを選び、入っている環境と入っていない
-        # 環境で字の置き方が変わる。追跡中の画像と比べるので固定する。
-        return ImageFont.truetype(path, size, layout_engine=ImageFont.Layout.BASIC)
+        return ImageFont.truetype(path, size, layout_engine=BASIC_LAYOUT)
     except OSError:
         print(f'{os.path.relpath(path, ROOT)} が読めない。docs/screenshots/ の画像は'
               'この書体で描いたもので、別の書体で生成すると 6 枚とも差し替わる。',
@@ -583,11 +585,27 @@ def check():
             tracked = os.path.join(OUT_DIR, name)
             if not os.path.exists(tracked):
                 stale.append(f'{name}: 追跡されていない')
-            elif ImageChops.difference(Image.open(os.path.join(fresh, name)).convert('RGB'),
-                                       Image.open(tracked).convert('RGB')).getbbox():
+                continue
+            try:
+                new, old = (Image.open(os.path.join(fresh, name)).convert('RGB'),
+                            Image.open(tracked).convert('RGB'))
+            except OSError as err:
+                # 読めないものは「いま描くもの」ではない。1 枚で止めると残りの
+                # 比較も orphan の報告も出ない。
+                stale.append(f'{name}: 画像として読めない ({err})')
+                continue
+            if new.size != old.size:
+                # ImageChops.difference は大きさが違っても投げず、小さい方に
+                # 切り詰めた差を返す。はみ出した分は比較から落ちる。
+                stale.append(f'{name}: 大きさが違う ({old.size} → {new.size})')
+            elif ImageChops.difference(new, old).getbbox():
                 stale.append(f'{name}: いま描くものと違う')
     here = os.path.relpath(OUT_DIR, ROOT)
-    tracked_now = sorted(os.listdir(OUT_DIR)) if os.path.isdir(OUT_DIR) else []
+    # 描くのは png だけなので、それ以外 (.DS_Store, 中断した走行が残す作業
+    # ディレクトリ) を追跡物として数えない。
+    tracked_now = sorted(name for name in os.listdir(OUT_DIR)
+                         if name.endswith('.png') and os.path.isfile(os.path.join(OUT_DIR, name))
+                         ) if os.path.isdir(OUT_DIR) else []
     orphans = [f'{here}/{name}' for name in tracked_now if name not in drawn]
 
     for line in stale:
@@ -605,18 +623,36 @@ def check():
     return 0
 
 
+USAGE = f'usage: {os.path.basename(__file__)} [--check] [--out <dir>]'
+
+
 def out_dir_from(args):
-    """--out の次の引数。無ければ docs/screenshots。"""
-    if '--out' not in args:
-        return OUT_DIR
-    after = args.index('--out') + 1
-    if after >= len(args) or not args[after]:
-        print('--out には書き込み先のディレクトリが要る', file=sys.stderr)
+    """--out の次の引数。無ければ docs/screenshots。
+
+    綴りを外した引数は書き込みへ落とさない。読むだけのつもりの `--chek` が
+    追跡画像の上書きになると、確かめたかった古さがその場で消える。
+    """
+    target = OUT_DIR
+    rest = list(args)
+    while rest:
+        arg = rest.pop(0)
+        if arg == '--check':
+            continue
+        if arg == '--out':
+            if not rest or not rest[0]:
+                print(f'--out には書き込み先のディレクトリが要る\n{USAGE}', file=sys.stderr)
+                sys.exit(2)
+            target = os.path.abspath(rest.pop(0))
+            continue
+        print(f'知らない引数: {arg}\n{USAGE}', file=sys.stderr)
         sys.exit(2)
-    return os.path.abspath(args[after])
+    return target
 
 
 if __name__ == '__main__':
+    # 引数は分岐の前に全部見る。--check と一緒に渡された --out や、綴り違いを
+    # 描画側へ素通ししないため。
+    destination = out_dir_from(sys.argv[1:])
     if '--check' in sys.argv[1:]:
         sys.exit(check())
-    main(out_dir_from(sys.argv[1:]))
+    main(destination)

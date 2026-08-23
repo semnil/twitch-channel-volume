@@ -43,11 +43,13 @@ jobs:
 
       - name: Check Screenshots 📸
         id: screenshots
+        timeout-minutes: 5
         run: python3 gen_screenshots.py --check
 
       - name: Draw Them Again For Inspection 🖼️
         id: redraw
         if: failure() && steps.screenshots.conclusion == 'failure'
+        timeout-minutes: 5
         run: python3 gen_screenshots.py --out ${{ runner.temp }}/screenshots-from-ci
 
       - name: Upload What The Runner Drew 📡

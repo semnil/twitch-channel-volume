@@ -4807,10 +4807,20 @@ const generatorImport = spawnSync('python3', ['-B', '-c',
   "m = importlib.util.module_from_spec(spec);" +
   "spec.loader.exec_module(m)"
 ], { cwd: __dirname, encoding: 'utf8' });
-const generatorSkip = generatorImport.status === 0
-  ? false
-  : 'gen_screenshots.py cannot be imported here: ' +
-    ((generatorImport.stderr || '').trim().split('\n').pop() || 'python3 failed');
+// The generator answers 3 where it cannot draw — no Pillow, no face — and that
+// is the only reading that means "not here". Anything else is the generator
+// itself being broken, which the runs below are there to catch, so they run.
+const generatorReason = (generatorImport.stderr || '').trim().split('\n').pop() || 'python3 failed';
+const generatorSkip = generatorImport.error || generatorImport.status === 3
+  ? 'gen_screenshots.py cannot draw here: ' + generatorReason
+  : false;
+
+test('gen_screenshots.py imports, or says it cannot draw here', () => {
+  assert.ok(generatorImport.error === undefined || generatorSkip,
+    'python3 could not be run: ' + generatorReason);
+  assert.ok([0, 3].includes(generatorImport.status),
+    `importing gen_screenshots.py exited ${generatorImport.status}: ${generatorReason}`);
+});
 
 // Drawing all six before replacing any is only half of it: the replacement is
 // six moves, and a run that stops among them leaves some of the tracked images
@@ -4832,7 +4842,7 @@ const INJECT_MOVE_FAILURE = [
   "    source = source.replace('WHITE = (255, 255, 255)', 'WHITE = (254, 254, 254)', 1)",
   "    open(script, 'w', encoding='utf-8').write(source)",
   '    # The faces are resolved beside the script, so the copy needs them too.',
-  "    os.symlink(os.path.join(repo, 'tools'), os.path.join(sandbox, 'tools'))",
+  "    shutil.copytree(os.path.join(repo, 'tools'), os.path.join(sandbox, 'tools'))",
   "    out = os.path.join(sandbox, 'docs', 'screenshots')",
   '    os.makedirs(out)',
   "    tracked = os.path.join(repo, 'docs', 'screenshots')",
@@ -4951,7 +4961,11 @@ test('store screenshot generator writes the tracked directory, and only whole', 
   }
   // Pillow picks raqm where it is installed and places the strings differently,
   // so the runner and this machine would disagree on every image.
-  assert.match(source, /layout_engine=ImageFont\.Layout\.BASIC/);
+  assert.match(source, /^\s*BASIC_LAYOUT = ImageFont\.Layout\.BASIC$/m);
+  assert.match(source, /layout_engine=BASIC_LAYOUT/);
+  // The reading that means "not here" — the suite skips on it, so its value is
+  // part of the contract.
+  assert.match(source, /^UNAVAILABLE = 3$/m);
   assert.match(source, /sys\.exit\(UNAVAILABLE\)/);
   assert.ok(!source.includes('ImageFont.load_default()'), 'no silent fallback face');
 });
@@ -4964,6 +4978,132 @@ test('tracked store screenshots are what the generator draws', { skip: generator
     { cwd: __dirname, encoding: 'utf8' });
   assert.equal(run.status, 0,
     ((run.stdout || '') + (run.stderr || '')).trim() || 'gen_screenshots.py --check failed');
+});
+
+// A run over a matching tree says nothing about what --check rejects, so the
+// runs below hand it trees it has to turn down. Each gets its own copy: the
+// script, the faces it resolves beside itself, and the six images.
+function screenshotSandbox() {
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'tcv-shots-'));
+  fs.copyFileSync(path.join(__dirname, 'gen_screenshots.py'),
+    path.join(sandbox, 'gen_screenshots.py'));
+  fs.cpSync(path.join(__dirname, 'tools'), path.join(sandbox, 'tools'), { recursive: true });
+  fs.cpSync(path.join(__dirname, 'docs/screenshots'), path.join(sandbox, 'docs/screenshots'),
+    { recursive: true });
+  return sandbox;
+}
+
+function runCheck(sandbox) {
+  return spawnSync('python3', ['-B', 'gen_screenshots.py', '--check'],
+    { cwd: sandbox, encoding: 'utf8' });
+}
+
+test('--check turns down a tracked image that is not what the code draws',
+  { skip: generatorSkip }, () => {
+    const sandbox = screenshotSandbox();
+    try {
+      assert.equal(runCheck(sandbox).status, 0, 'the copy starts out matching');
+
+      // One pixel, one channel: the smallest difference the comparison has to
+      // see, and the one a tolerance would swallow first.
+      const target = path.join(sandbox, 'docs/screenshots/popup_ja.png');
+      const flip = spawnSync('python3', ['-B', '-c',
+        'import sys; from PIL import Image;' +
+        'i = Image.open(sys.argv[1]).convert("RGB");' +
+        'p = i.getpixel((320, 200));' +
+        'i.putpixel((320, 200), (p[0] ^ 1, p[1], p[2]));' +
+        'i.save(sys.argv[1])', target], { encoding: 'utf8' });
+      assert.equal(flip.status, 0, 'the probe rewrote one pixel: ' + (flip.stderr || ''));
+
+      const run = runCheck(sandbox);
+      assert.equal(run.status, 1, 'a changed pixel is reported: ' + (run.stderr || run.stdout));
+      assert.match(run.stderr, /popup_ja\.png/);
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+test('--check turns down a size the code no longer draws', { skip: generatorSkip }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    const target = path.join(sandbox, 'docs/screenshots/settings_en.png');
+    // Cropping keeps every pixel the comparison would overlay, so only a size
+    // of its own can catch it.
+    assert.equal(spawnSync('python3', ['-B', '-c',
+      'import sys; from PIL import Image;' +
+      'Image.open(sys.argv[1]).crop((0, 0, 320, 200)).save(sys.argv[1])', target],
+    { encoding: 'utf8' }).status, 0, 'the probe cropped the image');
+
+    const run = runCheck(sandbox);
+    assert.equal(run.status, 1, 'a cropped image is reported: ' + (run.stderr || run.stdout));
+    assert.match(run.stderr, /settings_en\.png/);
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test('--check names a tracked image nothing draws, and leaves the rest alone',
+  { skip: generatorSkip }, () => {
+    const sandbox = screenshotSandbox();
+    try {
+      fs.copyFileSync(path.join(sandbox, 'docs/screenshots/popup_ja.png'),
+        path.join(sandbox, 'docs/screenshots/popup_de.png'));
+      const run = runCheck(sandbox);
+      assert.equal(run.status, 1, 'an image nothing draws is reported');
+      assert.match(run.stderr, /popup_de\.png/);
+
+      // What macOS and an interrupted run leave behind are not tracked images.
+      fs.rmSync(path.join(sandbox, 'docs/screenshots/popup_de.png'));
+      fs.writeFileSync(path.join(sandbox, 'docs/screenshots/.DS_Store'), '');
+      fs.mkdirSync(path.join(sandbox, 'docs/screenshots/tmpabc123'));
+      const after = runCheck(sandbox);
+      assert.equal(after.status, 0,
+        'neither .DS_Store nor a leftover staging directory is a tracked image: ' +
+        (after.stderr || after.stdout));
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+test('--check says it cannot draw here rather than passing', { skip: generatorSkip }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    fs.rmSync(path.join(sandbox, 'tools'), { recursive: true });
+    const run = runCheck(sandbox);
+    assert.equal(run.status, 3, 'a missing face is 3, not 0 and not 1');
+    assert.match(run.stderr, /MPLUS1p-Regular\.ttf/);
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test('--out writes where it is told, and nowhere else', { skip: generatorSkip }, () => {
+  const sandbox = screenshotSandbox();
+  const before = fs.readdirSync(path.join(sandbox, 'docs/screenshots')).sort()
+    .map((name) => [name, fs.readFileSync(path.join(sandbox, 'docs/screenshots', name))]);
+  try {
+    const elsewhere = path.join(sandbox, 'elsewhere');
+    const run = spawnSync('python3', ['-B', 'gen_screenshots.py', '--out', elsewhere],
+      { cwd: sandbox, encoding: 'utf8' });
+    assert.equal(run.status, 0, (run.stderr || '') + (run.stdout || ''));
+    assert.deepEqual(fs.readdirSync(elsewhere).sort(), before.map(([name]) => name));
+    for (const [name, bytes] of before) {
+      assert.ok(bytes.equals(fs.readFileSync(path.join(sandbox, 'docs/screenshots', name))),
+        `${name} in the tracked directory is untouched`);
+    }
+
+    // The one word that decides between reading and rewriting is not matched
+    // loosely: a near miss is an argument error, not a redraw.
+    const typo = spawnSync('python3', ['-B', 'gen_screenshots.py', '--chek'],
+      { cwd: sandbox, encoding: 'utf8' });
+    assert.equal(typo.status, 2, 'an unknown argument is refused: ' + (typo.stderr || ''));
+    for (const [name, bytes] of before) {
+      assert.ok(bytes.equals(fs.readFileSync(path.join(sandbox, 'docs/screenshots', name))),
+        `${name} is untouched by the refused run`);
+    }
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
 });
 
 test('CI uploads the screenshots the runner drew, not the ones it checked out', () => {
@@ -4980,6 +5120,14 @@ test('CI uploads the screenshots the runner drew, not the ones it checked out', 
   // would never run after the step it answers to has failed.
   assert.match(workflow, /if: failure\(\) && steps\.screenshots\.conclusion == 'failure'/);
   assert.match(workflow, /if: failure\(\) && steps\.redraw\.conclusion == 'success'/);
+  // A condition on a step id that no step carries is never true, and the job is
+  // already red by then, so nothing points it out.
+  for (const [, id] of workflow.matchAll(/steps\.(\w+)\.conclusion/g)) {
+    assert.match(workflow, new RegExp(`^\\s+id: ${id}$`, 'm'), `a step carries id: ${id}`);
+  }
+  // Uploading nothing is the case worth failing on: it means the redraw wrote
+  // somewhere else.
+  assert.match(workflow, /if-no-files-found: error/);
 });
 
 test('store screenshot generator mirrors the stylesheet muted colors', () => {
@@ -5150,8 +5298,7 @@ test('store screenshot generator draws icons the bundled font lacks', () => {
   assert.match(check, /size=FULLSCREEN_SIZE/);
   assert.match(source, /def main\(out_dir=OUT_DIR\):\n    verify_icons\(\)/);
   // --check draws the same six, so it runs the same self-check first.
-  const checking = source.slice(source.indexOf('def check():'), source.indexOf('def out_dir_from('));
-  assert.ok(checking.includes('verify_icons()'), '--check verifies the icon helpers too');
+  assert.match(source, /def check\(\):\n    """[^"]*"""\n    verify_icons\(\)/);
 });
 
 test('meanSquareToLufs: known reference', () => {

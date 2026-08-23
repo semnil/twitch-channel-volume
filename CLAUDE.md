@@ -181,7 +181,7 @@ options.html / options.js
 | `_locales/` | i18n (ja, en) |
 | `icons/` | 16/48/128 px PNG (Twitch purple 3-bar meter) |
 | `gen_icons.py` | アイコン生成 (Python Pillow) |
-| `gen_screenshots.py` | スクリーンショット生成 (PIL 直接描画, 640×400 ja/en → `docs/screenshots/`)。`--check` は書き込まず画素比較 (差は exit 1、描けない環境は exit 3)、`--out <dir>` は書き込み先を差し替える |
+| `gen_screenshots.py` | スクリーンショット生成 (PIL 直接描画, 640×400 ja/en → `docs/screenshots/`)。`--check` は書き込まず画素比較 (差は exit 1、描けない環境は exit 3)、`--out <dir>` は書き込み先を差し替える。知らない引数は exit 2 で拒否する (`--chek` が上書きにならないように) |
 | `pack.py` | Chrome Web Store 用 zip 生成 (manifest からの参照グラフで選択、`--list` で選択結果のみ出力) |
 | `PRIVACY_POLICY.md` / `PRIVACY_POLICY_JA.md` | プライバシーポリシー (審査・README リンク用, EN/JA) |
 | `docs/security-audit.md` | セキュリティ監査レポート |
