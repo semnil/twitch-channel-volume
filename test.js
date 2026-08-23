@@ -4367,6 +4367,19 @@ test('background tells a refused mutation from a failed write', async () => {
   );
 });
 
+test('background names a message type it does not handle', async () => {
+  const harness = createBackgroundHarness();
+
+  const { keepOpen, response } = await harness.dispatch({ type: 'somethingElse' });
+
+  assert.notEqual(keepOpen, true);
+  assert.equal(response, undefined);
+  assert.deepEqual(
+    harness.warnings.map(([message, type]) => [message, type]),
+    [['[TCV] unknown message type', 'somethingElse']]
+  );
+});
+
 test('options disables settings until load and saves only field mutations', () => {
   const html = fs.readFileSync(path.join(__dirname, 'options.html'), 'utf8');
   for (const id of [

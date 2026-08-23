@@ -43,6 +43,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       sendResponse({ ok: false, reason: 'settings-update-failed' });
     });
   } else {
+    // Answering here would take the response away from a listener added later,
+    // so the message is named and left alone.
+    console.warn('[TCV] unknown message type', message?.type);
     return false;
   }
   // Keep the service worker and response channel alive through the queued
