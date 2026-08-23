@@ -733,6 +733,8 @@ function createOptionsHarness({
     return node;
   });
   const sent = [];
+  const warnings = [];
+  const alerts = [];
   const stored = {
     [u.SETTINGS_KEY]: { targetLufs: -18, adGainDb: -6, displayUnit: '%', showGainOverlay: true, ...settings },
     [u.CHANNEL_VOLUMES_KEY]: channelVolumes
@@ -754,6 +756,24 @@ function createOptionsHarness({
   element('emptyMsg').style.display = 'none';
   element('select:.channel-table').style.display = 'none';
   element('overlayToggle').checked = true;
+  // The stub keeps markup as text. The rows the page builds carry the delete
+  // buttons it wires straight afterwards, so the lookup for them is answered
+  // out of the ids in that text.
+  const channelsBody = element('channelsBody');
+  const deleteButtons = new Map();
+  channelsBody.querySelectorAll = (selector) => {
+    if (selector !== 'button[data-id]') return [];
+    return [...channelsBody.textContent.matchAll(/data-id="([^"]*)"/g)].map(([, id]) => {
+      if (!deleteButtons.has(id)) {
+        const button = stubElement(`ch-del-${id}`);
+        button.setAttribute('data-id', id);
+        deleteButtons.set(id, button);
+      }
+      // One handler per render, as a fresh element would carry.
+      deleteButtons.get(id).listeners.click = [];
+      return deleteButtons.get(id);
+    });
+  };
   const document = {
     body,
     getElementById: element,
@@ -808,7 +828,13 @@ function createOptionsHarness({
     // characters that one would.
     esc: (value) => String(value)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
-    console: { warn() {}, error() {}, info() {} },
+    console: {
+      warn(...args) { warnings.push(args); },
+      error() {},
+      info() {}
+    },
+    alert(message) { alerts.push(message); },
+    confirm() { return true; },
     requestAnimationFrame(callback) { callback(); },
     // Held, not run: the page arms one to end a load that never answers, and
     // a stub that fires it at once ends every load in the suite.
@@ -827,7 +853,19 @@ function createOptionsHarness({
     i18nNodes,
     unitButtons,
     sent,
+    warnings,
+    alerts,
     timers,
+    async fire(id, type) {
+      for (const listener of element(id).listeners[type] || []) await listener({ target: element(id) });
+      await flushTasks(8);
+    },
+    async clickDelete(channelId) {
+      const button = deleteButtons.get(channelId);
+      assert.ok(button, `no delete button for ${channelId}`);
+      for (const listener of button.listeners.click || []) await listener({ target: button });
+      await flushTasks(8);
+    },
     fireTimers() {
       for (const timer of timers.splice(0)) timer.callback();
     },
@@ -847,7 +885,7 @@ function createPopupHarness({
   state = {},
   displayUnit = '%',
   deferAutoSave = false,
-  failGainSave = false
+  failCommand = ''
 } = {}) {
   const messages = JSON.parse(
     fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json'), 'utf8')
@@ -855,6 +893,7 @@ function createPopupHarness({
   const elements = new Map();
   const presetButtons = [];
   const sent = [];
+  const warnings = [];
   const intervals = [];
   let resolveAutoSave;
   let currentState = {
@@ -908,7 +947,7 @@ function createPopupHarness({
       async sendMessage(_tabId, request) {
         sent.push(structuredClone(request));
         if (request.cmd === 'getState') return structuredClone(currentState);
-        if (request.cmd === 'setGain' && failGainSave) {
+        if (request.cmd === failCommand) {
           return { ok: false, reason: 'storage update failed' };
         }
         if (request.cmd === 'setAutoApplyLoudness') {
@@ -940,7 +979,11 @@ function createPopupHarness({
     },
     chrome,
     document,
-    console: { warn() {}, error() {}, info() {} },
+    console: {
+      warn(...args) { warnings.push(args); },
+      error() {},
+      info() {}
+    },
     requestAnimationFrame(callback) { callback(); },
     setInterval(callback) { return intervals.push(callback); },
     structuredClone
@@ -956,6 +999,7 @@ function createPopupHarness({
     presets: presetButtons,
     i18nNodes,
     sent,
+    warnings,
     message: (key, substitutions) => {
       const text = messages[key] ? messages[key].message : key;
       return substitutions && substitutions.length
@@ -4644,6 +4688,40 @@ test('popup keeps the apply label on one line and owns the Current card once', (
   assert.match(source, /function syncSlider\(gain\) \{[\s\S]*?setCardValue\(\$\('current'\)/);
 });
 
+test('options names the reason a destructive change was refused', async () => {
+  const refused = [
+    {
+      act: (harness) => harness.clickDelete('123'),
+      message: '[TCV] failed to delete the channel'
+    },
+    {
+      act: (harness) => harness.fire('clearAllBtn', 'click'),
+      message: '[TCV] failed to clear the saved channels'
+    }
+  ];
+
+  for (const { act, message } of refused) {
+    const harness = createOptionsHarness({
+      failMutation: true,
+      channelVolumes: { 123: { name: 'Broadcaster', login: 'broadcaster', gainLive: 0.8 } }
+    });
+    await flushTasks(8);
+
+    await act(harness);
+
+    // Both paths put the same alert in front of the viewer; the reason the
+    // service worker gave is readable only here.
+    assert.equal(harness.alerts.at(-1), harness.message('channelUpdateFailed'));
+    assert.equal(
+      harness.warnings.some(([logged, error]) =>
+        logged === message && String(error?.message) === 'service worker unavailable'
+      ),
+      true,
+      `${message} was not logged`
+    );
+  }
+});
+
 test('options keeps muted text above the AA contrast floor', () => {
   const html = fs.readFileSync(path.join(__dirname, 'options.html'), 'utf8');
   assertContrastFloor(html, [
@@ -4830,9 +4908,57 @@ test('popup keeps both notices off a page with no channel', async () => {
   assert.equal(harness.el('applyHint').textContent, harness.message('channelNotDetected'));
 });
 
+test('popup names the reason each rejected request came back with', async () => {
+  const rejected = [
+    {
+      failCommand: 'setGain',
+      act: (harness) => harness.fire('applyBtn', 'click'),
+      message: '[TCV] suggested gain request failed'
+    },
+    {
+      failCommand: 'setGain',
+      act: (harness) => harness.firePreset(3, 'click'),
+      message: '[TCV] gain request failed'
+    },
+    {
+      failCommand: 'setAutoApplyLoudness',
+      act: async (harness) => {
+        harness.el('autoApplyToggle').checked = true;
+        await harness.fire('autoApplyToggle', 'change');
+      },
+      message: '[TCV] Auto setting request failed'
+    },
+    {
+      failCommand: 'resetMeasurement',
+      act: (harness) => harness.fire('resetMeasurementBtn', 'click'),
+      message: '[TCV] measurement reset request failed'
+    }
+  ];
+
+  for (const { failCommand, act, message } of rejected) {
+    const harness = createPopupHarness({
+      failCommand,
+      state: { lufs: { momentary: -21, shortTerm: -21, integrated: -21 } }
+    });
+    await flushTasks(8);
+
+    await act(harness);
+
+    // The viewer sees one localized line; the reason content.js worked out is
+    // readable only here.
+    assert.equal(
+      harness.warnings.some(([logged, error]) =>
+        logged === message && String(error?.message) === 'storage update failed'
+      ),
+      true,
+      `${message} was not logged`
+    );
+  }
+});
+
 test('popup keeps a failed save visible while the audio notice stands', async () => {
   const harness = createPopupHarness({
-    failGainSave: true,
+    failCommand: 'setGain',
     state: { lufs: { momentary: -21, shortTerm: -21, integrated: -21 } }
   });
   await flushTasks(8);
