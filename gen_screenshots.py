@@ -173,7 +173,7 @@ STRINGS = {
         ],
         'stream_title': '【雑談】ゲーム配信のあとに少しだけ',
         'viewers': '1,234 人が視聴中',
-        'overlay_note': '↑ ゲイン表示',
+        'overlay_note': '↓ ゲイン表示',
     },
     'en': {
         'channel': 'Sample Stream',
@@ -202,7 +202,7 @@ STRINGS = {
         ],
         'stream_title': 'Just chatting after the game',
         'viewers': '1,234 watching',
-        'overlay_note': '↑ Gain overlay',
+        'overlay_note': '↓ Gain overlay',
     },
 }
 
