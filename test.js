@@ -767,6 +767,7 @@ function createOptionsHarness({
   };
 
   const storageListeners = [];
+  const timers = [];
   let resolveStorageGet = null;
   const storageGate = deferStorage
     ? new Promise((resolve) => { resolveStorageGet = resolve; })
@@ -808,7 +809,9 @@ function createOptionsHarness({
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
     console: { warn() {}, error() {}, info() {} },
     requestAnimationFrame(callback) { callback(); },
-    setTimeout(callback) { queueMicrotask(callback); return 1; },
+    // Held, not run: the page arms one to end a load that never answers, and
+    // a stub that fires it at once ends every load in the suite.
+    setTimeout(callback, delay) { timers.push({ callback, delay }); return timers.length; },
     structuredClone
   });
   vm.runInContext(
@@ -823,6 +826,10 @@ function createOptionsHarness({
     i18nNodes,
     unitButtons,
     sent,
+    timers,
+    fireTimers() {
+      for (const timer of timers.splice(0)) timer.callback();
+    },
     fireStorageChanged(changes) {
       for (const listener of storageListeners) listener(changes);
     },
