@@ -576,27 +576,36 @@ def main(out_dir=OUT_DIR):
             print(f'Generated {os.path.join(shown(out_dir), name)}')
 
 
-def spare_pixel_bytes(pixels):
-    """IDAT が運ぶ zlib ストリームの外にあるバイト。無ければ None。
+def unpack_pixels(pixels, cap):
+    """IDAT が運ぶ zlib ストリームを展開した長さと、通らないところ (無ければ None)。
 
-    デコーダは画素が揃った時点で読むのをやめるので、その後ろは増やし放題で、
-    チャンクの本数を畳んだ並びにも現れない。
+    デコーダは走査線が揃った時点で読むのをやめるので、その後ろは圧縮の内側でも
+    外側でも増やし放題で、画素にも大きさにも出ない。展開は cap バイトで止める
+    — 追跡物が言うだけの大きさをこちらが確保する筋合いはない。cap が None の
+    ときだけ最後まで展開する (自分が今書いた 1 枚を測るときに使う)。
     """
     if not pixels:
-        return None
+        return 0, None
+    packed = b''.join(pixels)
     stream = zlib.decompressobj()
     try:
-        stream.decompress(b''.join(pixels))
+        unpacked = stream.decompress(packed) if cap is None else stream.decompress(packed, cap)
     except zlib.error as err:
-        return f'IDAT が zlib ストリームとして読めない ({err})'
+        return 0, f'IDAT が zlib ストリームとして読めない ({err})'
+    if stream.unconsumed_tail or (cap is not None and len(unpacked) >= cap):
+        return len(unpacked), '走査線の後ろに展開されるものがまだある'
     if not stream.eof:
-        return 'IDAT の zlib ストリームが終わっていない'
-    return f'IDAT に zlib ストリームの後ろが {len(stream.unused_data)} バイトある' \
-        if stream.unused_data else None
+        return len(unpacked), 'IDAT の zlib ストリームが終わっていない'
+    if stream.unused_data:
+        return len(unpacked), f'IDAT に zlib ストリームの後ろが {len(stream.unused_data)} バイトある'
+    return len(unpacked), None
 
 
-def png_shape(path):
-    """PNG のチャンク型の並びと、通らないところ (無ければ None)。
+def png_shape(path, expected=None):
+    """PNG のチャンク型の並び、展開した走査線の長さ、通らないところ (無ければ None)。
+
+    expected は「描いた側の走査線の長さ」。渡されたときはそこまでしか展開せず、
+    一致も要求する。渡されないのは自分が今書いた 1 枚を測るときだけ。
 
     デコーダは中身で形式を決め、壊れた末尾も知らないチャンクも黙って許すので、
     画素・大きさ・フレーム数のどれにも出ない違いがここに残る。IDAT の本数は
@@ -605,7 +614,7 @@ def png_shape(path):
     """
     data = open(path, 'rb').read()
     if not data.startswith(b'\x89PNG\r\n\x1a\n'):
-        return [], 'PNG ではない'
+        return [], 0, 'PNG ではない'
     kinds, pixels = [], []
     at = 8
     while at + 8 <= len(data):
@@ -616,27 +625,27 @@ def png_shape(path):
         # 型は英字 4 文字で、3 文字目の小文字 (予約ビット 1) は仕様が使い道を
         # 決めていない。どちらも「読めるが PNG ではない」形。
         if not all(0x41 <= byte <= 0x5a or 0x61 <= byte <= 0x7a for byte in raw):
-            return kinds, f'{at} バイト目のチャンク型が英字 4 文字ではない ({raw!r})'
+            return kinds, 0, f'{at} バイト目のチャンク型が英字 4 文字ではない ({raw!r})'
         if raw[2] & 0x20:
-            return kinds, f'{kind} チャンクの予約ビットが 1'
+            return kinds, 0, f'{kind} チャンクの予約ビットが 1'
         if end > len(data):
-            return kinds, f'{kind} チャンクがファイルの外へ出ている'
+            return kinds, 0, f'{kind} チャンクがファイルの外へ出ている'
         if zlib.crc32(data[at + 4:end - 4]) & 0xffffffff != int.from_bytes(data[end - 4:end], 'big'):
-            return kinds, f'{kind} チャンクの CRC が合わない'
+            return kinds, 0, f'{kind} チャンクの CRC が合わない'
         if kind == 'IDAT':
             pixels.append(data[at + 8:end - 4])
         if kind != 'IDAT' or kinds[-1:] != ['IDAT']:
             kinds.append(kind)
         if kind == 'IEND':
             if length:
-                return kinds, f'IEND の長さが {length} (0 のはず)'
-            spare = spare_pixel_bytes(pixels)
+                return kinds, 0, f'IEND の長さが {length} (0 のはず)'
+            unpacked, spare = unpack_pixels(pixels, None if expected is None else expected + 1)
             if spare:
-                return kinds, spare
+                return kinds, unpacked, spare
             trailing = len(data) - end
-            return kinds, f'IEND の後ろに {trailing} バイトある' if trailing else None
+            return kinds, unpacked, f'IEND の後ろに {trailing} バイトある' if trailing else None
         at = end
-    return kinds, 'IEND が無い'
+    return kinds, 0, 'IEND が無い'
 
 
 def check():
@@ -654,7 +663,7 @@ def check():
             # 変えられた画像が「同じ」になる。いま描いた側は guard の外で開く。
             # そこで失敗するのはこの走行の側の失敗で、追跡物の話ではない。
             new = Image.open(os.path.join(fresh, name)).convert('RGBA')
-            drawn_kinds, drawn_fault = png_shape(os.path.join(fresh, name))
+            drawn_kinds, drawn_pixels, drawn_fault = png_shape(os.path.join(fresh, name))
             if drawn_fault:
                 raise SystemExit(f'いま描いた {name} が PNG として通らない: {drawn_fault}')
             try:
@@ -671,7 +680,7 @@ def check():
                 # 来るので両方を捕らえる。
                 stale.append(f'{name}: 画像として読めない ({err})')
                 continue
-            kinds, fault = png_shape(tracked)
+            kinds, _, fault = png_shape(tracked, drawn_pixels)
             if frames != 1:
                 # 下の比較はファイルが開いたフレームしか読まないので、第 1
                 # フレームが一致する APNG はそこを通ってしまう。

@@ -5415,6 +5415,29 @@ const CHUNK_PROBE = [
   '    size = int.from_bytes(data[at:at + 4], "big")',
   '    walk.append((data[at + 4:at + 8], data[at:at + 12 + size]))',
   '    at += 12 + size',
+  'if op == "pad-stream":',
+  '    raw = zlib.decompress(b"".join(r[8:-4] for k, r in walk if k == b"IDAT"))',
+  '    packer = zlib.compressobj(6)',
+  '    packed = packer.compress(raw)',
+  '    left = int(sys.argv[3])',
+  '    while left:',
+  '        slice_size = min(left, 1 << 20)',
+  '        packed += packer.compress(bytes(slice_size))',
+  '        left -= slice_size',
+  '    packed += packer.flush()',
+  '    out, written = bytearray(data[:8]), False',
+  '    for kind, raw_chunk in walk:',
+  '        if kind != b"IDAT":',
+  '            out += raw_chunk',
+  '            continue',
+  '        if written:',
+  '            continue',
+  '        written = True',
+  '        head = b"IDAT" + packed',
+  '        out += struct.pack(">I", len(packed)) + head',
+  '        out += struct.pack(">I", zlib.crc32(head) & 0xffffffff)',
+  '    open(target, "wb").write(bytes(out))',
+  '    raise SystemExit',
   'if op == "trim-idat":',
   '    body = b"".join(raw[8:-4] for kind, raw in walk if kind == b"IDAT")',
   '    body = body[:-int(sys.argv[3])]',
@@ -5650,6 +5673,47 @@ test('--check turns down a PNG that stops before its own end', { skip: generator
   }
 });
 
+// Peak resident memory of the run, which is how the ceiling on inflation shows
+// up from outside. RUSAGE_CHILDREN counts what the check took; the unit is
+// bytes on macOS and KiB elsewhere.
+const COST_PROBE = [
+  'import resource, subprocess, sys',
+  'unit = 1 if sys.platform == "darwin" else 1024',
+  'run = subprocess.run(["python3", "-B", "gen_screenshots.py", "--check"],',
+  '                     cwd=sys.argv[1], capture_output=True, text=True)',
+  'print(run.returncode)',
+  'print(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * unit)',
+  'sys.stderr.write(run.stderr)',
+].join('\n');
+
+test('--check does not inflate a tracked image beyond what the drawing needs',
+  { skip: generatorSkip || (process.platform === 'win32'
+    && 'the resource module this measures with is not on win32') }, () => {
+    const sandbox = screenshotSandbox();
+    try {
+      // 256 MiB of zeros ride in 53 KB of chunk: the file on disk says nothing
+      // about what reading it costs. Inflating on the tracked file's word is
+      // how a check turns into the memory it was handed.
+      const padding = 256 * 1024 * 1024;
+      assert.equal(spawnSync('python3', ['-B', '-c', CHUNK_PROBE, 'pad-stream',
+        path.join(sandbox, 'docs/screenshots/popup_ja.png'), String(padding)],
+      { encoding: 'utf8' }).status, 0, 'the probe padded the stream');
+
+      const probe = spawnSync('python3', ['-B', '-c', COST_PROBE, sandbox], { encoding: 'utf8' });
+      assert.equal(probe.status, 0, 'the cost probe ran: ' + probe.stderr);
+      const [status, peak] = probe.stdout.trim().split('\n');
+      // A run over the untouched tree peaks around 40 MB here, so the ceiling
+      // is set well above that and far below the padding.
+      assert.ok(Number(peak) < padding / 2,
+        `the run peaked at ${Math.round(Number(peak) / (1 << 20))} MiB`
+        + ` against ${padding / (1 << 20)} MiB of padding`);
+      assert.equal(status, '1', 'and it still turns the image down: ' + probe.stderr);
+      assert.match(probe.stderr, /popup_ja\.png: 走査線の後ろに展開されるものがまだある/);
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
 test('--check turns down a pixel stream that does not end where the chunks do',
   { skip: generatorSkip }, () => {
     const sandbox = screenshotSandbox();
@@ -5667,9 +5731,16 @@ test('--check turns down a pixel stream that does not end where the chunks do',
         path.join(sandbox, 'docs/screenshots/settings_ja.png'), '4'],
       { encoding: 'utf8' }).status, 0, 'the probe cut the end off the stream');
 
+      // And inside the stream: 64 bytes past the scanlines inflate with them,
+      // so nothing outside the stream is out of place.
+      assert.equal(spawnSync('python3', ['-B', '-c', CHUNK_PROBE, 'pad-stream',
+        path.join(sandbox, 'docs/screenshots/overlay_ja.png'), '64'],
+      { encoding: 'utf8' }).status, 0, 'the probe padded the scanlines');
+
       const run = runCheck(sandbox);
       assert.equal(run.status, 1, 'the spare bytes are reported: ' + (run.stderr || run.stdout));
       assert.match(run.stderr, /popup_ja\.png: IDAT に zlib ストリームの後ろが \d+ バイトある/);
+      assert.match(run.stderr, /overlay_ja\.png: 走査線の後ろに展開されるものがまだある/);
       assert.match(run.stderr, /settings_ja\.png: IDAT の zlib ストリームが終わっていない/);
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
