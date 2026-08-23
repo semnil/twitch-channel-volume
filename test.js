@@ -5451,6 +5451,55 @@ test('--check turns down a tracked image changed only in its alpha',
     }
   });
 
+test('--check turns down a second frame riding on the drawn one',
+  { skip: generatorSkip }, () => {
+    const sandbox = screenshotSandbox();
+    try {
+      const target = path.join(sandbox, 'docs/screenshots/popup_ja.png');
+      // Every comparison reads the frame the file opens on, so an animation
+      // whose first frame is the drawn one matches on it.
+      assert.equal(spawnSync('python3', ['-B', '-c',
+        'import sys; from PIL import Image;' +
+        'first = Image.open(sys.argv[1]).convert("RGB");' +
+        'second = first.copy();' +
+        'second.paste((255, 0, 255), (0, 0, first.width, first.height));' +
+        'first.save(sys.argv[1], save_all=True, append_images=[second])', target],
+      { encoding: 'utf8' }).status, 0, 'the probe saved a two-frame APNG');
+
+      const run = runCheck(sandbox);
+      assert.equal(run.status, 1, 'a second frame is reported: ' + (run.stderr || run.stdout));
+      assert.match(run.stderr, /popup_ja\.png: 2 フレームある/);
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+test('--check reads a bomb header as unreadable, and goes on', { skip: generatorSkip }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    // DecompressionBombError is not an OSError, so a guard written for
+    // unreadable files alone lets it out of the loop with the report.
+    assert.equal(spawnSync('python3', ['-B', '-c',
+      'import struct, sys, zlib;' +
+      'chunk = lambda kind, data: struct.pack(">I", len(data)) + kind + data' +
+      ' + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff);' +
+      'header = struct.pack(">IIBBBBB", 200000, 200000, 8, 2, 0, 0, 0);' +
+      'open(sys.argv[1], "wb").write(b"\\x89PNG\\r\\n\\x1a\\n" + chunk(b"IHDR", header)' +
+      ' + chunk(b"IDAT", zlib.compress(b"\\x00")) + chunk(b"IEND", b""))',
+      path.join(sandbox, 'docs/screenshots/overlay_ja.png')],
+    { encoding: 'utf8' }).status, 0, 'the probe wrote a bomb header');
+    fs.copyFileSync(path.join(sandbox, 'docs/screenshots/popup_ja.png'),
+      path.join(sandbox, 'docs/screenshots/popup_de.png'));
+
+    const run = runCheck(sandbox);
+    assert.equal(run.status, 1, 'a bomb header is reported: ' + (run.stderr || run.stdout));
+    assert.match(run.stderr, /overlay_ja\.png: 画像として読めない/);
+    assert.match(run.stderr, /popup_de\.png/, 'and the report goes on to the rest');
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
 test('--check turns down a size the code no longer draws', { skip: generatorSkip }, () => {
   const sandbox = screenshotSandbox();
   try {
@@ -5483,10 +5532,20 @@ test('--check names a tracked image nothing draws, and leaves the rest alone',
       assert.equal(run.status, 1, 'an image nothing draws is reported');
       assert.match(run.stderr, /popup_de\.png/);
 
+      // An image by any other spelling is still one nothing draws — and APFS
+      // makes that spelling easy to commit.
+      fs.renameSync(path.join(sandbox, 'docs/screenshots/popup_de.png'),
+        path.join(sandbox, 'docs/screenshots/popup_de.PNG'));
+      const upper = runCheck(sandbox);
+      assert.equal(upper.status, 1, '.PNG is read as an image too: ' + (upper.stderr || upper.stdout));
+      assert.match(upper.stderr, /popup_de\.PNG/);
+
       // What macOS and an interrupted run leave behind are not tracked images.
-      fs.rmSync(path.join(sandbox, 'docs/screenshots/popup_de.png'));
+      // The staging directory carries the suffix, so the name alone cannot
+      // tell it from a file.
+      fs.rmSync(path.join(sandbox, 'docs/screenshots/popup_de.PNG'));
       fs.writeFileSync(path.join(sandbox, 'docs/screenshots/.DS_Store'), '');
-      fs.mkdirSync(path.join(sandbox, 'docs/screenshots/tmpabc123'));
+      fs.mkdirSync(path.join(sandbox, 'docs/screenshots/tmpabc123.png'));
       const after = runCheck(sandbox);
       assert.equal(after.status, 0,
         'neither .DS_Store nor a leftover staging directory is a tracked image: ' +

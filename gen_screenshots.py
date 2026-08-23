@@ -586,17 +586,26 @@ def check():
             if not os.path.exists(tracked):
                 stale.append(f'{name}: 追跡されていない')
                 continue
+            # RGBA で比べる。RGB へ落とすと、色をそのままに alpha だけ
+            # 変えられた画像が「同じ」になる。いま描いた側は guard の外で開く。
+            # そこで失敗するのはこの走行の側の失敗で、追跡物の話ではない。
+            new = Image.open(os.path.join(fresh, name)).convert('RGBA')
             try:
-                # RGBA で比べる。RGB へ落とすと、色をそのままに alpha だけ
-                # 変えられた画像が「同じ」になる。
-                new, old = (Image.open(os.path.join(fresh, name)).convert('RGBA'),
-                            Image.open(tracked).convert('RGBA'))
-            except OSError as err:
+                opened = Image.open(tracked)
+                # convert() が返す Image はフレーム数を忘れるので先に読む。
+                frames = getattr(opened, 'n_frames', 1)
+                old = opened.convert('RGBA')
+            except (OSError, Image.DecompressionBombError) as err:
                 # 読めないものは「いま描くもの」ではない。1 枚で止めると残りの
-                # 比較も orphan の報告も出ない。
+                # 比較も orphan の報告も出ない。爆弾ヘッダは OSError の外から
+                # 来るので両方を捕らえる。
                 stale.append(f'{name}: 画像として読めない ({err})')
                 continue
-            if new.size != old.size:
+            if frames != 1:
+                # 下の比較はファイルが開いたフレームしか読まないので、第 1
+                # フレームが一致する APNG はそこを通ってしまう。
+                stale.append(f'{name}: {frames} フレームある (描くのは 1 枚)')
+            elif new.size != old.size:
                 # 大きさは先に見る。ImageChops.difference は大きさが違っても
                 # 投げず、小さい方に切り詰めた差を返すため。
                 stale.append(f'{name}: 大きさが違う ({old.size} → {new.size})')
@@ -608,7 +617,8 @@ def check():
     # 描くのは png だけなので、それ以外 (.DS_Store, 中断した走行が残す作業
     # ディレクトリ) を追跡物として数えない。
     tracked_now = sorted(name for name in os.listdir(OUT_DIR)
-                         if name.endswith('.png') and os.path.isfile(os.path.join(OUT_DIR, name))
+                         if name.lower().endswith('.png')
+                         and os.path.isfile(os.path.join(OUT_DIR, name))
                          ) if os.path.isdir(OUT_DIR) else []
     orphans = [f'{here}/{name}' for name in tracked_now if name not in drawn]
 
