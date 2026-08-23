@@ -377,6 +377,7 @@ function createContentHarness({
   href = 'https://www.twitch.tv/videos/100',
   channelVolumes,
   deferInitialStorageGet = false,
+  failInitialStorageGet = false,
   deferChannelMutationOperation = '',
   failChannelMutationOperation = ''
 } = {}) {
@@ -386,7 +387,7 @@ function createContentHarness({
   const warnings = [];
   let runtimeMessageListener;
   let runtimeId = 'test-extension';
-  let failNextStorageGet = false;
+  let failNextStorageGet = failInitialStorageGet;
   let initialStorageGetDeferred = deferInitialStorageGet;
   let channelMutationDeferred = !!deferChannelMutationOperation;
   let failingChannelMutationOperation = failChannelMutationOperation;
@@ -2082,6 +2083,51 @@ test('content answers a command it does not implement', async () => {
   assert.equal(response.reason, 'unknown command');
   assert.equal(
     harness.warnings.some(([message]) => message === '[TCV] unknown command'),
+    true
+  );
+});
+
+test('content reports a bridge message it could not finish handling', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  harness.failNextStorageGet();
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '123456789',
+    login: 'fixture_channel',
+    displayName: 'Fixture_Channel',
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '100'
+  });
+
+  assert.equal(
+    harness.warnings.some(([message]) => message === '[TCV] failed to handle a bridge message'),
+    true
+  );
+});
+
+test('content reports a route change it could not finish handling', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  harness.failNextStorageGet();
+
+  await harness.navigate('https://www.twitch.tv/videos/200');
+
+  assert.equal(
+    harness.warnings.some(([message]) => message === '[TCV] failed to handle a route change'),
+    true
+  );
+});
+
+test('content reports a startup it could not finish', async () => {
+  const harness = createContentHarness({ failInitialStorageGet: true });
+  await flushTasks();
+
+  assert.equal(
+    harness.warnings.some(([message]) => message === '[TCV] failed to start up'),
     true
   );
 });
