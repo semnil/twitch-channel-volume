@@ -5526,6 +5526,57 @@ test('--check turns down bytes the decoder never reaches', { skip: generatorSkip
   }
 });
 
+test('--check turns down a file that is not the PNG it is named', { skip: generatorSkip }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    // Pillow decodes by content, so the same pixels in another container read
+    // as a match on every comparison above.
+    const target = path.join(sandbox, 'docs/screenshots/popup_ja.png');
+    assert.equal(spawnSync('python3', ['-B', '-c',
+      'import sys; from PIL import Image;' +
+      'Image.open(sys.argv[1]).convert("RGB").save(sys.argv[1], format="BMP")', target],
+    { encoding: 'utf8' }).status, 0, 'the probe rewrote it as a BMP');
+
+    const run = runCheck(sandbox);
+    assert.equal(run.status, 1, 'a BMP is reported: ' + (run.stderr || run.stdout));
+    assert.match(run.stderr, /popup_ja\.png: PNG ではない/);
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test('--check turns down a PNG that stops before its own end', { skip: generatorSkip }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    // Pillow reads a PNG whose IEND was cut off, and one whose IEND no longer
+    // matches its CRC, without a word.
+    const cut = path.join(sandbox, 'docs/screenshots/popup_ja.png');
+    fs.writeFileSync(cut, fs.readFileSync(cut).subarray(0, -12));
+    const broken = path.join(sandbox, 'docs/screenshots/settings_ja.png');
+    const bytes = fs.readFileSync(broken);
+    bytes[bytes.length - 1] ^= 0xff;
+    fs.writeFileSync(broken, bytes);
+
+    // And one whose IEND carries a payload, which the spec gives no length.
+    assert.equal(spawnSync('python3', ['-B', '-c',
+      'import struct, sys, zlib;' +
+      'data = open(sys.argv[1], "rb").read()[:-12];' +
+      'body = b"IEND" + b"payload";' +
+      'open(sys.argv[1], "wb").write(data + struct.pack(">I", 7) + body' +
+      ' + struct.pack(">I", zlib.crc32(body) & 0xffffffff))',
+      path.join(sandbox, 'docs/screenshots/overlay_ja.png')],
+    { encoding: 'utf8' }).status, 0, 'the probe gave IEND a payload');
+
+    const run = runCheck(sandbox);
+    assert.equal(run.status, 1, 'a truncated end is reported: ' + (run.stderr || run.stdout));
+    assert.match(run.stderr, /popup_ja\.png: IEND が無い/);
+    assert.match(run.stderr, /settings_ja\.png: IEND チャンクの CRC が合わない/);
+    assert.match(run.stderr, /overlay_ja\.png: IEND の長さが 7/);
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
 test('--check asks for a rename, not a deletion, when only the spelling differs',
   { skip: generatorSkip }, () => {
     const sandbox = screenshotSandbox();
@@ -5541,6 +5592,23 @@ test('--check asks for a rename, not a deletion, when only the spelling differs'
       assert.match(run.stderr, /popup_ja\.PNG: 綴りが違う \(popup_ja\.png として描いている\)/);
       assert.match(run.stderr, /名前を直す: .*popup_ja\.PNG → popup_ja\.png/);
       assert.doesNotMatch(run.stderr, /削除する/, 'and it is not on the list to delete');
+
+      // Where both spellings can exist at once, renaming onto the other one is
+      // no instruction at all: the spare is the one to delete.
+      fs.copyFileSync(path.join(sandbox, 'docs/screenshots/popup_ja.PNG'),
+        path.join(sandbox, 'docs/screenshots/popup_ja.png'));
+      const both = fs.readdirSync(path.join(sandbox, 'docs/screenshots'))
+        .filter((name) => name.toLowerCase() === 'popup_ja.png');
+      if (both.length < 2) {
+        console.log('  (both spellings at once: skipped, this filesystem folds them)');
+      } else {
+        const after = runCheck(sandbox);
+        assert.equal(after.status, 1, 'the spare is reported: ' + (after.stderr || after.stdout));
+        assert.match(after.stderr, /popup_ja\.PNG: 誰も描いていない/);
+        assert.match(after.stderr, /削除する: .*popup_ja\.PNG/);
+        assert.doesNotMatch(after.stderr, /名前を直す/,
+          'and it is not asked to be renamed onto the name that is already there');
+      }
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }

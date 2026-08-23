@@ -13,6 +13,7 @@ import os
 import shutil
 import sys
 import tempfile
+import zlib
 
 UNAVAILABLE = 3
 
@@ -575,19 +576,31 @@ def main(out_dir=OUT_DIR):
             print(f'Generated {os.path.join(shown(out_dir), name)}')
 
 
-def trailing_bytes(path):
-    """PNG の IEND より後ろにあるバイト数。"""
+def png_fault(path):
+    """PNG として通らないところ。無ければ None。
+
+    デコーダは中身で形式を決め、壊れた末尾を黙って許すので、画素・大きさ・
+    フレーム数のどれにも出ない違いがここに残る。
+    """
     data = open(path, 'rb').read()
     if not data.startswith(b'\x89PNG\r\n\x1a\n'):
-        return 0
+        return 'PNG ではない'
     at = 8
     while at + 8 <= len(data):
         length = int.from_bytes(data[at:at + 4], 'big')
-        kind = data[at + 4:at + 8]
-        at += 12 + length
-        if kind == b'IEND':
-            return max(0, len(data) - at)
-    return 0
+        kind = data[at + 4:at + 8].decode('ascii', 'replace')
+        end = at + 12 + length
+        if end > len(data):
+            return f'{kind} チャンクがファイルの外へ出ている'
+        if zlib.crc32(data[at + 4:end - 4]) & 0xffffffff != int.from_bytes(data[end - 4:end], 'big'):
+            return f'{kind} チャンクの CRC が合わない'
+        if kind == 'IEND':
+            if length:
+                return f'IEND の長さが {length} (0 のはず)'
+            trailing = len(data) - end
+            return f'IEND の後ろに {trailing} バイトある' if trailing else None
+        at = end
+    return 'IEND が無い'
 
 
 def check():
@@ -619,7 +632,7 @@ def check():
                 # 来るので両方を捕らえる。
                 stale.append(f'{name}: 画像として読めない ({err})')
                 continue
-            trailing = trailing_bytes(tracked)
+            fault = png_fault(tracked)
             if frames != 1:
                 # 下の比較はファイルが開いたフレームしか読まないので、第 1
                 # フレームが一致する APNG はそこを通ってしまう。
@@ -628,10 +641,10 @@ def check():
                 # ImageChops.difference は大きさが違っても投げず、小さい方に
                 # 切り詰めた差を返すため、画素より先に見る。
                 stale.append(f'{name}: 大きさが違う ({size} → {new.size})')
-            elif trailing:
-                # デコーダは IEND で読むのをやめるので、その後ろのバイトは
-                # 画素にも大きさにもフレーム数にも現れない。
-                stale.append(f'{name}: IEND の後ろに {trailing} バイトある')
+            elif fault:
+                # デコーダは中身で形式を決め、IEND の欠落や後ろのバイトを
+                # 黙って許すので、ここまでの 3 つには出てこない。
+                stale.append(f'{name}: {fault}')
             elif new.tobytes() != old.tobytes():
                 # 画素をそのまま比べる。difference().getbbox() は既定で alpha
                 # だけを見るので、色が違っても alpha が同じなら None を返す。
@@ -647,12 +660,15 @@ def check():
     # ファイルシステムでは画素比較を通ってしまうので、消せとは言わずに
     # 名前を直せと言う。
     by_spelling = {name.lower(): name for name in drawn}
+    present = set(tracked_now)
     orphans, misspelled = [], []
     for name in tracked_now:
         if name in drawn:
             continue
         drawn_as = by_spelling.get(name.lower())
-        if drawn_as:
+        # 正しい綴りのファイルが隣にあるなら、これは名前の問題ではなく余りの
+        # 1 枚 (ケースを区別する FS では両方が並んで存在しうる)。
+        if drawn_as and drawn_as not in present:
             misspelled.append((name, drawn_as))
         else:
             orphans.append(f'{here}/{name}')
