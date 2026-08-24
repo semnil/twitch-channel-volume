@@ -5403,6 +5403,160 @@ function runCheck(sandbox) {
     { cwd: sandbox, encoding: 'utf8' });
 }
 
+// Chunk surgery on a tracked image: insert <kind> [payload] before IEND, or
+// copy the IHDR that is already there. Every chunk it writes carries the CRC
+// the spec asks for, so what the walk turns down is the chunk, not the CRC.
+const CHUNK_PROBE = [
+  'import struct, sys, zlib',
+  'op, target = sys.argv[1], sys.argv[2]',
+  'data = open(target, "rb").read()',
+  'walk, at = [], 8',
+  'while at < len(data):',
+  '    size = int.from_bytes(data[at:at + 4], "big")',
+  '    walk.append((data[at + 4:at + 8], data[at:at + 12 + size]))',
+  '    at += 12 + size',
+  'if op == "bad-filter":',
+  '    raw = bytearray(zlib.decompress(b"".join(r[8:-4] for k, r in walk if k == b"IDAT")))',
+  '    raw[0] = 99',
+  '    packed = zlib.compress(bytes(raw), 6)',
+  '    out, written = bytearray(data[:8]), False',
+  '    for kind, raw_chunk in walk:',
+  '        if kind != b"IDAT":',
+  '            out += raw_chunk',
+  '            continue',
+  '        if written:',
+  '            continue',
+  '        written = True',
+  '        head = b"IDAT" + packed',
+  '        out += struct.pack(">I", len(packed)) + head',
+  '        out += struct.pack(">I", zlib.crc32(head) & 0xffffffff)',
+  '    open(target, "wb").write(bytes(out))',
+  '    raise SystemExit',
+  'if op == "fat-text":',
+  '    text = zlib.compress(b"x" * int(sys.argv[3]))',
+  '    body = b"zTXt" + b"Comment\\0\\0" + text',
+  '    extra = struct.pack(">I", len(body) - 4) + body',
+  '    extra += struct.pack(">I", zlib.crc32(body) & 0xffffffff)',
+  '    out = bytearray(data[:8])',
+  '    for kind, raw in walk:',
+  '        if kind == b"IDAT" and extra:',
+  '            out += extra',
+  '            extra = b""',
+  '        out += raw',
+  '    open(target, "wb").write(bytes(out))',
+  '    raise SystemExit',
+  'if op == "header-byte":',
+  '    out = bytearray(data)',
+  '    body = bytearray(out[12:12 + 17])',
+  '    body[4 + int(sys.argv[3])] = int(sys.argv[4])',
+  '    out[12:12 + 17] = body',
+  '    out[29:33] = (zlib.crc32(bytes(body)) & 0xffffffff).to_bytes(4, "big")',
+  '    open(target, "wb").write(bytes(out))',
+  '    raise SystemExit',
+  'if op == "pad-stream":',
+  '    raw = zlib.decompress(b"".join(r[8:-4] for k, r in walk if k == b"IDAT"))',
+  '    packer = zlib.compressobj(6)',
+  '    packed = packer.compress(raw)',
+  '    left = int(sys.argv[3])',
+  '    while left:',
+  '        slice_size = min(left, 1 << 20)',
+  '        packed += packer.compress(bytes(slice_size))',
+  '        left -= slice_size',
+  '    packed += packer.flush()',
+  '    out, written = bytearray(data[:8]), False',
+  '    for kind, raw_chunk in walk:',
+  '        if kind != b"IDAT":',
+  '            out += raw_chunk',
+  '            continue',
+  '        if written:',
+  '            continue',
+  '        written = True',
+  '        head = b"IDAT" + packed',
+  '        out += struct.pack(">I", len(packed)) + head',
+  '        out += struct.pack(">I", zlib.crc32(head) & 0xffffffff)',
+  '    open(target, "wb").write(bytes(out))',
+  '    raise SystemExit',
+  'if op == "trim-idat":',
+  '    body = b"".join(raw[8:-4] for kind, raw in walk if kind == b"IDAT")',
+  '    body = body[:-int(sys.argv[3])]',
+  '    out, written = bytearray(data[:8]), False',
+  '    for kind, raw in walk:',
+  '        if kind != b"IDAT":',
+  '            out += raw',
+  '            continue',
+  '        if written:',
+  '            continue',
+  '        written = True',
+  '        head = b"IDAT" + body',
+  '        out += struct.pack(">I", len(body)) + head',
+  '        out += struct.pack(">I", zlib.crc32(head) & 0xffffffff)',
+  '    open(target, "wb").write(bytes(out))',
+  '    raise SystemExit',
+  'if op == "fat-idat":',
+  '    room = int(sys.argv[3])',
+  '    crc, block = zlib.crc32(b"IDAT"), b"\\0" * (1 << 20)',
+  '    left = room',
+  '    while left:',
+  '        crc = zlib.crc32(block[:min(len(block), left)], crc)',
+  '        left -= min(len(block), left)',
+  '    out = bytearray(data[:8])',
+  '    for kind, raw in walk:',
+  '        if kind == b"IEND" and room:',
+  '            out += struct.pack(">I", room) + b"IDAT"',
+  '            left = room',
+  '            while left:',
+  '                out += block[:min(len(block), left)]',
+  '                left -= min(len(block), left)',
+  '            out += struct.pack(">I", crc & 0xffffffff)',
+  '            room = 0',
+  '        out += raw',
+  '    open(target, "wb").write(bytes(out))',
+  '    raise SystemExit',
+  'if op == "smuggle-idat":',
+  '    body = b"IDAT" + b"smuggled payload" * 4',
+  '    extra = struct.pack(">I", len(body) - 4) + body',
+  '    extra += struct.pack(">I", zlib.crc32(body) & 0xffffffff)',
+  '    out = bytearray(data[:8])',
+  '    for kind, raw in walk:',
+  '        if kind == b"IEND":',
+  '            out += extra',
+  '        out += raw',
+  '    open(target, "wb").write(bytes(out))',
+  '    raise SystemExit',
+  'if op == "split-idat":',
+  '    body = b"".join(raw[8:-4] for kind, raw in walk if kind == b"IDAT")',
+  '    cut = len(body) // 2',
+  '    out = bytearray(data[:8])',
+  '    for kind, raw in walk:',
+  '        if kind != b"IDAT":',
+  '            out += raw',
+  '            continue',
+  '        if raw is not next(r for k, r in walk if k == b"IDAT"):',
+  '            continue',
+  '        for piece in (body[:cut], body[cut:]):',
+  '            head = b"IDAT" + piece',
+  '            out += struct.pack(">I", len(piece)) + head',
+  '            out += struct.pack(">I", zlib.crc32(head) & 0xffffffff)',
+  '    open(target, "wb").write(bytes(out))',
+  '    raise SystemExit',
+  'if op == "copy-ihdr":',
+  '    extra = dict(walk)[b"IHDR"]',
+  'else:',
+  '    kind = sys.argv[3].encode()',
+  // argv carries no NUL byte, so the payload spells its separator and the
+  // probe puts the byte back.
+  '    text = sys.argv[4].encode().replace(rb"\\0", b"\\0") if len(sys.argv) > 4 else b""',
+  '    body = kind + text',
+  '    extra = struct.pack(">I", len(body) - 4) + body',
+  '    extra += struct.pack(">I", zlib.crc32(body) & 0xffffffff)',
+  'out = bytearray(data[:8])',
+  'for kind, raw in walk:',
+  '    if kind == b"IEND":',
+  '        out += extra',
+  '    out += raw',
+  'open(target, "wb").write(bytes(out))',
+].join('\n');
+
 test('--check turns down a tracked image that is not what the code draws',
   { skip: generatorSkip }, () => {
     const sandbox = screenshotSandbox();
@@ -5451,6 +5605,473 @@ test('--check turns down a tracked image changed only in its alpha',
     }
   });
 
+test('--check turns down a second frame riding on the drawn one',
+  { skip: generatorSkip }, () => {
+    const sandbox = screenshotSandbox();
+    try {
+      const target = path.join(sandbox, 'docs/screenshots/popup_ja.png');
+      // Decoding reads the frame the file opens on, so an animation whose
+      // first frame is the drawn one matches on it. What an animation cannot
+      // do is arrive without the chunks that drive it.
+      assert.equal(spawnSync('python3', ['-B', '-c',
+        'import sys; from PIL import Image;' +
+        'first = Image.open(sys.argv[1]).convert("RGB");' +
+        'second = first.copy();' +
+        'second.paste((255, 0, 255), (0, 0, first.width, first.height));' +
+        'first.save(sys.argv[1], save_all=True, append_images=[second])', target],
+      { encoding: 'utf8' }).status, 0, 'the probe saved a two-frame APNG');
+
+      const run = runCheck(sandbox);
+      assert.equal(run.status, 1, 'a second frame is reported: ' + (run.stderr || run.stdout));
+      assert.match(run.stderr,
+        /popup_ja\.png: チャンクの並びが違う \(IHDR acTL fcTL IDAT fcTL fdAT IEND \/ 描くのは IHDR IDAT IEND\)/);
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+test('--check turns down a header that names more pixels than the drawing has',
+  { skip: generatorSkip }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    // 200000 x 200000 in a header no decoder should be handed: the size the
+    // file claims is in IHDR, which this reads for itself.
+    assert.equal(spawnSync('python3', ['-B', '-c',
+      'import struct, sys, zlib;' +
+      'chunk = lambda kind, data: struct.pack(">I", len(data)) + kind + data' +
+      ' + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff);' +
+      'header = struct.pack(">IIBBBBB", 200000, 200000, 8, 2, 0, 0, 0);' +
+      'open(sys.argv[1], "wb").write(b"\\x89PNG\\r\\n\\x1a\\n" + chunk(b"IHDR", header)' +
+      ' + chunk(b"IDAT", zlib.compress(b"\\x00")) + chunk(b"IEND", b""))',
+      path.join(sandbox, 'docs/screenshots/overlay_ja.png')],
+    { encoding: 'utf8' }).status, 0, 'the probe wrote a bomb header');
+    // The second fault sits on an image that sorts after the first, so only
+    // the loop carrying on can report it — an orphan would be found either
+    // way, since that scan runs after the loop has ended.
+    assert.equal(spawnSync('python3', ['-B', '-c',
+      'import sys; from PIL import Image;' +
+      'i = Image.open(sys.argv[1]).convert("RGB");' +
+      'r, g, b = i.getpixel((320, 200));' +
+      'i.putpixel((320, 200), (r ^ 1, g, b));' +
+      'i.save(sys.argv[1])', path.join(sandbox, 'docs/screenshots/settings_ja.png')],
+    { encoding: 'utf8' }).status, 0, 'the probe changed a later image');
+
+    const run = runCheck(sandbox);
+    assert.equal(run.status, 1, 'a bomb header is reported: ' + (run.stderr || run.stdout));
+    assert.match(run.stderr, /overlay_ja\.png: 大きさが違う \(\(200000, 200000\) → \(640, 400\)\)/);
+    assert.match(run.stderr, /settings_ja\.png: いま描くものと違う/,
+      'and the comparison goes on to the images after it');
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test('--check turns down bytes the decoder never reaches', { skip: generatorSkip }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    // The decoder stops at IEND, so anything after it shows up in neither the
+    // pixels nor the size nor the frame count.
+    const target = path.join(sandbox, 'docs/screenshots/popup_ja.png');
+    fs.writeFileSync(target, Buffer.concat([fs.readFileSync(target),
+      fs.readFileSync(path.join(sandbox, 'docs/screenshots/overlay_ja.png'))]));
+
+    const run = runCheck(sandbox);
+    assert.equal(run.status, 1, 'appended bytes are reported: ' + (run.stderr || run.stdout));
+    assert.match(run.stderr, /popup_ja\.png: IEND の後ろに \d+ バイトある/);
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test('--check turns down a file that is not the PNG it is named', { skip: generatorSkip }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    // Pillow decodes by content, so the same pixels in another container read
+    // as a match on every comparison above.
+    const target = path.join(sandbox, 'docs/screenshots/popup_ja.png');
+    assert.equal(spawnSync('python3', ['-B', '-c',
+      'import sys; from PIL import Image;' +
+      'Image.open(sys.argv[1]).convert("RGB").save(sys.argv[1], format="BMP")', target],
+    { encoding: 'utf8' }).status, 0, 'the probe rewrote it as a BMP');
+
+    const run = runCheck(sandbox);
+    assert.equal(run.status, 1, 'a BMP is reported: ' + (run.stderr || run.stdout));
+    assert.match(run.stderr, /popup_ja\.png: PNG ではない/);
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test('--check turns down a PNG that stops before its own end', { skip: generatorSkip }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    // Pillow reads a PNG whose IEND was cut off, and one whose IEND no longer
+    // matches its CRC, without a word.
+    const cut = path.join(sandbox, 'docs/screenshots/popup_ja.png');
+    fs.writeFileSync(cut, fs.readFileSync(cut).subarray(0, -12));
+    const broken = path.join(sandbox, 'docs/screenshots/settings_ja.png');
+    const bytes = fs.readFileSync(broken);
+    bytes[bytes.length - 1] ^= 0xff;
+    fs.writeFileSync(broken, bytes);
+
+    // And one whose IEND carries a payload, which the spec gives no length.
+    assert.equal(spawnSync('python3', ['-B', '-c',
+      'import struct, sys, zlib;' +
+      'data = open(sys.argv[1], "rb").read()[:-12];' +
+      'body = b"IEND" + b"payload";' +
+      'open(sys.argv[1], "wb").write(data + struct.pack(">I", 7) + body' +
+      ' + struct.pack(">I", zlib.crc32(body) & 0xffffffff))',
+      path.join(sandbox, 'docs/screenshots/overlay_ja.png')],
+    { encoding: 'utf8' }).status, 0, 'the probe gave IEND a payload');
+
+    const run = runCheck(sandbox);
+    assert.equal(run.status, 1, 'a truncated end is reported: ' + (run.stderr || run.stdout));
+    assert.match(run.stderr, /popup_ja\.png: IEND が無い/);
+    assert.match(run.stderr, /settings_ja\.png: IEND チャンクの CRC が合わない/);
+    assert.match(run.stderr, /overlay_ja\.png: IEND の長さが 7/);
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+// Peak resident memory of the run, which is how the ceiling on inflation shows
+// up from outside. RUSAGE_CHILDREN counts what the check took; the unit is
+// bytes on macOS and KiB elsewhere.
+const COST_PROBE = [
+  'import resource, subprocess, sys',
+  'unit = 1 if sys.platform == "darwin" else 1024',
+  'run = subprocess.run(["python3", "-B", "gen_screenshots.py", "--check"],',
+  '                     cwd=sys.argv[1], capture_output=True, text=True)',
+  'print(run.returncode)',
+  'print(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * unit)',
+  'sys.stderr.write(run.stderr)',
+].join('\n');
+
+test('--check goes on to the next image when one cannot be read', { skip: generatorSkip
+  || (process.platform === 'win32' && 'mode bits do not keep this file from being read on win32')
+  || (typeof process.getuid === 'function' && process.getuid() === 0
+    && 'root reads a file whatever its mode says') }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    // The bytes are read here before anything decodes them, and a file the
+    // process cannot open raises where nothing was catching it: the run ended
+    // on the first one, taking the images after it and the scan for files
+    // nothing draws with it.
+    fs.chmodSync(path.join(sandbox, 'docs/screenshots/overlay_en.png'), 0o000);
+    fs.copyFileSync(path.join(sandbox, 'docs/screenshots/overlay_ja.png'),
+      path.join(sandbox, 'docs/screenshots/popup_de.png'));
+
+    const run = runCheck(sandbox);
+    assert.equal(run.status, 1, 'the unreadable file is reported: ' + (run.stderr || run.stdout));
+    assert.match(run.stderr, /overlay_en\.png: ファイルを読めない/);
+    assert.doesNotMatch(run.stderr, /Traceback/, 'without a traceback');
+    assert.match(run.stderr, /popup_de\.png: 誰も描いていない/,
+      'and the scan for files nothing draws still runs');
+  } finally {
+    fs.chmodSync(path.join(sandbox, 'docs/screenshots/overlay_en.png'), 0o644);
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test('--check does not take a tracked file into memory to read it', { skip: generatorSkip
+  || (process.platform === 'win32'
+    && 'the resource module this measures with is not on win32') }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    // 64 MiB in a chunk that is all there on disk: nothing inflates, so the
+    // ceiling on inflation says nothing about it. Reading the file whole, or
+    // handing its bytes to a stream that has already finished, spends the
+    // file's size — or more, since zlib keeps what it could not use.
+    const room = 64 * 1024 * 1024;
+    assert.equal(spawnSync('python3', ['-B', '-c', CHUNK_PROBE, 'fat-idat',
+      path.join(sandbox, 'docs/screenshots/popup_ja.png'), String(room)],
+    { encoding: 'utf8' }).status, 0, 'the probe wrote a fat IDAT');
+
+    const probe = spawnSync('python3', ['-B', '-c', COST_PROBE, sandbox], { encoding: 'utf8' });
+    assert.equal(probe.status, 0, 'the cost probe ran: ' + probe.stderr);
+    const [status, peak] = probe.stdout.trim().split('\n');
+    // A run over the untouched tree peaks around 40 MB here, so anything below
+    // what the file itself holds means it was read in pieces.
+    assert.ok(Number(peak) < room,
+      `the run peaked at ${Math.round(Number(peak) / (1 << 20))} MiB`
+      + ` against a ${room / (1 << 20)} MiB chunk`);
+    assert.equal(status, '1', 'and it still turns the image down: ' + probe.stderr);
+    assert.match(probe.stderr, /popup_ja\.png: IDAT に zlib ストリームの後ろが \d+ バイトある/);
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test('--check does not inflate a tracked image beyond what the drawing needs',
+  { skip: generatorSkip || (process.platform === 'win32'
+    && 'the resource module this measures with is not on win32') }, () => {
+    const sandbox = screenshotSandbox();
+    try {
+      // 256 MiB of zeros ride in 53 KB of chunk: the file on disk says nothing
+      // about what reading it costs. Inflating on the tracked file's word is
+      // how a check turns into the memory it was handed.
+      const padding = 256 * 1024 * 1024;
+      assert.equal(spawnSync('python3', ['-B', '-c', CHUNK_PROBE, 'pad-stream',
+        path.join(sandbox, 'docs/screenshots/popup_ja.png'), String(padding)],
+      { encoding: 'utf8' }).status, 0, 'the probe padded the stream');
+
+      const probe = spawnSync('python3', ['-B', '-c', COST_PROBE, sandbox], { encoding: 'utf8' });
+      assert.equal(probe.status, 0, 'the cost probe ran: ' + probe.stderr);
+      const [status, peak] = probe.stdout.trim().split('\n');
+      // A run over the untouched tree peaks around 40 MB here, and one that
+      // inflates a block at a time without a ceiling reaches 133 MB, so the
+      // bound sits between the two.
+      assert.ok(Number(peak) < padding / 4,
+        `the run peaked at ${Math.round(Number(peak) / (1 << 20))} MiB`
+        + ` against a ${padding / (4 << 20)} MiB bound`);
+      assert.equal(status, '1', 'and it still turns the image down: ' + probe.stderr);
+      assert.match(probe.stderr, /popup_ja\.png: 走査線の後ろに展開されるものがまだある/);
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+test('--check turns down a pixel stream that does not end where the chunks do',
+  { skip: generatorSkip }, () => {
+    const sandbox = screenshotSandbox();
+    try {
+      // The decoder stops once it has the pixels, so a further IDAT carrying
+      // anything at all decodes to the same image at the same size. Folding a
+      // run of IDAT into one entry is what makes the count no defence.
+      assert.equal(spawnSync('python3', ['-B', '-c', CHUNK_PROBE, 'smuggle-idat',
+        path.join(sandbox, 'docs/screenshots/popup_ja.png')],
+      { encoding: 'utf8' }).status, 0, 'the probe added an IDAT with a payload');
+      // And the other way round: dropping the four bytes that close the stream
+      // leaves every scanline in place, so the decoder hands back the image
+      // without a word.
+      assert.equal(spawnSync('python3', ['-B', '-c', CHUNK_PROBE, 'trim-idat',
+        path.join(sandbox, 'docs/screenshots/settings_ja.png'), '4'],
+      { encoding: 'utf8' }).status, 0, 'the probe cut the end off the stream');
+
+      // And inside the stream: 64 bytes past the scanlines inflate with them,
+      // so nothing outside the stream is out of place.
+      assert.equal(spawnSync('python3', ['-B', '-c', CHUNK_PROBE, 'pad-stream',
+        path.join(sandbox, 'docs/screenshots/overlay_ja.png'), '64'],
+      { encoding: 'utf8' }).status, 0, 'the probe padded the scanlines');
+
+      const run = runCheck(sandbox);
+      assert.equal(run.status, 1, 'the spare bytes are reported: ' + (run.stderr || run.stdout));
+      assert.match(run.stderr, /popup_ja\.png: IDAT に zlib ストリームの後ろが \d+ バイトある/);
+      assert.match(run.stderr, /overlay_ja\.png: 走査線の後ろに展開されるものがまだある/);
+      assert.match(run.stderr, /settings_ja\.png: IDAT の zlib ストリームが終わっていない/);
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+test('--check takes the same pixels however the compressor split them',
+  { skip: generatorSkip }, () => {
+    const sandbox = screenshotSandbox();
+    try {
+      // How many IDAT chunks a file holds is the compressor's call, not the
+      // image's: the same pixels come back whether the stream arrives in one
+      // piece or several. A run of them is one entry, so a machine that splits
+      // differently is not a difference in what the code draws.
+      assert.equal(spawnSync('python3', ['-B', '-c', CHUNK_PROBE, 'split-idat',
+        path.join(sandbox, 'docs/screenshots/popup_ja.png')],
+      { encoding: 'utf8' }).status, 0, 'the probe split the IDAT stream');
+      assert.equal(spawnSync('python3', ['-B', '-c',
+        'import sys; from PIL import Image;'
+        + 'print(len(Image.open(sys.argv[1]).convert("RGBA").tobytes()))',
+        path.join(sandbox, 'docs/screenshots/popup_ja.png')],
+      { encoding: 'utf8' }).status, 0, 'and the split file still decodes');
+
+      const run = runCheck(sandbox);
+      assert.equal(run.status, 0, 'a split stream is not a difference: '
+        + (run.stderr || run.stdout));
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+test('--check turns down a chunk type the spec does not allow', { skip: generatorSkip }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    // Both carry a correct CRC and a length the file honours, so the walk that
+    // reads only those two lets them through. The decoder skips what it does
+    // not know, which leaves the pixels, the size and the frame count alike.
+    assert.equal(spawnSync('python3', ['-B', '-c', CHUNK_PROBE, 'insert',
+      path.join(sandbox, 'docs/screenshots/popup_ja.png'), 'a1b2'],
+    { encoding: 'utf8' }).status, 0, 'the probe added a chunk named in digits');
+    assert.equal(spawnSync('python3', ['-B', '-c', CHUNK_PROBE, 'insert',
+      path.join(sandbox, 'docs/screenshots/settings_ja.png'), 'abcd'],
+    { encoding: 'utf8' }).status, 0, 'the probe added a chunk with the reserved bit set');
+
+    const run = runCheck(sandbox);
+    assert.equal(run.status, 1, 'the chunk types are reported: ' + (run.stderr || run.stdout));
+    assert.match(run.stderr, /popup_ja\.png: \d+ バイト目のチャンク型が英字 4 文字ではない/);
+    assert.match(run.stderr, /settings_ja\.png: abcd チャンクの予約ビットが 1/);
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test('--check goes on to the next image when one will not decode', { skip: generatorSkip }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    // A filter type the spec does not define, in a stream that inflates to the
+    // same length under a header that is byte for byte the drawn one: every
+    // check that reads the file itself passes, and the decoder is the one that
+    // says no. The image that fails sorts before the one that follows it.
+    assert.equal(spawnSync('python3', ['-B', '-c', CHUNK_PROBE, 'bad-filter',
+      path.join(sandbox, 'docs/screenshots/overlay_ja.png')],
+    { encoding: 'utf8' }).status, 0, 'the probe wrote an undefined filter type');
+    assert.equal(spawnSync('python3', ['-B', '-c',
+      'import sys; from PIL import Image;' +
+      'i = Image.open(sys.argv[1]).convert("RGB");' +
+      'r, g, b = i.getpixel((320, 200));' +
+      'i.putpixel((320, 200), (r ^ 1, g, b));' +
+      'i.save(sys.argv[1])', path.join(sandbox, 'docs/screenshots/settings_ja.png')],
+    { encoding: 'utf8' }).status, 0, 'the probe changed a later image');
+
+    const run = runCheck(sandbox);
+    assert.equal(run.status, 1, 'the image is reported: ' + (run.stderr || run.stdout));
+    assert.match(run.stderr, /overlay_ja\.png: 画像として読めない/);
+    assert.match(run.stderr, /settings_ja\.png: いま描くものと違う/,
+      'and the comparison goes on to the images after it');
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test('--check reads the chunks before the decoder gets the file', { skip: generatorSkip }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    // 2 MiB of text in a chunk with a correct CRC: Pillow refuses to inflate
+    // it and raises ValueError, which is neither of the two the guard around
+    // the decoding catches. Handing the file over before reading it here took
+    // the whole run down with it — the images after this one, and the scan for
+    // files nothing draws, never ran.
+    assert.equal(spawnSync('python3', ['-B', '-c', CHUNK_PROBE, 'fat-text',
+      path.join(sandbox, 'docs/screenshots/popup_ja.png'), String(2 * 1024 * 1024)],
+    { encoding: 'utf8' }).status, 0, 'the probe added a fat text chunk');
+    assert.equal(spawnSync('python3', ['-B', '-c',
+      'import sys; from PIL import Image;' +
+      'i = Image.open(sys.argv[1]).convert("RGB");' +
+      'r, g, b = i.getpixel((320, 200));' +
+      'i.putpixel((320, 200), (r ^ 1, g, b));' +
+      'i.save(sys.argv[1])', path.join(sandbox, 'docs/screenshots/settings_ja.png')],
+    { encoding: 'utf8' }).status, 0, 'the probe changed a later image');
+    fs.copyFileSync(path.join(sandbox, 'docs/screenshots/overlay_ja.png'),
+      path.join(sandbox, 'docs/screenshots/popup_de.png'));
+
+    const run = runCheck(sandbox);
+    assert.equal(run.status, 1, 'the text chunk is reported: ' + (run.stderr || run.stdout));
+    assert.match(run.stderr,
+      /popup_ja\.png: チャンクの並びが違う \(IHDR zTXt IDAT IEND \/ 描くのは IHDR IDAT IEND\)/);
+    assert.match(run.stderr, /settings_ja\.png: いま描くものと違う/,
+      'and the images after it are still compared');
+    assert.match(run.stderr, /popup_de\.png: 誰も描いていない/,
+      'and the scan for files nothing draws still runs');
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test('--check turns down a header byte the decoder does not mind',
+  { skip: generatorSkip }, () => {
+    const sandbox = screenshotSandbox();
+    try {
+      // The compression method is the eleventh byte of IHDR, and the spec
+      // gives it one value. Pillow reads the image whatever it says, so the
+      // pixels, the size and the chunk order are all as drawn.
+      assert.equal(spawnSync('python3', ['-B', '-c', CHUNK_PROBE, 'header-byte',
+        path.join(sandbox, 'docs/screenshots/popup_ja.png'), '10', '1'],
+      { encoding: 'utf8' }).status, 0, 'the probe rewrote a header byte');
+      assert.equal(spawnSync('python3', ['-B', '-c',
+        'import sys; from PIL import Image;'
+        + 'print(Image.open(sys.argv[1]).size)',
+        path.join(sandbox, 'docs/screenshots/popup_ja.png')],
+      { encoding: 'utf8' }).status, 0, 'and the decoder still opens it');
+
+      const run = runCheck(sandbox);
+      assert.equal(run.status, 1, 'the header is reported: ' + (run.stderr || run.stdout));
+      assert.match(run.stderr, /popup_ja\.png: IHDR チャンクの中身が描くものと違う/);
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+test('--check turns down chunks the drawing never writes', { skip: generatorSkip }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    // A second IHDR and a text chunk are both legal bytes to the decoder: it
+    // reads the first header and skips the rest, so a file carrying either
+    // still opens on the same pixels at the same size.
+    assert.equal(spawnSync('python3', ['-B', '-c', CHUNK_PROBE, 'copy-ihdr',
+      path.join(sandbox, 'docs/screenshots/popup_ja.png')],
+    { encoding: 'utf8' }).status, 0, 'the probe duplicated IHDR');
+    assert.equal(spawnSync('python3', ['-B', '-c', CHUNK_PROBE, 'insert',
+      path.join(sandbox, 'docs/screenshots/settings_ja.png'), 'tEXt', 'Comment\\0smuggled'],
+    { encoding: 'utf8' }).status, 0, 'the probe added a text chunk');
+
+    const run = runCheck(sandbox);
+    assert.equal(run.status, 1, 'the extra chunks are reported: ' + (run.stderr || run.stdout));
+    assert.match(run.stderr,
+      /popup_ja\.png: チャンクの並びが違う \(IHDR IDAT IHDR IEND \/ 描くのは IHDR IDAT IEND\)/);
+    assert.match(run.stderr,
+      /settings_ja\.png: チャンクの並びが違う \(IHDR IDAT tEXt IEND \/ 描くのは IHDR IDAT IEND\)/);
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test('--check asks for a rename, not a deletion, when only the spelling differs',
+  { skip: generatorSkip }, () => {
+    const sandbox = screenshotSandbox();
+    try {
+      // On a case-insensitive filesystem the pixel comparison opens this file
+      // and passes, so calling it an image nothing draws would have the reader
+      // delete the one that is drawn.
+      fs.renameSync(path.join(sandbox, 'docs/screenshots/popup_ja.png'),
+        path.join(sandbox, 'docs/screenshots/popup_ja.PNG'));
+
+      const run = runCheck(sandbox);
+      assert.equal(run.status, 1, 'the spelling is reported: ' + (run.stderr || run.stdout));
+      assert.match(run.stderr, /popup_ja\.PNG: 綴りが違う \(popup_ja\.png として描いている\)/);
+      assert.match(run.stderr, /名前を直す: .*popup_ja\.PNG → popup_ja\.png/);
+      assert.doesNotMatch(run.stderr, /削除する/, 'and it is not on the list to delete');
+
+      // Where both spellings can exist at once, renaming onto the other one is
+      // no instruction at all: the spare is the one to delete.
+      fs.copyFileSync(path.join(sandbox, 'docs/screenshots/popup_ja.PNG'),
+        path.join(sandbox, 'docs/screenshots/popup_ja.png'));
+      const both = fs.readdirSync(path.join(sandbox, 'docs/screenshots'))
+        .filter((name) => name.toLowerCase() === 'popup_ja.png');
+      if (both.length < 2) {
+        console.log('  (both spellings at once: skipped, this filesystem folds them)');
+      } else {
+        const after = runCheck(sandbox);
+        assert.equal(after.status, 1, 'the spare is reported: ' + (after.stderr || after.stdout));
+        assert.match(after.stderr, /popup_ja\.PNG: 誰も描いていない/);
+        assert.match(after.stderr, /削除する: .*popup_ja\.PNG/);
+        assert.doesNotMatch(after.stderr, /名前を直す/,
+          'and it is not asked to be renamed onto the name that is already there');
+
+        // Two spellings and no canonical name: whichever is renamed first, the
+        // second one lands on top of it, so this is not a rename to advise.
+        fs.renameSync(path.join(sandbox, 'docs/screenshots/popup_ja.png'),
+          path.join(sandbox, 'docs/screenshots/POPUP_JA.png'));
+        const contested = runCheck(sandbox);
+        assert.equal(contested.status, 1,
+          'the collision is reported: ' + (contested.stderr || contested.stdout));
+        assert.match(contested.stderr, /POPUP_JA\.png: popup_ja\.png を名乗るものが 2 つある/);
+        assert.match(contested.stderr, /popup_ja\.PNG: popup_ja\.png を名乗るものが 2 つある/);
+        assert.match(contested.stderr,
+          /1 つだけ popup_ja\.png に直して残りを消す: .*POPUP_JA\.png .*popup_ja\.PNG/);
+        assert.doesNotMatch(contested.stderr, /名前を直す/,
+          'and neither is told to take the name the other would take');
+      }
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
 test('--check turns down a size the code no longer draws', { skip: generatorSkip }, () => {
   const sandbox = screenshotSandbox();
   try {
@@ -5473,6 +6094,93 @@ test('--check turns down a size the code no longer draws', { skip: generatorSkip
   }
 });
 
+test('--check turns down a tracked directory that is a link to one', { skip: generatorSkip
+  || (process.platform === 'win32' && 'symlinks need a privilege this does not ask for') }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    // A link anywhere on the way there hides the same thing: lstat answers for
+    // the last name in the path, so with docs itself a link, everything under
+    // it reads as a directory of images. Neither run may write through it —
+    // both name docs/screenshots in what they print.
+    fs.renameSync(path.join(sandbox, 'docs'), path.join(sandbox, 'docs.source'));
+    fs.symlinkSync('docs.source', path.join(sandbox, 'docs'));
+    const marked = path.join(sandbox, 'docs.source/screenshots/popup_ja.png');
+    assert.equal(spawnSync('python3', ['-B', '-c',
+      'import sys; from PIL import Image;' +
+      'i = Image.open(sys.argv[1]).convert("RGB");' +
+      'r, g, b = i.getpixel((5, 5));' +
+      'i.putpixel((5, 5), (r ^ 1, g, b));' +
+      'i.save(sys.argv[1])', marked], { encoding: 'utf8' }).status, 0, 'the probe marked a pixel');
+    const before = fs.readFileSync(marked);
+
+    const parent = runCheck(sandbox);
+    assert.equal(parent.status, 1, 'the linked parent is reported: ' + (parent.stderr || parent.stdout));
+    assert.match(parent.stderr, /docs: シンボリックリンク \(docs\.source を指している\)/);
+    const redraw = spawnSync('python3', ['-B', 'gen_screenshots.py'],
+      { cwd: sandbox, encoding: 'utf8' });
+    assert.equal(redraw.status, 1, 'and drawing refuses the same way: ' + redraw.stderr);
+    assert.match(redraw.stderr, /docs: シンボリックリンク/);
+    assert.deepEqual(fs.readFileSync(marked), before, 'the refused run wrote nothing');
+
+    fs.unlinkSync(path.join(sandbox, 'docs'));
+    fs.renameSync(path.join(sandbox, 'docs.source'), path.join(sandbox, 'docs'));
+    // lstat on each image reads the last name in the path, so the six under a
+    // linked directory all pass. What a repository records for that is six
+    // deletions and one link.
+    fs.renameSync(path.join(sandbox, 'docs/screenshots'),
+      path.join(sandbox, 'docs/screenshots.source'));
+    fs.symlinkSync('screenshots.source', path.join(sandbox, 'docs/screenshots'));
+
+    const run = runCheck(sandbox);
+    assert.equal(run.status, 1, 'the linked directory is reported: ' + (run.stderr || run.stdout));
+    assert.match(run.stderr,
+      /docs\/screenshots: シンボリックリンク \(screenshots\.source を指している\)/);
+    assert.doesNotMatch(run.stderr, /枚ともいま描くものと同じ/,
+      'and the six images under it are not vouched for');
+
+    // A file by that name is not a directory either, and neither is reported
+    // as an image that differs.
+    fs.unlinkSync(path.join(sandbox, 'docs/screenshots'));
+    fs.writeFileSync(path.join(sandbox, 'docs/screenshots'), '');
+    const asFile = runCheck(sandbox);
+    assert.equal(asFile.status, 1, 'a file by that name is reported too');
+    assert.match(asFile.stderr, /docs\/screenshots: ディレクトリではない/);
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test('--check turns down a tracked image that is a link to one', { skip: generatorSkip
+  || (process.platform === 'win32' && 'symlinks need a privilege this does not ask for') }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    // Everything that opens the file follows the link, so the pixels match and
+    // the size matches. What git records for a link is where it points, which
+    // is not an image at all.
+    const shots = path.join(sandbox, 'docs/screenshots');
+    fs.renameSync(path.join(shots, 'popup_ja.png'), path.join(shots, 'popup_ja.source'));
+    fs.symlinkSync('popup_ja.source', path.join(shots, 'popup_ja.png'));
+    // And two under names nothing draws: one that points nowhere, which a
+    // filter asking whether the target is a file leaves out of the report, and
+    // one that points at a directory, which a filter asking whether the target
+    // is a directory leaves out the same way.
+    fs.symlinkSync('gone.png', path.join(shots, 'popup_de.png'));
+    fs.symlinkSync('../../tools', path.join(shots, 'overlay_de.png'));
+    fs.mkdirSync(path.join(shots, 'tmpabc123.png'));
+
+    const run = runCheck(sandbox);
+    assert.equal(run.status, 1, 'the link is reported: ' + (run.stderr || run.stdout));
+    assert.match(run.stderr,
+      /popup_ja\.png: シンボリックリンク \(popup_ja\.source を指している\)/);
+    assert.match(run.stderr, /popup_de\.png: 誰も描いていない/);
+    assert.match(run.stderr, /overlay_de\.png: 誰も描いていない/);
+    assert.doesNotMatch(run.stderr, /tmpabc123\.png/,
+      'while a directory of that name is still what an interrupted run left');
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
 test('--check names a tracked image nothing draws, and leaves the rest alone',
   { skip: generatorSkip }, () => {
     const sandbox = screenshotSandbox();
@@ -5483,10 +6191,20 @@ test('--check names a tracked image nothing draws, and leaves the rest alone',
       assert.equal(run.status, 1, 'an image nothing draws is reported');
       assert.match(run.stderr, /popup_de\.png/);
 
+      // An image by any other spelling is still one nothing draws — and APFS
+      // makes that spelling easy to commit.
+      fs.renameSync(path.join(sandbox, 'docs/screenshots/popup_de.png'),
+        path.join(sandbox, 'docs/screenshots/popup_de.PNG'));
+      const upper = runCheck(sandbox);
+      assert.equal(upper.status, 1, '.PNG is read as an image too: ' + (upper.stderr || upper.stdout));
+      assert.match(upper.stderr, /popup_de\.PNG/);
+
       // What macOS and an interrupted run leave behind are not tracked images.
-      fs.rmSync(path.join(sandbox, 'docs/screenshots/popup_de.png'));
+      // The staging directory carries the suffix, so the name alone cannot
+      // tell it from a file.
+      fs.rmSync(path.join(sandbox, 'docs/screenshots/popup_de.PNG'));
       fs.writeFileSync(path.join(sandbox, 'docs/screenshots/.DS_Store'), '');
-      fs.mkdirSync(path.join(sandbox, 'docs/screenshots/tmpabc123'));
+      fs.mkdirSync(path.join(sandbox, 'docs/screenshots/tmpabc123.png'));
       const after = runCheck(sandbox);
       assert.equal(after.status, 0,
         'neither .DS_Store nor a leftover staging directory is a tracked image: ' +
@@ -5738,8 +6456,12 @@ test('store screenshot generator draws icons the bundled font lacks', () => {
   assert.match(check, /for radius in \(HEADER_GEAR_RADIUS, PLAYER_GEAR_RADIUS\):/);
   assert.match(check, /size=FULLSCREEN_SIZE/);
   assert.match(source, /def main\(out_dir=OUT_DIR\):\n    verify_icons\(\)/);
-  // --check draws the same six, so it runs the same self-check first.
-  assert.match(source, /def check\(\):\n    """[^"]*"""\n    verify_icons\(\)/);
+  // --check draws the same six, so it runs the same self-check before it
+  // draws — wherever in the function that lands.
+  const checkBody = source.slice(source.indexOf('def check():'));
+  assert.ok(checkBody.indexOf('verify_icons()') > -1
+    && checkBody.indexOf('verify_icons()') < checkBody.indexOf('draw_all('),
+  '--check runs the self-check before it draws');
 });
 
 test('meanSquareToLufs: known reference', () => {
