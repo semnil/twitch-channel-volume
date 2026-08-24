@@ -185,7 +185,7 @@ options.html / options.js
 | `pack.py` | Chrome Web Store 用 zip 生成 (manifest からの参照グラフで選択、`--list` で選択結果のみ出力) |
 | `PRIVACY_POLICY.md` / `PRIVACY_POLICY_JA.md` | プライバシーポリシー (審査・README リンク用, EN/JA) |
 | `docs/security-audit.md` | セキュリティ監査レポート |
-| `docs/screenshots/` | `gen_screenshots.py` の出力。README とストア掲載の両方が使う (拡張機能には同梱しない)。追跡しているのは `tools/fonts/` の M PLUS 1p で描いたもの。生成器はその 2 書体だけを使い、無ければ止まる (別の書体で描くと 6 枚とも差し替わるため)。6 枚を作業ディレクトリで描き切ってから移し、移動が 1 つでも失敗したら上書きした分を最後まで戻すので、描画・置換のどちらで止まっても追跡先は前回のまま。戻すこと自体を断られたときは、戻せなかった名前と控えの置き場所を言って控えを残す (それ以外は消す)。CI は `--check` で描き直して画素比較する |
+| `docs/screenshots/` | `gen_screenshots.py` の出力。README とストア掲載の両方が使う (拡張機能には同梱しない)。追跡しているのは `tools/fonts/` の M PLUS 1p で描いたもの。生成器はその 2 書体だけを使い、無ければ止まる (別の書体で描くと 6 枚とも差し替わるため)。6 枚を作業ディレクトリで描き切ってから移し、移動が 1 つでも失敗したら置換前の姿 (通常ファイル / リンク / 無かった) へ最後まで戻すので、描画・置換のどちらで止まっても追跡先は前回のまま。描画名がディレクトリを指すリンクのときは、移動がその中へ入れてしまうため置換の前に断る。戻すこと自体を断られたときは、戻せなかった名前と前は何だったかを言い、控えの中身が要るときだけ控えを残して場所を名乗る (それ以外は消す)。CI は `--check` で描き直して画素比較する |
 | `tools/fonts/` | 描画に使う M PLUS 1p (Regular / Bold) と OFL.txt。google/fonts の `ofl/mplus1p` から取得 (commit `66a36c8`)。CI と各マシンで同じ画素を得るためにリポジトリへ入れている |
 | `test.js` | ユニットテスト (`node test.js`) — utils と store に加え、content.js / page-bridge.js / popup.js / options.js / background.js を VM 上の harness で走らせる |
 

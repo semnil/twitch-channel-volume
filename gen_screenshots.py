@@ -549,6 +549,29 @@ def named_by(err, fallback):
     return where if where and where.lower().endswith('.png') else fallback
 
 
+def state_of(path):
+    """置換前の姿。(種別, リンクの指し先)。
+
+    exists はリンクの先を読むので、行き先の無いリンクが「無い」に見え、戻す側
+    はそれを消しに行く。copy2 はリンクを辿るので、控えに入るのは指し先の中身
+    で、戻すと通常ファイルになる。どちらも lstat なら分かれる。
+    """
+    if not os.path.lexists(path):
+        return ('absent', None)
+    if os.path.islink(path):
+        return ('link', os.readlink(path))
+    return ('file', None)
+
+
+# 戻せなかった名前を、それが前は何だったかで言い分ける。「前回の画像」は前に
+# 画像があった名前にしか当てはまらない。
+LEFT_AS = {
+    'file': '前回の画像へ戻せない',
+    'link': '前回のリンクへ戻せない',
+    'absent': 'この走行の画像を取り除けない',
+}
+
+
 def replace_all(staging, out_dir):
     """staging の全ファイルで out_dir を置き換える。1 つでも失敗したら元へ戻す。
 
@@ -558,20 +581,28 @@ def replace_all(staging, out_dir):
     names = sorted(os.listdir(staging))
     os.makedirs(out_dir, exist_ok=True)
     backup = tempfile.mkdtemp(dir=out_dir)
-    left = []
+    keep = False
     try:
-        saved = [n for n in names if os.path.exists(os.path.join(out_dir, n))]
-        for name in saved:
+        before = {}
+        for name in names:
             here = os.path.join(out_dir, name)
-            try:
-                shutil.copy2(here, os.path.join(backup, name))
-            except OSError as err:
-                # 控えられないのは読めないからで、書けないからではない。まだ
-                # 1 枚も動かしていない。
-                raise Refused(f'{shown(here)} を読めない ({reason(err)})') from err
+            kind, target = state_of(here)
+            before[name] = (kind, target)
+            if kind == 'link' and os.path.isdir(here):
+                # shutil.move はディレクトリを指すリンクの「中へ」置く。指し先
+                # の中に画像を作って追跡先は前回のまま、では答えにならない。
+                raise Refused(f'{shown(here)}: ディレクトリを指すリンク ({target})')
+            if kind == 'file':
+                try:
+                    shutil.copy2(here, os.path.join(backup, name))
+                except OSError as err:
+                    # 控えられないのは読めないからで、書けないからではない。
+                    # まだ 1 枚も動かしていない。
+                    raise Refused(f'{shown(here)} を読めない ({reason(err)})') from err
         # 名前は移動を試みる前に控える。移動し終えた直後に割り込まれると、
         # 後から控える形では戻す対象から漏れる。
         attempted = []
+        left = []
         try:
             for name in names:
                 attempted.append(name)
@@ -580,23 +611,30 @@ def replace_all(staging, out_dir):
             for name in attempted:
                 # 1 つ戻せなくても残りは最後まで試す。ここで送出すると、その先
                 # の名前が新しいまま残り、しかも何が残ったかを誰も言わない。
+                kind, target = before[name]
                 try:
-                    if name in saved:
+                    if kind == 'file':
                         shutil.copy2(os.path.join(backup, name), os.path.join(out_dir, name))
-                    elif os.path.exists(os.path.join(out_dir, name)):
-                        os.remove(os.path.join(out_dir, name))
+                    else:
+                        if os.path.lexists(os.path.join(out_dir, name)):
+                            os.remove(os.path.join(out_dir, name))
+                        if kind == 'link':
+                            os.symlink(target, os.path.join(out_dir, name))
                 except OSError as sweeping:
-                    left.append((name, reason(sweeping)))
+                    left.append((name, kind, reason(sweeping)))
             if left:
-                # 戻せなかった分は控えの中にしか無い。控えを残して名指しする。
-                told = '\n'.join(f'{name} を前回の画像へ戻せない ({why})' for name, why in left)
+                # 控えに入っているのは通常ファイルだった名前だけ。その分が
+                # 戻せなかったときだけ、控えを残して場所を名乗る。
+                keep = any(kind == 'file' for _, kind, _ in left)
+                told = '\n'.join(f'{name}: {LEFT_AS[kind]} ({why})' for name, kind, why in left)
+                if keep:
+                    told += f'\n控えは {shown(backup)} にある'
                 raise Refused(
                     f'{shown(named_by(err, out_dir))} の置き換えが途中で止まった'
-                    f' ({reason(err)})\n{told}\n'
-                    f'控えは {shown(backup)} にある') from err
+                    f' ({reason(err)})\n{told}') from err
             raise
     finally:
-        if not left:
+        if not keep:
             try:
                 shutil.rmtree(backup)
             except OSError as err:

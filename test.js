@@ -5355,7 +5355,11 @@ test('store screenshot generator writes the tracked directory, and only whole', 
   // Putting them back is a loop of its own: one name it cannot restore must not
   // stop it from trying the rest.
   assert.match(replaceAll,
-    /except OSError as sweeping:\n\s+left\.append\(\(name, reason\(sweeping\)\)\)/);
+    /except OSError as sweeping:\n\s+left\.append\(\(name, kind, reason\(sweeping\)\)\)/);
+  // What was there decides how it comes back, so it is read before the first
+  // move and with lstat - exists() and copy2() both read through a link.
+  assert.match(replaceAll, /kind, target = state_of\(here\)/);
+  assert.match(replaceAll, /os\.symlink\(target, os\.path\.join\(out_dir, name\)\)/);
   // Recorded before the move is attempted: a run interrupted once the rename
   // has happened still has that name to put back.
   assert.ok(replaceAll.indexOf('attempted.append(name)') <
@@ -6268,7 +6272,7 @@ test('a name the rollback cannot put back is named, and what it holds is kept',
     // own failure must not take its place.
     assert.match(seen.told, /injected before the move/);
     assert.match(seen.told, new RegExp(stuck.replace('.', '\\.')
-      + ' を前回の画像へ戻せない \\(injected while putting it back\\)'),
+      + ': 前回の画像へ戻せない \\(injected while putting it back\\)'),
     'and why it could not be: ' + seen.told);
     // And the previous image is still somewhere the reader can reach.
     assert.equal(seen.kept.length, 1, 'what it took is kept: ' + seen.told);
@@ -6315,6 +6319,137 @@ test('a refusal while drawing names the destination, not the working directory',
     // The name it was handed is inside a directory this run picked and removed.
     assert.doesNotMatch(seen.told, /screenshots\/tmp/, 'a name the reader cannot look at');
     assert.equal(seen.left.length, 6, 'and it took its working directory with it');
+  });
+
+// A name about to be replaced does not have to be a plain file. exists() reads a
+// link with nothing at the end of it as a name with nothing to put back, and
+// copy2 reads through a link, so what came back was whatever it pointed at,
+// written as a file of its own.
+const INJECT_OVER_A_LINK = [
+  'import contextlib, hashlib, importlib.util, io, json, os, shutil, sys, tempfile',
+  'mode = sys.argv[1]',
+  'repo = os.getcwd()',
+  "first = 'overlay_en.png'",
+  'def digest(p):',
+  "    return hashlib.sha256(open(p, 'rb').read()).hexdigest()",
+  'with tempfile.TemporaryDirectory() as sandbox:',
+  "    script = os.path.join(sandbox, 'gen_screenshots.py')",
+  "    source = open(os.path.join(repo, 'gen_screenshots.py'), encoding='utf-8').read()",
+  "    source = source.replace('WHITE = (255, 255, 255)', 'WHITE = (254, 254, 254)', 1)",
+  "    open(script, 'w', encoding='utf-8').write(source)",
+  "    shutil.copytree(os.path.join(repo, 'tools'), os.path.join(sandbox, 'tools'))",
+  "    out = os.path.join(sandbox, 'docs', 'screenshots')",
+  '    os.makedirs(out)',
+  "    tracked = os.path.join(repo, 'docs', 'screenshots')",
+  "    if mode != 'firstrun':",
+  '        for name in os.listdir(tracked):',
+  '            shutil.copy2(os.path.join(tracked, name), os.path.join(out, name))',
+  '    here = os.path.join(out, first)',
+  '    aside = None',
+  "    if mode == 'dangling':",
+  '        os.remove(here)',
+  "        os.symlink('gone.png', here)",
+  "    elif mode == 'pointing':",
+  "        aside = os.path.join(sandbox, 'elsewhere.png')",
+  '        shutil.move(here, aside)',
+  '        os.symlink(aside, here)',
+  "    held = digest(aside) if aside else None",
+  "    spec = importlib.util.spec_from_file_location('gen_under_test', script)",
+  '    gen = importlib.util.module_from_spec(spec)',
+  '    spec.loader.exec_module(gen)',
+  "    calls = {'n': 0}",
+  '    real_move, real_remove = shutil.move, os.remove',
+  '    def stopping(src, dst, *a, **k):',
+  "        calls['n'] += 1",
+  '        # The first name has been replaced by now, so a rollback is owed.',
+  "        if calls['n'] == 2:",
+  "            raise OSError('injected before the move')",
+  '        return real_move(src, dst, *a, **k)',
+  '    def refusing(path, *a, **k):',
+  '        if os.path.dirname(path) == out and os.path.basename(path) == first:',
+  "            raise OSError(13, 'Permission denied', path)",
+  '        return real_remove(path, *a, **k)',
+  '    gen.shutil.move = stopping',
+  "    if mode == 'firstrun':",
+  '        os.remove = refusing',
+  '    said = io.StringIO()',
+  '    try:',
+  '        with contextlib.redirect_stderr(said):',
+  '            code = gen.main()',
+  '    finally:',
+  '        gen.shutil.move, os.remove = real_move, real_remove',
+  "    state = 'absent'",
+  '    if os.path.islink(here):',
+  "        state = 'link -> ' + os.readlink(here)",
+  '    elif os.path.exists(here):',
+  "        state = 'file ' + digest(here)",
+  "    print(json.dumps({'code': code, 'told': said.getvalue(), 'state': state,",
+  "                      'moved': calls['n'] - 1,",
+  "                      'pointed_at_held': bool(aside) and digest(aside) == held,",
+  "                      'kept': [n for n in sorted(os.listdir(out))",
+  '                               if os.path.isdir(os.path.join(out, n))]}))',
+].join('\n');
+
+function overALink(mode) {
+  const run = spawnSync('python3', ['-B', '-c', INJECT_OVER_A_LINK, mode],
+    { cwd: __dirname, encoding: 'utf8' });
+  assert.equal(run.status, 0, 'the probe ran: ' + (run.stderr || run.stdout));
+  const seen = JSON.parse(run.stdout);
+  assert.ok(seen.moved >= 1, 'something had been replaced, so a rollback was owed');
+  assert.equal(seen.code, 1, 'the run reports rather than raises: ' + seen.told);
+  return seen;
+}
+
+test('a rollback puts back a link with nothing at the end of it', { skip: generatorSkip
+  || (process.platform === 'win32' && 'symlinks need a privilege this does not ask for') }, () => {
+  const seen = overALink('dangling');
+  // Not "absent": the run did not commit its images, so it does not get to
+  // decide the name is gone either.
+  assert.equal(seen.state, 'link -> gone.png', 'the link is back: ' + seen.told);
+});
+
+test('a rollback puts back a link rather than what it pointed at', { skip: generatorSkip
+  || (process.platform === 'win32' && 'symlinks need a privilege this does not ask for') }, () => {
+  const seen = overALink('pointing');
+  assert.match(seen.state, /^link -> .*elsewhere\.png$/, 'the link is back: ' + seen.told);
+  assert.ok(seen.pointed_at_held, 'and what it pointed at was never written through');
+});
+
+test('a first run says it could not take its own image back out', { skip: generatorSkip
+  || (typeof process.getuid === 'function' && process.getuid() === 0
+    && 'root removes a file whatever the directory says') }, () => {
+  const seen = overALink('firstrun');
+  // There was no previous image under that name, so "前回の画像へ戻せない" would
+  // name one that never existed - and point at a backup holding nothing.
+  assert.match(seen.told, /overlay_en\.png: この走行の画像を取り除けない/, seen.told);
+  assert.doesNotMatch(seen.told, /控えは/, 'nothing was taken, so nothing is offered');
+  assert.deepEqual(seen.kept, [], 'and an empty backup is not left behind');
+});
+
+test('a link to a directory under a drawn name is turned down, not written through',
+  { skip: generatorSkip
+    || (process.platform === 'win32' && 'symlinks need a privilege this does not ask for') }, () => {
+    const sandbox = screenshotSandbox();
+    try {
+      // shutil.move puts the file inside a directory it is handed, and a link
+      // to one is a directory to everything that reads through it. The run
+      // would report six images and have written one of them somewhere else.
+      const aside = path.join(sandbox, 'aside');
+      fs.mkdirSync(aside);
+      const target = path.join(sandbox, 'docs/screenshots/overlay_en.png');
+      fs.rmSync(target);
+      fs.symlinkSync(aside, target);
+
+      const redraw = spawnSync('python3', ['-B', 'gen_screenshots.py'],
+        { cwd: sandbox, encoding: 'utf8' });
+      assert.equal(redraw.status, 1, 'the run stops: ' + redraw.stderr);
+      assert.doesNotMatch(redraw.stderr, /Traceback/);
+      assert.match(redraw.stderr, /overlay_en\.png: ディレクトリを指すリンク/);
+      assert.deepEqual(fs.readdirSync(aside), [], 'and nothing was written inside it');
+      assert.ok(fs.lstatSync(target).isSymbolicLink(), 'and the link is left as it was');
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
   });
 
 test('an image that cannot be read is not called one that cannot be written',
