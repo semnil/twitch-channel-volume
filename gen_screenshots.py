@@ -26,8 +26,8 @@ try:
     BASIC_LAYOUT = ImageFont.Layout.BASIC
 except (AttributeError, ImportError) as err:
     # ここでは終わらせない。引数の間違いは引数の答え (exit 2) を返すべきで、
-    # Pillow が無いこと (exit 3) に置き換わってはいけない。
-    CANNOT_DRAW = err
+    # 描けないこと (exit 3) に置き換わってはいけない。
+    CANNOT_DRAW = f'{err}. Pillow を入れると描ける。'
 else:
     CANNOT_DRAW = None
 
@@ -76,27 +76,26 @@ FONT_BOLD_FILE = os.path.join(FONT_DIR, 'MPLUS1p-Bold.ttf')
 
 def _font(size, bold=False):
     path = FONT_BOLD_FILE if bold else FONT_REGULAR_FILE
-    try:
-        return ImageFont.truetype(path, size, layout_engine=BASIC_LAYOUT)
-    except OSError:
-        print(f'{os.path.relpath(path, ROOT)} が読めない。docs/screenshots/ の画像は'
-              'この書体で描いたもので、別の書体で生成すると 6 枚とも差し替わる。',
-              file=sys.stderr)
-        sys.exit(UNAVAILABLE)
+    return ImageFont.truetype(path, size, layout_engine=BASIC_LAYOUT)
 
 
-# 書体を解決するのは Pillow がある環境だけ。無い環境でも読み込みは通り、
-# 引数を読んでから描けないと答える。
+# 書体を解決するのは Pillow がある環境だけ。読めない書体も持ち帰るだけにして、
+# 引数を読んでから描けないと答える (引数の間違いは exit 2 のまま)。
 if CANNOT_DRAW is None:
-    FONT = _font(13)
-    FONT_SM = _font(11)
-    FONT_LG = _font(18)
-    FONT_TITLE = _font(15, bold=True)
-    FONT_BOLD = _font(13, bold=True)
-    FONT_VAL = _font(17, bold=True)
-    FONT_XL = _font(20, bold=True)
-    FONT_XS = _font(9)
-    FONT_PRESET = _font(11, bold=True)
+    try:
+        FONT = _font(13)
+        FONT_SM = _font(11)
+        FONT_LG = _font(18)
+        FONT_TITLE = _font(15, bold=True)
+        FONT_BOLD = _font(13, bold=True)
+        FONT_VAL = _font(17, bold=True)
+        FONT_XL = _font(20, bold=True)
+        FONT_XS = _font(9)
+        FONT_PRESET = _font(11, bold=True)
+    except OSError as err:
+        CANNOT_DRAW = (f'{os.path.relpath(FONT_REGULAR_FILE, ROOT)} が読めない ({err})。'
+                       'docs/screenshots/ の画像はこの書体で描いたもので、別の書体で'
+                       '生成すると 6 枚とも差し替わる。')
 
 
 def draw_gear(draw, center, color, radius=HEADER_GEAR_RADIUS):
@@ -888,21 +887,26 @@ def check():
 USAGE = f'usage: {os.path.basename(__file__)} [--check] [--out <dir>]'
 
 
-def cannot_hold_images(target):
+def cannot_hold_images(path):
     """--out の行き先になれないところ。無ければ None。
 
-    まだ無いパスは作られるので、既にある一番近い親を見る。終端は lexists で
-    見る — 行き先の無いリンクは exists では見えないまま os.makedirs に届く。
+    渡された成分のまま辿る。abspath は `norm-file/..` を先に畳むので、
+    途中の非ディレクトリが検査に出てこない。まだ無い名前は作られるので、
+    既にあるところまでを見る。lexists で見るのは、行き先の無いリンクが
+    exists に映らないまま os.makedirs へ届くため。
     """
-    if os.path.lexists(target):
-        return None if os.path.isdir(target) else target
-    at = os.path.dirname(target)
-    while not os.path.lexists(at):
-        parent = os.path.dirname(at)
-        if parent == at:
-            break
-        at = parent
-    return None if os.path.isdir(at) else at
+    drive, rest = os.path.splitdrive(path)
+    at = drive + os.sep
+    for part in rest.split(os.sep):
+        if not part:
+            continue
+        at = os.path.join(at, part)
+        if not os.path.lexists(at):
+            # ここから先は作られる。
+            return None
+        if not os.path.isdir(at):
+            return at
+    return None
 
 
 def out_dir_from(args):
@@ -930,8 +934,12 @@ def out_dir_from(args):
                 # 無く消える。
                 print(f'--out は 1 つだけ\n{USAGE}', file=sys.stderr)
                 sys.exit(2)
-            target = os.path.abspath(rest.pop(0))
-            blocked = cannot_hold_images(target)
+            given = rest.pop(0)
+            # 検査は畳む前のパスに当てる。書き込み先は畳んだものでよい —
+            # `directory/../ok` は OS も同じところへ行き着く。
+            blocked = cannot_hold_images(given if os.path.isabs(given)
+                                         else os.path.join(os.getcwd(), given))
+            target = os.path.abspath(given)
             if blocked:
                 # 行き先がディレクトリになれないのは引数の間違いで、画像の差では
                 # ない。ここで見ないと os.makedirs の traceback が exit 1 に
@@ -955,7 +963,7 @@ if __name__ == '__main__':
     # 描画側へ素通ししないため。
     destination = out_dir_from(sys.argv[1:])
     if CANNOT_DRAW is not None:
-        print(f'{CANNOT_DRAW}. Pillow を入れると描ける。', file=sys.stderr)
+        print(CANNOT_DRAW, file=sys.stderr)
         sys.exit(UNAVAILABLE)
     if '--check' in sys.argv[1:]:
         sys.exit(check())
