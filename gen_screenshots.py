@@ -8,6 +8,7 @@ PIL 直接描画。popup / settings / overlay の 3 シーンを ja/en で出力
 `--out <dir>` は docs/screenshots ではなくそのディレクトリへ書く。知らない引数と
 値の無い `--out` は exit 2 で、どちらも何も描かない。
 """
+import hashlib
 import math
 import os
 import shutil
@@ -596,9 +597,9 @@ def is_directory(path):
 
 def header_size(kinds):
     """IHDR が名乗る大きさ。IHDR が無ければ None。"""
-    for kind, body in kinds:
+    for kind, _, first in kinds:
         if kind == 'IHDR':
-            return int.from_bytes(body[8:12], 'big'), int.from_bytes(body[12:16], 'big')
+            return int.from_bytes(first[0:4], 'big'), int.from_bytes(first[4:8], 'big')
     return None
 
 
@@ -639,83 +640,110 @@ def not_a_plain_file(path):
     return 'ファイルではない'
 
 
-def unpack_pixels(pixels, cap):
-    """IDAT が運ぶ zlib ストリームを展開した長さと、通らないところ (無ければ None)。
-
-    デコーダは走査線が揃った時点で読むのをやめるので、その後ろは圧縮の内側でも
-    外側でも増やし放題で、画素にも大きさにも出ない。展開は cap バイトで止める
-    — 追跡物が言うだけの大きさをこちらが確保する筋合いはない。cap が None の
-    ときだけ最後まで展開する (自分が今書いた 1 枚を測るときに使う)。
-    """
-    if not pixels:
-        return 0, None
-    packed = b''.join(pixels)
-    stream = zlib.decompressobj()
-    try:
-        unpacked = stream.decompress(packed) if cap is None else stream.decompress(packed, cap)
-    except zlib.error as err:
-        return 0, f'IDAT が zlib ストリームとして読めない ({err})'
-    if stream.unconsumed_tail or (cap is not None and len(unpacked) >= cap):
-        return len(unpacked), '走査線の後ろに展開されるものがまだある'
+def pixel_stream_fault(stream, pending, unpacked, cap, saw_idat, spare_after):
+    """走査線の zlib ストリームが、IDAT の終わりと噛み合わないところ。"""
+    if not saw_idat:
+        return None
+    if pending or (cap is not None and unpacked >= cap):
+        return '走査線の後ろに展開されるものがまだある'
     if not stream.eof:
-        return len(unpacked), 'IDAT の zlib ストリームが終わっていない'
-    if stream.unused_data:
-        return len(unpacked), f'IDAT に zlib ストリームの後ろが {len(stream.unused_data)} バイトある'
-    return len(unpacked), None
+        return 'IDAT の zlib ストリームが終わっていない'
+    spare = len(stream.unused_data) + spare_after
+    if spare:
+        return f'IDAT に zlib ストリームの後ろが {spare} バイトある'
+    return None
 
 
-def png_shape(path, expected=None):
+def png_shape(path, expected=None, block=1 << 16):
     """PNG のチャンクの並び、展開した走査線の長さ、通らないところ (無ければ None)。
 
-    並びは (型, そのチャンクのバイト列) の列。IDAT だけはバイト列を持たない —
-    画素は画素として比べ、圧縮のされ方は問わない。
+    並びは (型, 中身のダイジェスト, 先頭 16 バイト) の列。IDAT だけは中身を
+    持たない — 画素は画素として比べ、圧縮のされ方は問わない。
 
-    expected は「描いた側の走査線の長さ」。渡されたときはそこまでしか展開せず、
-    一致も要求する。渡されないのは自分が今書いた 1 枚を測るときだけ。
+    expected は「描いた側の走査線の長さ」。渡されたときはそこまでしか展開しない。
+    渡されないのは自分が今書いた 1 枚を測るときだけ。
 
     デコーダは中身で形式を決め、壊れた末尾も知らないチャンクも黙って許すので、
-    画素・大きさ・フレーム数のどれにも出ない違いがここに残る。IDAT の本数は
-    圧縮器の刻み方で決まるので 1 つに畳み、代わりに IDAT の中身が zlib
-    ストリーム 1 本ちょうどであることを見る (畳んだ本数の裏でバイトが増える)。
+    画素・大きさのどちらにも出ない違いがここに残る。IDAT の本数は圧縮器の
+    刻み方で決まるので 1 つに畳み、代わりに IDAT の中身が zlib ストリーム
+    1 本ちょうどであることを見る (畳んだ本数の裏でバイトが増える)。
+
+    ファイルは block バイトずつ読む。CRC もダイジェストも展開も継ぎ足しで
+    進むので、追跡物が何バイトあってもこちらが抱えるのはその 1 ブロック分
+    — 大きさを追跡物に決めさせない。
     """
-    data = open(path, 'rb').read()
-    if not data.startswith(b'\x89PNG\r\n\x1a\n'):
-        return [], 0, 'PNG ではない'
-    kinds, pixels = [], []
-    at = 8
-    while at + 8 <= len(data):
-        length = int.from_bytes(data[at:at + 4], 'big')
-        raw = data[at + 4:at + 8]
-        kind = raw.decode('ascii', 'replace')
-        end = at + 12 + length
-        # 型は英字 4 文字で、3 文字目の小文字 (予約ビット 1) は仕様が使い道を
-        # 決めていない。どちらも「読めるが PNG ではない」形。
-        if not all(0x41 <= byte <= 0x5a or 0x61 <= byte <= 0x7a for byte in raw):
-            return kinds, 0, f'{at} バイト目のチャンク型が英字 4 文字ではない ({raw!r})'
-        if raw[2] & 0x20:
-            return kinds, 0, f'{kind} チャンクの予約ビットが 1'
-        if end > len(data):
-            return kinds, 0, f'{kind} チャンクがファイルの外へ出ている'
-        if zlib.crc32(data[at + 4:end - 4]) & 0xffffffff != int.from_bytes(data[end - 4:end], 'big'):
-            return kinds, 0, f'{kind} チャンクの CRC が合わない'
-        if kind == 'IDAT':
-            pixels.append(data[at + 8:end - 4])
-            if kinds[-1:] != [('IDAT', None)]:
-                kinds.append((kind, None))
-        else:
-            # 画素以外は描いた側と 1 バイト単位で突き合わせる。IHDR の
-            # 圧縮方式のように、デコーダが読み飛ばしても中身は変わる。
-            kinds.append((kind, data[at:end]))
-        if kind == 'IEND':
-            if length:
-                return kinds, 0, f'IEND の長さが {length} (0 のはず)'
-            unpacked, spare = unpack_pixels(pixels, None if expected is None else expected + 1)
-            if spare:
-                return kinds, unpacked, spare
-            trailing = len(data) - end
-            return kinds, unpacked, f'IEND の後ろに {trailing} バイトある' if trailing else None
-        at = end
-    return kinds, 0, 'IEND が無い'
+    kinds, unpacked, saw_idat, spare_after = [], 0, False, 0
+    stream = zlib.decompressobj()
+    cap = None if expected is None else expected + 1
+    pending = b''
+    with open(path, 'rb') as handle:
+        size = os.fstat(handle.fileno()).st_size
+        if handle.read(8) != b'\x89PNG\r\n\x1a\n':
+            return [], 0, 'PNG ではない'
+        at = 8
+        while True:
+            head = handle.read(8)
+            if len(head) < 8:
+                return kinds, unpacked, 'IEND が無い'
+            length = int.from_bytes(head[:4], 'big')
+            raw = head[4:8]
+            kind = raw.decode('ascii', 'replace')
+            # 型は英字 4 文字で、3 文字目の小文字 (予約ビット 1) は仕様が使い道を
+            # 決めていない。どちらも「読めるが PNG ではない」形。
+            if not all(0x41 <= byte <= 0x5a or 0x61 <= byte <= 0x7a for byte in raw):
+                return kinds, unpacked, f'{at} バイト目のチャンク型が英字 4 文字ではない ({raw!r})'
+            if raw[2] & 0x20:
+                return kinds, unpacked, f'{kind} チャンクの予約ビットが 1'
+            crc, digest, first = zlib.crc32(raw), hashlib.sha256(), b''
+            left = length
+            while left:
+                piece = handle.read(min(block, left))
+                if not piece:
+                    return kinds, unpacked, f'{kind} チャンクがファイルの外へ出ている'
+                left -= len(piece)
+                crc = zlib.crc32(piece, crc)
+                if kind != 'IDAT':
+                    digest.update(piece)
+                    first += piece[:16 - len(first)]
+                    continue
+                saw_idat = True
+                if stream.eof:
+                    # ストリームは終わっている。ここから先は数えるだけで渡さない
+                    # — 渡すと zlib が unused_data に継ぎ足し続け、追跡物の
+                    # 大きさがそのままこちらのメモリになる。
+                    spare_after += len(piece)
+                    continue
+                room = None if cap is None else cap - unpacked
+                if room is not None and room <= 0:
+                    return kinds, unpacked, '走査線の後ろに展開されるものがまだある'
+                try:
+                    out = (stream.decompress(pending + piece) if room is None
+                           else stream.decompress(pending + piece, room))
+                except zlib.error as err:
+                    return kinds, unpacked, f'IDAT が zlib ストリームとして読めない ({err})'
+                unpacked += len(out)
+                pending = stream.unconsumed_tail
+            tail = handle.read(4)
+            if len(tail) < 4:
+                return kinds, unpacked, f'{kind} チャンクがファイルの外へ出ている'
+            if crc & 0xffffffff != int.from_bytes(tail, 'big'):
+                return kinds, unpacked, f'{kind} チャンクの CRC が合わない'
+            if kind == 'IDAT':
+                if kinds[-1:] != [('IDAT', None, b'')]:
+                    kinds.append((kind, None, b''))
+            else:
+                # 画素以外は描いた側と中身ごと突き合わせる。IHDR の圧縮方式の
+                # ように、デコーダが読み飛ばしても中身は変わる。
+                kinds.append((kind, digest.digest(), first))
+            at += 12 + length
+            if kind == 'IEND':
+                if length:
+                    return kinds, unpacked, f'IEND の長さが {length} (0 のはず)'
+                spare = pixel_stream_fault(stream, pending, unpacked, cap, saw_idat, spare_after)
+                if spare:
+                    return kinds, unpacked, spare
+                trailing = size - at
+                return kinds, unpacked, f'IEND の後ろに {trailing} バイトある' if trailing else None
 
 
 def check():
@@ -752,14 +780,20 @@ def check():
             # 渡してから見ると、Pillow が付き合いきれないと言った時点 (テキスト
             # チャンクの展開上限など) で走行ごと止まり、後ろの画像も orphan の
             # 報告も出ない。
-            kinds, _, fault = png_shape(tracked, drawn_pixels)
+            try:
+                kinds, _, fault = png_shape(tracked, drawn_pixels)
+            except OSError as err:
+                # 読めないものは「いま描くもの」ではない。1 枚で止めると残りの
+                # 比較も orphan の報告も出ない。
+                stale.append(f'{name}: ファイルを読めない ({err})')
+                continue
             if fault:
                 # デコーダは中身で形式を決め、IEND の欠落や後ろのバイトを
                 # 黙って許すので、画素にも大きさにも出てこない。
                 stale.append(f'{name}: {fault}')
                 continue
-            here_kinds = [kind for kind, _ in kinds]
-            drawn_only = [kind for kind, _ in drawn_kinds]
+            here_kinds = [kind for kind, _, _ in kinds]
+            drawn_only = [kind for kind, _, _ in drawn_kinds]
             if here_kinds != drawn_only:
                 # 知らないチャンクも 2 つ目の IHDR も APNG の制御チャンクも
                 # デコーダは読み飛ばすか 1 枚目だけ返すので、画素は一致した
@@ -773,7 +807,7 @@ def check():
                 stale.append(f'{name}: 大きさが違う '
                              f'({header_size(kinds)} → {header_size(drawn_kinds)})')
                 continue
-            changed = [kind for (kind, body), (_, drawn_body) in zip(kinds, drawn_kinds)
+            changed = [kind for (kind, body, _), (_, drawn_body, _) in zip(kinds, drawn_kinds)
                        if body != drawn_body]
             if changed:
                 # 並びが同じでも中身は違いうる。IHDR の圧縮方式を書き換えても

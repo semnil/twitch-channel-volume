@@ -5492,6 +5492,26 @@ const CHUNK_PROBE = [
   '        out += struct.pack(">I", zlib.crc32(head) & 0xffffffff)',
   '    open(target, "wb").write(bytes(out))',
   '    raise SystemExit',
+  'if op == "fat-idat":',
+  '    room = int(sys.argv[3])',
+  '    crc, block = zlib.crc32(b"IDAT"), b"\\0" * (1 << 20)',
+  '    left = room',
+  '    while left:',
+  '        crc = zlib.crc32(block[:min(len(block), left)], crc)',
+  '        left -= min(len(block), left)',
+  '    out = bytearray(data[:8])',
+  '    for kind, raw in walk:',
+  '        if kind == b"IEND" and room:',
+  '            out += struct.pack(">I", room) + b"IDAT"',
+  '            left = room',
+  '            while left:',
+  '                out += block[:min(len(block), left)]',
+  '                left -= min(len(block), left)',
+  '            out += struct.pack(">I", crc & 0xffffffff)',
+  '            room = 0',
+  '        out += raw',
+  '    open(target, "wb").write(bytes(out))',
+  '    raise SystemExit',
   'if op == "smuggle-idat":',
   '    body = b"IDAT" + b"smuggled payload" * 4',
   '    extra = struct.pack(">I", len(body) - 4) + body',
@@ -5726,6 +5746,61 @@ const COST_PROBE = [
   'print(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * unit)',
   'sys.stderr.write(run.stderr)',
 ].join('\n');
+
+test('--check goes on to the next image when one cannot be read', { skip: generatorSkip
+  || (process.platform === 'win32' && 'mode bits do not keep this file from being read on win32')
+  || (typeof process.getuid === 'function' && process.getuid() === 0
+    && 'root reads a file whatever its mode says') }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    // The bytes are read here before anything decodes them, and a file the
+    // process cannot open raises where nothing was catching it: the run ended
+    // on the first one, taking the images after it and the scan for files
+    // nothing draws with it.
+    fs.chmodSync(path.join(sandbox, 'docs/screenshots/overlay_en.png'), 0o000);
+    fs.copyFileSync(path.join(sandbox, 'docs/screenshots/overlay_ja.png'),
+      path.join(sandbox, 'docs/screenshots/popup_de.png'));
+
+    const run = runCheck(sandbox);
+    assert.equal(run.status, 1, 'the unreadable file is reported: ' + (run.stderr || run.stdout));
+    assert.match(run.stderr, /overlay_en\.png: ファイルを読めない/);
+    assert.doesNotMatch(run.stderr, /Traceback/, 'without a traceback');
+    assert.match(run.stderr, /popup_de\.png: 誰も描いていない/,
+      'and the scan for files nothing draws still runs');
+  } finally {
+    fs.chmodSync(path.join(sandbox, 'docs/screenshots/overlay_en.png'), 0o644);
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test('--check does not take a tracked file into memory to read it', { skip: generatorSkip
+  || (process.platform === 'win32'
+    && 'the resource module this measures with is not on win32') }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    // 64 MiB in a chunk that is all there on disk: nothing inflates, so the
+    // ceiling on inflation says nothing about it. Reading the file whole, or
+    // handing its bytes to a stream that has already finished, spends the
+    // file's size — or more, since zlib keeps what it could not use.
+    const room = 64 * 1024 * 1024;
+    assert.equal(spawnSync('python3', ['-B', '-c', CHUNK_PROBE, 'fat-idat',
+      path.join(sandbox, 'docs/screenshots/popup_ja.png'), String(room)],
+    { encoding: 'utf8' }).status, 0, 'the probe wrote a fat IDAT');
+
+    const probe = spawnSync('python3', ['-B', '-c', COST_PROBE, sandbox], { encoding: 'utf8' });
+    assert.equal(probe.status, 0, 'the cost probe ran: ' + probe.stderr);
+    const [status, peak] = probe.stdout.trim().split('\n');
+    // A run over the untouched tree peaks around 40 MB here, so anything below
+    // what the file itself holds means it was read in pieces.
+    assert.ok(Number(peak) < room,
+      `the run peaked at ${Math.round(Number(peak) / (1 << 20))} MiB`
+      + ` against a ${room / (1 << 20)} MiB chunk`);
+    assert.equal(status, '1', 'and it still turns the image down: ' + probe.stderr);
+    assert.match(probe.stderr, /popup_ja\.png: IDAT に zlib ストリームの後ろが \d+ バイトある/);
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
 
 test('--check does not inflate a tracked image beyond what the drawing needs',
   { skip: generatorSkip || (process.platform === 'win32'
