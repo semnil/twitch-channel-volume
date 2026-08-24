@@ -836,7 +836,7 @@ def check():
     # 名前を直せと言う。
     by_spelling = {name.lower(): name for name in drawn}
     present = set(tracked_now)
-    orphans, misspelled = [], []
+    orphans, spellings = [], {}
     for name in tracked_now:
         if name in drawn:
             continue
@@ -844,9 +844,15 @@ def check():
         # 正しい綴りのファイルが隣にあるなら、これは名前の問題ではなく余りの
         # 1 枚 (ケースを区別する FS では両方が並んで存在しうる)。
         if drawn_as and drawn_as not in present:
-            misspelled.append((name, drawn_as))
+            spellings.setdefault(drawn_as, []).append(name)
         else:
             orphans.append(f'{here}/{name}')
+    # 同じ 1 枚を名乗るものが 2 つ以上あるなら、どれを直すかはこちらでは決まらない
+    # — 順に直させると 2 つ目が 1 つ目の上に落ちる。
+    misspelled = [(names[0], drawn_as) for drawn_as, names in sorted(spellings.items())
+                  if len(names) == 1]
+    contested = [(sorted(names), drawn_as) for drawn_as, names in sorted(spellings.items())
+                 if len(names) > 1]
 
     for line in stale:
         print(line, file=sys.stderr)
@@ -862,6 +868,11 @@ def check():
     if misspelled:
         print('名前を直す: ' + ' '.join(f'{here}/{name} → {drawn_as}'
                                     for name, drawn_as in misspelled), file=sys.stderr)
+    for names, drawn_as in contested:
+        for name in names:
+            print(f'{here}/{name}: {drawn_as} を名乗るものが {len(names)} つある', file=sys.stderr)
+        print(f'1 つだけ {drawn_as} に直して残りを消す: '
+              + ' '.join(f'{here}/{name}' for name in names), file=sys.stderr)
     if stale or orphans or misspelled:
         return 1
     print(f'{len(drawn)} 枚ともいま描くものと同じ。')

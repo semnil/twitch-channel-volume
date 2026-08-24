@@ -6052,6 +6052,20 @@ test('--check asks for a rename, not a deletion, when only the spelling differs'
         assert.match(after.stderr, /削除する: .*popup_ja\.PNG/);
         assert.doesNotMatch(after.stderr, /名前を直す/,
           'and it is not asked to be renamed onto the name that is already there');
+
+        // Two spellings and no canonical name: whichever is renamed first, the
+        // second one lands on top of it, so this is not a rename to advise.
+        fs.renameSync(path.join(sandbox, 'docs/screenshots/popup_ja.png'),
+          path.join(sandbox, 'docs/screenshots/POPUP_JA.png'));
+        const contested = runCheck(sandbox);
+        assert.equal(contested.status, 1,
+          'the collision is reported: ' + (contested.stderr || contested.stdout));
+        assert.match(contested.stderr, /POPUP_JA\.png: popup_ja\.png を名乗るものが 2 つある/);
+        assert.match(contested.stderr, /popup_ja\.PNG: popup_ja\.png を名乗るものが 2 つある/);
+        assert.match(contested.stderr,
+          /1 つだけ popup_ja\.png に直して残りを消す: .*POPUP_JA\.png .*popup_ja\.PNG/);
+        assert.doesNotMatch(contested.stderr, /名前を直す/,
+          'and neither is told to take the name the other would take');
       }
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
