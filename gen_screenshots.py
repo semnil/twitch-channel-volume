@@ -25,8 +25,11 @@ try:
     # 字の置き方が変わる。追跡中の画像と比べるので、ここで固定する。
     BASIC_LAYOUT = ImageFont.Layout.BASIC
 except (AttributeError, ImportError) as err:
-    print(f'{err}. Pillow を入れると描ける。', file=sys.stderr)
-    sys.exit(UNAVAILABLE)
+    # ここでは終わらせない。引数の間違いは引数の答え (exit 2) を返すべきで、
+    # Pillow が無いこと (exit 3) に置き換わってはいけない。
+    CANNOT_DRAW = err
+else:
+    CANNOT_DRAW = None
 
 W, H = 640, 400
 
@@ -82,15 +85,18 @@ def _font(size, bold=False):
         sys.exit(UNAVAILABLE)
 
 
-FONT = _font(13)
-FONT_SM = _font(11)
-FONT_LG = _font(18)
-FONT_TITLE = _font(15, bold=True)
-FONT_BOLD = _font(13, bold=True)
-FONT_VAL = _font(17, bold=True)
-FONT_XL = _font(20, bold=True)
-FONT_XS = _font(9)
-FONT_PRESET = _font(11, bold=True)
+# 書体を解決するのは Pillow がある環境だけ。無い環境でも読み込みは通り、
+# 引数を読んでから描けないと答える。
+if CANNOT_DRAW is None:
+    FONT = _font(13)
+    FONT_SM = _font(11)
+    FONT_LG = _font(18)
+    FONT_TITLE = _font(15, bold=True)
+    FONT_BOLD = _font(13, bold=True)
+    FONT_VAL = _font(17, bold=True)
+    FONT_XL = _font(20, bold=True)
+    FONT_XS = _font(9)
+    FONT_PRESET = _font(11, bold=True)
 
 
 def draw_gear(draw, center, color, radius=HEADER_GEAR_RADIUS):
@@ -882,6 +888,23 @@ def check():
 USAGE = f'usage: {os.path.basename(__file__)} [--check] [--out <dir>]'
 
 
+def cannot_hold_images(target):
+    """--out の行き先になれないところ。無ければ None。
+
+    まだ無いパスは作られるので、既にある一番近い親を見る。終端は lexists で
+    見る — 行き先の無いリンクは exists では見えないまま os.makedirs に届く。
+    """
+    if os.path.lexists(target):
+        return None if os.path.isdir(target) else target
+    at = os.path.dirname(target)
+    while not os.path.lexists(at):
+        parent = os.path.dirname(at)
+        if parent == at:
+            break
+        at = parent
+    return None if os.path.isdir(at) else at
+
+
 def out_dir_from(args):
     """--out の次の引数。無ければ docs/screenshots。
 
@@ -908,11 +931,12 @@ def out_dir_from(args):
                 print(f'--out は 1 つだけ\n{USAGE}', file=sys.stderr)
                 sys.exit(2)
             target = os.path.abspath(rest.pop(0))
-            if os.path.exists(target) and not os.path.isdir(target):
-                # 行き先がディレクトリでないのは引数の間違いで、画像の差では
+            blocked = cannot_hold_images(target)
+            if blocked:
+                # 行き先がディレクトリになれないのは引数の間違いで、画像の差では
                 # ない。ここで見ないと os.makedirs の traceback が exit 1 に
                 # なり、「差がある」と同じ答えになる。
-                print(f'--out の行き先がディレクトリではない: {target}\n{USAGE}', file=sys.stderr)
+                print(f'--out の行き先がディレクトリではない: {blocked}\n{USAGE}', file=sys.stderr)
                 sys.exit(2)
             continue
         print(f'知らない引数: {arg}\n{USAGE}', file=sys.stderr)
@@ -930,6 +954,9 @@ if __name__ == '__main__':
     # 引数は分岐の前に全部見る。--check と一緒に渡された --out や、綴り違いを
     # 描画側へ素通ししないため。
     destination = out_dir_from(sys.argv[1:])
+    if CANNOT_DRAW is not None:
+        print(f'{CANNOT_DRAW}. Pillow を入れると描ける。', file=sys.stderr)
+        sys.exit(UNAVAILABLE)
     if '--check' in sys.argv[1:]:
         sys.exit(check())
     sys.exit(main(destination))

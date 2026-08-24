@@ -5210,7 +5210,10 @@ const generatorImport = spawnSync('python3', ['-B', '-c',
   "import importlib.util, sys;" +
   "spec = importlib.util.spec_from_file_location('g', 'gen_screenshots.py');" +
   "m = importlib.util.module_from_spec(spec);" +
-  "spec.loader.exec_module(m)"
+  "spec.loader.exec_module(m);" +
+  // Importing no longer ends on a missing Pillow — arguments are answered
+  // before it is needed — so the module says so and this asks.
+  "sys.exit(3 if m.CANNOT_DRAW else 0)"
 ], { cwd: __dirname, encoding: 'utf8' });
 // The generator answers 3 where it cannot draw — no Pillow, no face — and that
 // is the only reading that means "not here". Anything else is the generator
@@ -6258,10 +6261,18 @@ test('--out writes where it is told, and nowhere else', { skip: generatorSkip },
     // and one that is a file — each is the argument being wrong rather than
     // the images differing, and none of them is a place to write.
     fs.writeFileSync(path.join(sandbox, 'afile'), '');
+    fs.symlinkSync('nowhere', path.join(sandbox, 'broken'));
     for (const args of [['--chek'], ['--check', '--chek'],
-      ['--check', '--out', elsewhere], ['--out', '--chek'],
+      ['--check', '--out', elsewhere], ['--out', elsewhere, '--check'],
+      ['--out', '--chek'],
       ['--out'], ['--out', ''], ['--out', elsewhere, '--out', `${elsewhere}2`],
-      ['--out', path.join(sandbox, 'afile')]]) {
+      ['--out', path.join(sandbox, 'afile')],
+      // A destination that does not exist yet is created, so what has to hold
+      // is the nearest name that does: under a file there is no directory to
+      // make, and a link that points nowhere is not a directory either — both
+      // used to reach os.makedirs and come back as a traceback.
+      ['--out', path.join(sandbox, 'afile', 'child')],
+      ['--out', path.join(sandbox, 'broken')]]) {
       const refused = spawnSync('python3', ['-B', 'gen_screenshots.py', ...args],
         { cwd: sandbox, encoding: 'utf8' });
       assert.equal(refused.status, 2,
@@ -6269,11 +6280,39 @@ test('--out writes where it is told, and nowhere else', { skip: generatorSkip },
       assert.match(refused.stderr, /usage:/, `${args.join(' ')} is told the shape of the command`);
     }
     assert.ok(!fs.existsSync(path.join(sandbox, '--chek')), 'and none of them made a directory');
+    assert.ok(!fs.statSync(path.join(sandbox, 'afile')).isDirectory(),
+      'nor turned a file into one');
+    assert.ok(!fs.existsSync(path.join(sandbox, 'broken')), 'nor gave a broken link somewhere to point');
     assert.ok(!fs.existsSync(`${elsewhere}2`), 'nor the second of two destinations');
     for (const [name, bytes] of before) {
       assert.ok(bytes.equals(fs.readFileSync(path.join(sandbox, 'docs/screenshots', name))),
         `${name} is untouched by the refused runs`);
     }
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test('an argument that is wrong is answered before Pillow is needed', () => {
+  // -S keeps site-packages out of the path, so Pillow is not importable here
+  // whatever the machine has. Reading the arguments after the import made
+  // every one of these say "cannot draw here" (3) instead of "that argument is
+  // wrong" (2) — and every test that would have caught it skips on that same
+  // answer, so the whole of this file went quiet with it.
+  const sandbox = screenshotSandbox();
+  try {
+    for (const args of [['--chek'], ['--out'], ['--out', '--chek'],
+      ['--check', '--out', path.join(sandbox, 'elsewhere')]]) {
+      const refused = spawnSync('python3', ['-S', '-B', 'gen_screenshots.py', ...args],
+        { cwd: sandbox, encoding: 'utf8' });
+      assert.equal(refused.status, 2,
+        `${args.join(' ')} without Pillow is refused: ` + (refused.stderr || ''));
+      assert.match(refused.stderr, /usage:/);
+      assert.doesNotMatch(refused.stderr, /PIL/,
+        `${args.join(' ')} is answered as an argument, not as a missing library`);
+    }
+    assert.ok(!fs.existsSync(path.join(sandbox, 'elsewhere')), 'and none of them wrote anywhere');
+    assert.ok(!fs.existsSync(path.join(sandbox, '--chek')));
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
   }

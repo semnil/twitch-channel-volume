@@ -181,7 +181,7 @@ options.html / options.js
 | `_locales/` | i18n (ja, en) |
 | `icons/` | 16/48/128 px PNG (Twitch purple 3-bar meter) |
 | `gen_icons.py` | アイコン生成 (Python Pillow) |
-| `gen_screenshots.py` | スクリーンショット生成 (PIL 直接描画, 640×400 ja/en → `docs/screenshots/`)。`--check` は書き込まず、追跡先までのパスの各成分と画像が通常ファイルか → PNG 構造 (署名・チャンク・IDAT の zlib ストリーム) → チャンクの並び → IHDR の大きさ → IDAT 以外のバイト列 → RGBA 画素、の順に見る (デコーダに渡すのは最後)。差は exit 1、描けない環境は exit 3。`--out <dir>` は書き込み先を差し替える。知らない引数・`--check` と `--out` の同時指定・`--out` の重複・フラグの形をした値・ディレクトリでない行き先は exit 2 で拒否する (`--chek` が上書きにならないように)。追跡先までのパスに実体ディレクトリでない成分があれば、描画も `--check` も exit 1 で何もしない |
+| `gen_screenshots.py` | スクリーンショット生成 (PIL 直接描画, 640×400 ja/en → `docs/screenshots/`)。`--check` は書き込まず、追跡先までのパスの各成分と画像が通常ファイルか → PNG 構造 (署名・チャンク・IDAT の zlib ストリーム) → チャンクの並び → IHDR の大きさ → IDAT 以外のバイト列 → RGBA 画素、の順に見る (デコーダに渡すのは最後)。差は exit 1、描けない環境は exit 3。`--out <dir>` は書き込み先を差し替える。知らない引数・`--check` と `--out` の同時指定 (順不同)・`--out` の重複・フラグの形をした値・ディレクトリになれない行き先 (既存の非ディレクトリ・行き先の無いリンク・非ディレクトリの親) は exit 2 で拒否する。引数は Pillow を読む前に見るので、Pillow が無い環境でも引数の間違いは exit 2 (`--chek` が上書きにならないように)。追跡先までのパスに実体ディレクトリでない成分があれば、描画も `--check` も exit 1 で何もしない |
 | `pack.py` | Chrome Web Store 用 zip 生成 (manifest からの参照グラフで選択、`--list` で選択結果のみ出力) |
 | `PRIVACY_POLICY.md` / `PRIVACY_POLICY_JA.md` | プライバシーポリシー (審査・README リンク用, EN/JA) |
 | `docs/security-audit.md` | セキュリティ監査レポート |
