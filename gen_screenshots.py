@@ -76,7 +76,11 @@ FONT_BOLD_FILE = os.path.join(FONT_DIR, 'MPLUS1p-Bold.ttf')
 
 def _font(size, bold=False):
     path = FONT_BOLD_FILE if bold else FONT_REGULAR_FILE
-    return ImageFont.truetype(path, size, layout_engine=BASIC_LAYOUT)
+    try:
+        return ImageFont.truetype(path, size, layout_engine=BASIC_LAYOUT)
+    except OSError as err:
+        # どちらの書体で失敗したかは、投げられたものには入っていない。
+        raise OSError(err.errno or 0, str(err), path) from err
 
 
 # 書体を解決するのは Pillow がある環境だけ。読めない書体も持ち帰るだけにして、
@@ -93,7 +97,7 @@ if CANNOT_DRAW is None:
         FONT_XS = _font(9)
         FONT_PRESET = _font(11, bold=True)
     except OSError as err:
-        CANNOT_DRAW = (f'{os.path.relpath(FONT_REGULAR_FILE, ROOT)} が読めない ({err})。'
+        CANNOT_DRAW = (f'{os.path.relpath(err.filename, ROOT)} が読めない ({err.strerror})。'
                        'docs/screenshots/ の画像はこの書体で描いたもので、別の書体で'
                        '生成すると 6 枚とも差し替わる。')
 
@@ -887,19 +891,18 @@ def check():
 USAGE = f'usage: {os.path.basename(__file__)} [--check] [--out <dir>]'
 
 
-def cannot_hold_images(path):
-    """--out の行き先になれないところ。無ければ None。
+def path_parts(rest, sep=os.sep, altsep=os.altsep):
+    """パスの成分。Windows は / も区切りに数える (splitdrive 済みを渡す)。"""
+    if altsep:
+        rest = rest.replace(altsep, sep)
+    return [part for part in rest.split(sep) if part]
 
-    渡された成分のまま辿る。abspath は `norm-file/..` を先に畳むので、
-    途中の非ディレクトリが検査に出てこない。まだ無い名前は作られるので、
-    既にあるところまでを見る。lexists で見るのは、行き先の無いリンクが
-    exists に映らないまま os.makedirs へ届くため。
-    """
+
+def walk_for_a_place(path):
+    """渡された成分のまま辿り、ディレクトリでない名前があればそれ。"""
     drive, rest = os.path.splitdrive(path)
     at = drive + os.sep
-    for part in rest.split(os.sep):
-        if not part:
-            continue
+    for part in path_parts(rest):
         at = os.path.join(at, part)
         if not os.path.lexists(at):
             # ここから先は作られる。
@@ -907,6 +910,20 @@ def cannot_hold_images(path):
         if not os.path.isdir(at):
             return at
     return None
+
+
+def cannot_hold_images(path):
+    """--out の行き先になれないところ。無ければ None。
+
+    渡された成分のまま辿る。abspath は `norm-file/..` を先に畳むので、
+    途中の非ディレクトリが検査に出てこない。まだ無い名前は作られるので、
+    既にあるところまでを見る。lexists で見るのは、行き先の無いリンクが
+    exists に映らないまま os.makedirs へ届くため。
+
+    畳んだ側も見る。`missing/../afile` のように、まだ無い名前の後ろの `..` が
+    既にある名前へ戻ることがあり、辿るだけではそこを跨いでしまう。
+    """
+    return walk_for_a_place(path) or walk_for_a_place(os.path.abspath(path))
 
 
 def out_dir_from(args):

@@ -6292,9 +6292,13 @@ test('--out writes where it is told, and nowhere else', { skip: generatorSkip },
       // `..` after a name is only walkable if that name is a directory. The
       // path collapses to a place that would be fine, so a check that reads
       // the collapsed one never sees the file it was told to go through.
-      // path.join would collapse the `..` here as well, so this one is spelled
-      // out: what has to reach the generator is the path as written.
-      ['--out', [sandbox, 'afile', '..', 'escaped'].join(path.sep)]]) {
+      // path.join would collapse the `..` here as well, so these are spelled
+      // out: what has to reach the generator is the path as written. The last
+      // two walk back onto a name that is there, past one that is not — the
+      // walk stops at the missing name, so the collapsed path is what says no.
+      ['--out', [sandbox, 'afile', '..', 'escaped'].join(path.sep)],
+      ['--out', [sandbox, 'missing', '..', 'afile'].join(path.sep)],
+      ['--out', [sandbox, 'missing', '..', 'broken'].join(path.sep)]]) {
       const refused = spawnSync('python3', ['-B', 'gen_screenshots.py', ...args],
         { cwd: sandbox, encoding: 'utf8' });
       assert.equal(refused.status, 2,
@@ -6306,6 +6310,7 @@ test('--out writes where it is told, and nowhere else', { skip: generatorSkip },
       'nor turned a file into one');
     assert.ok(!fs.existsSync(path.join(sandbox, 'broken')), 'nor gave a broken link somewhere to point');
     assert.ok(!fs.existsSync(path.join(sandbox, 'escaped')), 'nor wrote where the path collapsed to');
+    assert.ok(!fs.existsSync(path.join(sandbox, 'missing')), 'nor made the name it was told to pass');
 
     // Through a directory it is the same path either way, and that one runs.
     fs.mkdirSync(path.join(sandbox, 'adir'));
@@ -6313,6 +6318,12 @@ test('--out writes where it is told, and nowhere else', { skip: generatorSkip },
       '--out', [sandbox, 'adir', '..', 'landed'].join(path.sep)], { cwd: sandbox, encoding: 'utf8' });
     assert.equal(through.status, 0, 'a path through a directory still runs: ' + through.stderr);
     assert.deepEqual(fs.readdirSync(path.join(sandbox, 'landed')).sort(),
+      before.map(([name]) => name));
+    // And one through a name that is not there yet, which is made on the way.
+    const made = spawnSync('python3', ['-B', 'gen_screenshots.py',
+      '--out', [sandbox, 'notyet', '..', 'arrived'].join(path.sep)], { cwd: sandbox, encoding: 'utf8' });
+    assert.equal(made.status, 0, 'a path through a name to be made runs: ' + made.stderr);
+    assert.deepEqual(fs.readdirSync(path.join(sandbox, 'arrived')).sort(),
       before.map(([name]) => name));
     assert.ok(!fs.existsSync(`${elsewhere}2`), 'nor the second of two destinations');
     for (const [name, bytes] of before) {
@@ -6322,6 +6333,28 @@ test('--out writes where it is told, and nowhere else', { skip: generatorSkip },
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
   }
+});
+
+test('the destination is walked by the separators the platform accepts', () => {
+  // On Windows both \\ and / separate names, and splitting on os.sep alone
+  // leaves `C:/tmp/afile/child` as one name — a name nothing has, so the walk
+  // finds nothing to refuse and os.makedirs is left to fail. The split is
+  // asked here with Windows' own separators, which is the part of it that
+  // cannot be run on this machine.
+  const parts = spawnSync('python3', ['-B', '-c',
+    'import importlib.util, ntpath, posixpath, sys;'
+    + "spec = importlib.util.spec_from_file_location('g', 'gen_screenshots.py');"
+    + 'm = importlib.util.module_from_spec(spec); spec.loader.exec_module(m);'
+    + "print(m.path_parts(ntpath.splitdrive('C:/tmp/afile/child')[1], ntpath.sep, ntpath.altsep));"
+    + "print(m.path_parts(ntpath.splitdrive('C:\\\\tmp\\\\afile')[1], ntpath.sep, ntpath.altsep));"
+    + "print(m.path_parts('/tmp/afile/child', posixpath.sep, posixpath.altsep))"],
+  { cwd: __dirname, encoding: 'utf8' });
+  assert.equal(parts.status, 0, 'the split answered: ' + parts.stderr);
+  assert.deepEqual(parts.stdout.trim().split('\n'), [
+    "['tmp', 'afile', 'child']",
+    "['tmp', 'afile']",
+    "['tmp', 'afile', 'child']",
+  ]);
 });
 
 test('an argument that is wrong is answered before Pillow is needed', () => {
@@ -6371,6 +6404,18 @@ test('an argument that is wrong is answered before the faces are needed', () => 
       { cwd: bare, encoding: 'utf8' });
     assert.equal(cannot.status, 3, 'and a missing face still says it cannot draw');
     assert.match(cannot.stderr, /MPLUS1p-Regular\.ttf が読めない/);
+
+    // With one of the two there, the one that is named is the one that is not:
+    // the regular face is read first, so only the bold case tells them apart.
+    fs.mkdirSync(path.join(bare, 'tools/fonts'), { recursive: true });
+    fs.copyFileSync(path.join(__dirname, 'tools/fonts/MPLUS1p-Regular.ttf'),
+      path.join(bare, 'tools/fonts/MPLUS1p-Regular.ttf'));
+    const noBold = spawnSync('python3', ['-B', 'gen_screenshots.py', '--check'],
+      { cwd: bare, encoding: 'utf8' });
+    assert.equal(noBold.status, 3, 'a missing bold face says it cannot draw');
+    assert.match(noBold.stderr, /MPLUS1p-Bold\.ttf が読めない/);
+    assert.doesNotMatch(noBold.stderr, /MPLUS1p-Regular\.ttf/,
+      'and does not name the face it could read');
   } finally {
     fs.rmSync(bare, { recursive: true, force: true });
   }
