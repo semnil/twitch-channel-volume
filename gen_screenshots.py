@@ -599,6 +599,13 @@ def replace_all(staging, out_dir):
                     # 控えられないのは読めないからで、書けないからではない。
                     # まだ 1 枚も動かしていない。
                     raise Refused(f'{shown(here)} を読めない ({reason(err)})') from err
+            elif kind == 'link':
+                # リンクも控えへリンクとして置く。戻すのを断られると、指し先を
+                # 持っているのはこの走行の中の before だけになる。
+                try:
+                    os.symlink(target, os.path.join(backup, name))
+                except OSError as err:
+                    raise Refused(f'{shown(here)} の控えを作れない ({reason(err)})') from err
         # 名前は移動を試みる前に控える。移動し終えた直後に割り込まれると、
         # 後から控える形では戻す対象から漏れる。
         attempted = []
@@ -623,10 +630,16 @@ def replace_all(staging, out_dir):
                 except OSError as sweeping:
                     left.append((name, kind, reason(sweeping)))
             if left:
-                # 控えに入っているのは通常ファイルだった名前だけ。その分が
-                # 戻せなかったときだけ、控えを残して場所を名乗る。
-                keep = any(kind == 'file' for _, kind, _ in left)
-                told = '\n'.join(f'{name}: {LEFT_AS[kind]} ({why})' for name, kind, why in left)
+                # 控えに入っているのは前があった名前だけ。前が無かった名前しか
+                # 残らなかったなら、控えには誰の役にも立つものが無い。
+                keep = any(kind != 'absent' for _, kind, _ in left)
+                lines = []
+                for name, kind, why in left:
+                    # リンクだった名前は指し先ごと言う。控えを読める人ばかりでは
+                    # ないし、読めても指し先は控えの隣を指す形で入っている。
+                    was = f' -> {before[name][1]}' if kind == 'link' else ''
+                    lines.append(f'{name}{was}: {LEFT_AS[kind]} ({why})')
+                told = '\n'.join(lines)
                 if keep:
                     told += f'\n控えは {shown(backup)} にある'
                 raise Refused(

@@ -6346,7 +6346,7 @@ const INJECT_OVER_A_LINK = [
   '            shutil.copy2(os.path.join(tracked, name), os.path.join(out, name))',
   '    here = os.path.join(out, first)',
   '    aside = None',
-  "    if mode == 'dangling':",
+  "    if mode in ('dangling', 'linkback', 'linkbackup'):",
   '        os.remove(here)',
   "        os.symlink('gone.png', here)",
   "    elif mode == 'pointing':",
@@ -6358,7 +6358,18 @@ const INJECT_OVER_A_LINK = [
   '    gen = importlib.util.module_from_spec(spec)',
   '    spec.loader.exec_module(gen)',
   "    calls = {'n': 0}",
-  '    real_move, real_remove = shutil.move, os.remove',
+  '    def state(p):',
+  '        if os.path.islink(p):',
+  "            return 'link -> ' + os.readlink(p)",
+  '        if not os.path.exists(p):',
+  "            return 'absent'",
+  '        if os.path.isdir(p):',
+  "            return 'dir'",
+  "        return 'file ' + digest(p)",
+  '    def snapshot(d):',
+  '        return {n: state(os.path.join(d, n)) for n in sorted(os.listdir(d))}',
+  '    was = snapshot(out)',
+  '    real_move, real_remove, real_symlink = shutil.move, os.remove, os.symlink',
   '    def stopping(src, dst, *a, **k):',
   "        calls['n'] += 1",
   '        # The first name has been replaced by now, so a rollback is owed.',
@@ -6369,33 +6380,43 @@ const INJECT_OVER_A_LINK = [
   '        if os.path.dirname(path) == out and os.path.basename(path) == first:',
   "            raise OSError(13, 'Permission denied', path)",
   '        return real_remove(path, *a, **k)',
+  '    def refusing_link(target, dst, *a, **k):',
+  '        # linkback refuses the way back, linkbackup refuses the copy taken of it.',
+  "        into_tracked = os.path.dirname(dst) == out",
+  "        if into_tracked if mode == 'linkback' else not into_tracked:",
+  "            raise OSError(13, 'Permission denied', dst)",
+  '        return real_symlink(target, dst, *a, **k)',
   '    gen.shutil.move = stopping',
   "    if mode == 'firstrun':",
   '        os.remove = refusing',
+  "    if mode in ('linkback', 'linkbackup'):",
+  '        os.symlink = refusing_link',
   '    said = io.StringIO()',
   '    try:',
   '        with contextlib.redirect_stderr(said):',
   '            code = gen.main()',
   '    finally:',
-  '        gen.shutil.move, os.remove = real_move, real_remove',
-  "    state = 'absent'",
-  '    if os.path.islink(here):',
-  "        state = 'link -> ' + os.readlink(here)",
-  '    elif os.path.exists(here):',
-  "        state = 'file ' + digest(here)",
-  "    print(json.dumps({'code': code, 'told': said.getvalue(), 'state': state,",
-  "                      'moved': calls['n'] - 1,",
+  '        gen.shutil.move = real_move',
+  '        os.remove, os.symlink = real_remove, real_symlink',
+  '    now = snapshot(out)',
+  "    kept = [n for n in sorted(os.listdir(out)) if os.path.isdir(os.path.join(out, n))]",
+  "    print(json.dumps({'code': code, 'told': said.getvalue(), 'state': state(here),",
+  "                      'moved': max(calls['n'] - 1, 0),",
   "                      'pointed_at_held': bool(aside) and digest(aside) == held,",
-  "                      'kept': [n for n in sorted(os.listdir(out))",
-  '                               if os.path.isdir(os.path.join(out, n))]}))',
+  "                      'kept': kept, 'changed': sorted(n for n in was if now.get(n) != was[n]),",
+  "                      'kept_holds': snapshot(os.path.join(out, kept[0])) if kept else {}}))",
 ].join('\n');
 
-function overALink(mode) {
+function overALink(mode, { replaced = true } = {}) {
   const run = spawnSync('python3', ['-B', '-c', INJECT_OVER_A_LINK, mode],
     { cwd: __dirname, encoding: 'utf8' });
   assert.equal(run.status, 0, 'the probe ran: ' + (run.stderr || run.stdout));
   const seen = JSON.parse(run.stdout);
-  assert.ok(seen.moved >= 1, 'something had been replaced, so a rollback was owed');
+  if (replaced) {
+    assert.ok(seen.moved >= 1, 'something had been replaced, so a rollback was owed');
+  } else {
+    assert.equal(seen.moved, 0, 'it stopped before replacing anything');
+  }
   assert.equal(seen.code, 1, 'the run reports rather than raises: ' + seen.told);
   return seen;
 }
@@ -6414,6 +6435,28 @@ test('a rollback puts back a link rather than what it pointed at', { skip: gener
   assert.match(seen.state, /^link -> .*elsewhere\.png$/, 'the link is back: ' + seen.told);
   assert.ok(seen.pointed_at_held, 'and what it pointed at was never written through');
 });
+
+test('a link the rollback cannot put back is kept, target and all', { skip: generatorSkip
+  || (process.platform === 'win32' && 'symlinks need a privilege this does not ask for') }, () => {
+  const seen = overALink('linkback');
+  // Where it pointed lives in this run and nowhere else, so it has to leave the
+  // run: in what is said, and in what is kept.
+  assert.match(seen.told, /overlay_en\.png -> gone\.png: 前回のリンクへ戻せない/, seen.told);
+  assert.match(seen.told, /控えは/, 'and the copy it took is offered: ' + seen.told);
+  assert.equal(seen.kept.length, 1, 'the copy is kept: ' + seen.told);
+  assert.equal(seen.kept_holds['overlay_en.png'], 'link -> gone.png',
+    'and holds the link itself, not what it pointed at');
+});
+
+test('a link that cannot be copied stops the run before it replaces anything',
+  { skip: generatorSkip
+    || (process.platform === 'win32' && 'symlinks need a privilege this does not ask for') }, () => {
+    const seen = overALink('linkbackup', { replaced: false });
+    // Nothing to put back is only safe while nothing has been taken away.
+    assert.match(seen.told, /overlay_en\.png の控えを作れない \(Permission denied\)/, seen.told);
+    assert.deepEqual(seen.changed, [], 'and the six names are as they were');
+    assert.equal(seen.state, 'link -> gone.png');
+  });
 
 test('a first run says it could not take its own image back out', { skip: generatorSkip
   || (typeof process.getuid === 'function' && process.getuid() === 0
