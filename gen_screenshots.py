@@ -25,8 +25,11 @@ try:
     # 字の置き方が変わる。追跡中の画像と比べるので、ここで固定する。
     BASIC_LAYOUT = ImageFont.Layout.BASIC
 except (AttributeError, ImportError) as err:
-    print(f'{err}. Pillow を入れると描ける。', file=sys.stderr)
-    sys.exit(UNAVAILABLE)
+    # ここでは終わらせない。引数の間違いは引数の答え (exit 2) を返すべきで、
+    # 描けないこと (exit 3) に置き換わってはいけない。
+    CANNOT_DRAW = f'{err}. Pillow を入れると描ける。'
+else:
+    CANNOT_DRAW = None
 
 W, H = 640, 400
 
@@ -75,22 +78,28 @@ def _font(size, bold=False):
     path = FONT_BOLD_FILE if bold else FONT_REGULAR_FILE
     try:
         return ImageFont.truetype(path, size, layout_engine=BASIC_LAYOUT)
-    except OSError:
-        print(f'{os.path.relpath(path, ROOT)} が読めない。docs/screenshots/ の画像は'
-              'この書体で描いたもので、別の書体で生成すると 6 枚とも差し替わる。',
-              file=sys.stderr)
-        sys.exit(UNAVAILABLE)
+    except OSError as err:
+        # どちらの書体で失敗したかは、投げられたものには入っていない。
+        raise OSError(err.errno or 0, str(err), path) from err
 
 
-FONT = _font(13)
-FONT_SM = _font(11)
-FONT_LG = _font(18)
-FONT_TITLE = _font(15, bold=True)
-FONT_BOLD = _font(13, bold=True)
-FONT_VAL = _font(17, bold=True)
-FONT_XL = _font(20, bold=True)
-FONT_XS = _font(9)
-FONT_PRESET = _font(11, bold=True)
+# 書体を解決するのは Pillow がある環境だけ。読めない書体も持ち帰るだけにして、
+# 引数を読んでから描けないと答える (引数の間違いは exit 2 のまま)。
+if CANNOT_DRAW is None:
+    try:
+        FONT = _font(13)
+        FONT_SM = _font(11)
+        FONT_LG = _font(18)
+        FONT_TITLE = _font(15, bold=True)
+        FONT_BOLD = _font(13, bold=True)
+        FONT_VAL = _font(17, bold=True)
+        FONT_XL = _font(20, bold=True)
+        FONT_XS = _font(9)
+        FONT_PRESET = _font(11, bold=True)
+    except OSError as err:
+        CANNOT_DRAW = (f'{os.path.relpath(err.filename, ROOT)} が読めない ({err.strerror})。'
+                       'docs/screenshots/ の画像はこの書体で描いたもので、別の書体で'
+                       '生成すると 6 枚とも差し替わる。')
 
 
 def draw_gear(draw, center, color, radius=HEADER_GEAR_RADIUS):
@@ -882,33 +891,111 @@ def check():
 USAGE = f'usage: {os.path.basename(__file__)} [--check] [--out <dir>]'
 
 
+def path_parts(rest, sep=os.sep, altsep=os.altsep):
+    """パスの成分。Windows は / も区切りに数える (splitdrive 済みを渡す)。"""
+    if altsep:
+        rest = rest.replace(altsep, sep)
+    return [part for part in rest.split(sep) if part]
+
+
+def walk_for_a_place(path):
+    """渡された成分のまま辿り、ディレクトリでない名前があればそれ。"""
+    drive, rest = os.path.splitdrive(path)
+    at = drive + os.sep
+    for part in path_parts(rest):
+        at = os.path.join(at, part)
+        if not os.path.lexists(at):
+            # ここから先は作られる。
+            return None
+        if not os.path.isdir(at):
+            return at
+    return None
+
+
+def where_it_lands(path):
+    """OS が行き着く先。終端の名前だけはそのまま残す。
+
+    途中のリンクは辿る (`link/..` はリンクの先の親で、字句で畳んだ隣ではない)。
+    終端を辿らないのは、行き先の無いリンクをその指し先へすり替えないため。
+    """
+    return os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path))
+
+
+def cannot_hold_images(path):
+    """--out の行き先になれないところ。無ければ None。
+
+    渡された成分のまま辿る。abspath は `norm-file/..` を先に畳むので、
+    途中の非ディレクトリが検査に出てこない。まだ無い名前は作られるので、
+    既にあるところまでを見る。lexists で見るのは、行き先の無いリンクが
+    exists に映らないまま os.makedirs へ届くため。
+
+    OS が行き着く先も見る。`missing/../afile` のように、まだ無い名前の後ろの
+    `..` が既にある名前へ戻ることがあり、辿るだけではそこを跨いでしまう。
+    リンクを含むパスは字句で畳んだ先と行き着く先が別なので、書き込みと同じ
+    realpath を見る。
+    """
+    return walk_for_a_place(path) or walk_for_a_place(where_it_lands(path))
+
+
 def out_dir_from(args):
     """--out の次の引数。無ければ docs/screenshots。
 
     綴りを外した引数は書き込みへ落とさない。読むだけのつもりの `--chek` が
     追跡画像の上書きになると、確かめたかった古さがその場で消える。
     """
-    target = OUT_DIR
+    target = None
+    checking = False
     rest = list(args)
     while rest:
         arg = rest.pop(0)
         if arg == '--check':
+            checking = True
             continue
         if arg == '--out':
-            if not rest or not rest[0]:
+            # フラグの形をした値は値ではない。`--out --chek` は `--chek` と
+            # いうディレクトリを作っていた。
+            if not rest or not rest[0] or rest[0].startswith('-'):
                 print(f'--out には書き込み先のディレクトリが要る\n{USAGE}', file=sys.stderr)
                 sys.exit(2)
-            target = os.path.abspath(rest.pop(0))
+            if target is not None:
+                # 2 つ言われて後ろを採ると、先に名指しされた行き先が診断も
+                # 無く消える。
+                print(f'--out は 1 つだけ\n{USAGE}', file=sys.stderr)
+                sys.exit(2)
+            given = rest.pop(0)
+            # 検査は畳む前のパスに当てる。書き込み先は畳んだものでよい —
+            # `directory/../ok` は OS も同じところへ行き着く。
+            blocked = cannot_hold_images(given if os.path.isabs(given)
+                                         else os.path.join(os.getcwd(), given))
+            # 書き込み先は OS が行き着く先。abspath は `link/..` を字句で畳んで
+            # しまい、リンクの隣へ書きながら検査はリンクの先を見ることになる。
+            target = where_it_lands(given if os.path.isabs(given)
+                                    else os.path.join(os.getcwd(), given))
+            if blocked:
+                # 行き先がディレクトリになれないのは引数の間違いで、画像の差では
+                # ない。ここで見ないと os.makedirs の traceback が exit 1 に
+                # なり、「差がある」と同じ答えになる。
+                print(f'--out の行き先がディレクトリではない: {blocked}\n{USAGE}', file=sys.stderr)
+                sys.exit(2)
             continue
         print(f'知らない引数: {arg}\n{USAGE}', file=sys.stderr)
         sys.exit(2)
-    return target
+    if checking and target is not None:
+        # --check は追跡中の画像と比べるだけで書かないので、渡された行き先は
+        # 黙って捨てられる。
+        print(f'--check は追跡中の画像と比べるだけで書き込まない。--out の行き先が無い\n{USAGE}',
+              file=sys.stderr)
+        sys.exit(2)
+    return OUT_DIR if target is None else target
 
 
 if __name__ == '__main__':
     # 引数は分岐の前に全部見る。--check と一緒に渡された --out や、綴り違いを
     # 描画側へ素通ししないため。
     destination = out_dir_from(sys.argv[1:])
+    if CANNOT_DRAW is not None:
+        print(CANNOT_DRAW, file=sys.stderr)
+        sys.exit(UNAVAILABLE)
     if '--check' in sys.argv[1:]:
         sys.exit(check())
     sys.exit(main(destination))

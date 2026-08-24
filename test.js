@@ -5210,7 +5210,10 @@ const generatorImport = spawnSync('python3', ['-B', '-c',
   "import importlib.util, sys;" +
   "spec = importlib.util.spec_from_file_location('g', 'gen_screenshots.py');" +
   "m = importlib.util.module_from_spec(spec);" +
-  "spec.loader.exec_module(m)"
+  "spec.loader.exec_module(m);" +
+  // Importing no longer ends on a missing Pillow — arguments are answered
+  // before it is needed — so the module says so and this asks.
+  "sys.exit(3 if m.CANNOT_DRAW else 0)"
 ], { cwd: __dirname, encoding: 'utf8' });
 // The generator answers 3 where it cannot draw — no Pillow, no face — and that
 // is the only reading that means "not here". Anything else is the generator
@@ -6124,6 +6127,22 @@ test('--check turns down a tracked directory that is a link to one', { skip: gen
 
     fs.unlinkSync(path.join(sandbox, 'docs'));
     fs.renameSync(path.join(sandbox, 'docs.source'), path.join(sandbox, 'docs'));
+
+    // A link that points nowhere is not "nothing is tracked here": what the
+    // six images would say about themselves is beside the point, and drawing
+    // through it ends in a traceback rather than an answer.
+    fs.rmSync(path.join(sandbox, 'docs/screenshots'), { recursive: true });
+    fs.symlinkSync('nowhere', path.join(sandbox, 'docs/screenshots'));
+    const dangling = runCheck(sandbox);
+    assert.equal(dangling.status, 1, 'the dangling link is reported: ' + (dangling.stderr || ''));
+    assert.match(dangling.stderr, /docs\/screenshots: シンボリックリンク \(nowhere を指している\)/);
+    const drawn = spawnSync('python3', ['-B', 'gen_screenshots.py'],
+      { cwd: sandbox, encoding: 'utf8' });
+    assert.equal(drawn.status, 1, 'and drawing refuses it too: ' + drawn.stderr);
+    assert.doesNotMatch(drawn.stderr, /Traceback/, 'without a traceback');
+    fs.unlinkSync(path.join(sandbox, 'docs/screenshots'));
+    fs.cpSync(path.join(__dirname, 'docs/screenshots'),
+      path.join(sandbox, 'docs/screenshots'), { recursive: true });
     // lstat on each image reads the last name in the path, so the six under a
     // linked directory all pass. What a repository records for that is six
     // deletions and one link.
@@ -6228,6 +6247,15 @@ test('--check says it cannot draw here rather than passing', { skip: generatorSk
 
 test('--out writes where it is told, and nowhere else', { skip: generatorSkip }, () => {
   const sandbox = screenshotSandbox();
+  // Drawing is deterministic, so bytes alone cannot tell a run that wrote the
+  // tracked directory from one that left it alone. This pixel would come back.
+  assert.equal(spawnSync('python3', ['-B', '-c',
+    'import sys; from PIL import Image;' +
+    'i = Image.open(sys.argv[1]).convert("RGB");' +
+    'r, g, b = i.getpixel((320, 200));' +
+    'i.putpixel((320, 200), (r ^ 1, g, b));' +
+    'i.save(sys.argv[1])', path.join(sandbox, 'docs/screenshots/popup_ja.png')],
+  { encoding: 'utf8' }).status, 0, 'the probe marked one pixel');
   const before = fs.readdirSync(path.join(sandbox, 'docs/screenshots')).sort()
     .map((name) => [name, fs.readFileSync(path.join(sandbox, 'docs/screenshots', name))]);
   try {
@@ -6242,14 +6270,213 @@ test('--out writes where it is told, and nowhere else', { skip: generatorSkip },
     }
 
     // The one word that decides between reading and rewriting is not matched
-    // loosely: a near miss is an argument error, not a redraw.
-    const typo = spawnSync('python3', ['-B', 'gen_screenshots.py', '--chek'],
-      { cwd: sandbox, encoding: 'utf8' });
-    assert.equal(typo.status, 2, 'an unknown argument is refused: ' + (typo.stderr || ''));
+    // loosely: a near miss is an argument error, not a redraw. Neither is a
+    // destination handed to the mode that writes nothing, nor a flag standing
+    // in for one — `--out --chek` used to create a directory called --chek.
+    // Also: a destination given twice, one that never arrived, an empty one,
+    // and one that is a file — each is the argument being wrong rather than
+    // the images differing, and none of them is a place to write.
+    fs.writeFileSync(path.join(sandbox, 'afile'), '');
+    fs.symlinkSync('nowhere', path.join(sandbox, 'broken'));
+    for (const args of [['--chek'], ['--check', '--chek'],
+      ['--check', '--out', elsewhere], ['--out', elsewhere, '--check'],
+      ['--out', '--chek'],
+      ['--out'], ['--out', ''], ['--out', elsewhere, '--out', `${elsewhere}2`],
+      ['--out', path.join(sandbox, 'afile')],
+      // A destination that does not exist yet is created, so what has to hold
+      // is the nearest name that does: under a file there is no directory to
+      // make, and a link that points nowhere is not a directory either — both
+      // used to reach os.makedirs and come back as a traceback.
+      ['--out', path.join(sandbox, 'afile', 'child')],
+      ['--out', path.join(sandbox, 'broken')],
+      // `..` after a name is only walkable if that name is a directory. The
+      // path collapses to a place that would be fine, so a check that reads
+      // the collapsed one never sees the file it was told to go through.
+      // path.join would collapse the `..` here as well, so these are spelled
+      // out: what has to reach the generator is the path as written. The last
+      // two walk back onto a name that is there, past one that is not — the
+      // walk stops at the missing name, so the collapsed path is what says no.
+      ['--out', [sandbox, 'afile', '..', 'escaped'].join(path.sep)],
+      ['--out', [sandbox, 'missing', '..', 'afile'].join(path.sep)],
+      ['--out', [sandbox, 'missing', '..', 'broken'].join(path.sep)]]) {
+      const refused = spawnSync('python3', ['-B', 'gen_screenshots.py', ...args],
+        { cwd: sandbox, encoding: 'utf8' });
+      assert.equal(refused.status, 2,
+        `${args.join(' ')} is refused: ` + (refused.stderr || ''));
+      assert.match(refused.stderr, /usage:/, `${args.join(' ')} is told the shape of the command`);
+    }
+    assert.ok(!fs.existsSync(path.join(sandbox, '--chek')), 'and none of them made a directory');
+    assert.ok(!fs.statSync(path.join(sandbox, 'afile')).isDirectory(),
+      'nor turned a file into one');
+    assert.ok(!fs.existsSync(path.join(sandbox, 'broken')), 'nor gave a broken link somewhere to point');
+    assert.ok(!fs.existsSync(path.join(sandbox, 'escaped')), 'nor wrote where the path collapsed to');
+    assert.ok(!fs.existsSync(path.join(sandbox, 'missing')), 'nor made the name it was told to pass');
+
+    // Through a directory it is the same path either way, and that one runs.
+    fs.mkdirSync(path.join(sandbox, 'adir'));
+    const through = spawnSync('python3', ['-B', 'gen_screenshots.py',
+      '--out', [sandbox, 'adir', '..', 'landed'].join(path.sep)], { cwd: sandbox, encoding: 'utf8' });
+    assert.equal(through.status, 0, 'a path through a directory still runs: ' + through.stderr);
+    assert.deepEqual(fs.readdirSync(path.join(sandbox, 'landed')).sort(),
+      before.map(([name]) => name));
+    // And one through a name that is not there yet, which is made on the way.
+    const made = spawnSync('python3', ['-B', 'gen_screenshots.py',
+      '--out', [sandbox, 'notyet', '..', 'arrived'].join(path.sep)], { cwd: sandbox, encoding: 'utf8' });
+    assert.equal(made.status, 0, 'a path through a name to be made runs: ' + made.stderr);
+    assert.deepEqual(fs.readdirSync(path.join(sandbox, 'arrived')).sort(),
+      before.map(([name]) => name));
+    assert.ok(!fs.existsSync(`${elsewhere}2`), 'nor the second of two destinations');
     for (const [name, bytes] of before) {
       assert.ok(bytes.equals(fs.readFileSync(path.join(sandbox, 'docs/screenshots', name))),
-        `${name} is untouched by the refused run`);
+        `${name} is untouched by the refused runs`);
     }
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test('--out lands where the path leads, not where it folds to', { skip: generatorSkip
+  || (process.platform === 'win32' && 'symlinks need a privilege this does not ask for') }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    // `link/..` is the directory the link points into, not the one the link
+    // sits in — the kernel resolves it, and folding the text does not. What is
+    // written and what is checked have to be the same place.
+    fs.mkdirSync(path.join(sandbox, 'actual/inner'), { recursive: true });
+    fs.symlinkSync('actual/inner', path.join(sandbox, 'link'));
+    const run = spawnSync('python3', ['-B', 'gen_screenshots.py',
+      '--out', [sandbox, 'link', '..', 'landed'].join(path.sep)], { cwd: sandbox, encoding: 'utf8' });
+    assert.equal(run.status, 0, 'it runs: ' + run.stderr);
+    assert.equal(fs.readdirSync(path.join(sandbox, 'actual/landed')).length, 6,
+      'the six are where the link leads');
+    assert.ok(!fs.existsSync(path.join(sandbox, 'landed')),
+      'and not beside the link, where the text folds to');
+
+    // A file on the way there is the one that counts: on the folded side it is
+    // not on the way at all, and the run goes past it.
+    fs.writeFileSync(path.join(sandbox, 'afile'), '');
+    const folded = spawnSync('python3', ['-B', 'gen_screenshots.py',
+      '--out', [sandbox, 'link', '..', 'afile'].join(path.sep)], { cwd: sandbox, encoding: 'utf8' });
+    assert.equal(folded.status, 0, 'a file only where the text folds is not in the way: ' + folded.stderr);
+    assert.equal(fs.readdirSync(path.join(sandbox, 'actual/afile')).length, 6);
+    assert.ok(fs.statSync(path.join(sandbox, 'afile')).isFile(), 'and that file is left alone');
+
+    // On the side the kernel walks, it is refused.
+    fs.writeFileSync(path.join(sandbox, 'actual/inner-file'), '');
+    const real = spawnSync('python3', ['-B', 'gen_screenshots.py',
+      '--out', [sandbox, 'link', '..', 'inner-file'].join(path.sep)], { cwd: sandbox, encoding: 'utf8' });
+    assert.equal(real.status, 2, 'a file on the way there is refused: ' + real.stderr);
+    assert.ok(fs.statSync(path.join(sandbox, 'actual/inner-file')).isFile());
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test('the destination is walked by the separators the platform accepts', () => {
+  // On Windows both \\ and / separate names, and splitting on os.sep alone
+  // leaves `C:/tmp/afile/child` as one name — a name nothing has, so the walk
+  // finds nothing to refuse and os.makedirs is left to fail. The split is
+  // asked here with Windows' own separators, which is the part of it that
+  // cannot be run on this machine.
+  const parts = spawnSync('python3', ['-B', '-c',
+    'import importlib.util, ntpath, posixpath, sys;'
+    + "spec = importlib.util.spec_from_file_location('g', 'gen_screenshots.py');"
+    + 'm = importlib.util.module_from_spec(spec); spec.loader.exec_module(m);'
+    + "print(m.path_parts(ntpath.splitdrive('C:/tmp/afile/child')[1], ntpath.sep, ntpath.altsep));"
+    + "print(m.path_parts(ntpath.splitdrive('C:\\\\tmp\\\\afile')[1], ntpath.sep, ntpath.altsep));"
+    + "print(m.path_parts('/tmp/afile/child', posixpath.sep, posixpath.altsep))"],
+  { cwd: __dirname, encoding: 'utf8' });
+  assert.equal(parts.status, 0, 'the split answered: ' + parts.stderr);
+  assert.deepEqual(parts.stdout.trim().split('\n'), [
+    "['tmp', 'afile', 'child']",
+    "['tmp', 'afile']",
+    "['tmp', 'afile', 'child']",
+  ]);
+});
+
+test('an argument that is wrong is answered before Pillow is needed', () => {
+  // -S keeps site-packages out of the path, so Pillow is not importable here
+  // whatever the machine has. Reading the arguments after the import made
+  // every one of these say "cannot draw here" (3) instead of "that argument is
+  // wrong" (2) — and every test that would have caught it skips on that same
+  // answer, so the whole of this file went quiet with it.
+  const sandbox = screenshotSandbox();
+  try {
+    for (const args of [['--chek'], ['--out'], ['--out', '--chek'],
+      ['--check', '--out', path.join(sandbox, 'elsewhere')]]) {
+      const refused = spawnSync('python3', ['-S', '-B', 'gen_screenshots.py', ...args],
+        { cwd: sandbox, encoding: 'utf8' });
+      assert.equal(refused.status, 2,
+        `${args.join(' ')} without Pillow is refused: ` + (refused.stderr || ''));
+      assert.match(refused.stderr, /usage:/);
+      assert.doesNotMatch(refused.stderr, /PIL/,
+        `${args.join(' ')} is answered as an argument, not as a missing library`);
+    }
+    assert.ok(!fs.existsSync(path.join(sandbox, 'elsewhere')), 'and none of them wrote anywhere');
+    assert.ok(!fs.existsSync(path.join(sandbox, '--chek')));
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test('an argument that is wrong is answered before the faces are needed', () => {
+  // The faces resolve when the module loads, and that used to end the run: the
+  // one answer for "no face here" (3) came back for a misspelled flag too.
+  // Without the tools/ directory there is no face to resolve.
+  const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'tcv-nofont-'));
+  try {
+    fs.copyFileSync(path.join(__dirname, 'gen_screenshots.py'),
+      path.join(bare, 'gen_screenshots.py'));
+    fs.cpSync(path.join(__dirname, 'docs/screenshots'), path.join(bare, 'docs/screenshots'),
+      { recursive: true });
+
+    const refused = spawnSync('python3', ['-B', 'gen_screenshots.py', '--chek'],
+      { cwd: bare, encoding: 'utf8' });
+    assert.equal(refused.status, 2, 'the argument is answered as one: ' + (refused.stderr || ''));
+    assert.match(refused.stderr, /知らない引数: --chek/);
+
+    // The positive control: with the arguments right, the missing face is what
+    // there is to say, and it is said as "cannot draw here".
+    const cannot = spawnSync('python3', ['-B', 'gen_screenshots.py', '--check'],
+      { cwd: bare, encoding: 'utf8' });
+    assert.equal(cannot.status, 3, 'and a missing face still says it cannot draw');
+    assert.match(cannot.stderr, /MPLUS1p-Regular\.ttf が読めない/);
+
+    // With one of the two there, the one that is named is the one that is not:
+    // the regular face is read first, so only the bold case tells them apart.
+    fs.mkdirSync(path.join(bare, 'tools/fonts'), { recursive: true });
+    fs.copyFileSync(path.join(__dirname, 'tools/fonts/MPLUS1p-Regular.ttf'),
+      path.join(bare, 'tools/fonts/MPLUS1p-Regular.ttf'));
+    const noBold = spawnSync('python3', ['-B', 'gen_screenshots.py', '--check'],
+      { cwd: bare, encoding: 'utf8' });
+    assert.equal(noBold.status, 3, 'a missing bold face says it cannot draw');
+    assert.match(noBold.stderr, /MPLUS1p-Bold\.ttf が読めない/);
+    assert.doesNotMatch(noBold.stderr, /MPLUS1p-Regular\.ttf/,
+      'and does not name the face it could read');
+  } finally {
+    fs.rmSync(bare, { recursive: true, force: true });
+  }
+});
+
+test('no argument redraws the tracked directory', { skip: generatorSkip }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    // The command CLAUDE.md documents and the one --check names when it
+    // fails. Nothing else here runs the default destination.
+    const target = path.join(sandbox, 'docs/screenshots/popup_ja.png');
+    const marked = spawnSync('python3', ['-B', '-c',
+      'import sys; from PIL import Image;' +
+      'i = Image.open(sys.argv[1]).convert("RGB");' +
+      'r, g, b = i.getpixel((320, 200));' +
+      'i.putpixel((320, 200), (r ^ 1, g, b));' +
+      'i.save(sys.argv[1])', target], { encoding: 'utf8' });
+    assert.equal(marked.status, 0, 'the probe marked one pixel');
+    assert.equal(runCheck(sandbox).status, 1, 'which --check turns down');
+
+    const run = spawnSync('python3', ['-B', 'gen_screenshots.py'],
+      { cwd: sandbox, encoding: 'utf8' });
+    assert.equal(run.status, 0, (run.stderr || '') + (run.stdout || ''));
+    assert.equal(runCheck(sandbox).status, 0, 'and the redraw puts the pixel back');
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
   }
