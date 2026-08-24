@@ -5351,7 +5351,11 @@ test('store screenshot generator writes the tracked directory, and only whole', 
   // main hands the staging directory over rather than moving anything itself.
   assert.match(source, /for name in replace_all\(staging, out_dir\):/);
   const replaceAll = source.slice(source.indexOf('def replace_all('), source.indexOf('def main('));
-  assert.match(replaceAll, /except BaseException:/);
+  assert.match(replaceAll, /except BaseException as err:/);
+  // Putting them back is a loop of its own: one name it cannot restore must not
+  // stop it from trying the rest.
+  assert.match(replaceAll,
+    /except OSError as sweeping:\n\s+left\.append\(\(name, reason\(sweeping\)\)\)/);
   // Recorded before the move is attempted: a run interrupted once the rename
   // has happened still has that name to put back.
   assert.ok(replaceAll.indexOf('attempted.append(name)') <
@@ -6185,12 +6189,184 @@ test('a name a redraw cannot overwrite is named, not raised over', { skip: gener
       { cwd: sandbox, encoding: 'utf8' });
     assert.equal(redraw.status, 1, 'the run stops: ' + redraw.stderr);
     assert.doesNotMatch(redraw.stderr, /Traceback/);
-    assert.match(redraw.stderr, /docs\/screenshots\/popup_ja\.png へ書けない/);
+    // Named as the copy it is - reading the image it is about to overwrite.
+    assert.match(redraw.stderr, /docs\/screenshots\/popup_ja\.png を読めない/);
     assert.ok(fs.statSync(target).isDirectory(), 'and the name is left as it was');
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
   }
 });
+
+// Rolling back is six copies of its own, and they can be refused too. Stopping
+// at the first refusal leaves every name after it holding this run's image, and
+// the error that escapes is the rollback's - the replacement that started it is
+// gone.
+const INJECT_RESTORE_FAILURE = [
+  'import contextlib, hashlib, importlib.util, io, json, os, shutil, sys, tempfile',
+  'stuck = sys.argv[1]',
+  'repo = os.getcwd()',
+  'def digest(p):',
+  "    return hashlib.sha256(open(p, 'rb').read()).hexdigest()",
+  'with tempfile.TemporaryDirectory() as sandbox:',
+  "    script = os.path.join(sandbox, 'gen_screenshots.py')",
+  "    source = open(os.path.join(repo, 'gen_screenshots.py'), encoding='utf-8').read()",
+  '    # Drawn white has to differ from tracked white, or a name left new cannot',
+  '    # be told from one put back.',
+  "    source = source.replace('WHITE = (255, 255, 255)', 'WHITE = (254, 254, 254)', 1)",
+  "    open(script, 'w', encoding='utf-8').write(source)",
+  "    shutil.copytree(os.path.join(repo, 'tools'), os.path.join(sandbox, 'tools'))",
+  "    out = os.path.join(sandbox, 'docs', 'screenshots')",
+  '    os.makedirs(out)',
+  "    tracked = os.path.join(repo, 'docs', 'screenshots')",
+  '    for name in os.listdir(tracked):',
+  '        shutil.copy2(os.path.join(tracked, name), os.path.join(out, name))',
+  '    before = {n: digest(os.path.join(out, n)) for n in sorted(os.listdir(out))}',
+  "    spec = importlib.util.spec_from_file_location('gen_under_test', script)",
+  '    gen = importlib.util.module_from_spec(spec)',
+  '    spec.loader.exec_module(gen)',
+  "    calls = {'n': 0}",
+  '    real_move, real_copy2 = shutil.move, shutil.copy2',
+  '    def flaky_move(src, dst, *a, **k):',
+  "        calls['n'] += 1",
+  "        if calls['n'] == 4:",
+  "            raise OSError('injected before the move')",
+  '        return real_move(src, dst, *a, **k)',
+  '    def flaky_copy2(src, dst, *a, **k):',
+  '        # Only the way back, and only for the one name.',
+  '        if os.path.dirname(dst) == out and os.path.basename(dst) == stuck:',
+  "            raise OSError('injected while putting it back')",
+  '        return real_copy2(src, dst, *a, **k)',
+  '    gen.shutil.move = flaky_move',
+  '    gen.shutil.copy2 = flaky_copy2',
+  '    said = io.StringIO()',
+  '    with contextlib.redirect_stderr(said):',
+  '        code = gen.main()',
+  '    gen.shutil.move, gen.shutil.copy2 = real_move, real_copy2',
+  '    kept = [n for n in sorted(os.listdir(out)) if os.path.isdir(os.path.join(out, n))]',
+  '    held = os.path.join(out, kept[0], stuck) if kept else None',
+  "    print(json.dumps({'code': code, 'told': said.getvalue(), 'kept': kept,",
+  "                      'moved': calls['n'] - 1,",
+  "                      'changed': sorted(n for n in before",
+  '                                        if digest(os.path.join(out, n)) != before[n]),',
+  "                      'recoverable': bool(held) and os.path.exists(held)",
+  '                                     and digest(held) == before[stuck]}))',
+].join('\n');
+
+test('a name the rollback cannot put back is named, and what it holds is kept',
+  { skip: generatorSkip }, () => {
+    const stuck = 'overlay_ja.png';
+    const run = spawnSync('python3', ['-B', '-c', INJECT_RESTORE_FAILURE, stuck],
+      { cwd: __dirname, encoding: 'utf8' });
+    assert.equal(run.status, 0, 'the probe ran: ' + (run.stderr || run.stdout));
+    const seen = JSON.parse(run.stdout);
+    assert.ok(seen.moved >= 1, 'something had been replaced, so a rollback was owed');
+    assert.equal(seen.code, 1, 'the run reports rather than raises: ' + seen.told);
+    // The rest of the names were put back, so the one that could not be is the
+    // only one left holding this run's image.
+    assert.deepEqual(seen.changed, [stuck], 'only the name it could not put back: ' + seen.told);
+    // The replacement failure is what the reader is looking for; the rollback's
+    // own failure must not take its place.
+    assert.match(seen.told, /injected before the move/);
+    assert.match(seen.told, new RegExp(stuck.replace('.', '\\.')
+      + ' を前回の画像へ戻せない \\(injected while putting it back\\)'),
+    'and why it could not be: ' + seen.told);
+    // And the previous image is still somewhere the reader can reach.
+    assert.equal(seen.kept.length, 1, 'what it took is kept: ' + seen.told);
+    assert.ok(seen.told.includes(seen.kept[0]), 'and named: ' + seen.told);
+    assert.ok(seen.recoverable, 'the kept copy is the image that was there');
+  });
+
+// Drawing happens in a working directory inside the destination, so a refusal
+// there arrives carrying a name nobody asked about - and the six that name is
+// under are the ones the reader is looking at.
+const INJECT_DRAW_FAILURE = [
+  'import contextlib, importlib.util, io, json, os, shutil, sys, tempfile',
+  'repo = os.getcwd()',
+  'with tempfile.TemporaryDirectory() as sandbox:',
+  "    script = os.path.join(sandbox, 'gen_screenshots.py')",
+  "    shutil.copy2(os.path.join(repo, 'gen_screenshots.py'), script)",
+  "    shutil.copytree(os.path.join(repo, 'tools'), os.path.join(sandbox, 'tools'))",
+  "    out = os.path.join(sandbox, 'docs', 'screenshots')",
+  '    os.makedirs(out)',
+  "    tracked = os.path.join(repo, 'docs', 'screenshots')",
+  '    for name in os.listdir(tracked):',
+  '        shutil.copy2(os.path.join(tracked, name), os.path.join(out, name))',
+  "    spec = importlib.util.spec_from_file_location('gen_under_test', script)",
+  '    gen = importlib.util.module_from_spec(spec)',
+  '    spec.loader.exec_module(gen)',
+  '    def refusing(target):',
+  "        raise OSError(13, 'Permission denied', os.path.join(target, 'popup_ja.png'))",
+  '    gen.draw_all = refusing',
+  '    said = io.StringIO()',
+  '    with contextlib.redirect_stderr(said):',
+  '        code = gen.main()',
+  "    print(json.dumps({'code': code, 'told': said.getvalue(),",
+  "                      'left': sorted(os.listdir(out))}))",
+].join('\n');
+
+test('a refusal while drawing names the destination, not the working directory',
+  { skip: generatorSkip }, () => {
+    const run = spawnSync('python3', ['-B', '-c', INJECT_DRAW_FAILURE],
+      { cwd: __dirname, encoding: 'utf8' });
+    assert.equal(run.status, 0, 'the probe ran: ' + (run.stderr || run.stdout));
+    const seen = JSON.parse(run.stdout);
+    assert.equal(seen.code, 1, 'the run reports rather than raises: ' + seen.told);
+    assert.match(seen.told, /docs\/screenshots へ描けない \(Permission denied\)/);
+    // The name it was handed is inside a directory this run picked and removed.
+    assert.doesNotMatch(seen.told, /screenshots\/tmp/, 'a name the reader cannot look at');
+    assert.equal(seen.left.length, 6, 'and it took its working directory with it');
+  });
+
+test('an image that cannot be read is not called one that cannot be written',
+  { skip: generatorSkip
+    || (process.platform === 'win32' && 'mode bits do not keep a file shut on win32')
+    || (typeof process.getuid === 'function' && process.getuid() === 0
+      && 'root reads a file whatever its mode says') }, () => {
+    const sandbox = screenshotSandbox();
+    const target = path.join(sandbox, 'docs/screenshots/overlay_en.png');
+    try {
+      // The copy that takes a backup reads the tracked image. Calling that
+      // "cannot be written" sends the reader to the directory's mode, which is
+      // the one thing that is not in the way.
+      fs.chmodSync(target, 0o000);
+      const redraw = spawnSync('python3', ['-B', 'gen_screenshots.py'],
+        { cwd: sandbox, encoding: 'utf8' });
+      assert.equal(redraw.status, 1, 'the run stops: ' + redraw.stderr);
+      assert.doesNotMatch(redraw.stderr, /Traceback/);
+      assert.match(redraw.stderr, /docs\/screenshots\/overlay_en\.png を読めない \(Permission denied\)/);
+      assert.doesNotMatch(redraw.stderr, /へ書けない/);
+    } finally {
+      fs.chmodSync(target, 0o644);
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+test('a destination handed on the command line is answered as an argument',
+  { skip: generatorSkip
+    || (process.platform === 'win32' && 'mode bits do not keep a directory shut on win32')
+    || (typeof process.getuid === 'function' && process.getuid() === 0
+      && 'root writes into a directory whatever its mode says') }, () => {
+    const sandbox = screenshotSandbox();
+    const tracked = path.join(sandbox, 'docs/screenshots');
+    try {
+      // Both runs are refused by the same directory. What differs is who is
+      // being answered: one wrote the destination down, the other did not - and
+      // reading the exit code off where it landed makes --out mean two things.
+      fs.chmodSync(tracked, 0o555);
+      const named = spawnSync('python3', ['-B', 'gen_screenshots.py', '--out', tracked],
+        { cwd: sandbox, encoding: 'utf8' });
+      assert.equal(named.status, 2, 'a destination that was handed over: ' + named.stderr);
+      assert.match(named.stderr, /usage:/);
+
+      const bare = spawnSync('python3', ['-B', 'gen_screenshots.py'],
+        { cwd: sandbox, encoding: 'utf8' });
+      assert.equal(bare.status, 1, 'and the tracked directory on its own: ' + bare.stderr);
+      assert.doesNotMatch(bare.stderr, /usage:/);
+    } finally {
+      fs.chmodSync(tracked, 0o755);
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
 
 test('--check turns down a tracked directory that is a link to one', { skip: generatorSkip
   || (process.platform === 'win32' && 'symlinks need a privilege this does not ask for') }, () => {
@@ -6777,7 +6953,7 @@ test('store screenshot generator draws icons the bundled font lacks', () => {
   const check = source.slice(source.indexOf('def verify_icons():'), source.indexOf('def draw_all('));
   assert.match(check, /for radius in \(HEADER_GEAR_RADIUS, PLAYER_GEAR_RADIUS\):/);
   assert.match(check, /size=FULLSCREEN_SIZE/);
-  assert.match(source, /def main\(out_dir=OUT_DIR\):\n    verify_icons\(\)/);
+  assert.match(source, /def main\(out_dir=OUT_DIR, named=False\):\n    verify_icons\(\)/);
   // --check draws the same six, so it runs the same self-check before it
   // draws — wherever in the function that lands.
   const checkBody = source.slice(source.indexOf('def check():'));

@@ -181,11 +181,11 @@ options.html / options.js
 | `_locales/` | i18n (ja, en) |
 | `icons/` | 16/48/128 px PNG (Twitch purple 3-bar meter) |
 | `gen_icons.py` | アイコン生成 (Python Pillow) |
-| `gen_screenshots.py` | スクリーンショット生成 (PIL 直接描画, 640×400 ja/en → `docs/screenshots/`)。`--check` は書き込まず、追跡先までのパスの各成分と画像が通常ファイルか → PNG 構造 (署名・チャンク・IDAT の zlib ストリーム) → チャンクの並び → IHDR の大きさ → IDAT 以外のバイト列 → RGBA 画素、の順に見る (デコーダに渡すのは最後)。差は exit 1、描けない環境は exit 3。`--out <dir>` は書き込み先を差し替える。知らない引数・`--check` と `--out` の同時指定 (順不同)・`--out` の重複・フラグの形をした値・ディレクトリになれない行き先 (既存の非ディレクトリ・行き先の無いリンク・非ディレクトリの親) は exit 2 で拒否する。引数の間違いは Pillow / 書体の読取失敗より先に答える (import と書体解決自体はモジュール読み込み時で、失敗は持ち帰って引数解析の後に exit 3) (`--chek` が上書きにならないように)。追跡先までのパスに実体ディレクトリでない成分があれば、描画も `--check` も exit 1 で何もしない。ファイルシステムに断られたときも traceback にしない — `--out` の行き先が作れない・書けないは exit 2、追跡先が読めない・書けないは exit 1 |
+| `gen_screenshots.py` | スクリーンショット生成 (PIL 直接描画, 640×400 ja/en → `docs/screenshots/`)。`--check` は書き込まず、追跡先までのパスの各成分と画像が通常ファイルか → PNG 構造 (署名・チャンク・IDAT の zlib ストリーム) → チャンクの並び → IHDR の大きさ → IDAT 以外のバイト列 → RGBA 画素、の順に見る (デコーダに渡すのは最後)。差は exit 1、描けない環境は exit 3。`--out <dir>` は書き込み先を差し替える。知らない引数・`--check` と `--out` の同時指定 (順不同)・`--out` の重複・フラグの形をした値・ディレクトリになれない行き先 (既存の非ディレクトリ・行き先の無いリンク・非ディレクトリの親) は exit 2 で拒否する。引数の間違いは Pillow / 書体の読取失敗より先に答える (import と書体解決自体はモジュール読み込み時で、失敗は持ち帰って引数解析の後に exit 3) (`--chek` が上書きにならないように)。追跡先までのパスに実体ディレクトリでない成分があれば、描画も `--check` も exit 1 で何もしない。ファイルシステムに断られたときも traceback にしない — `--out` で名指しされた行き先は exit 2 (それが追跡先と同じでも)、引数なしの追跡先は exit 1。断られた場所ごとに言い分ける (控えのために読めない・作業ディレクトリへ描けない・行き先へ書けない) |
 | `pack.py` | Chrome Web Store 用 zip 生成 (manifest からの参照グラフで選択、`--list` で選択結果のみ出力) |
 | `PRIVACY_POLICY.md` / `PRIVACY_POLICY_JA.md` | プライバシーポリシー (審査・README リンク用, EN/JA) |
 | `docs/security-audit.md` | セキュリティ監査レポート |
-| `docs/screenshots/` | `gen_screenshots.py` の出力。README とストア掲載の両方が使う (拡張機能には同梱しない)。追跡しているのは `tools/fonts/` の M PLUS 1p で描いたもの。生成器はその 2 書体だけを使い、無ければ止まる (別の書体で描くと 6 枚とも差し替わるため)。6 枚を作業ディレクトリで描き切ってから移し、移動が 1 つでも失敗したら上書きした分を戻すので、描画・置換のどちらで止まっても追跡先は前回のまま。CI は `--check` で描き直して画素比較する |
+| `docs/screenshots/` | `gen_screenshots.py` の出力。README とストア掲載の両方が使う (拡張機能には同梱しない)。追跡しているのは `tools/fonts/` の M PLUS 1p で描いたもの。生成器はその 2 書体だけを使い、無ければ止まる (別の書体で描くと 6 枚とも差し替わるため)。6 枚を作業ディレクトリで描き切ってから移し、移動が 1 つでも失敗したら上書きした分を最後まで戻すので、描画・置換のどちらで止まっても追跡先は前回のまま。戻すこと自体を断られたときは、戻せなかった名前と控えの置き場所を言って控えを残す (それ以外は消す)。CI は `--check` で描き直して画素比較する |
 | `tools/fonts/` | 描画に使う M PLUS 1p (Regular / Bold) と OFL.txt。google/fonts の `ofl/mplus1p` から取得 (commit `66a36c8`)。CI と各マシンで同じ画素を得るためにリポジトリへ入れている |
 | `test.js` | ユニットテスト (`node test.js`) — utils と store に加え、content.js / page-bridge.js / popup.js / options.js / background.js を VM 上の harness で走らせる |
 

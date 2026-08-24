@@ -6,7 +6,8 @@ PIL 直接描画。popup / settings / overlay の 3 シーンを ja/en で出力
 `--check` は一時ディレクトリへ描き直し、追跡物をバイトで確かめてから画素比較する。
 書き込まない。差があれば exit 1、この環境では描けない (Pillow / 書体が無い) なら exit 3。
 `--out <dir>` は docs/screenshots ではなくそのディレクトリへ書く。知らない引数と
-値の無い `--out` は exit 2 で、どちらも何も描かない。
+値の無い `--out` は exit 2 で、どちらも何も描かない。名指しされた行き先へ書けない
+ときも exit 2 (引数なしの追跡先へ書けないときは exit 1)。
 """
 import hashlib
 import math
@@ -526,6 +527,28 @@ def verify_icons():
                 f'draw_fullscreen: 角 ({sx}, {sy}) の垂直アームが描かれていない'
 
 
+class Refused(Exception):
+    """ファイルシステムに断られた。何をしようとして断られたかは文面が持つ。
+
+    読めない・描けない・書けない・戻せない、は別のことなので別の文面で言う。
+    受け取る側は印字するだけで、分類し直さない。
+    """
+
+
+def reason(err):
+    """例外が言っていること。文面だけの OSError には strerror が無い。"""
+    return getattr(err, 'strerror', None) or err
+
+
+def named_by(err, fallback):
+    """断られた名前。画像でなければ渡された名前で言う。
+
+    この走行がたまたま選んだ作業用ディレクトリの名前を、読む人へ渡さない。
+    """
+    where = getattr(err, 'filename', None)
+    return where if where and where.lower().endswith('.png') else fallback
+
+
 def replace_all(staging, out_dir):
     """staging の全ファイルで out_dir を置き換える。1 つでも失敗したら元へ戻す。
 
@@ -534,10 +557,18 @@ def replace_all(staging, out_dir):
     """
     names = sorted(os.listdir(staging))
     os.makedirs(out_dir, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=out_dir) as backup:
+    backup = tempfile.mkdtemp(dir=out_dir)
+    left = []
+    try:
         saved = [n for n in names if os.path.exists(os.path.join(out_dir, n))]
         for name in saved:
-            shutil.copy2(os.path.join(out_dir, name), os.path.join(backup, name))
+            here = os.path.join(out_dir, name)
+            try:
+                shutil.copy2(here, os.path.join(backup, name))
+            except OSError as err:
+                # 控えられないのは読めないからで、書けないからではない。まだ
+                # 1 枚も動かしていない。
+                raise Refused(f'{shown(here)} を読めない ({reason(err)})') from err
         # 名前は移動を試みる前に控える。移動し終えた直後に割り込まれると、
         # 後から控える形では戻す対象から漏れる。
         attempted = []
@@ -545,13 +576,32 @@ def replace_all(staging, out_dir):
             for name in names:
                 attempted.append(name)
                 shutil.move(os.path.join(staging, name), os.path.join(out_dir, name))
-        except BaseException:
+        except BaseException as err:
             for name in attempted:
-                if name in saved:
-                    shutil.copy2(os.path.join(backup, name), os.path.join(out_dir, name))
-                elif os.path.exists(os.path.join(out_dir, name)):
-                    os.remove(os.path.join(out_dir, name))
+                # 1 つ戻せなくても残りは最後まで試す。ここで送出すると、その先
+                # の名前が新しいまま残り、しかも何が残ったかを誰も言わない。
+                try:
+                    if name in saved:
+                        shutil.copy2(os.path.join(backup, name), os.path.join(out_dir, name))
+                    elif os.path.exists(os.path.join(out_dir, name)):
+                        os.remove(os.path.join(out_dir, name))
+                except OSError as sweeping:
+                    left.append((name, reason(sweeping)))
+            if left:
+                # 戻せなかった分は控えの中にしか無い。控えを残して名指しする。
+                told = '\n'.join(f'{name} を前回の画像へ戻せない ({why})' for name, why in left)
+                raise Refused(
+                    f'{shown(named_by(err, out_dir))} の置き換えが途中で止まった'
+                    f' ({reason(err)})\n{told}\n'
+                    f'控えは {shown(backup)} にある') from err
             raise
+    finally:
+        if not left:
+            try:
+                shutil.rmtree(backup)
+            except OSError as err:
+                # 消せなくても走行の答えは変わらない。残ったことだけ言う。
+                print(f'{shown(backup)} が残った ({reason(err)})', file=sys.stderr)
     return names
 
 
@@ -578,25 +628,26 @@ def draw_all(target):
 # 2 枚目以降でも落ちるため、追跡先へ直に書くと新しい 1 枚と古い 5 枚が残る。
 # 作業ディレクトリを追跡先の隣に置くのは、移動が同一ファイルシステム内の
 # rename になるようにするため。
-def refused_to_write(out_dir, why):
+def refused_to_write(named, why):
     """書けなかったと言って、行き先に応じた終了コードを返す。
 
     --out は行き先を名指しで渡されているので引数の答え (2)、追跡先はこの走行
-    が終われなかったこと (1)。
+    が終われなかったこと (1)。決めるのは名指しされたかどうかで、行き着いた先
+    ではない — --out に追跡先を渡した人が読むのも、自分が書いた引数の答え。
     """
     print(why, file=sys.stderr)
-    if out_dir == OUT_DIR:
+    if not named:
         return 1
     print(USAGE, file=sys.stderr)
     return 2
 
 
-def main(out_dir=OUT_DIR):
+def main(out_dir=OUT_DIR, named=False):
     verify_icons()
-    bad = out_dir == OUT_DIR and not_a_directory(out_dir)
+    bad = not named and not_a_directory(out_dir)
     if bad:
         # 書いた先を追跡先の名前で報告してしまうため、追跡先へ書くときだけ見る
-        # (--out は行き先を名指しで渡されている)。
+        # (--out の行き先は cannot_hold_images が引数として見ている)。
         print(f'{bad[0]}: {bad[1]}', file=sys.stderr)
         print(f'{bad[0]} をディレクトリに戻してから描き直す。', file=sys.stderr)
         return 1
@@ -605,21 +656,24 @@ def main(out_dir=OUT_DIR):
     except OSError as err:
         # パスの形はここまでで見た。残るのはファイルシステムの答えで、それは
         # 引数の間違い (--out) か、この走行が終われなかったこと (追跡先) か。
-        return refused_to_write(out_dir, f'{shown(out_dir)} を作れない ({err.strerror or err})')
+        return refused_to_write(named, f'{shown(out_dir)} を作れない ({reason(err)})')
     try:
         with tempfile.TemporaryDirectory(dir=out_dir) as staging:
-            draw_all(staging)
+            try:
+                draw_all(staging)
+            except OSError as err:
+                # 描き先は行き先の中の作業ディレクトリなので、名指しするのは
+                # 行き先の側。読む人には作業用の名前を渡さない。
+                raise Refused(f'{shown(out_dir)} へ描けない ({reason(err)})') from err
             for name in replace_all(staging, out_dir):
                 print(f'Generated {os.path.join(shown(out_dir), name)}')
+    except Refused as err:
+        # 何をしようとして断られたかは断った側が言う。ここで言い直さない。
+        return refused_to_write(named, str(err))
     except OSError as err:
-        # 作業ディレクトリを作る・描く・置き換える、のどこで断られても同じ
-        # 答えにする。traceback は exit 1 (= 画像に差がある) になってしまう。
-        # 名指しするのは行き先か画像で、この走行がたまたま選んだ作業用の名前
-        # ではない。
-        where = getattr(err, 'filename', None)
-        if not where or not where.lower().endswith('.png'):
-            where = out_dir
-        return refused_to_write(out_dir, f'{shown(where)} へ書けない ({err.strerror or err})')
+        # 残るのは作業ディレクトリを作る・消すの 2 つ。traceback は exit 1
+        # (= 画像に差がある) になってしまう。
+        return refused_to_write(named, f'{shown(out_dir)} へ書けない ({reason(err)})')
     return 0
 
 
@@ -973,7 +1027,7 @@ def cannot_hold_images(path):
 
 
 def out_dir_from(args):
-    """--out の次の引数。無ければ docs/screenshots。
+    """(書き込み先, --out で名指しされたか)。無ければ docs/screenshots。
 
     綴りを外した引数は書き込みへ落とさない。読むだけのつもりの `--chek` が
     追跡画像の上書きになると、確かめたかった古さがその場で消える。
@@ -1021,16 +1075,16 @@ def out_dir_from(args):
         print(f'--check は追跡中の画像と比べるだけで書き込まない。--out の行き先が無い\n{USAGE}',
               file=sys.stderr)
         sys.exit(2)
-    return OUT_DIR if target is None else target
+    return (OUT_DIR, False) if target is None else (target, True)
 
 
 if __name__ == '__main__':
     # 引数は分岐の前に全部見る。--check と一緒に渡された --out や、綴り違いを
     # 描画側へ素通ししないため。
-    destination = out_dir_from(sys.argv[1:])
+    destination, was_named = out_dir_from(sys.argv[1:])
     if CANNOT_DRAW is not None:
         print(CANNOT_DRAW, file=sys.stderr)
         sys.exit(UNAVAILABLE)
     if '--check' in sys.argv[1:]:
         sys.exit(check())
-    sys.exit(main(destination))
+    sys.exit(main(destination, was_named))
