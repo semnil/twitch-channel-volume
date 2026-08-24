@@ -5818,11 +5818,12 @@ test('--check does not inflate a tracked image beyond what the drawing needs',
       const probe = spawnSync('python3', ['-B', '-c', COST_PROBE, sandbox], { encoding: 'utf8' });
       assert.equal(probe.status, 0, 'the cost probe ran: ' + probe.stderr);
       const [status, peak] = probe.stdout.trim().split('\n');
-      // A run over the untouched tree peaks around 40 MB here, so the ceiling
-      // is set well above that and far below the padding.
-      assert.ok(Number(peak) < padding / 2,
+      // A run over the untouched tree peaks around 40 MB here, and one that
+      // inflates a block at a time without a ceiling reaches 133 MB, so the
+      // bound sits between the two.
+      assert.ok(Number(peak) < padding / 4,
         `the run peaked at ${Math.round(Number(peak) / (1 << 20))} MiB`
-        + ` against ${padding / (1 << 20)} MiB of padding`);
+        + ` against a ${padding / (4 << 20)} MiB bound`);
       assert.equal(status, '1', 'and it still turns the image down: ' + probe.stderr);
       assert.match(probe.stderr, /popup_ja\.png: 走査線の後ろに展開されるものがまだある/);
     } finally {
