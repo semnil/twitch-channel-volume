@@ -912,6 +912,15 @@ def walk_for_a_place(path):
     return None
 
 
+def where_it_lands(path):
+    """OS が行き着く先。終端の名前だけはそのまま残す。
+
+    途中のリンクは辿る (`link/..` はリンクの先の親で、字句で畳んだ隣ではない)。
+    終端を辿らないのは、行き先の無いリンクをその指し先へすり替えないため。
+    """
+    return os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path))
+
+
 def cannot_hold_images(path):
     """--out の行き先になれないところ。無ければ None。
 
@@ -920,10 +929,12 @@ def cannot_hold_images(path):
     既にあるところまでを見る。lexists で見るのは、行き先の無いリンクが
     exists に映らないまま os.makedirs へ届くため。
 
-    畳んだ側も見る。`missing/../afile` のように、まだ無い名前の後ろの `..` が
-    既にある名前へ戻ることがあり、辿るだけではそこを跨いでしまう。
+    OS が行き着く先も見る。`missing/../afile` のように、まだ無い名前の後ろの
+    `..` が既にある名前へ戻ることがあり、辿るだけではそこを跨いでしまう。
+    リンクを含むパスは字句で畳んだ先と行き着く先が別なので、書き込みと同じ
+    realpath を見る。
     """
-    return walk_for_a_place(path) or walk_for_a_place(os.path.abspath(path))
+    return walk_for_a_place(path) or walk_for_a_place(where_it_lands(path))
 
 
 def out_dir_from(args):
@@ -956,7 +967,10 @@ def out_dir_from(args):
             # `directory/../ok` は OS も同じところへ行き着く。
             blocked = cannot_hold_images(given if os.path.isabs(given)
                                          else os.path.join(os.getcwd(), given))
-            target = os.path.abspath(given)
+            # 書き込み先は OS が行き着く先。abspath は `link/..` を字句で畳んで
+            # しまい、リンクの隣へ書きながら検査はリンクの先を見ることになる。
+            target = where_it_lands(given if os.path.isabs(given)
+                                    else os.path.join(os.getcwd(), given))
             if blocked:
                 # 行き先がディレクトリになれないのは引数の間違いで、画像の差では
                 # ない。ここで見ないと os.makedirs の traceback が exit 1 に

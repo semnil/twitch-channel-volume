@@ -6335,6 +6335,43 @@ test('--out writes where it is told, and nowhere else', { skip: generatorSkip },
   }
 });
 
+test('--out lands where the path leads, not where it folds to', { skip: generatorSkip
+  || (process.platform === 'win32' && 'symlinks need a privilege this does not ask for') }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    // `link/..` is the directory the link points into, not the one the link
+    // sits in — the kernel resolves it, and folding the text does not. What is
+    // written and what is checked have to be the same place.
+    fs.mkdirSync(path.join(sandbox, 'actual/inner'), { recursive: true });
+    fs.symlinkSync('actual/inner', path.join(sandbox, 'link'));
+    const run = spawnSync('python3', ['-B', 'gen_screenshots.py',
+      '--out', [sandbox, 'link', '..', 'landed'].join(path.sep)], { cwd: sandbox, encoding: 'utf8' });
+    assert.equal(run.status, 0, 'it runs: ' + run.stderr);
+    assert.equal(fs.readdirSync(path.join(sandbox, 'actual/landed')).length, 6,
+      'the six are where the link leads');
+    assert.ok(!fs.existsSync(path.join(sandbox, 'landed')),
+      'and not beside the link, where the text folds to');
+
+    // A file on the way there is the one that counts: on the folded side it is
+    // not on the way at all, and the run goes past it.
+    fs.writeFileSync(path.join(sandbox, 'afile'), '');
+    const folded = spawnSync('python3', ['-B', 'gen_screenshots.py',
+      '--out', [sandbox, 'link', '..', 'afile'].join(path.sep)], { cwd: sandbox, encoding: 'utf8' });
+    assert.equal(folded.status, 0, 'a file only where the text folds is not in the way: ' + folded.stderr);
+    assert.equal(fs.readdirSync(path.join(sandbox, 'actual/afile')).length, 6);
+    assert.ok(fs.statSync(path.join(sandbox, 'afile')).isFile(), 'and that file is left alone');
+
+    // On the side the kernel walks, it is refused.
+    fs.writeFileSync(path.join(sandbox, 'actual/inner-file'), '');
+    const real = spawnSync('python3', ['-B', 'gen_screenshots.py',
+      '--out', [sandbox, 'link', '..', 'inner-file'].join(path.sep)], { cwd: sandbox, encoding: 'utf8' });
+    assert.equal(real.status, 2, 'a file on the way there is refused: ' + real.stderr);
+    assert.ok(fs.statSync(path.join(sandbox, 'actual/inner-file')).isFile());
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
 test('the destination is walked by the separators the platform accepts', () => {
   // On Windows both \\ and / separate names, and splitting on os.sep alone
   // leaves `C:/tmp/afile/child` as one name — a name nothing has, so the walk
