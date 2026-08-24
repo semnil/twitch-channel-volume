@@ -578,6 +578,19 @@ def draw_all(target):
 # 2 枚目以降でも落ちるため、追跡先へ直に書くと新しい 1 枚と古い 5 枚が残る。
 # 作業ディレクトリを追跡先の隣に置くのは、移動が同一ファイルシステム内の
 # rename になるようにするため。
+def refused_to_write(out_dir, why):
+    """書けなかったと言って、行き先に応じた終了コードを返す。
+
+    --out は行き先を名指しで渡されているので引数の答え (2)、追跡先はこの走行
+    が終われなかったこと (1)。
+    """
+    print(why, file=sys.stderr)
+    if out_dir == OUT_DIR:
+        return 1
+    print(USAGE, file=sys.stderr)
+    return 2
+
+
 def main(out_dir=OUT_DIR):
     verify_icons()
     bad = out_dir == OUT_DIR and not_a_directory(out_dir)
@@ -587,11 +600,26 @@ def main(out_dir=OUT_DIR):
         print(f'{bad[0]}: {bad[1]}', file=sys.stderr)
         print(f'{bad[0]} をディレクトリに戻してから描き直す。', file=sys.stderr)
         return 1
-    os.makedirs(out_dir, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=out_dir) as staging:
-        draw_all(staging)
-        for name in replace_all(staging, out_dir):
-            print(f'Generated {os.path.join(shown(out_dir), name)}')
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+    except OSError as err:
+        # パスの形はここまでで見た。残るのはファイルシステムの答えで、それは
+        # 引数の間違い (--out) か、この走行が終われなかったこと (追跡先) か。
+        return refused_to_write(out_dir, f'{shown(out_dir)} を作れない ({err.strerror or err})')
+    try:
+        with tempfile.TemporaryDirectory(dir=out_dir) as staging:
+            draw_all(staging)
+            for name in replace_all(staging, out_dir):
+                print(f'Generated {os.path.join(shown(out_dir), name)}')
+    except OSError as err:
+        # 作業ディレクトリを作る・描く・置き換える、のどこで断られても同じ
+        # 答えにする。traceback は exit 1 (= 画像に差がある) になってしまう。
+        # 名指しするのは行き先か画像で、この走行がたまたま選んだ作業用の名前
+        # ではない。
+        where = getattr(err, 'filename', None)
+        if not where or not where.lower().endswith('.png'):
+            where = out_dir
+        return refused_to_write(out_dir, f'{shown(where)} へ書けない ({err.strerror or err})')
     return 0
 
 
@@ -771,9 +799,11 @@ def check():
         drawn = set(draw_all(fresh))
         for name in sorted(drawn):
             tracked = os.path.join(OUT_DIR, name)
-            if not os.path.exists(tracked):
+            if not os.path.lexists(tracked):
                 stale.append(f'{name}: 追跡されていない')
                 continue
+            # lexists で見るのは、行き先の無いリンクを「誰も追跡していない名前」
+            # ではなくリンクとして名乗らせるため。
             kind = not_a_plain_file(tracked)
             if kind:
                 stale.append(f'{name}: {kind}')
@@ -836,10 +866,15 @@ def check():
                 stale.append(f'{name}: いま描くものと違う')
     # 描くのは png だけなので、それ以外 (.DS_Store, 中断した走行が残す作業
     # ディレクトリ) を追跡物として数えない。
-    tracked_now = sorted(name for name in os.listdir(OUT_DIR)
-                         if name.lower().endswith('.png')
-                         and not is_directory(os.path.join(OUT_DIR, name))
-                         ) if os.path.isdir(OUT_DIR) else []
+    try:
+        tracked_now = sorted(name for name in os.listdir(OUT_DIR)
+                             if name.lower().endswith('.png')
+                             and not is_directory(os.path.join(OUT_DIR, name))
+                             ) if os.path.isdir(OUT_DIR) else []
+    except OSError as err:
+        # 何が置いてあるかはこの走行の答えの半分で、画像の差ではない。
+        print(f'{here}: 読めない ({err.strerror})', file=sys.stderr)
+        return 1
     # 綴りだけ違う名前は「誰も描いていない」ではない。ケース非依存の
     # ファイルシステムでは画素比較を通ってしまうので、消せとは言わずに
     # 名前を直せと言う。

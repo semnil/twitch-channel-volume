@@ -5234,7 +5234,7 @@ test('gen_screenshots.py imports, or says it cannot draw here', () => {
 // six moves, and a run that stops among them leaves some of the tracked images
 // from this run and the rest from the last one.
 const INJECT_MOVE_FAILURE = [
-  'import hashlib, importlib.util, os, shutil, sys, tempfile',
+  'import contextlib, hashlib, importlib.util, io, os, shutil, sys, tempfile',
   'fail_at = int(sys.argv[1])',
   'when = sys.argv[2]',
   "seeded = sys.argv[3] == '1'",
@@ -5274,13 +5274,19 @@ const INJECT_MOVE_FAILURE = [
   "            raise KeyboardInterrupt('interrupted after the move')",
   '        return result',
   '    gen.shutil.move = flaky_move',
+  '    said = io.StringIO()',
   '    try:',
-  '        gen.main()',
+  '        with contextlib.redirect_stderr(said):',
+  '            code = gen.main()',
   '    except BaseException as error:',
   '        escaped = str(error)',
   '    else:',
-  "        print('the injected failure never fired')",
-  '        raise SystemExit(2)',
+  '        # A failure the run reports rather than raises is the same event:',
+  '        # what has to hold is that the tracked six are as they were.',
+  '        escaped = said.getvalue()',
+  '        if code == 0:',
+  "            print('the injected failure never fired')",
+  '            raise SystemExit(2)',
   '    gen.shutil.move = real_move',
   '    after = digests(out)',
   '    # The interrupted move renamed in one mode and not in the other.',
@@ -6092,6 +6098,95 @@ test('--check turns down a size the code no longer draws', { skip: generatorSkip
     // the crop still matches, and reading "違う" would send the reader looking
     // for the wrong thing.
     assert.match(run.stderr, /settings_en\.png: 大きさが違う/);
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test('--check names a link with nothing at the end of it', { skip: generatorSkip
+  || (process.platform === 'win32' && 'symlinks need a privilege this does not ask for') }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    // exists() reads through the link and finds nothing, which reads as a name
+    // nobody has committed — and sends the reader to a redraw that leaves the
+    // link exactly where it is.
+    fs.rmSync(path.join(sandbox, 'docs/screenshots/popup_ja.png'));
+    fs.symlinkSync('gone.png', path.join(sandbox, 'docs/screenshots/popup_ja.png'));
+
+    const run = runCheck(sandbox);
+    assert.equal(run.status, 1, 'the link is reported: ' + (run.stderr || run.stdout));
+    assert.match(run.stderr, /popup_ja\.png: シンボリックリンク \(gone\.png を指している\)/);
+    assert.doesNotMatch(run.stderr, /popup_ja\.png: 追跡されていない/,
+      'and not as a name nobody has committed');
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test('a directory that will not take this run says so', { skip: generatorSkip
+  || (process.platform === 'win32' && 'mode bits do not keep a directory shut on win32')
+  || (typeof process.getuid === 'function' && process.getuid() === 0
+    && 'root writes into a directory whatever its mode says') }, () => {
+  const sandbox = screenshotSandbox();
+  const readonly = path.join(sandbox, 'readonly');
+  const tracked = path.join(sandbox, 'docs/screenshots');
+  try {
+    // Three moments where the filesystem is the one that refuses: making the
+    // destination, making the working directory inside it, and reading what is
+    // there. Each was a traceback with exit 1 — the answer for images that
+    // differ — and the working directory left nothing behind either way.
+    fs.mkdirSync(readonly);
+    fs.chmodSync(readonly, 0o555);
+    const under = spawnSync('python3', ['-B', 'gen_screenshots.py',
+      '--out', path.join(readonly, 'shots')], { cwd: sandbox, encoding: 'utf8' });
+    assert.equal(under.status, 2, 'a destination that cannot be made: ' + under.stderr);
+    assert.doesNotMatch(under.stderr, /Traceback/);
+    assert.match(under.stderr, /usage:/);
+
+    const into = spawnSync('python3', ['-B', 'gen_screenshots.py', '--out', readonly],
+      { cwd: sandbox, encoding: 'utf8' });
+    assert.equal(into.status, 2, 'a destination that will not take a file: ' + into.stderr);
+    assert.doesNotMatch(into.stderr, /Traceback/);
+    assert.match(into.stderr, /readonly へ書けない \(Permission denied\)/,
+      'named as the destination rather than as the working directory');
+    assert.deepEqual(fs.readdirSync(readonly), [], 'and nothing was left in it');
+
+    fs.chmodSync(tracked, 0o555);
+    const redraw = spawnSync('python3', ['-B', 'gen_screenshots.py'],
+      { cwd: sandbox, encoding: 'utf8' });
+    assert.equal(redraw.status, 1, 'the tracked directory refusing is exit 1: ' + redraw.stderr);
+    assert.doesNotMatch(redraw.stderr, /Traceback/);
+    assert.match(redraw.stderr, /docs\/screenshots へ書けない \(Permission denied\)/);
+    assert.deepEqual(fs.readdirSync(tracked).filter((name) => !name.endsWith('.png')), [],
+      'and left nothing of its own behind');
+
+    fs.chmodSync(tracked, 0o000);
+    const unreadable = runCheck(sandbox);
+    assert.equal(unreadable.status, 1, 'a tracked directory that cannot be listed');
+    assert.doesNotMatch(unreadable.stderr, /Traceback/);
+    assert.match(unreadable.stderr, /docs\/screenshots: 読めない \(Permission denied\)/);
+  } finally {
+    fs.chmodSync(readonly, 0o755);
+    fs.chmodSync(tracked, 0o755);
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
+test('a name a redraw cannot overwrite is named, not raised over', { skip: generatorSkip }, () => {
+  const sandbox = screenshotSandbox();
+  try {
+    // Replacing takes a copy of what it is about to overwrite first, and a
+    // directory under one of the six names stops that copy.
+    const target = path.join(sandbox, 'docs/screenshots/popup_ja.png');
+    fs.rmSync(target);
+    fs.mkdirSync(target);
+
+    const redraw = spawnSync('python3', ['-B', 'gen_screenshots.py'],
+      { cwd: sandbox, encoding: 'utf8' });
+    assert.equal(redraw.status, 1, 'the run stops: ' + redraw.stderr);
+    assert.doesNotMatch(redraw.stderr, /Traceback/);
+    assert.match(redraw.stderr, /docs\/screenshots\/popup_ja\.png へ書けない/);
+    assert.ok(fs.statSync(target).isDirectory(), 'and the name is left as it was');
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
   }
