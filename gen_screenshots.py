@@ -596,16 +596,19 @@ def replace_all(staging, out_dir):
                 try:
                     shutil.copy2(here, os.path.join(backup, name))
                 except OSError as err:
-                    # 控えられないのは読めないからで、書けないからではない。
-                    # まだ 1 枚も動かしていない。
-                    raise Refused(f'{shown(here)} を読めない ({reason(err)})') from err
+                    # copy2 は読んで書く 1 回の呼び出しなので、どちらの端が断った
+                    # かはここでは分からない。両端を名指しする。まだ 1 枚も動か
+                    # していない。
+                    raise Refused(f'{shown(here)} の控えを {shown(backup)} に'
+                                  f'作れない ({reason(err)})') from err
             elif kind == 'link':
                 # リンクも控えへリンクとして置く。戻すのを断られると、指し先を
                 # 持っているのはこの走行の中の before だけになる。
                 try:
                     os.symlink(target, os.path.join(backup, name))
                 except OSError as err:
-                    raise Refused(f'{shown(here)} の控えを作れない ({reason(err)})') from err
+                    raise Refused(f'{shown(here)} の控えを {shown(backup)} に'
+                                  f'作れない ({reason(err)})') from err
         # 名前は移動を試みる前に控える。移動し終えた直後に割り込まれると、
         # 後から控える形では戻す対象から漏れる。
         attempted = []

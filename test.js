@@ -6193,8 +6193,9 @@ test('a name a redraw cannot overwrite is named, not raised over', { skip: gener
       { cwd: sandbox, encoding: 'utf8' });
     assert.equal(redraw.status, 1, 'the run stops: ' + redraw.stderr);
     assert.doesNotMatch(redraw.stderr, /Traceback/);
-    // Named as the copy it is - reading the image it is about to overwrite.
-    assert.match(redraw.stderr, /docs\/screenshots\/popup_ja\.png を読めない/);
+    // Named as the copy it is - taking one of the image it is about to
+    // overwrite, with where that copy was going named too.
+    assert.match(redraw.stderr, /docs\/screenshots\/popup_ja\.png の控えを .+ に作れない/);
     assert.ok(fs.statSync(target).isDirectory(), 'and the name is left as it was');
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
@@ -6453,7 +6454,8 @@ test('a link that cannot be copied stops the run before it replaces anything',
     || (process.platform === 'win32' && 'symlinks need a privilege this does not ask for') }, () => {
     const seen = overALink('linkbackup', { replaced: false });
     // Nothing to put back is only safe while nothing has been taken away.
-    assert.match(seen.told, /overlay_en\.png の控えを作れない \(Permission denied\)/, seen.told);
+    assert.match(seen.told, /overlay_en\.png の控えを .+ に作れない \(Permission denied\)/,
+      seen.told);
     assert.deepEqual(seen.changed, [], 'and the six names are as they were');
     assert.equal(seen.state, 'link -> gone.png');
   });
@@ -6495,6 +6497,58 @@ test('a link to a directory under a drawn name is turned down, not written throu
     }
   });
 
+// Taking the copy reads the image and writes the copy in the one call, so what
+// refused is not known from here - both ends are named.
+const INJECT_COPY_FAULT = [
+  'import contextlib, importlib.util, io, json, os, shutil, sys, tempfile',
+  'repo = os.getcwd()',
+  'with tempfile.TemporaryDirectory() as sandbox:',
+  "    script = os.path.join(sandbox, 'gen_screenshots.py')",
+  "    shutil.copy2(os.path.join(repo, 'gen_screenshots.py'), script)",
+  "    shutil.copytree(os.path.join(repo, 'tools'), os.path.join(sandbox, 'tools'))",
+  "    out = os.path.join(sandbox, 'docs', 'screenshots')",
+  '    os.makedirs(out)',
+  "    tracked = os.path.join(repo, 'docs', 'screenshots')",
+  '    for name in os.listdir(tracked):',
+  '        shutil.copy2(os.path.join(tracked, name), os.path.join(out, name))',
+  '    first = sorted(os.listdir(out))[0]',
+  "    spec = importlib.util.spec_from_file_location('gen_under_test', script)",
+  '    gen = importlib.util.module_from_spec(spec)',
+  '    spec.loader.exec_module(gen)',
+  '    real_copy2 = shutil.copy2',
+  '    def full_disk(src, dst, *a, **k):',
+  '        # The copy is what will not fit; the image itself reads.',
+  '        if os.path.dirname(dst) != out:',
+  "            raise OSError(28, 'No space left on device', dst)",
+  '        return real_copy2(src, dst, *a, **k)',
+  '    gen.shutil.copy2 = full_disk',
+  '    said = io.StringIO()',
+  '    try:',
+  '        with contextlib.redirect_stderr(said), contextlib.redirect_stdout(io.StringIO()):',
+  '            code = gen.main()',
+  '    finally:',
+  '        gen.shutil.copy2 = real_copy2',
+  "    print(json.dumps({'code': code, 'told': said.getvalue(), 'first': first,",
+  "                      'reads': open(os.path.join(out, first), 'rb').read(4).hex(),",
+  "                      'left': sorted(n for n in os.listdir(out)",
+  "                                     if not n.lower().endswith('.png'))}))",
+].join('\n');
+
+test('a copy that will not fit names where it was going, not the image',
+  { skip: generatorSkip }, () => {
+    const run = spawnSync('python3', ['-B', '-c', INJECT_COPY_FAULT],
+      { cwd: __dirname, encoding: 'utf8' });
+    assert.equal(run.status, 0, 'the probe ran: ' + (run.stderr || run.stdout));
+    const seen = JSON.parse(run.stdout);
+    // The image reads perfectly well, so "を読めない" would have the reader
+    // looking at the one thing that is not in the way.
+    assert.equal(seen.reads, '89504e47', 'the image reads, so the copy is what refused');
+    assert.equal(seen.code, 1, 'the run stops: ' + seen.told);
+    assert.match(seen.told, new RegExp(seen.first.replace('.', '\\.')
+      + ' の控えを .+ に作れない \\(No space left on device\\)'), seen.told);
+    assert.deepEqual(seen.left, [], 'and nothing of the run is left behind');
+  });
+
 test('an image that cannot be read is not called one that cannot be written',
   { skip: generatorSkip
     || (process.platform === 'win32' && 'mode bits do not keep a file shut on win32')
@@ -6511,7 +6565,8 @@ test('an image that cannot be read is not called one that cannot be written',
         { cwd: sandbox, encoding: 'utf8' });
       assert.equal(redraw.status, 1, 'the run stops: ' + redraw.stderr);
       assert.doesNotMatch(redraw.stderr, /Traceback/);
-      assert.match(redraw.stderr, /docs\/screenshots\/overlay_en\.png を読めない \(Permission denied\)/);
+      assert.match(redraw.stderr,
+        /docs\/screenshots\/overlay_en\.png の控えを .+ に作れない \(Permission denied\)/);
       assert.doesNotMatch(redraw.stderr, /へ書けない/);
     } finally {
       fs.chmodSync(target, 0o644);
