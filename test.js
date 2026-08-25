@@ -5348,8 +5348,10 @@ test('store screenshot generator writes the tracked directory, and only whole', 
   }
   // Beside the destination, so each move is a rename within one filesystem.
   assert.match(source, /with tempfile\.TemporaryDirectory\(dir=out_dir\) as staging:/);
-  // main hands the staging directory over rather than moving anything itself.
-  assert.match(source, /for name in replace_all\(staging, out_dir\):/);
+  // main hands the staging directory over rather than moving anything itself,
+  // and what replacing could not clear away comes back to be answered for.
+  assert.match(source, /written, litter = replace_all\(staging, out_dir\)/);
+  assert.match(source, /if litter is not None:\n\s+#.*\n\s+#.*\n\s+raise Refused\(litter\)/);
   const replaceAll = source.slice(source.indexOf('def replace_all('), source.indexOf('def main('));
   assert.match(replaceAll, /except BaseException as err:/);
   // Putting them back is a loop of its own: one name it cannot restore must not
@@ -6193,8 +6195,9 @@ test('a name a redraw cannot overwrite is named, not raised over', { skip: gener
       { cwd: sandbox, encoding: 'utf8' });
     assert.equal(redraw.status, 1, 'the run stops: ' + redraw.stderr);
     assert.doesNotMatch(redraw.stderr, /Traceback/);
-    // Named as the copy it is - reading the image it is about to overwrite.
-    assert.match(redraw.stderr, /docs\/screenshots\/popup_ja\.png を読めない/);
+    // Named as the copy it is - taking one of the image it is about to
+    // overwrite, with where that copy was going named too.
+    assert.match(redraw.stderr, /docs\/screenshots\/popup_ja\.png の控えを .+ に作れない/);
     assert.ok(fs.statSync(target).isDirectory(), 'and the name is left as it was');
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
@@ -6453,7 +6456,8 @@ test('a link that cannot be copied stops the run before it replaces anything',
     || (process.platform === 'win32' && 'symlinks need a privilege this does not ask for') }, () => {
     const seen = overALink('linkbackup', { replaced: false });
     // Nothing to put back is only safe while nothing has been taken away.
-    assert.match(seen.told, /overlay_en\.png の控えを作れない \(Permission denied\)/, seen.told);
+    assert.match(seen.told, /overlay_en\.png の控えを .+ に作れない \(Permission denied\)/,
+      seen.told);
     assert.deepEqual(seen.changed, [], 'and the six names are as they were');
     assert.equal(seen.state, 'link -> gone.png');
   });
@@ -6495,6 +6499,114 @@ test('a link to a directory under a drawn name is turned down, not written throu
     }
   });
 
+// Taking the copy reads the image and writes the copy in the one call, and a run
+// that finished says the copy it made did not outlive it.
+const INJECT_COPY_FAULT = [
+  'import contextlib, importlib.util, io, json, os, shutil, sys, tempfile',
+  'mode = sys.argv[1]',
+  'repo = os.getcwd()',
+  'with tempfile.TemporaryDirectory() as sandbox:',
+  "    script = os.path.join(sandbox, 'gen_screenshots.py')",
+  "    shutil.copy2(os.path.join(repo, 'gen_screenshots.py'), script)",
+  "    shutil.copytree(os.path.join(repo, 'tools'), os.path.join(sandbox, 'tools'))",
+  "    out = os.path.join(sandbox, 'docs', 'screenshots')",
+  '    os.makedirs(out)',
+  "    tracked = os.path.join(repo, 'docs', 'screenshots')",
+  '    for name in os.listdir(tracked):',
+  '        shutil.copy2(os.path.join(tracked, name), os.path.join(out, name))',
+  '    first = sorted(os.listdir(out))[0]',
+  "    spec = importlib.util.spec_from_file_location('gen_under_test', script)",
+  '    gen = importlib.util.module_from_spec(spec)',
+  '    spec.loader.exec_module(gen)',
+  '    real_copy2, real_rmtree = shutil.copy2, shutil.rmtree',
+  '    def full_disk(src, dst, *a, **k):',
+  '        # The copy is what will not fit; the image itself reads.',
+  '        if os.path.dirname(dst) != out:',
+  "            raise OSError(28, 'No space left on device', dst)",
+  '        return real_copy2(src, dst, *a, **k)',
+  '    def refusing_rmtree(path, *a, **k):',
+  '        # Only the copy: the staging directory is empty by the time it goes.',
+  '        if os.listdir(path):',
+  "            raise OSError(13, 'Permission denied', path)",
+  '        return real_rmtree(path, *a, **k)',
+  "    if mode == 'nospace':",
+  '        gen.shutil.copy2 = full_disk',
+  '    else:',
+  '        gen.shutil.rmtree = refusing_rmtree',
+  '    said = io.StringIO()',
+  '    try:',
+  '        with contextlib.redirect_stderr(said), contextlib.redirect_stdout(io.StringIO()):',
+  '            code = gen.main()',
+  '    finally:',
+  '        gen.shutil.copy2, gen.shutil.rmtree = real_copy2, real_rmtree',
+  "    print(json.dumps({'code': code, 'told': said.getvalue(), 'first': first,",
+  "                      'reads': open(os.path.join(out, first), 'rb').read(4).hex(),",
+  "                      'left': sorted(n for n in os.listdir(out)",
+  "                                     if not n.lower().endswith('.png'))}))",
+].join('\n');
+
+test('a copy that will not fit names where it was going, not the image',
+  { skip: generatorSkip }, () => {
+    const run = spawnSync('python3', ['-B', '-c', INJECT_COPY_FAULT, 'nospace'],
+      { cwd: __dirname, encoding: 'utf8' });
+    assert.equal(run.status, 0, 'the probe ran: ' + (run.stderr || run.stdout));
+    const seen = JSON.parse(run.stdout);
+    // The image reads perfectly well, so "を読めない" would have the reader
+    // looking at the one thing that is not in the way.
+    assert.equal(seen.reads, '89504e47', 'the image reads, so the copy is what refused');
+    assert.equal(seen.code, 1, 'the run stops: ' + seen.told);
+    assert.match(seen.told, new RegExp(seen.first.replace('.', '\\.')
+      + ' の控えを .+ に作れない \\(No space left on device\\)'), seen.told);
+    assert.deepEqual(seen.left, [], 'and nothing of the run is left behind');
+  });
+
+test('a run leaves alone what it found in the directory, and says nothing of it',
+  { skip: generatorSkip }, () => {
+    const sandbox = screenshotSandbox();
+    try {
+      // What the run answers for is the copy it made. Something already in the
+      // directory is not this run's to remove, or to report: reading exit 0 as
+      // "the six and nothing else" would be reading more than is measured.
+      const beside = path.join(sandbox, 'docs/screenshots/sentinel.txt');
+      fs.writeFileSync(beside, 'not this run\n');
+
+      const drew = spawnSync('python3', ['-B', 'gen_screenshots.py'],
+        { cwd: sandbox, encoding: 'utf8' });
+      assert.equal(drew.status, 0, 'the run finishes: ' + drew.stderr);
+      assert.equal(fs.readFileSync(beside, 'utf8'), 'not this run\n',
+        'and what was there is untouched');
+      assert.deepEqual(fs.readdirSync(sandbox + '/docs/screenshots').filter(
+        (name) => !name.toLowerCase().endsWith('.png')), ['sentinel.txt'],
+      'with nothing of the run beside it');
+      // Saying nothing is the other half of leaving it alone: a name the run
+      // mentions is one the reader is being asked to do something about.
+      assert.ok(!(drew.stdout + drew.stderr).includes('sentinel'),
+        'and the run says nothing about it: ' + (drew.stdout + drew.stderr));
+
+      const checked = runCheck(sandbox);
+      assert.equal(checked.status, 0, '--check counts .png files: ' + checked.stderr);
+      assert.ok(!(checked.stdout + checked.stderr).includes('sentinel'),
+        'nor does --check: ' + (checked.stdout + checked.stderr));
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+test('a copy that cannot be cleared away is answered for, not only mentioned',
+  { skip: generatorSkip }, () => {
+    const run = spawnSync('python3', ['-B', '-c', INJECT_COPY_FAULT, 'litter'],
+      { cwd: __dirname, encoding: 'utf8' });
+    assert.equal(run.status, 0, 'the probe ran: ' + (run.stderr || run.stdout));
+    const seen = JSON.parse(run.stdout);
+    // Exit 0 says this run left no copy of its own behind - it says nothing
+    // about what was in the directory before it. The copy is named and filled
+    // by this run, so a copy that outlives it has nobody else to report it:
+    // --check only counts .png files.
+    assert.equal(seen.code, 1, 'the run does not answer 0: ' + seen.told);
+    assert.match(seen.told, /が残った \(Permission denied\)/, seen.told);
+    assert.equal(seen.left.length, 1, 'since it is still there: ' + seen.left.join(', '));
+  });
+
 test('an image that cannot be read is not called one that cannot be written',
   { skip: generatorSkip
     || (process.platform === 'win32' && 'mode bits do not keep a file shut on win32')
@@ -6511,7 +6623,8 @@ test('an image that cannot be read is not called one that cannot be written',
         { cwd: sandbox, encoding: 'utf8' });
       assert.equal(redraw.status, 1, 'the run stops: ' + redraw.stderr);
       assert.doesNotMatch(redraw.stderr, /Traceback/);
-      assert.match(redraw.stderr, /docs\/screenshots\/overlay_en\.png を読めない \(Permission denied\)/);
+      assert.match(redraw.stderr,
+        /docs\/screenshots\/overlay_en\.png の控えを .+ に作れない \(Permission denied\)/);
       assert.doesNotMatch(redraw.stderr, /へ書けない/);
     } finally {
       fs.chmodSync(target, 0o644);
