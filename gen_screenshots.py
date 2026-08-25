@@ -666,9 +666,10 @@ def replace_all(staging, out_dir):
             if litter is not None:
                 print(litter, file=sys.stderr)
         raise
-    # 片付けられなかったことは呼び出し側が答えに載せる。exit 0 は「追跡先には
-    # 6 枚以外が無い」の意味で、--check は .png しか数えないため、ここで言わな
-    # ければ後続の検査も言わない。
+    # 片付けられなかったことは呼び出し側が答えに載せる。exit 0 が言えるのは
+    # 「この走行が置いた控えは残っていない」までで、追跡先に元からある非 PNG に
+    # ついては何も言わない (--check も .png しか数えない)。控えは名前も中身も
+    # この走行のものなので、残ったならこの走行しか言える者がいない。
     return names, None if keep else clear_away(backup)
 
 

@@ -6560,14 +6560,42 @@ test('a copy that will not fit names where it was going, not the image',
     assert.deepEqual(seen.left, [], 'and nothing of the run is left behind');
   });
 
+test('a run leaves alone what it found in the directory, and says nothing of it',
+  { skip: generatorSkip }, () => {
+    const sandbox = screenshotSandbox();
+    try {
+      // What the run answers for is the copy it made. Something already in the
+      // directory is not this run's to remove, or to report: reading exit 0 as
+      // "the six and nothing else" would be reading more than is measured.
+      const beside = path.join(sandbox, 'docs/screenshots/sentinel.txt');
+      fs.writeFileSync(beside, 'not this run\n');
+
+      const drew = spawnSync('python3', ['-B', 'gen_screenshots.py'],
+        { cwd: sandbox, encoding: 'utf8' });
+      assert.equal(drew.status, 0, 'the run finishes: ' + drew.stderr);
+      assert.equal(fs.readFileSync(beside, 'utf8'), 'not this run\n',
+        'and what was there is untouched');
+      assert.deepEqual(fs.readdirSync(sandbox + '/docs/screenshots').filter(
+        (name) => !name.toLowerCase().endsWith('.png')), ['sentinel.txt'],
+      'with nothing of the run beside it');
+
+      const checked = runCheck(sandbox);
+      assert.equal(checked.status, 0, '--check counts .png files: ' + checked.stderr);
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
 test('a copy that cannot be cleared away is answered for, not only mentioned',
   { skip: generatorSkip }, () => {
     const run = spawnSync('python3', ['-B', '-c', INJECT_COPY_FAULT, 'litter'],
       { cwd: __dirname, encoding: 'utf8' });
     assert.equal(run.status, 0, 'the probe ran: ' + (run.stderr || run.stdout));
     const seen = JSON.parse(run.stdout);
-    // Exit 0 says the tracked directory holds the six and nothing else, and
-    // --check only counts .png files, so nothing downstream would say this.
+    // Exit 0 says this run left no copy of its own behind - it says nothing
+    // about what was in the directory before it. The copy is named and filled
+    // by this run, so a copy that outlives it has nobody else to report it:
+    // --check only counts .png files.
     assert.equal(seen.code, 1, 'the run does not answer 0: ' + seen.told);
     assert.match(seen.told, /が残った \(Permission denied\)/, seen.told);
     assert.equal(seen.left.length, 1, 'since it is still there: ' + seen.left.join(', '));
