@@ -6499,8 +6499,8 @@ test('a link to a directory under a drawn name is turned down, not written throu
     }
   });
 
-// Taking the copy reads the image and writes the copy in the one call, and a
-// run that finished says the tracked directory holds the six and nothing else.
+// Taking the copy reads the image and writes the copy in the one call, and a run
+// that finished says the copy it made did not outlive it.
 const INJECT_COPY_FAULT = [
   'import contextlib, importlib.util, io, json, os, shutil, sys, tempfile',
   'mode = sys.argv[1]',
@@ -6578,9 +6578,15 @@ test('a run leaves alone what it found in the directory, and says nothing of it'
       assert.deepEqual(fs.readdirSync(sandbox + '/docs/screenshots').filter(
         (name) => !name.toLowerCase().endsWith('.png')), ['sentinel.txt'],
       'with nothing of the run beside it');
+      // Saying nothing is the other half of leaving it alone: a name the run
+      // mentions is one the reader is being asked to do something about.
+      assert.ok(!(drew.stdout + drew.stderr).includes('sentinel'),
+        'and the run says nothing about it: ' + (drew.stdout + drew.stderr));
 
       const checked = runCheck(sandbox);
       assert.equal(checked.status, 0, '--check counts .png files: ' + checked.stderr);
+      assert.ok(!(checked.stdout + checked.stderr).includes('sentinel'),
+        'nor does --check: ' + (checked.stdout + checked.stderr));
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }
