@@ -5348,8 +5348,10 @@ test('store screenshot generator writes the tracked directory, and only whole', 
   }
   // Beside the destination, so each move is a rename within one filesystem.
   assert.match(source, /with tempfile\.TemporaryDirectory\(dir=out_dir\) as staging:/);
-  // main hands the staging directory over rather than moving anything itself.
-  assert.match(source, /for name in replace_all\(staging, out_dir\):/);
+  // main hands the staging directory over rather than moving anything itself,
+  // and what replacing could not clear away comes back to be answered for.
+  assert.match(source, /written, litter = replace_all\(staging, out_dir\)/);
+  assert.match(source, /if litter is not None:\n\s+#.*\n\s+#.*\n\s+raise Refused\(litter\)/);
   const replaceAll = source.slice(source.indexOf('def replace_all('), source.indexOf('def main('));
   assert.match(replaceAll, /except BaseException as err:/);
   // Putting them back is a loop of its own: one name it cannot restore must not
@@ -6497,10 +6499,11 @@ test('a link to a directory under a drawn name is turned down, not written throu
     }
   });
 
-// Taking the copy reads the image and writes the copy in the one call, so what
-// refused is not known from here - both ends are named.
+// Taking the copy reads the image and writes the copy in the one call, and a
+// run that finished says the tracked directory holds the six and nothing else.
 const INJECT_COPY_FAULT = [
   'import contextlib, importlib.util, io, json, os, shutil, sys, tempfile',
+  'mode = sys.argv[1]',
   'repo = os.getcwd()',
   'with tempfile.TemporaryDirectory() as sandbox:',
   "    script = os.path.join(sandbox, 'gen_screenshots.py')",
@@ -6515,19 +6518,27 @@ const INJECT_COPY_FAULT = [
   "    spec = importlib.util.spec_from_file_location('gen_under_test', script)",
   '    gen = importlib.util.module_from_spec(spec)',
   '    spec.loader.exec_module(gen)',
-  '    real_copy2 = shutil.copy2',
+  '    real_copy2, real_rmtree = shutil.copy2, shutil.rmtree',
   '    def full_disk(src, dst, *a, **k):',
   '        # The copy is what will not fit; the image itself reads.',
   '        if os.path.dirname(dst) != out:',
   "            raise OSError(28, 'No space left on device', dst)",
   '        return real_copy2(src, dst, *a, **k)',
-  '    gen.shutil.copy2 = full_disk',
+  '    def refusing_rmtree(path, *a, **k):',
+  '        # Only the copy: the staging directory is empty by the time it goes.',
+  '        if os.listdir(path):',
+  "            raise OSError(13, 'Permission denied', path)",
+  '        return real_rmtree(path, *a, **k)',
+  "    if mode == 'nospace':",
+  '        gen.shutil.copy2 = full_disk',
+  '    else:',
+  '        gen.shutil.rmtree = refusing_rmtree',
   '    said = io.StringIO()',
   '    try:',
   '        with contextlib.redirect_stderr(said), contextlib.redirect_stdout(io.StringIO()):',
   '            code = gen.main()',
   '    finally:',
-  '        gen.shutil.copy2 = real_copy2',
+  '        gen.shutil.copy2, gen.shutil.rmtree = real_copy2, real_rmtree',
   "    print(json.dumps({'code': code, 'told': said.getvalue(), 'first': first,",
   "                      'reads': open(os.path.join(out, first), 'rb').read(4).hex(),",
   "                      'left': sorted(n for n in os.listdir(out)",
@@ -6536,7 +6547,7 @@ const INJECT_COPY_FAULT = [
 
 test('a copy that will not fit names where it was going, not the image',
   { skip: generatorSkip }, () => {
-    const run = spawnSync('python3', ['-B', '-c', INJECT_COPY_FAULT],
+    const run = spawnSync('python3', ['-B', '-c', INJECT_COPY_FAULT, 'nospace'],
       { cwd: __dirname, encoding: 'utf8' });
     assert.equal(run.status, 0, 'the probe ran: ' + (run.stderr || run.stdout));
     const seen = JSON.parse(run.stdout);
@@ -6547,6 +6558,19 @@ test('a copy that will not fit names where it was going, not the image',
     assert.match(seen.told, new RegExp(seen.first.replace('.', '\\.')
       + ' の控えを .+ に作れない \\(No space left on device\\)'), seen.told);
     assert.deepEqual(seen.left, [], 'and nothing of the run is left behind');
+  });
+
+test('a copy that cannot be cleared away is answered for, not only mentioned',
+  { skip: generatorSkip }, () => {
+    const run = spawnSync('python3', ['-B', '-c', INJECT_COPY_FAULT, 'litter'],
+      { cwd: __dirname, encoding: 'utf8' });
+    assert.equal(run.status, 0, 'the probe ran: ' + (run.stderr || run.stdout));
+    const seen = JSON.parse(run.stdout);
+    // Exit 0 says the tracked directory holds the six and nothing else, and
+    // --check only counts .png files, so nothing downstream would say this.
+    assert.equal(seen.code, 1, 'the run does not answer 0: ' + seen.told);
+    assert.match(seen.told, /が残った \(Permission denied\)/, seen.told);
+    assert.equal(seen.left.length, 1, 'since it is still there: ' + seen.left.join(', '));
   });
 
 test('an image that cannot be read is not called one that cannot be written',

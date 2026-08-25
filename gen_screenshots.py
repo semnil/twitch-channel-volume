@@ -572,11 +572,21 @@ LEFT_AS = {
 }
 
 
+def clear_away(backup):
+    """控えを片付ける。できなかったことがあればその文面、無ければ None。"""
+    try:
+        shutil.rmtree(backup)
+    except OSError as err:
+        return f'{shown(backup)} が残った ({reason(err)})'
+    return None
+
+
 def replace_all(staging, out_dir):
     """staging の全ファイルで out_dir を置き換える。1 つでも失敗したら元へ戻す。
 
-    描画が最後まで通っても置換は 6 回に分かれるため、途中で止まると新しい
-    ものと前回のものが並ぶ。戻せるように、上書きする分を先に控える。
+    (置き換えた名前, 片付けられなかった控えの文面 or None) を返す。描画が
+    最後まで通っても置換は 6 回に分かれるため、途中で止まると新しいものと
+    前回のものが並ぶ。戻せるように、上書きする分を先に控える。
     """
     names = sorted(os.listdir(staging))
     os.makedirs(out_dir, exist_ok=True)
@@ -649,14 +659,17 @@ def replace_all(staging, out_dir):
                     f'{shown(named_by(err, out_dir))} の置き換えが途中で止まった'
                     f' ({reason(err)})\n{told}') from err
             raise
-    finally:
+    except BaseException:
+        # 断って出ていく経路。控えは名指し済み (keep) か、この走行のゴミ。
         if not keep:
-            try:
-                shutil.rmtree(backup)
-            except OSError as err:
-                # 消せなくても走行の答えは変わらない。残ったことだけ言う。
-                print(f'{shown(backup)} が残った ({reason(err)})', file=sys.stderr)
-    return names
+            litter = clear_away(backup)
+            if litter is not None:
+                print(litter, file=sys.stderr)
+        raise
+    # 片付けられなかったことは呼び出し側が答えに載せる。exit 0 は「追跡先には
+    # 6 枚以外が無い」の意味で、--check は .png しか数えないため、ここで言わな
+    # ければ後続の検査も言わない。
+    return names, None if keep else clear_away(backup)
 
 
 def shown(path):
@@ -719,8 +732,13 @@ def main(out_dir=OUT_DIR, named=False):
                 # 描き先は行き先の中の作業ディレクトリなので、名指しするのは
                 # 行き先の側。読む人には作業用の名前を渡さない。
                 raise Refused(f'{shown(out_dir)} へ描けない ({reason(err)})') from err
-            for name in replace_all(staging, out_dir):
+            written, litter = replace_all(staging, out_dir)
+            for name in written:
                 print(f'Generated {os.path.join(shown(out_dir), name)}')
+            if litter is not None:
+                # 6 枚は書けている。走行が終わらなかったのは、この走行が置いた
+                # ものを引き取れなかったから。
+                raise Refused(litter)
     except Refused as err:
         # 何をしようとして断られたかは断った側が言う。ここで言い直さない。
         return refused_to_write(named, str(err))
