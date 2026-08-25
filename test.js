@@ -5255,7 +5255,7 @@ const INJECT_MOVE_FAILURE = [
   '    os.makedirs(out)',
   "    tracked = os.path.join(repo, 'docs', 'screenshots')",
   '    if seeded:',
-  '        for name in os.listdir(tracked):',
+  "        for name in sorted(n for n in os.listdir(tracked) if n.lower().endswith('.png')):",
   '            shutil.copy2(os.path.join(tracked, name), os.path.join(out, name))',
   '    before = digests(out)',
   "    spec = importlib.util.spec_from_file_location('gen_under_test', script)",
@@ -5407,13 +5407,22 @@ test('tracked store screenshots are what the generator draws', { skip: generator
 // A run over a matching tree says nothing about what --check rejects, so the
 // runs below hand it trees it has to turn down. Each gets its own copy: the
 // script, the faces it resolves beside itself, and the six images.
+// The images the repository tracks, by name. What else the directory is holding
+// is not one of them: .DS_Store is there for the asking on a Mac and allowed by
+// .gitignore, and copied into a sandbox it is answered for as this run's.
+const TRACKED_SHOTS = fs.readdirSync(path.join(__dirname, 'docs/screenshots'))
+  .filter((name) => name.toLowerCase().endsWith('.png')).sort();
+
 function screenshotSandbox() {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'tcv-shots-'));
   fs.copyFileSync(path.join(__dirname, 'gen_screenshots.py'),
     path.join(sandbox, 'gen_screenshots.py'));
   fs.cpSync(path.join(__dirname, 'tools'), path.join(sandbox, 'tools'), { recursive: true });
-  fs.cpSync(path.join(__dirname, 'docs/screenshots'), path.join(sandbox, 'docs/screenshots'),
-    { recursive: true });
+  fs.mkdirSync(path.join(sandbox, 'docs/screenshots'), { recursive: true });
+  for (const name of TRACKED_SHOTS) {
+    fs.copyFileSync(path.join(__dirname, 'docs/screenshots', name),
+      path.join(sandbox, 'docs/screenshots', name));
+  }
   return sandbox;
 }
 
@@ -6225,7 +6234,7 @@ const INJECT_RESTORE_FAILURE = [
   "    out = os.path.join(sandbox, 'docs', 'screenshots')",
   '    os.makedirs(out)',
   "    tracked = os.path.join(repo, 'docs', 'screenshots')",
-  '    for name in os.listdir(tracked):',
+  "    for name in sorted(n for n in os.listdir(tracked) if n.lower().endswith('.png')):",
   '        shutil.copy2(os.path.join(tracked, name), os.path.join(out, name))',
   '    before = {n: digest(os.path.join(out, n)) for n in sorted(os.listdir(out))}',
   "    spec = importlib.util.spec_from_file_location('gen_under_test', script)",
@@ -6296,7 +6305,7 @@ const INJECT_DRAW_FAILURE = [
   "    out = os.path.join(sandbox, 'docs', 'screenshots')",
   '    os.makedirs(out)',
   "    tracked = os.path.join(repo, 'docs', 'screenshots')",
-  '    for name in os.listdir(tracked):',
+  "    for name in sorted(n for n in os.listdir(tracked) if n.lower().endswith('.png')):",
   '        shutil.copy2(os.path.join(tracked, name), os.path.join(out, name))',
   "    spec = importlib.util.spec_from_file_location('gen_under_test', script)",
   '    gen = importlib.util.module_from_spec(spec)',
@@ -6345,7 +6354,7 @@ const INJECT_OVER_A_LINK = [
   '    os.makedirs(out)',
   "    tracked = os.path.join(repo, 'docs', 'screenshots')",
   "    if mode != 'firstrun':",
-  '        for name in os.listdir(tracked):',
+  "        for name in sorted(n for n in os.listdir(tracked) if n.lower().endswith('.png')):",
   '            shutil.copy2(os.path.join(tracked, name), os.path.join(out, name))',
   '    here = os.path.join(out, first)',
   '    aside = None',
@@ -6512,7 +6521,7 @@ const INJECT_COPY_FAULT = [
   "    out = os.path.join(sandbox, 'docs', 'screenshots')",
   '    os.makedirs(out)',
   "    tracked = os.path.join(repo, 'docs', 'screenshots')",
-  '    for name in os.listdir(tracked):',
+  "    for name in sorted(n for n in os.listdir(tracked) if n.lower().endswith('.png')):",
   '        shutil.copy2(os.path.join(tracked, name), os.path.join(out, name))',
   '    first = sorted(os.listdir(out))[0]',
   "    spec = importlib.util.spec_from_file_location('gen_under_test', script)",
@@ -6567,26 +6576,37 @@ test('a run leaves alone what it found in the directory, and says nothing of it'
       // What the run answers for is the copy it made. Something already in the
       // directory is not this run's to remove, or to report: reading exit 0 as
       // "the six and nothing else" would be reading more than is measured.
+      //
+      // Both halves are measured against the same directory with one thing
+      // changed. Saying nothing is the whole of what the two runs print, not
+      // the absence of one name — a line that mentions the file without naming
+      // it says something too — and what is left alone is read back after each
+      // run, since one that removes it quietly says nothing either.
+      const draw = () => spawnSync('python3', ['-B', 'gen_screenshots.py'],
+        { cwd: sandbox, encoding: 'utf8' });
       const beside = path.join(sandbox, 'docs/screenshots/sentinel.txt');
+      const quiet = [draw(), runCheck(sandbox)];
+      assert.deepEqual(quiet.map((run) => run.status), [0, 0],
+        'the runs to compare against finish: ' + quiet.map((run) => run.stderr).join(' '));
+
       fs.writeFileSync(beside, 'not this run\n');
 
-      const drew = spawnSync('python3', ['-B', 'gen_screenshots.py'],
-        { cwd: sandbox, encoding: 'utf8' });
+      const drew = draw();
       assert.equal(drew.status, 0, 'the run finishes: ' + drew.stderr);
+      assert.deepEqual([drew.stdout, drew.stderr], [quiet[0].stdout, quiet[0].stderr],
+        'and says exactly what it says with nothing there: ' + drew.stdout);
       assert.equal(fs.readFileSync(beside, 'utf8'), 'not this run\n',
-        'and what was there is untouched');
-      assert.deepEqual(fs.readdirSync(sandbox + '/docs/screenshots').filter(
-        (name) => !name.toLowerCase().endsWith('.png')), ['sentinel.txt'],
-      'with nothing of the run beside it');
-      // Saying nothing is the other half of leaving it alone: a name the run
-      // mentions is one the reader is being asked to do something about.
-      assert.ok(!(drew.stdout + drew.stderr).includes('sentinel'),
-        'and the run says nothing about it: ' + (drew.stdout + drew.stderr));
+        'with what was there still there, unchanged');
 
       const checked = runCheck(sandbox);
       assert.equal(checked.status, 0, '--check counts .png files: ' + checked.stderr);
-      assert.ok(!(checked.stdout + checked.stderr).includes('sentinel'),
-        'nor does --check: ' + (checked.stdout + checked.stderr));
+      assert.deepEqual([checked.stdout, checked.stderr], [quiet[1].stdout, quiet[1].stderr],
+        'and says the same as it says with nothing there: ' + checked.stdout);
+      assert.equal(fs.readFileSync(beside, 'utf8'), 'not this run\n',
+        'with what was there still there after that too');
+      assert.deepEqual(fs.readdirSync(sandbox + '/docs/screenshots').filter(
+        (name) => !name.toLowerCase().endsWith('.png')), ['sentinel.txt'],
+      'and nothing of either run beside it');
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }
