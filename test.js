@@ -5255,7 +5255,7 @@ const INJECT_MOVE_FAILURE = [
   '    os.makedirs(out)',
   "    tracked = os.path.join(repo, 'docs', 'screenshots')",
   '    if seeded:',
-  '        for name in os.listdir(tracked):',
+  "        for name in sorted(n for n in os.listdir(tracked) if n.lower().endswith('.png')):",
   '            shutil.copy2(os.path.join(tracked, name), os.path.join(out, name))',
   '    before = digests(out)',
   "    spec = importlib.util.spec_from_file_location('gen_under_test', script)",
@@ -5407,13 +5407,22 @@ test('tracked store screenshots are what the generator draws', { skip: generator
 // A run over a matching tree says nothing about what --check rejects, so the
 // runs below hand it trees it has to turn down. Each gets its own copy: the
 // script, the faces it resolves beside itself, and the six images.
+// The images the repository tracks, by name. What else the directory is holding
+// is not one of them: .DS_Store is there for the asking on a Mac and allowed by
+// .gitignore, and copied into a sandbox it is answered for as this run's.
+const TRACKED_SHOTS = fs.readdirSync(path.join(__dirname, 'docs/screenshots'))
+  .filter((name) => name.toLowerCase().endsWith('.png')).sort();
+
 function screenshotSandbox() {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'tcv-shots-'));
   fs.copyFileSync(path.join(__dirname, 'gen_screenshots.py'),
     path.join(sandbox, 'gen_screenshots.py'));
   fs.cpSync(path.join(__dirname, 'tools'), path.join(sandbox, 'tools'), { recursive: true });
-  fs.cpSync(path.join(__dirname, 'docs/screenshots'), path.join(sandbox, 'docs/screenshots'),
-    { recursive: true });
+  fs.mkdirSync(path.join(sandbox, 'docs/screenshots'), { recursive: true });
+  for (const name of TRACKED_SHOTS) {
+    fs.copyFileSync(path.join(__dirname, 'docs/screenshots', name),
+      path.join(sandbox, 'docs/screenshots', name));
+  }
   return sandbox;
 }
 
@@ -6225,7 +6234,7 @@ const INJECT_RESTORE_FAILURE = [
   "    out = os.path.join(sandbox, 'docs', 'screenshots')",
   '    os.makedirs(out)',
   "    tracked = os.path.join(repo, 'docs', 'screenshots')",
-  '    for name in os.listdir(tracked):',
+  "    for name in sorted(n for n in os.listdir(tracked) if n.lower().endswith('.png')):",
   '        shutil.copy2(os.path.join(tracked, name), os.path.join(out, name))',
   '    before = {n: digest(os.path.join(out, n)) for n in sorted(os.listdir(out))}',
   "    spec = importlib.util.spec_from_file_location('gen_under_test', script)",
@@ -6296,7 +6305,7 @@ const INJECT_DRAW_FAILURE = [
   "    out = os.path.join(sandbox, 'docs', 'screenshots')",
   '    os.makedirs(out)',
   "    tracked = os.path.join(repo, 'docs', 'screenshots')",
-  '    for name in os.listdir(tracked):',
+  "    for name in sorted(n for n in os.listdir(tracked) if n.lower().endswith('.png')):",
   '        shutil.copy2(os.path.join(tracked, name), os.path.join(out, name))',
   "    spec = importlib.util.spec_from_file_location('gen_under_test', script)",
   '    gen = importlib.util.module_from_spec(spec)',
@@ -6345,7 +6354,7 @@ const INJECT_OVER_A_LINK = [
   '    os.makedirs(out)',
   "    tracked = os.path.join(repo, 'docs', 'screenshots')",
   "    if mode != 'firstrun':",
-  '        for name in os.listdir(tracked):',
+  "        for name in sorted(n for n in os.listdir(tracked) if n.lower().endswith('.png')):",
   '            shutil.copy2(os.path.join(tracked, name), os.path.join(out, name))',
   '    here = os.path.join(out, first)',
   '    aside = None',
@@ -6512,7 +6521,7 @@ const INJECT_COPY_FAULT = [
   "    out = os.path.join(sandbox, 'docs', 'screenshots')",
   '    os.makedirs(out)',
   "    tracked = os.path.join(repo, 'docs', 'screenshots')",
-  '    for name in os.listdir(tracked):',
+  "    for name in sorted(n for n in os.listdir(tracked) if n.lower().endswith('.png')):",
   '        shutil.copy2(os.path.join(tracked, name), os.path.join(out, name))',
   '    first = sorted(os.listdir(out))[0]',
   "    spec = importlib.util.spec_from_file_location('gen_under_test', script)",
