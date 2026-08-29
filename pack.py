@@ -150,11 +150,17 @@ def selected_files(root):
     for relative in sorted(selected):
         yield _packaged(root, relative), relative
 
-    # Chrome resolves every __MSG_ placeholder against the default locale and
-    # declines to load an extension whose default locale holds no messages, so
-    # that one file is required rather than carried when it happens to be there.
+    # Chrome requires the two to agree. An extension carrying a _locales
+    # directory has to name a default_locale, and the locale it names has to hold
+    # messages — every __MSG_ placeholder resolves against it. Either half alone
+    # is an extension Chrome declines to load. Naming a default_locale with no
+    # _locales at all is refused by the messages check below rather than here.
     default_locale = manifest.get('default_locale')
+    if default_locale is not None and not (isinstance(default_locale, str) and default_locale):
+        raise SystemExit(f'default_locale is not a locale name: {default_locale!r}')
     locales = _host(root, LOCALE_DIR)
+    if os.path.isdir(locales) and not default_locale:
+        raise SystemExit(f'{LOCALE_DIR} is here and the manifest names no default_locale')
     required = (posixpath.join(LOCALE_DIR, default_locale, LOCALE_FILE)
                 if default_locale else None)
     carried = set()

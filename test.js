@@ -225,7 +225,8 @@ test('the store package carries only the files the extension loads', () => {
     write('manifest.json', JSON.stringify({
       manifest_version: 3,
       version: '1.0.0',
-        content_scripts: [{ js: ['utils.js', 'content.js'] }],
+      default_locale: 'ja',
+      content_scripts: [{ js: ['utils.js', 'content.js'] }],
       web_accessible_resources: [{ resources: ['audio-worklet.js'] }],
       background: { service_worker: 'background.js' },
       action: { default_popup: 'popup.html', default_icon: { 16: 'icons/icon16.png' } }
@@ -406,6 +407,16 @@ test('the store package refuses to leave out what it has to carry', () => {
     ["the default locale's messages gone",
       (box) => fs.rmSync(path.join(box, '_locales/ja/messages.json'))],
     ['_locales gone', (box) => fs.rmSync(path.join(box, '_locales'), { recursive: true })],
+    // Chrome reads _locales and default_locale as one contract: a directory
+    // with nothing naming it is an extension it declines to load.
+    ['no default_locale, and _locales still here',
+      (box) => editManifest(box, (m) => { delete m.default_locale; })],
+    ['default_locale set to an empty string',
+      (box) => editManifest(box, (m) => { m.default_locale = ''; })],
+    ['default_locale set to something that is not a string',
+      (box) => editManifest(box, (m) => { m.default_locale = 7; })],
+    ['default_locale naming a directory that is not there',
+      (box) => editManifest(box, (m) => { m.default_locale = 'de'; })],
     ['a manifest reference naming a drive rather than a path inside the package',
       (box) => editManifest(box, (m) => { m.content_scripts = [{ js: ['C:/content.js'] }]; })]
   ]) {
@@ -422,6 +433,10 @@ test('the store package refuses to leave out what it has to carry', () => {
         `pack.py ${args.join(' ')} refuses a package with ${broken}`);
       assert.doesNotMatch(refused.stdout || '', /^\s*\+ /m,
         `pack.py names nothing as packed with ${broken}`);
+      // A traceback exits non-zero too, and says what broke rather than what is
+      // wrong with the package.
+      assert.doesNotMatch(refused.stderr || '', /Traceback \(most recent call last\)/,
+        `pack.py says what is wrong with ${broken}, instead of raising`);
     }
     assert.ok(fs.existsSync(zip) && fs.statSync(zip).size === before,
       `the package built before is left alone with ${broken}`);
