@@ -15,6 +15,10 @@ import sys
 # only opening a file goes through the host's own separator.
 LOCALE_DIR = '_locales'
 LOCALE_FILE = 'messages.json'
+# What a copy of the extension carries although nothing in it loads them. The
+# MIT text requires the notice to travel with the copies it covers, and a store
+# package is one, so the reference walk below never reaching it is not an answer.
+DISTRIBUTION_FILES = ('LICENSE',)
 SCRIPT_SRC = re.compile(r'<script[^>]+src="([^"]+)"')
 STYLE_HREF = re.compile(r'<link[^>]+href="([^"]+)"')
 IMPORT_SCRIPTS = re.compile(r'importScripts\(([^)]*)\)')
@@ -118,6 +122,11 @@ def selected_files(root):
             full = _packaged(root, relative)
             if os.path.isfile(full):
                 yield full, relative
+
+    for relative in DISTRIBUTION_FILES:
+        full = _packaged(root, relative)
+        if os.path.isfile(full):
+            yield full, relative
 
 
 def pack():

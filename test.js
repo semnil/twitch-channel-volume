@@ -110,6 +110,19 @@ test('every packaged path is one the extension loads', () => {
   assert.ok(packaged.includes('manifest.json'));
   assert.ok(!packaged.includes('test.js'));
 
+  // What a copy carries although nothing in it loads them. pack.py names them
+  // in DISTRIBUTION_FILES, and reading that list here holds the two together.
+  const packSource = fs.readFileSync(path.join(__dirname, 'pack.py'), 'utf8');
+  const declared = packSource.match(/^DISTRIBUTION_FILES = \(([^)]*)\)/m);
+  assert.ok(declared, 'pack.py names what a copy carries in DISTRIBUTION_FILES');
+  const distribution = [...declared[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  assert.ok(distribution.includes('LICENSE'),
+    'the licence text travels with the copies the licence covers');
+  for (const name of distribution) {
+    assert.ok(fs.existsSync(path.join(__dirname, name)), `${name} exists`);
+    assert.ok(packaged.includes(name), `${name} is in the store package`);
+  }
+
   // Read independently of pack.py's own parsing: every packaged script or page
   // is named by the manifest, by a page the manifest names, or by the worker.
   const references = ['manifest.json', 'popup.html', 'options.html', 'background.js']
@@ -119,7 +132,7 @@ test('every packaged path is one the extension loads', () => {
     // A name inside the package is POSIX whatever the host writes it on.
     const segments = arcname.split('/');
     if (segments.length === 1) {
-      if (arcname === 'manifest.json') continue;
+      if (arcname === 'manifest.json' || distribution.includes(arcname)) continue;
       assert.match(arcname, /\.(js|html)$/, `${arcname} is not a script or a page`);
       assert.ok(references.includes(arcname), `${arcname} is packaged but nothing loads it`);
       continue;
@@ -201,6 +214,7 @@ test('the store package carries only the files the extension loads', () => {
       '<script src="utils.js"></script>\n<script src="popup.js"></script>\n'
       + '<script src="sub/deep.js"></script>\n');
     write('sub/deep.js');
+    write('LICENSE', 'MIT License\n');
     write('popup.js');
     write('icons/icon16.png');
     write('_locales/ja/messages.json', '{}');
@@ -231,6 +245,7 @@ test('the store package carries only the files the extension loads', () => {
     assert.equal(listed.status, 0, listed.stderr);
     const packaged = listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
     const expected = [
+      'LICENSE',
       '_locales/ja/messages.json',
       'audio-worklet.js',
       'background.js',
