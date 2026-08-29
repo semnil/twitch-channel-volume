@@ -2,12 +2,17 @@
 import zipfile
 import os
 import json
+import posixpath
 import re
 import sys
 
 # The package is what the extension loads: the manifest, everything the
 # manifest names, what those pages and workers pull in, and the locale files.
 # A file nobody references is not part of it, whatever it is called.
+# Everything below names a packaged file by its path inside the package, which
+# is POSIX whatever the host writes: the manifest spells its references with
+# forward slashes and a zip entry carries them, so the two are one name and
+# only opening a file goes through the host's own separator.
 LOCALE_DIR = '_locales'
 LOCALE_FILE = 'messages.json'
 SCRIPT_SRC = re.compile(r'<script[^>]+src="([^"]+)"')
@@ -17,18 +22,23 @@ QUOTED = re.compile(r'[\'"]([^\'"]+)[\'"]')
 REMOTE = ('http:', 'https:', '//', 'data:', 'chrome-extension:')
 
 
-def _resolve(root, relative):
-    """Absolute path of a packaged file, or None when it leaves the package.
+def _host(root, relative):
+    """The host path of a packaged file named by its path inside the package."""
+    return os.path.join(root, *relative.split('/'))
 
-    The path is rejected when it is absolute, climbs out with .., or reaches
-    its target through a symbolic link at any point — the final name or a
-    parent directory alike.
+
+def _resolve(root, relative):
+    """Absolute host path of a packaged file, or None when it leaves the package.
+
+    The path is rejected when it is absolute, carries a backslash, climbs out
+    with .., or reaches its target through a symbolic link at any point — the
+    final name or a parent directory alike.
     """
-    if os.path.isabs(relative):
+    if '\\' in relative or posixpath.isabs(relative):
         return None
-    normalized = os.path.normpath(relative)
+    normalized = posixpath.normpath(relative)
     real_root = os.path.realpath(root)
-    full = os.path.join(real_root, normalized)
+    full = _host(real_root, normalized)
     if os.path.realpath(full) != full:
         return None
     return full
@@ -42,7 +52,7 @@ def _packaged(root, relative):
 
 
 def _read(root, relative):
-    with open(os.path.join(root, relative), encoding='utf-8') as handle:
+    with open(_host(root, relative), encoding='utf-8') as handle:
         return handle.read()
 
 
@@ -68,7 +78,7 @@ def _manifest_references(manifest):
 
 def _references_within(root, relative):
     """Paths the given page or script pulls in, relative to the package root."""
-    base = os.path.dirname(relative)
+    base = posixpath.dirname(relative)
     found = []
     if relative.endswith('.html'):
         text = _read(root, relative)
@@ -80,7 +90,7 @@ def _references_within(root, relative):
     for reference in found:
         if reference.startswith(REMOTE):
             continue
-        yield os.path.normpath(os.path.join(base, reference))
+        yield posixpath.normpath(posixpath.join(base, reference))
 
 
 def selected_files(root):
@@ -89,7 +99,7 @@ def selected_files(root):
     pending.extend(_manifest_references(json.loads(_read(root, 'manifest.json'))))
     selected = []
     while pending:
-        relative = os.path.normpath(pending.pop(0))
+        relative = posixpath.normpath(pending.pop(0))
         if relative in selected:
             continue
         full = _packaged(root, relative)
@@ -99,12 +109,12 @@ def selected_files(root):
         pending.extend(_references_within(root, relative))
 
     for relative in sorted(selected):
-        yield os.path.join(root, relative), relative
+        yield _packaged(root, relative), relative
 
-    locales = os.path.join(root, LOCALE_DIR)
+    locales = _host(root, LOCALE_DIR)
     if os.path.isdir(locales):
         for locale in sorted(os.listdir(locales)):
-            relative = os.path.join(LOCALE_DIR, locale, LOCALE_FILE)
+            relative = posixpath.join(LOCALE_DIR, locale, LOCALE_FILE)
             full = _packaged(root, relative)
             if os.path.isfile(full):
                 yield full, relative

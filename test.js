@@ -64,6 +64,41 @@ test('extension tree keeps out underscore names and build leftovers', () => {
   assert.deepEqual(forbiddenNamesUnder(__dirname), []);
 });
 
+const WINDOWS_PATH_HARNESS = [
+    'import ntpath, os, builtins, types, importlib.util',
+    'spec = importlib.util.spec_from_file_location("packmod", "pack.py")',
+    'mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)',
+    'real, real_open, real_os = os.path, builtins.open, os',
+    'host = lambda p: p.replace(chr(92), "/")',
+    'win = lambda p: p.replace("/", chr(92))',
+    'class W:',
+    '    isabs, normpath, join, dirname = ntpath.isabs, ntpath.normpath, ntpath.join, ntpath.dirname',
+    '    realpath = staticmethod(lambda p: win(real.realpath(host(p))))',
+    '    isfile = staticmethod(lambda p: real.isfile(host(p)))',
+    '    isdir = staticmethod(lambda p: real.isdir(host(p)))',
+    '    abspath = staticmethod(lambda p: win(real.abspath(host(p))))',
+    'mod.os = types.SimpleNamespace(path=W, listdir=lambda p: real_os.listdir(host(p)),',
+    '                               remove=real_os.remove, sep=chr(92))',
+    'mod.open = lambda p, *a, **k: real_open(host(p), *a, **k)',
+    'print(chr(10).join(arc for _f, arc in mod.selected_files(win(real.abspath(".")))))'
+].join('\n');
+
+function namesOnWindows(cwd, where) {
+  const run = spawnSync('python3', ['-B', '-c', WINDOWS_PATH_HARNESS],
+    { cwd, encoding: 'utf8' });
+  if (run.error) {
+    console.log(`  (windows path check skipped for ${where}: ${run.error.message})`);
+    return null;
+  }
+  assert.equal(run.status, 0,
+    `the windows path harness runs on ${where} — ${(run.stderr || '').trim()}`);
+  const names = (run.stdout || '').trim().split('\n').filter(Boolean);
+  const backslashed = names.filter((name) => name.includes('\\'));
+  assert.deepEqual(backslashed, [],
+    `every name inside ${where}'s package stays POSIX on Windows`);
+  return names;
+}
+
 test('every packaged path is one the extension loads', () => {
   const listed = spawnSync('python3', ['-B', 'pack.py', '--list'], {
     cwd: __dirname,
@@ -81,7 +116,8 @@ test('every packaged path is one the extension loads', () => {
     .map((name) => fs.readFileSync(path.join(__dirname, name), 'utf8'))
     .join('\n');
   for (const arcname of packaged) {
-    const segments = arcname.split(path.sep);
+    // A name inside the package is POSIX whatever the host writes it on.
+    const segments = arcname.split('/');
     if (segments.length === 1) {
       if (arcname === 'manifest.json') continue;
       assert.match(arcname, /\.(js|html)$/, `${arcname} is not a script or a page`);
@@ -161,7 +197,10 @@ test('the store package carries only the files the extension loads', () => {
     write('audio-worklet.js');
     write('background.js', "importScripts('channel-store.js');\n");
     write('channel-store.js');
-    write('popup.html', '<script src="utils.js"></script>\n<script src="popup.js"></script>\n');
+    write('popup.html',
+      '<script src="utils.js"></script>\n<script src="popup.js"></script>\n'
+      + '<script src="sub/deep.js"></script>\n');
+    write('sub/deep.js');
     write('popup.js');
     write('icons/icon16.png');
     write('_locales/ja/messages.json', '{}');
@@ -191,7 +230,7 @@ test('the store package carries only the files the extension loads', () => {
     });
     assert.equal(listed.status, 0, listed.stderr);
     const packaged = listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
-    assert.deepEqual(packaged.sort(), [
+    const expected = [
       '_locales/ja/messages.json',
       'audio-worklet.js',
       'background.js',
@@ -201,9 +240,30 @@ test('the store package carries only the files the extension loads', () => {
       'manifest.json',
       'popup.html',
       'popup.js',
+      'sub/deep.js',
       'utils.js'
-    ]);
+    ];
+    assert.deepEqual(packaged.slice().sort(), expected.slice().sort());
+    const onWindows = namesOnWindows(fixture, 'the fixture');
+    if (onWindows) {
+      assert.deepEqual(onWindows.slice().sort(), expected.slice().sort(),
+        'the fixture packs the same names on either host');
+    }
   });
+});
+
+test('the names inside the package are POSIX on Windows too', () => {
+  // A zip entry uses forward slashes and the manifest spells its references
+  // that way, so those are one name. Windows is where they would not be, and
+  // this runs pack.py's own selection under Windows path semantics.
+  const listed = spawnSync('python3', ['-B', 'pack.py', '--list'],
+    { cwd: __dirname, encoding: 'utf8' });
+  assert.equal(listed.status, 0, listed.stderr);
+  const packaged = listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+  const onWindows = namesOnWindows(__dirname, 'this repository');
+  if (onWindows) {
+    assert.deepEqual(onWindows, packaged, 'the package holds the same names on either host');
+  }
 });
 
 test('the store package refuses a reference that leaves it', () => {
