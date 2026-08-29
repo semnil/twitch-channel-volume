@@ -5772,7 +5772,7 @@ test('--check turns down a second frame riding on the drawn one',
       const run = runCheck(sandbox);
       assert.equal(run.status, 1, 'a second frame is reported: ' + (run.stderr || run.stdout));
       assert.match(run.stderr,
-        /popup_ja\.png: チャンクの並びが違う \(IHDR acTL fcTL IDAT fcTL fdAT IEND \/ 描くのは IHDR IDAT IEND\)/);
+        /popup_ja\.png: a different sequence of chunks \(IHDR acTL fcTL IDAT fcTL fdAT IEND \/ the code draws IHDR IDAT IEND\)/);
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }
@@ -5806,8 +5806,8 @@ test('--check turns down a header that names more pixels than the drawing has',
 
     const run = runCheck(sandbox);
     assert.equal(run.status, 1, 'a bomb header is reported: ' + (run.stderr || run.stdout));
-    assert.match(run.stderr, /overlay_ja\.png: 大きさが違う \(\(200000, 200000\) → \(640, 400\)\)/);
-    assert.match(run.stderr, /settings_ja\.png: いま描くものと違う/,
+    assert.match(run.stderr, /overlay_ja\.png: a different size \(\(200000, 200000\) → \(640, 400\)\)/);
+    assert.match(run.stderr, /settings_ja\.png: differs from what the code draws now/,
       'and the comparison goes on to the images after it');
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
@@ -5825,7 +5825,7 @@ test('--check turns down bytes the decoder never reaches', { skip: generatorSkip
 
     const run = runCheck(sandbox);
     assert.equal(run.status, 1, 'appended bytes are reported: ' + (run.stderr || run.stdout));
-    assert.match(run.stderr, /popup_ja\.png: IEND の後ろに \d+ バイトある/);
+    assert.match(run.stderr, /popup_ja\.png: \d+ bytes after IEND/);
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
   }
@@ -5844,7 +5844,7 @@ test('--check turns down a file that is not the PNG it is named', { skip: genera
 
     const run = runCheck(sandbox);
     assert.equal(run.status, 1, 'a BMP is reported: ' + (run.stderr || run.stdout));
-    assert.match(run.stderr, /popup_ja\.png: PNG ではない/);
+    assert.match(run.stderr, /popup_ja\.png: not a PNG/);
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
   }
@@ -5874,9 +5874,9 @@ test('--check turns down a PNG that stops before its own end', { skip: generator
 
     const run = runCheck(sandbox);
     assert.equal(run.status, 1, 'a truncated end is reported: ' + (run.stderr || run.stdout));
-    assert.match(run.stderr, /popup_ja\.png: IEND が無い/);
-    assert.match(run.stderr, /settings_ja\.png: IEND チャンクの CRC が合わない/);
-    assert.match(run.stderr, /overlay_ja\.png: IEND の長さが 7/);
+    assert.match(run.stderr, /popup_ja\.png: no IEND/);
+    assert.match(run.stderr, /settings_ja\.png: IEND does not match its CRC/);
+    assert.match(run.stderr, /overlay_ja\.png: IEND is 7 bytes long/);
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
   }
@@ -5911,9 +5911,9 @@ test('--check goes on to the next image when one cannot be read', { skip: genera
 
     const run = runCheck(sandbox);
     assert.equal(run.status, 1, 'the unreadable file is reported: ' + (run.stderr || run.stdout));
-    assert.match(run.stderr, /overlay_en\.png: ファイルを読めない/);
+    assert.match(run.stderr, /overlay_en\.png: the file cannot be read/);
     assert.doesNotMatch(run.stderr, /Traceback/, 'without a traceback');
-    assert.match(run.stderr, /popup_de\.png: 誰も描いていない/,
+    assert.match(run.stderr, /popup_de\.png: drawn by nothing/,
       'and the scan for files nothing draws still runs');
   } finally {
     fs.chmodSync(path.join(sandbox, 'docs/screenshots/overlay_en.png'), 0o644);
@@ -5944,7 +5944,7 @@ test('--check does not take a tracked file into memory to read it', { skip: gene
       `the run peaked at ${Math.round(Number(peak) / (1 << 20))} MiB`
       + ` against a ${room / (1 << 20)} MiB chunk`);
     assert.equal(status, '1', 'and it still turns the image down: ' + probe.stderr);
-    assert.match(probe.stderr, /popup_ja\.png: IDAT に zlib ストリームの後ろが \d+ バイトある/);
+    assert.match(probe.stderr, /popup_ja\.png: \d+ bytes after the end of the IDAT stream/);
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
   }
@@ -5973,7 +5973,7 @@ test('--check does not inflate a tracked image beyond what the drawing needs',
         `the run peaked at ${Math.round(Number(peak) / (1 << 20))} MiB`
         + ` against a ${padding / (4 << 20)} MiB bound`);
       assert.equal(status, '1', 'and it still turns the image down: ' + probe.stderr);
-      assert.match(probe.stderr, /popup_ja\.png: 走査線の後ろに展開されるものがまだある/);
+      assert.match(probe.stderr, /popup_ja\.png: more to unpack after the scanlines/);
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }
@@ -6004,9 +6004,9 @@ test('--check turns down a pixel stream that does not end where the chunks do',
 
       const run = runCheck(sandbox);
       assert.equal(run.status, 1, 'the spare bytes are reported: ' + (run.stderr || run.stdout));
-      assert.match(run.stderr, /popup_ja\.png: IDAT に zlib ストリームの後ろが \d+ バイトある/);
-      assert.match(run.stderr, /overlay_ja\.png: 走査線の後ろに展開されるものがまだある/);
-      assert.match(run.stderr, /settings_ja\.png: IDAT の zlib ストリームが終わっていない/);
+      assert.match(run.stderr, /popup_ja\.png: \d+ bytes after the end of the IDAT stream/);
+      assert.match(run.stderr, /overlay_ja\.png: more to unpack after the scanlines/);
+      assert.match(run.stderr, /settings_ja\.png: the IDAT stream does not end/);
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }
@@ -6052,8 +6052,8 @@ test('--check turns down a chunk type the spec does not allow', { skip: generato
 
     const run = runCheck(sandbox);
     assert.equal(run.status, 1, 'the chunk types are reported: ' + (run.stderr || run.stdout));
-    assert.match(run.stderr, /popup_ja\.png: \d+ バイト目のチャンク型が英字 4 文字ではない/);
-    assert.match(run.stderr, /settings_ja\.png: abcd チャンクの予約ビットが 1/);
+    assert.match(run.stderr, /popup_ja\.png: a chunk type at byte \d+ that is not four letters/);
+    assert.match(run.stderr, /settings_ja\.png: abcd has the reserved bit set/);
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
   }
@@ -6079,8 +6079,8 @@ test('--check goes on to the next image when one will not decode', { skip: gener
 
     const run = runCheck(sandbox);
     assert.equal(run.status, 1, 'the image is reported: ' + (run.stderr || run.stdout));
-    assert.match(run.stderr, /overlay_ja\.png: 画像として読めない/);
-    assert.match(run.stderr, /settings_ja\.png: いま描くものと違う/,
+    assert.match(run.stderr, /overlay_ja\.png: cannot be read as an image/);
+    assert.match(run.stderr, /settings_ja\.png: differs from what the code draws now/,
       'and the comparison goes on to the images after it');
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
@@ -6111,10 +6111,10 @@ test('--check reads the chunks before the decoder gets the file', { skip: genera
     const run = runCheck(sandbox);
     assert.equal(run.status, 1, 'the text chunk is reported: ' + (run.stderr || run.stdout));
     assert.match(run.stderr,
-      /popup_ja\.png: チャンクの並びが違う \(IHDR zTXt IDAT IEND \/ 描くのは IHDR IDAT IEND\)/);
-    assert.match(run.stderr, /settings_ja\.png: いま描くものと違う/,
+      /popup_ja\.png: a different sequence of chunks \(IHDR zTXt IDAT IEND \/ the code draws IHDR IDAT IEND\)/);
+    assert.match(run.stderr, /settings_ja\.png: differs from what the code draws now/,
       'and the images after it are still compared');
-    assert.match(run.stderr, /popup_de\.png: 誰も描いていない/,
+    assert.match(run.stderr, /popup_de\.png: drawn by nothing/,
       'and the scan for files nothing draws still runs');
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
@@ -6139,7 +6139,7 @@ test('--check turns down a header byte the decoder does not mind',
 
       const run = runCheck(sandbox);
       assert.equal(run.status, 1, 'the header is reported: ' + (run.stderr || run.stdout));
-      assert.match(run.stderr, /popup_ja\.png: IHDR チャンクの中身が描くものと違う/);
+      assert.match(run.stderr, /popup_ja\.png: the body of IHDR differs from what the code draws/);
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }
@@ -6161,9 +6161,9 @@ test('--check turns down chunks the drawing never writes', { skip: generatorSkip
     const run = runCheck(sandbox);
     assert.equal(run.status, 1, 'the extra chunks are reported: ' + (run.stderr || run.stdout));
     assert.match(run.stderr,
-      /popup_ja\.png: チャンクの並びが違う \(IHDR IDAT IHDR IEND \/ 描くのは IHDR IDAT IEND\)/);
+      /popup_ja\.png: a different sequence of chunks \(IHDR IDAT IHDR IEND \/ the code draws IHDR IDAT IEND\)/);
     assert.match(run.stderr,
-      /settings_ja\.png: チャンクの並びが違う \(IHDR IDAT tEXt IEND \/ 描くのは IHDR IDAT IEND\)/);
+      /settings_ja\.png: a different sequence of chunks \(IHDR IDAT tEXt IEND \/ the code draws IHDR IDAT IEND\)/);
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
   }
@@ -6181,9 +6181,9 @@ test('--check asks for a rename, not a deletion, when only the spelling differs'
 
       const run = runCheck(sandbox);
       assert.equal(run.status, 1, 'the spelling is reported: ' + (run.stderr || run.stdout));
-      assert.match(run.stderr, /popup_ja\.PNG: 綴りが違う \(popup_ja\.png として描いている\)/);
-      assert.match(run.stderr, /名前を直す: .*popup_ja\.PNG → popup_ja\.png/);
-      assert.doesNotMatch(run.stderr, /削除する/, 'and it is not on the list to delete');
+      assert.match(run.stderr, /popup_ja\.PNG: spelled differently \(the code draws popup_ja\.png\)/);
+      assert.match(run.stderr, /Rename: .*popup_ja\.PNG → popup_ja\.png/);
+      assert.doesNotMatch(run.stderr, /Delete: /, 'and it is not on the list to delete');
 
       // Where both spellings can exist at once, renaming onto the other one is
       // no instruction at all: the spare is the one to delete.
@@ -6196,9 +6196,9 @@ test('--check asks for a rename, not a deletion, when only the spelling differs'
       } else {
         const after = runCheck(sandbox);
         assert.equal(after.status, 1, 'the spare is reported: ' + (after.stderr || after.stdout));
-        assert.match(after.stderr, /popup_ja\.PNG: 誰も描いていない/);
-        assert.match(after.stderr, /削除する: .*popup_ja\.PNG/);
-        assert.doesNotMatch(after.stderr, /名前を直す/,
+        assert.match(after.stderr, /popup_ja\.PNG: drawn by nothing/);
+        assert.match(after.stderr, /Delete: .*popup_ja\.PNG/);
+        assert.doesNotMatch(after.stderr, /Rename: /,
           'and it is not asked to be renamed onto the name that is already there');
 
         // Two spellings and no canonical name: whichever is renamed first, the
@@ -6208,11 +6208,11 @@ test('--check asks for a rename, not a deletion, when only the spelling differs'
         const contested = runCheck(sandbox);
         assert.equal(contested.status, 1,
           'the collision is reported: ' + (contested.stderr || contested.stdout));
-        assert.match(contested.stderr, /POPUP_JA\.png: popup_ja\.png を名乗るものが 2 つある/);
-        assert.match(contested.stderr, /popup_ja\.PNG: popup_ja\.png を名乗るものが 2 つある/);
+        assert.match(contested.stderr, /POPUP_JA\.png: one of 2 files claiming the name popup_ja\.png/);
+        assert.match(contested.stderr, /popup_ja\.PNG: one of 2 files claiming the name popup_ja\.png/);
         assert.match(contested.stderr,
-          /1 つだけ popup_ja\.png に直して残りを消す: .*POPUP_JA\.png .*popup_ja\.PNG/);
-        assert.doesNotMatch(contested.stderr, /名前を直す/,
+          /Keep one as popup_ja\.png and delete the rest: .*POPUP_JA\.png .*popup_ja\.PNG/);
+        assert.doesNotMatch(contested.stderr, /Rename: /,
           'and neither is told to take the name the other would take');
       }
     } finally {
@@ -6234,9 +6234,9 @@ test('--check turns down a size the code no longer draws', { skip: generatorSkip
     const run = runCheck(sandbox);
     assert.equal(run.status, 1, 'a cropped image is reported: ' + (run.stderr || run.stdout));
     // Named as a size rather than as a difference: every pixel that survived
-    // the crop still matches, and reading "違う" would send the reader looking
-    // for the wrong thing.
-    assert.match(run.stderr, /settings_en\.png: 大きさが違う/);
+    // the crop still matches, and reading "differs" would send the reader
+    // looking for the wrong thing.
+    assert.match(run.stderr, /settings_en\.png: a different size/);
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
   }
@@ -6254,8 +6254,8 @@ test('--check names a link with nothing at the end of it', { skip: generatorSkip
 
     const run = runCheck(sandbox);
     assert.equal(run.status, 1, 'the link is reported: ' + (run.stderr || run.stdout));
-    assert.match(run.stderr, /popup_ja\.png: シンボリックリンク \(gone\.png を指している\)/);
-    assert.doesNotMatch(run.stderr, /popup_ja\.png: 追跡されていない/,
+    assert.match(run.stderr, /popup_ja\.png: a symbolic link \(points at gone\.png\)/);
+    assert.doesNotMatch(run.stderr, /popup_ja\.png: not committed/,
       'and not as a name nobody has committed');
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
@@ -6286,7 +6286,7 @@ test('a directory that will not take this run says so', { skip: generatorSkip
       { cwd: sandbox, encoding: 'utf8' });
     assert.equal(into.status, 2, 'a destination that will not take a file: ' + into.stderr);
     assert.doesNotMatch(into.stderr, /Traceback/);
-    assert.match(into.stderr, /readonly へ書けない \(Permission denied\)/,
+    assert.match(into.stderr, /readonly cannot be written \(Permission denied\)/,
       'named as the destination rather than as the working directory');
     assert.deepEqual(fs.readdirSync(readonly), [], 'and nothing was left in it');
 
@@ -6295,7 +6295,7 @@ test('a directory that will not take this run says so', { skip: generatorSkip
       { cwd: sandbox, encoding: 'utf8' });
     assert.equal(redraw.status, 1, 'the tracked directory refusing is exit 1: ' + redraw.stderr);
     assert.doesNotMatch(redraw.stderr, /Traceback/);
-    assert.match(redraw.stderr, /docs\/screenshots へ書けない \(Permission denied\)/);
+    assert.match(redraw.stderr, /docs\/screenshots cannot be written \(Permission denied\)/);
     assert.deepEqual(fs.readdirSync(tracked).filter((name) => !name.endsWith('.png')), [],
       'and left nothing of its own behind');
 
@@ -6303,7 +6303,7 @@ test('a directory that will not take this run says so', { skip: generatorSkip
     const unreadable = runCheck(sandbox);
     assert.equal(unreadable.status, 1, 'a tracked directory that cannot be listed');
     assert.doesNotMatch(unreadable.stderr, /Traceback/);
-    assert.match(unreadable.stderr, /docs\/screenshots: 読めない \(Permission denied\)/);
+    assert.match(unreadable.stderr, /docs\/screenshots: cannot be read \(Permission denied\)/);
   } finally {
     fs.chmodSync(readonly, 0o755);
     fs.chmodSync(tracked, 0o755);
@@ -6326,7 +6326,7 @@ test('a name a redraw cannot overwrite is named, not raised over', { skip: gener
     assert.doesNotMatch(redraw.stderr, /Traceback/);
     // Named as the copy it is - taking one of the image it is about to
     // overwrite, with where that copy was going named too.
-    assert.match(redraw.stderr, /docs\/screenshots\/popup_ja\.png の控えを .+ に作れない/);
+    assert.match(redraw.stderr, /docs\/screenshots\/popup_ja\.png cannot be copied to .+/);
     assert.ok(fs.statSync(target).isDirectory(), 'and the name is left as it was');
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
@@ -6404,7 +6404,7 @@ test('a name the rollback cannot put back is named, and what it holds is kept',
     // own failure must not take its place.
     assert.match(seen.told, /injected before the move/);
     assert.match(seen.told, new RegExp(stuck.replace('.', '\\.')
-      + ': 前回の画像へ戻せない \\(injected while putting it back\\)'),
+      + ': the previous image cannot be put back \\(injected while putting it back\\)'),
     'and why it could not be: ' + seen.told);
     // And the previous image is still somewhere the reader can reach.
     assert.equal(seen.kept.length, 1, 'what it took is kept: ' + seen.told);
@@ -6447,7 +6447,7 @@ test('a refusal while drawing names the destination, not the working directory',
     assert.equal(run.status, 0, 'the probe ran: ' + (run.stderr || run.stdout));
     const seen = JSON.parse(run.stdout);
     assert.equal(seen.code, 1, 'the run reports rather than raises: ' + seen.told);
-    assert.match(seen.told, /docs\/screenshots へ描けない \(Permission denied\)/);
+    assert.match(seen.told, /docs\/screenshots cannot be drawn into \(Permission denied\)/);
     // The name it was handed is inside a directory this run picked and removed.
     assert.doesNotMatch(seen.told, /screenshots\/tmp/, 'a name the reader cannot look at');
     assert.equal(seen.left.length, 6, 'and it took its working directory with it');
@@ -6573,8 +6573,8 @@ test('a link the rollback cannot put back is kept, target and all', { skip: gene
   const seen = overALink('linkback');
   // Where it pointed lives in this run and nowhere else, so it has to leave the
   // run: in what is said, and in what is kept.
-  assert.match(seen.told, /overlay_en\.png -> gone\.png: 前回のリンクへ戻せない/, seen.told);
-  assert.match(seen.told, /控えは/, 'and the copy it took is offered: ' + seen.told);
+  assert.match(seen.told, /overlay_en\.png -> gone\.png: the previous link cannot be put back/, seen.told);
+  assert.match(seen.told, /what was there is kept in/, 'and the copy it took is offered: ' + seen.told);
   assert.equal(seen.kept.length, 1, 'the copy is kept: ' + seen.told);
   assert.equal(seen.kept_holds['overlay_en.png'], 'link -> gone.png',
     'and holds the link itself, not what it pointed at');
@@ -6585,7 +6585,7 @@ test('a link that cannot be copied stops the run before it replaces anything',
     || (process.platform === 'win32' && 'symlinks need a privilege this does not ask for') }, () => {
     const seen = overALink('linkbackup', { replaced: false });
     // Nothing to put back is only safe while nothing has been taken away.
-    assert.match(seen.told, /overlay_en\.png の控えを .+ に作れない \(Permission denied\)/,
+    assert.match(seen.told, /overlay_en\.png cannot be copied to .+ \(Permission denied\)/,
       seen.told);
     assert.deepEqual(seen.changed, [], 'and the six names are as they were');
     assert.equal(seen.state, 'link -> gone.png');
@@ -6595,10 +6595,11 @@ test('a first run says it could not take its own image back out', { skip: genera
   || (typeof process.getuid === 'function' && process.getuid() === 0
     && 'root removes a file whatever the directory says') }, () => {
   const seen = overALink('firstrun');
-  // There was no previous image under that name, so "前回の画像へ戻せない" would
-  // name one that never existed - and point at a backup holding nothing.
-  assert.match(seen.told, /overlay_en\.png: この走行の画像を取り除けない/, seen.told);
-  assert.doesNotMatch(seen.told, /控えは/, 'nothing was taken, so nothing is offered');
+  // There was no previous image under that name, so "the previous image cannot
+  // be put back" would name one that never existed - and point at a backup
+  // holding nothing.
+  assert.match(seen.told, /overlay_en\.png: this run's image cannot be taken back out/, seen.told);
+  assert.doesNotMatch(seen.told, /what was there is kept in/, 'nothing was taken, so nothing is offered');
   assert.deepEqual(seen.kept, [], 'and an empty backup is not left behind');
 });
 
@@ -6620,7 +6621,7 @@ test('a link to a directory under a drawn name is turned down, not written throu
         { cwd: sandbox, encoding: 'utf8' });
       assert.equal(redraw.status, 1, 'the run stops: ' + redraw.stderr);
       assert.doesNotMatch(redraw.stderr, /Traceback/);
-      assert.match(redraw.stderr, /overlay_en\.png: ディレクトリを指すリンク/);
+      assert.match(redraw.stderr, /overlay_en\.png: a link to a directory/);
       assert.deepEqual(fs.readdirSync(aside), [], 'and nothing was written inside it');
       assert.ok(fs.lstatSync(target).isSymbolicLink(), 'and the link is left as it was');
     } finally {
@@ -6680,12 +6681,12 @@ test('a copy that will not fit names where it was going, not the image',
       { cwd: __dirname, encoding: 'utf8' });
     assert.equal(run.status, 0, 'the probe ran: ' + (run.stderr || run.stdout));
     const seen = JSON.parse(run.stdout);
-    // The image reads perfectly well, so "を読めない" would have the reader
-    // looking at the one thing that is not in the way.
+    // The image reads perfectly well, so "cannot be read" would have the
+    // reader looking at the one thing that is not in the way.
     assert.equal(seen.reads, '89504e47', 'the image reads, so the copy is what refused');
     assert.equal(seen.code, 1, 'the run stops: ' + seen.told);
     assert.match(seen.told, new RegExp(seen.first.replace('.', '\\.')
-      + ' の控えを .+ に作れない \\(No space left on device\\)'), seen.told);
+      + ' cannot be copied to .+ \\(No space left on device\\)'), seen.told);
     assert.deepEqual(seen.left, [], 'and nothing of the run is left behind');
   });
 
@@ -6743,7 +6744,7 @@ test('a copy that cannot be cleared away is answered for, not only mentioned',
     // by this run, so a copy that outlives it has nobody else to report it:
     // --check only counts .png files.
     assert.equal(seen.code, 1, 'the run does not answer 0: ' + seen.told);
-    assert.match(seen.told, /が残った \(Permission denied\)/, seen.told);
+    assert.match(seen.told, /is left behind \(Permission denied\)/, seen.told);
     assert.equal(seen.left.length, 1, 'since it is still there: ' + seen.left.join(', '));
   });
 
@@ -6764,8 +6765,8 @@ test('an image that cannot be read is not called one that cannot be written',
       assert.equal(redraw.status, 1, 'the run stops: ' + redraw.stderr);
       assert.doesNotMatch(redraw.stderr, /Traceback/);
       assert.match(redraw.stderr,
-        /docs\/screenshots\/overlay_en\.png の控えを .+ に作れない \(Permission denied\)/);
-      assert.doesNotMatch(redraw.stderr, /へ書けない/);
+        /docs\/screenshots\/overlay_en\.png cannot be copied to .+ \(Permission denied\)/);
+      assert.doesNotMatch(redraw.stderr, /cannot be written/);
     } finally {
       fs.chmodSync(target, 0o644);
       fs.rmSync(sandbox, { recursive: true, force: true });
@@ -6820,11 +6821,11 @@ test('--check turns down a tracked directory that is a link to one', { skip: gen
 
     const parent = runCheck(sandbox);
     assert.equal(parent.status, 1, 'the linked parent is reported: ' + (parent.stderr || parent.stdout));
-    assert.match(parent.stderr, /docs: シンボリックリンク \(docs\.source を指している\)/);
+    assert.match(parent.stderr, /docs: a symbolic link \(points at docs\.source\)/);
     const redraw = spawnSync('python3', ['-B', 'gen_screenshots.py'],
       { cwd: sandbox, encoding: 'utf8' });
     assert.equal(redraw.status, 1, 'and drawing refuses the same way: ' + redraw.stderr);
-    assert.match(redraw.stderr, /docs: シンボリックリンク/);
+    assert.match(redraw.stderr, /docs: a symbolic link/);
     assert.deepEqual(fs.readFileSync(marked), before, 'the refused run wrote nothing');
 
     fs.unlinkSync(path.join(sandbox, 'docs'));
@@ -6837,7 +6838,7 @@ test('--check turns down a tracked directory that is a link to one', { skip: gen
     fs.symlinkSync('nowhere', path.join(sandbox, 'docs/screenshots'));
     const dangling = runCheck(sandbox);
     assert.equal(dangling.status, 1, 'the dangling link is reported: ' + (dangling.stderr || ''));
-    assert.match(dangling.stderr, /docs\/screenshots: シンボリックリンク \(nowhere を指している\)/);
+    assert.match(dangling.stderr, /docs\/screenshots: a symbolic link \(points at nowhere\)/);
     const drawn = spawnSync('python3', ['-B', 'gen_screenshots.py'],
       { cwd: sandbox, encoding: 'utf8' });
     assert.equal(drawn.status, 1, 'and drawing refuses it too: ' + drawn.stderr);
@@ -6855,8 +6856,8 @@ test('--check turns down a tracked directory that is a link to one', { skip: gen
     const run = runCheck(sandbox);
     assert.equal(run.status, 1, 'the linked directory is reported: ' + (run.stderr || run.stdout));
     assert.match(run.stderr,
-      /docs\/screenshots: シンボリックリンク \(screenshots\.source を指している\)/);
-    assert.doesNotMatch(run.stderr, /枚ともいま描くものと同じ/,
+      /docs\/screenshots: a symbolic link \(points at screenshots\.source\)/);
+    assert.doesNotMatch(run.stderr, /screenshots match the code that draws them/,
       'and the six images under it are not vouched for');
 
     // A file by that name is not a directory either, and neither is reported
@@ -6865,7 +6866,7 @@ test('--check turns down a tracked directory that is a link to one', { skip: gen
     fs.writeFileSync(path.join(sandbox, 'docs/screenshots'), '');
     const asFile = runCheck(sandbox);
     assert.equal(asFile.status, 1, 'a file by that name is reported too');
-    assert.match(asFile.stderr, /docs\/screenshots: ディレクトリではない/);
+    assert.match(asFile.stderr, /docs\/screenshots: not a directory/);
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
   }
@@ -6892,9 +6893,9 @@ test('--check turns down a tracked image that is a link to one', { skip: generat
     const run = runCheck(sandbox);
     assert.equal(run.status, 1, 'the link is reported: ' + (run.stderr || run.stdout));
     assert.match(run.stderr,
-      /popup_ja\.png: シンボリックリンク \(popup_ja\.source を指している\)/);
-    assert.match(run.stderr, /popup_de\.png: 誰も描いていない/);
-    assert.match(run.stderr, /overlay_de\.png: 誰も描いていない/);
+      /popup_ja\.png: a symbolic link \(points at popup_ja\.source\)/);
+    assert.match(run.stderr, /popup_de\.png: drawn by nothing/);
+    assert.match(run.stderr, /overlay_de\.png: drawn by nothing/);
     assert.doesNotMatch(run.stderr, /tmpabc123\.png/,
       'while a directory of that name is still what an interrupted run left');
   } finally {
@@ -7135,14 +7136,14 @@ test('an argument that is wrong is answered before the faces are needed', () => 
     const refused = spawnSync('python3', ['-B', 'gen_screenshots.py', '--chek'],
       { cwd: bare, encoding: 'utf8' });
     assert.equal(refused.status, 2, 'the argument is answered as one: ' + (refused.stderr || ''));
-    assert.match(refused.stderr, /知らない引数: --chek/);
+    assert.match(refused.stderr, /unknown argument: --chek/);
 
     // The positive control: with the arguments right, the missing face is what
     // there is to say, and it is said as "cannot draw here".
     const cannot = spawnSync('python3', ['-B', 'gen_screenshots.py', '--check'],
       { cwd: bare, encoding: 'utf8' });
     assert.equal(cannot.status, 3, 'and a missing face still says it cannot draw');
-    assert.match(cannot.stderr, /MPLUS1p-Regular\.ttf が読めない/);
+    assert.match(cannot.stderr, /MPLUS1p-Regular\.ttf cannot be read/);
 
     // With one of the two there, the one that is named is the one that is not:
     // the regular face is read first, so only the bold case tells them apart.
@@ -7152,7 +7153,7 @@ test('an argument that is wrong is answered before the faces are needed', () => 
     const noBold = spawnSync('python3', ['-B', 'gen_screenshots.py', '--check'],
       { cwd: bare, encoding: 'utf8' });
     assert.equal(noBold.status, 3, 'a missing bold face says it cannot draw');
-    assert.match(noBold.stderr, /MPLUS1p-Bold\.ttf が読めない/);
+    assert.match(noBold.stderr, /MPLUS1p-Bold\.ttf cannot be read/);
     assert.doesNotMatch(noBold.stderr, /MPLUS1p-Regular\.ttf/,
       'and does not name the face it could read');
   } finally {
