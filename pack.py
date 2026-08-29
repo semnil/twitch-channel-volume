@@ -147,8 +147,21 @@ def selected_files(root):
         selected.append(relative)
         pending.extend(_references_within(root, relative))
 
+    carried = set()
+
+    def carry(full, relative):
+        """A name reachable more than one way enters the archive once.
+
+        zipfile writes a second entry under the same name and warns on stderr,
+        which the release path does not read.
+        """
+        carried.add(relative)
+        return full, relative
+
     for relative in sorted(selected):
-        yield _packaged(root, relative), relative
+        entry = carry(_packaged(root, relative), relative)
+        if entry:
+            yield entry
 
     # Chrome requires the two to agree. An extension carrying a _locales
     # directory has to name a default_locale, and the locale it names has to hold
@@ -163,22 +176,26 @@ def selected_files(root):
         raise SystemExit(f'{LOCALE_DIR} is here and the manifest names no default_locale')
     required = (posixpath.join(LOCALE_DIR, default_locale, LOCALE_FILE)
                 if default_locale else None)
-    carried = set()
+    seen_locales = set()
     if os.path.isdir(locales):
         for locale in sorted(os.listdir(locales)):
             relative = posixpath.join(LOCALE_DIR, locale, LOCALE_FILE)
             full = _packaged(root, relative)
             if os.path.isfile(full):
-                carried.add(relative)
-                yield full, relative
-    if required and required not in carried:
+                seen_locales.add(relative)
+                entry = carry(full, relative)
+                if entry:
+                    yield entry
+    if required and required not in seen_locales:
         raise SystemExit(f'the default locale carries no messages: {required}')
 
     for relative in DISTRIBUTION_FILES:
         full = _packaged(root, relative)
         if not os.path.isfile(full):
             raise SystemExit(f'the package has to carry this and it is missing: {relative}')
-        yield full, relative
+        entry = carry(full, relative)
+        if entry:
+            yield entry
 
 
 def pack():
@@ -206,7 +223,10 @@ def list_files():
 
 
 if __name__ == '__main__':
-    if '--list' in sys.argv:
+    arguments = sys.argv[1:]
+    if arguments == ['--list']:
         list_files()
+    elif arguments:
+        raise SystemExit(f'usage: pack.py [--list] (got: {" ".join(arguments)})')
     else:
         pack()
