@@ -271,10 +271,10 @@ python3 pack.py --list
 
 ## Conventions
 
-- Documentation is maintained in English and Japanese, English first: `README.md` / `README.ja.md` at the root, `docs/en/` / `docs/ja/` under `docs`. Both members of a pair carry the same headings in the same order
-- `PRIVACY_POLICY.md` and `PRIVACY_POLICY_JA.md` keep those names. The Chrome Web Store listing links to `PRIVACY_POLICY.md` by path
+- Documentation is maintained in English and Japanese, English first: `README.md` / `README.ja.md` at the root, `docs/en/` / `docs/ja/` under `docs`. Both members of a pair carry the same headings in the same order. This overrides the global CLAUDE.md default of writing documentation in Japanese
+- `PRIVACY_POLICY.md` keeps its name because the Chrome Web Store listing links to it by path. `PRIVACY_POLICY_JA.md` keeps its name because the README pair and the English policy point at it
 - `CLAUDE.md` is English only and has no Japanese counterpart
-- Commits: **subject and body entirely in English** (Conventional Commits). **PR title and body entirely in English as well**, matching the repository's default language. The global CLAUDE.md rule about Japanese bodies does not apply to this project
+- Commit subjects and bodies are English, as Conventional Commits. Pull request titles and bodies are English too
 - Issue templates are one English set, with a note at the top saying Japanese is welcome
 
 ## Development notes
