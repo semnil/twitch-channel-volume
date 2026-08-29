@@ -172,13 +172,14 @@ test('the store package carries only the files the extension loads', () => {
     write('.env', 'TOKEN=secret');
     write('review-notes.txt');
     write('README.md');
+    write('README.ja.md');
     write('gen_icons.py');
     write('test.js');
     write('twitch-channel-volume-1.0.0.zip');
     write('.git', 'gitdir: /elsewhere');
     write('icons/source.svg');
     write('_locales/ja/notes.txt');
-    write('docs/security-audit.md');
+    write('docs/en/security-audit.md');
     write('node_modules/_cache/index.js');
     fs.symlinkSync(path.join(fixture, 'content.js'), path.join(fixture, 'linked.js'));
     for (const name of SCRATCH_DIRS) write(path.join(name, 'session', '_metadata', 'note.txt'));

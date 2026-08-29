@@ -1,5 +1,7 @@
 # セキュリティ監査
 
+> English version: [../en/security-audit.md](../en/security-audit.md)
+
 ## 対象
 
 LUFS の索引更新、保存済み LUFS による計測初期化、測定値リセット、page-bridge のコマンド受信と attach 結果通知、ページの `fetch` を包んで読む GraphQL レスポンス、プレイヤーの worker から受け取る CM の cue、CM 要素へのゲイン適用、ページへ公開する拡張リソースを対象とする。
