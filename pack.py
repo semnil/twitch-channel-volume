@@ -209,12 +209,21 @@ def pack():
     files = list(selected_files(root))
     out = f'twitch-channel-volume-{version}.zip'
     out_path = os.path.join(root, out)
-    if os.path.exists(out_path):
-        os.remove(out_path)
-    with zipfile.ZipFile(out_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for full, arcname in files:
-            zf.write(full, arcname)
-            print(f'  + {arcname}')
+    # Built beside the target and moved onto it. Resolving the names first
+    # answers for a file that is missing, and reading one can still fail — a
+    # write straight into the target would delete the package built last and
+    # leave a shorter one that opens cleanly in its place.
+    staging = out_path + '.part'
+    try:
+        with zipfile.ZipFile(staging, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for full, arcname in files:
+                zf.write(full, arcname)
+                print(f'  + {arcname}')
+        os.replace(staging, out_path)
+    except BaseException:
+        if os.path.exists(staging):
+            os.remove(staging)
+        raise
     print(f'\n=> {out}')
 
 

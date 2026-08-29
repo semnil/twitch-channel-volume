@@ -443,6 +443,40 @@ test('the store package refuses to leave out what it has to carry', () => {
     fs.rmSync(box, { recursive: true, force: true });
   }
 
+  // Resolving every name answers for one that is missing; reading one can still
+  // fail. What the package built last is worth is that it stays.
+  const entriesIn = (zip) => spawnSync('python3',
+    ['-c', 'import zipfile,sys;print(len(zipfile.ZipFile(sys.argv[1]).namelist()))', zip],
+    { encoding: 'utf8' }).stdout.trim();
+  for (const unreadable of ['LICENSE', '_locales/ja/messages.json']) {
+    const box = buildMinimal();
+    const built = runPack(box, []);
+    assert.equal(built.status, 0, built.stderr);
+    const zip = path.join(box, 'twitch-channel-volume-0.0.0.zip');
+    const before = fs.statSync(zip).size;
+    const entries = entriesIn(zip);
+    fs.chmodSync(path.join(box, unreadable), 0o000);
+    let denied = true;
+    try { fs.readFileSync(path.join(box, unreadable)); denied = false; } catch { /* denied */ }
+    if (!denied) {
+      // Running as a user the mode does not stop, so the case cannot be made.
+      console.log(`  (read-failure check skipped: ${unreadable} is readable at mode 000)`);
+      fs.chmodSync(path.join(box, unreadable), 0o644);
+      fs.rmSync(box, { recursive: true, force: true });
+      continue;
+    }
+    const failed = runPack(box, []);
+    fs.chmodSync(path.join(box, unreadable), 0o644);
+    assert.notEqual(failed.status, 0, `pack.py fails when ${unreadable} cannot be read`);
+    assert.ok(fs.existsSync(zip) && fs.statSync(zip).size === before,
+      `the package built before survives a read failure on ${unreadable}`);
+    assert.equal(entriesIn(zip), entries,
+      `the package built before still carries ${entries} entries`);
+    assert.deepEqual(fs.readdirSync(box).filter((name) => name.endsWith('.part')), [],
+      'a half-built package is not left beside the one that stands');
+    fs.rmSync(box, { recursive: true, force: true });
+  }
+
   // A name the walk reaches and the locale sweep or DISTRIBUTION_FILES reaches
   // too. zipfile writes the second entry and warns on stderr, which the release
   // path does not read.
