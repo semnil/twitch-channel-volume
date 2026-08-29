@@ -443,6 +443,23 @@ test('the store package refuses to leave out what it has to carry', () => {
     fs.rmSync(box, { recursive: true, force: true });
   }
 
+  // A name the walk reaches and the locale sweep or DISTRIBUTION_FILES reaches
+  // too. zipfile writes the second entry and warns on stderr, which the release
+  // path does not read.
+  {
+    const box = buildMinimal();
+    const manifest = JSON.parse(fs.readFileSync(path.join(box, 'manifest.json'), 'utf8'));
+    manifest.web_accessible_resources = [
+      { resources: ['LICENSE', '_locales/ja/messages.json'], matches: ['*://*/*'] }
+    ];
+    fs.writeFileSync(path.join(box, 'manifest.json'), JSON.stringify(manifest));
+    const listed = runPack(box, ['--list']);
+    assert.equal(listed.status, 0, listed.stderr);
+    const names = listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+    assert.equal(names.length, new Set(names).size, `each name enters the package once`);
+    fs.rmSync(box, { recursive: true, force: true });
+  }
+
   // An argument nobody recognised is not an instruction to rewrite the package.
   {
     const box = buildMinimal();

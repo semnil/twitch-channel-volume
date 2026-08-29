@@ -155,6 +155,8 @@ def selected_files(root):
         zipfile writes a second entry under the same name and warns on stderr,
         which the release path does not read.
         """
+        if relative in carried:
+            return None
         carried.add(relative)
         return full, relative
 
