@@ -125,9 +125,34 @@ test('every packaged path is one the extension loads', () => {
 
   // Read independently of pack.py's own parsing: every packaged script or page
   // is named by the manifest, by a page the manifest names, or by the worker.
-  const references = ['manifest.json', 'popup.html', 'options.html', 'background.js']
-    .map((name) => fs.readFileSync(path.join(__dirname, name), 'utf8'))
-    .join('\n');
+  // Written the way pack.py writes it, this side would agree with it about a
+  // spelling neither of them handles.
+// The pages are read independently of pack.py. Written the way pack.py writes
+// it, this side would agree with it about a spelling neither of them handles.
+const PAGE_TAG = /<(script|link)\b([^>]*)>/gi;
+const PAGE_ATTR = /([a-zA-Z-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g;
+const pageReferences = (text) => {
+  const found = [];
+  for (const [, tag, rest] of text.replace(/<!--[\s\S]*?-->/g, '').matchAll(PAGE_TAG)) {
+    const attributes = {};
+    for (const [, name, quoted, single, bare] of rest.matchAll(PAGE_ATTR)) {
+      attributes[name.toLowerCase()] = quoted ?? single ?? bare;
+    }
+    if (tag.toLowerCase() === 'script' && attributes.src) { found.push(attributes.src); }
+    if (tag.toLowerCase() === 'link' && attributes.href
+      && ((attributes.rel || '').toLowerCase().split(/\s+/).includes('stylesheet')
+        || attributes.href.endsWith('.css'))) {
+      found.push(attributes.href);
+    }
+  }
+  return found;
+};
+  const references = [
+    ...['manifest.json', 'background.js']
+      .map((name) => fs.readFileSync(path.join(__dirname, name), 'utf8')),
+    ...['popup.html', 'options.html'].flatMap((name) =>
+      pageReferences(fs.readFileSync(path.join(__dirname, name), 'utf8')))
+  ].join('\n');
   for (const arcname of packaged) {
     // A name inside the package is POSIX whatever the host writes it on.
     const segments = arcname.split('/');
@@ -210,9 +235,23 @@ test('the store package carries only the files the extension loads', () => {
     write('audio-worklet.js');
     write('background.js', "importScripts('channel-store.js');\n");
     write('channel-store.js');
+    // Spellings a browser reads alike. The expected list below is written out
+    // by hand rather than scanned, so it does not inherit whatever this page's
+    // markup happens to exercise.
     write('popup.html',
-      '<script src="utils.js"></script>\n<script src="popup.js"></script>\n'
-      + '<script src="sub/deep.js"></script>\n');
+      '<script src="utils.js"></script>\n'
+      + '<SCRIPT SRC="popup.js"></SCRIPT>\n'
+      + "<script src='sub/deep.js'></script>\n"
+      + '<script src=bare.js></script>\n'
+      + '<script  src = "spaced.js" ></script>\n'
+      + '<link rel="stylesheet" href="popup.style">\n'
+      + '<link href="popup.css">\n'
+      + '<!-- <script src="commented.js"></script> -->\n');
+    write('bare.js');
+    write('spaced.js');
+    write('popup.style');
+    write('popup.css');
+    write('commented.js');
     write('sub/deep.js');
     write('LICENSE', 'MIT License\n');
     write('popup.js');
@@ -249,12 +288,16 @@ test('the store package carries only the files the extension loads', () => {
       '_locales/ja/messages.json',
       'audio-worklet.js',
       'background.js',
+      'bare.js',
       'channel-store.js',
       'content.js',
       'icons/icon16.png',
       'manifest.json',
+      'popup.css',
       'popup.html',
       'popup.js',
+      'popup.style',
+      'spaced.js',
       'sub/deep.js',
       'utils.js'
     ];
