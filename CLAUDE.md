@@ -1,81 +1,82 @@
 # twitch-channel-volume
 
-Twitch チャンネルごとの音量を BS.1770 LUFS リアルタイム計測に基づき自動調整する Chrome 拡張機能 (MV3)。
-Twitch には YouTube の `loudnessDb` のような API が存在しないため、再生中の `<video>` 要素を Web Audio API で実測する。
-CM 区間はプレイヤーがページへ post する cue で検出し、cue の来ない media では DOM に現れる CM 表示へ戻る。本編とは別ゲインを適用する。
+Chrome extension (MV3) that automatically adjusts the volume of each Twitch channel from a real-time BS.1770 LUFS measurement.
+Twitch has no API like YouTube's `loudnessDb`, so the playing `<video>` element is measured directly with the Web Audio API.
+Ad breaks are detected from the cues the player posts to the page, falling back to the ad indicator in the DOM on media that receive no cue. A separate gain is applied to them.
 
 ## Architecture
 
 ```
 page-bridge.js (MAIN world content script, document_start)
-├── AudioContext / MediaElementSource / GainNode を所有
+├── Owns the AudioContext / MediaElementSource / GainNode
 ├── K-weighting IIRFilter (pre-filter high-shelf + RLB high-pass, BS.1770-4)
-├── AudioWorklet (k-mean-square) で 100ms ブロックごとの MS を集計
-│   ├── ブロックは受信時に video.volume の 2 乗で割り、音量 1.0 基準へ揃える
-│   ├── Momentary: 直近 4 ブロック (400ms) の MS 平均 → LUFS
-│   ├── Short-term: 直近 30 ブロック (3s) の MS 平均 → LUFS
-│   └── Integrated: 直近 4 ブロック (400ms) の MS 平均を 100ms ごとに 1 件のゲーティング窓として投入し、保存済みの種別別 LUFS をそれが測られた窓数 (最低 300 窓 = 30 秒、上限 1800 窓 = 3 分) 分の初期サンプルに、1 時間リングバッファ + 平衡木で絶対ゲート (-70 LUFS) と相対ゲート (-10 LU) を O(log n) 更新
-│       LUFS と一緒に、その値が立つ窓数 (相対ゲートを通った窓のうち、シードの分はそれが名乗ってきた窓数として数える) を通知する
-├── 境界スキップ: CM 終了・音量変更のあと、ゲーティング窓が境界を離れるまでの 4 窓を Integrated から除外
-├── CM ゲート: 再生位置が cue の `startTime` 以降 `endTime` 未満の間 Integrated へ積まない。
-│   cue を 1 つも受け取っていない間は DOM 指標が立っている間
-├── CM 開始ロールバック: cue を受けた時点の経過 (再生位置 − cue の `startTime`) から
-│   1 + 経過/0.1 窓を取り消す。cue が無く DOM 指標だけのときは 5 窓
-│   (リセット以降に積んだ窓のみ。リングバッファが溢れた後も行う)。
-│   取り消す区間に境界スキップで積まなかった窓が入っていれば、その数だけ引く
-├── 計測世代 (measurement epoch): resetMeasurement で受け取った番号を保持し、以降の lufs 通知へ付与
-├── attach loop (scheduleAttach): video 出現を 1s 間隔でリトライ。DOM から消えた video を
-│   検出したら経路を切って自分でループを再開する
-├── attach できなかった要素を保持し、ページに残っている間は attached に takenElsewhere を載せる
-├── buildMeasurementChain: attach 時に接続する (attach は worklet ロードの結果が出てから走る)
-├── Fetch hook (GraphQL のみ):
-│   └── gql.twitch.tv → user.id / video.owner.id / clip.broadcaster.id と
-│       リクエスト時点の content kind/id を抽出
-├── Worker hook: `Worker` を包んで message リスナーを足すだけ。worker はページが
-│   渡した引数のまま生成する
-│   └── プレイヤーが投げる CM の cue (`rollType` と media 時刻の `startTime` / `endTime`) を読む。
-│       受理するのは再生位置がその区間 (開始 1 秒前から終了まで) に入っている cue だけ
-│       (CM 中はもう 1 つのプレイヤーが別の時間軸で自分の CM を cue する)
-│   └── cue が pod の最後の creative だと言っていない限り (`podPosition` < `podCount` - 1、
-│       または値が読めない)、次の cue が届くまで 0.4 秒だけ CM を閉じずに保つ
-├── CM 要素: 本編要素が停止したまま別要素が鳴っているとき (VOD の CM で観測) は、その
-│   要素にも GainNode を挟み baseline * adGainOffset * (本編 volume / 当該 volume) を適用
-├── GainNode は ad active 時に baseline * adGainOffset (dB → gain) を適用
+├── AudioWorklet (k-mean-square) accumulates the MS of each 100ms block
+│   ├── Each block is divided by video.volume squared on arrival, normalising it to volume 1.0
+│   ├── Momentary: MS average of the last 4 blocks (400ms) → LUFS
+│   ├── Short-term: MS average of the last 30 blocks (3s) → LUFS
+│   └── Integrated: the MS average of the last 4 blocks (400ms) is submitted every 100ms as one gating window; the stored per-kind LUFS enters as initial samples worth the window count it was measured over (floor 300 windows = 30 seconds, cap 1800 windows = 3 minutes); a 1-hour ring buffer + balanced tree updates the absolute gate (-70 LUFS) and the relative gate (-10 LU) in O(log n)
+│       Reported alongside the LUFS is the window count the value stands on (windows that passed the relative gate, with the seed counted as the window count it declared)
+├── Boundary skip: after an ad ends or the volume changes, the 4 windows it takes for the gating window to clear the boundary are excluded from Integrated
+├── Ad gate: nothing is added to Integrated while the playback position is at or past the cue's `startTime` and before its `endTime`.
+│   While no cue has been received at all, the gate follows the DOM indicator instead
+├── Ad-start rollback: from the elapsed time when the cue arrives (playback position −
+│   the cue's `startTime`), 1 + elapsed/0.1 windows are withdrawn; with no cue and only the
+│   DOM indicator, 5 windows (windows added since the last reset only; done after the ring
+│   buffer has overflowed too). Windows the boundary skip never added are subtracted from that count
+├── Measurement epoch: the number received with resetMeasurement is held and stamped on later lufs notifications
+├── attach loop (scheduleAttach): retries for a video at 1s intervals. On detecting a video that
+│   left the DOM, it tears the chain down and restarts the loop itself
+├── Holds the element it could not attach to, and sets takenElsewhere on attached while that element remains in the page
+├── buildMeasurementChain: connected at attach time (attach runs after the worklet load has resolved)
+├── Fetch hook (GraphQL only):
+│   └── gql.twitch.tv → extracts user.id / video.owner.id / clip.broadcaster.id plus the
+│       content kind/id current at request time
+├── Worker hook: wraps `Worker` only to add a message listener. The worker is constructed
+│   with the arguments the page passed
+│   └── Reads the ad cues the player posts (`rollType` and `startTime` / `endTime` in media time).
+│       Only a cue whose span (from 1 second before the start to the end) contains the playback
+│       position is accepted (during an ad a second player cues its own ads on another timeline)
+│   └── Unless the cue says it is the last creative of the pod (`podPosition` < `podCount` - 1,
+│       or the value is unreadable), the ad is held open for 0.4 seconds waiting for the next cue
+├── Ad element: when the main element stays paused while another element sounds (observed on VOD
+│   ads), a GainNode is inserted there too, applying baseline * adGainOffset * (main volume / its volume)
+├── While an ad is active the GainNode applies baseline * adGainOffset (dB → gain)
 └── postMessage (`__twitch_channel_volume__`) → content.js
 
 content.js (ISOLATED world content script, document_idle)
-├── postMessage listener: page-bridge.js から LUFS / owner / CM 状態 / attach 結果を受信
-├── attach 結果の保持: attach-failed で audioUnavailable と cause (element-taken /
-│   audio-context)、attached は takenElsewhere (他が握る要素がまだページにある) と
-│   measuring (計測経路の有無) で audioUnavailable / measurementUnavailable を決める。
-│   bridge 再読込時は解除して attach を送り直す
-├── audioUnavailable の間は lufs 通知を破棄し (別要素の計測値を保存・Auto 適用しない)、
-│   ゲインオーバーレイを外し、手動ゲイン・Auto 設定・測定値リセットの mutation を拒否する。
-│   解除された時点で計測を初期化する (bridge の窓に別要素のブロックが残っているため)
-├── URL 分類 (classifyTwitchUrl): live / vod / clip / none
+├── postMessage listener: receives LUFS / owner / ad state / attach results from page-bridge.js
+├── Attach-result state: attach-failed sets audioUnavailable and a cause (element-taken /
+│   audio-context); attached decides audioUnavailable / measurementUnavailable from takenElsewhere
+│   (an element held by someone else is still in the page) and measuring (whether a measurement
+│   chain exists). On a bridge reload the state is cleared and attach is sent again
+├── While audioUnavailable, lufs notifications are discarded (another element's reading is neither
+│   stored nor applied by Auto), the gain overlay is removed, and manual-gain, Auto-setting and
+│   measurement-reset mutations are refused. Measurement is reset the moment it clears
+│   (the bridge's windows still hold blocks from the other element)
+├── URL classification (classifyTwitchUrl): live / vod / clip / none
 ├── Channel resolution:
-│   ├── live: URL の login 名 (`login:<name>`) / GraphQL user.id 解決後は数値 ID
+│   ├── live: the login name from the URL (`login:<name>`) / the numeric ID once GraphQL user.id resolves
 │   ├── vod: GraphQL owner.id (`<numeric>`) / fallback `vod-owner:<videoId>`
 │   └── clip: GraphQL broadcaster.id / fallback `clip-owner:<slug>`
-├── owner 応答を現在の login / videoId / clip slug と照合し、仮 ID の設定を数値 ID へマージ
-├── 保存済み gain の自動適用 (Live/VOD/Clip 種別ごとに別管理)
-├── LUFS 自動追従: チャンネル × Live/VOD/Clip 別の Auto 設定が ON の間、
-│   popup の表示周期と同じく 1 秒以上空けて Target LUFS との差から baseline gain を再計算
-├── Gain overlay: `.volume-slider__slider-container` の **次の兄弟** として span を挿入。 mute wrapper と slider container はプレイヤーコントロール内の flex 行に並ぶ sibling 構造のため、 slider container の右隣に span が並ぶ。 表示/非表示は親 `[data-a-target="player-controls"][data-a-visible]` の切り替えに自動追従する (= プレイヤーコントロール内に埋め込んでいるため)。 gain ≠ 1.0 かつ音声経路がある間のみ、表示は `%` 固定 / displayUnit に依存しない
-├── 保存済み LUFS による計測の初期化は、起動時・SPA 遷移時に加えて owner ID 解決後にも行う。再初期化の要否は alias 解決後のチャンネル ID と種別で判定する。
-│   保存済みの窓数 (`lastLufsWindows`) を一緒に渡し、bridge がシードの重みに使う。窓数を持たない保存値 (拡張更新前) は bridge 側の最低値で重み付けする
-├── 計測リセットは世代番号を進めて送り、それより古い世代の lufs 通知は破棄する
-├── SPA 遷移では `mediaChanged` を先に送り、`requestedAdActive` を落として bridge 側と
-│   揃える。**最後に DOM を読んだ時点で出ていた** CM 指標の要素を控え、その要素そのものは
-│   新 media の指標として扱わない (別の要素が出たらそれは新 media のもの。要素が DOM を
-│   離れたら控えを外す)。遷移を処理した直後に DOM を読み直すため、遷移と同じ batch で
-│   入った指標もその場で通知される
-│   (計測リセットは同一 media でも起きるため、cue の破棄はこちらだけが行う)
+├── Matches the owner response against the current login / videoId / clip slug and merges the provisional ID's settings into the numeric ID
+├── Automatic application of the stored gain (managed separately per Live/VOD/Clip kind)
+├── LUFS auto-follow: while the per-channel × Live/VOD/Clip Auto setting is on, the baseline gain is
+│   recomputed from the distance to Target LUFS, no more often than the popup's display period (1 second)
+├── Gain overlay: a span is inserted as the **next sibling** of `.volume-slider__slider-container`. The mute wrapper and the slider container are siblings in a flex row inside the player controls, so the span sits directly to the right of the slider container. Visibility follows the parent `[data-a-target="player-controls"][data-a-visible]` toggle by itself (it is embedded inside the player controls). Shown only while gain ≠ 1.0 and an audio chain exists; the display is fixed to `%` and does not follow displayUnit
+├── Measurement is seeded from the stored LUFS at startup, on SPA navigation and also once the owner ID resolves. Whether a re-seed is needed is decided from the channel ID after alias resolution and the kind.
+│   The stored window count (`lastLufsWindows`) is passed with it and the bridge uses it as the seed's weight. A stored value with no window count (from before the extension update) is weighted at the bridge's floor
+├── A measurement reset advances the epoch number before it is sent, and lufs notifications from an older epoch are discarded
+├── On SPA navigation `mediaChanged` is sent first and `requestedAdActive` is cleared to stay aligned
+│   with the bridge. The ad-indicator element present **at the last DOM read** is noted, and that
+│   element itself is not treated as an indicator for the new media (a different element that appears
+│   belongs to the new media; the note is dropped once the element leaves the DOM). The DOM is re-read
+│   right after the navigation is handled, so an indicator that arrived in the same batch is reported there and then
+│   (a measurement reset also happens within one media, so only this path discards cues)
 ├── DOM ad detection (`[data-a-target="video-ad-countdown"]` / `[data-test-selector="ad-banner-default-text"]`)
-│   は cue を 1 つも受け取っていない media でだけ ad gain を駆動する
+│   drives the ad gain only on media that have received no cue at all
 ├── SPA navigation: history.pushState/replaceState hook + popstate + MutationObserver
-├── channelVolumes の更新は Service Worker の単一キューへ委譲し、onChanged でクロスタブ同期
-├── popup からの chrome.tabs.sendMessage を `getState` / `setGain` / `setAutoApplyLoudness` / `resetMeasurement` / `resume` で処理し、知らない cmd には `unknown command` を返す (options は削除・全消去を Service Worker へ直接送る)
+├── channelVolumes updates are delegated to the Service Worker's single queue, with cross-tab sync through onChanged
+├── Handles chrome.tabs.sendMessage from the popup as `getState` / `setGain` / `setAutoApplyLoudness` / `resetMeasurement` / `resume`, and answers an unknown cmd with `unknown command` (options sends delete and clear-all straight to the Service Worker)
 └── Storage
     ├── autoLoudnessSettings: { targetLufs, adGainDb, displayUnit, showGainOverlay,
     │     autoApplyLoudnessLiveDefault, autoApplyLoudnessVodDefault, autoApplyLoudnessClipDefault }
@@ -84,25 +85,25 @@ content.js (ISOLATED world content script, document_idle)
           autoApplyLoudnessLive, autoApplyLoudnessVod, autoApplyLoudnessClip,
           url, lastLufs, lastLufsRef, lastLufsWindows, autoGainRef, lastMeasuredAt, __fieldVersions } }
     ├── channelVolumeAliases: { [loginOrContentProvisionalId]: canonicalOwnerId }
-    └── channelVolumeSequence: フィールド更新順序の永続カウンタ
+    └── channelVolumeSequence: persistent counter for the field update order
 
 audio-worklet.js (page context, loaded by page-bridge.js)
-└── KMeanSquareProcessor: blockSec (default 0.1) ごとに L²+R² 平均を port.postMessage
+└── KMeanSquareProcessor: port.postMessage of the L²+R² average every blockSec (default 0.1)
 
 channel-store.js (service worker helper)
-├── channelVolumes の全 read-modify-write を単一キューで直列化
-├── gain / Auto / LUFS / delete / clear mutation を検証して適用
-├── 測定値リセットは対象種別の lastLufs と、それを説明する lastLufsRef / lastLufsWindows だけを削除し (autoGainRef は残る)、更新番号付きの削除状態として ID 統合後も維持
-├── 仮 ID → 数値 owner ID の alias を永続化し、全 mutation で正準 ID を解決
-│   (alias 転送時は仮 ID 側の name / login / url を適用しない)
-├── 同じ login の Live 行と数値 owner 行を統合し、URL をチャンネル URL へ正規化
-└── フィールド単位の永続更新番号で仮 ID と確定 ID をマージ
+├── Serialises the read-modify-write of channelVolumes through a single queue
+├── Validates and applies gain / Auto / LUFS / delete / clear mutations
+├── A measurement reset deletes only the lastLufs of the target kind and the lastLufsRef / lastLufsWindows that describe it (autoGainRef stays), and keeps the deletion as a state carrying an update number, so it survives ID merging
+├── Persists the alias from a provisional ID to the numeric owner ID and resolves the canonical ID in every mutation
+│   (name / login / url from the provisional side are not applied when the alias is forwarded)
+├── Merges a Live row and a numeric owner row that share a login, and normalises the URL to the channel URL
+└── Merges provisional and confirmed IDs by per-field persistent update numbers
 
 settings-store.js (service worker helper)
-├── autoLoudnessSettings のフィールド単位 mutation を検証
-└── 全 read-modify-write を単一キューで直列化し、設定タブ間の上書きを防止
+├── Validates per-field mutations of autoLoudnessSettings
+└── Serialises the read-modify-write through a single queue, preventing settings tabs from overwriting each other
 
-utils.js (shared, popup/options + content.js + test.js。page-bridge.js は MAIN world で読み込まれないため自前の定数を持つ)
+utils.js (shared, popup/options + content.js + test.js. It is not loaded in the MAIN world, so page-bridge.js carries its own constants)
 ├── Constants: SETTINGS_KEY, SETTINGS_MUTATION_MESSAGE, CHANNEL_VOLUMES_KEY, CHANNEL_ALIASES_KEY,
 │              CHANNEL_SEQUENCE_KEY, DEFAULT_TARGET_LUFS, DEFAULT_AD_GAIN_DB,
 │              DEFAULT_AUTO_APPLY_LOUDNESS, LUFS_REFERENCE_VOLUME_1,
@@ -110,134 +111,135 @@ utils.js (shared, popup/options + content.js + test.js。page-bridge.js は MAIN
 │              MIN_GAIN, MAX_GAIN
 ├── Gain utilities: gainToPercent, percentToGain, gainToDb, dbToGain, formatGain, calcGain,
 │                  suggestedGain, resolveAutoApplySetting, resolvePreferredGain
-├── URL classification: classifyTwitchUrl (TWITCH_RESERVED_PATHS 除外)
-├── BS.1770: K_PRE_48K / K_RLB_48K 係数 + redesignBiquad (任意 sample rate 対応)
+├── URL classification: classifyTwitchUrl (TWITCH_RESERVED_PATHS excluded)
+├── BS.1770: K_PRE_48K / K_RLB_48K coefficients + redesignBiquad (any sample rate)
 ├── LUFS: meanSquareToLufs, gatedIntegratedLufs (absolute + relative gating)
 ├── i18n: msg()
 └── HTML escape: esc()
 
 popup.html / popup.js
-├── Channel name + kind badge (Live/VOD/Clip) + CM 検出 badge
-├── チャンネル行のアイコンボタン (36×36) で現在種別の保存済み LUFS と実行中の計測を初期化。ラベルは視覚的に隠して読み上げ名に使い、title で hover 表示する
-├── チャンネル名は行幅に合わせて切り詰めるため、全文を title に持たせる
-├── 3 カード 1 行グリッド: Integrated LUFS / Suggested gain / Current gain (姉妹拡張と共通レイアウト)
-│   ├── Suggested gain は target との差分から算出 (ゲート通過値が無い間は 100%)
-│   ├── Suggested / Current の表示は displayUnit (% / dB) に追従
-│   └── 単位 (LUFS / dB / %) は setCardValue で <span class="unit"> に分離して灰色小文字表示
-├── Auto OFF 時の適用ボタンは Suggested gain を displayUnit で表示し、Auto ON 時は Current と Manual Volume を適用中 gain へ同期
-├── Auto ON で Integrated をまだ取れていない間は Fallback バッジを出す
-├── 現在視聴中の種別に対するチャンネル別「LUFS 自動追従」トグル
-├── Auto 保存失敗時はローカライズ済みエラーを表示して最新状態を再取得
-├── Auto 保存中は Apply / Manual 操作を無効化し、content 側でも手動 gain mutation を拒否
-├── audioUnavailable / measurementUnavailable の間はチャンネル行の下に理由と対処を出す
-│   (文言は cause 別に 3 種: 要素を他に握られた / AudioContext を作れない / 計測経路のみ不可)
-│   (チャンネル未解決のページでは出さない)。audioUnavailable では Apply / Manual /
-│   Auto トグル / 測定値リセットを無効化し、3 カードを unknown 表示にする。
-│   ゲイン保存の失敗表示はこの通知より優先し、ヒント行は空にする
-├── Manual slider (slider 自体は 0–600%, 表示値は displayUnit 追従) + 6 プリセット (0/50/100/200/400/MAX)
-└── SETTINGS_KEY を初期ロード + storage.onChanged で options の単位切替に即時反応
+├── Channel name + kind badge (Live/VOD/Clip) + ad-detected badge
+├── An icon button (36×36) on the channel row clears the stored LUFS for the current kind and the running measurement. Its label is visually hidden and used as the accessible name, with title for the hover text
+├── The channel name is truncated to the row width, so the full text is carried in title
+├── One-row grid of three cards: Integrated LUFS / Suggested gain / Current gain (layout shared with the sibling extensions)
+│   ├── Suggested gain is computed from the distance to the target (100% while no gated value exists)
+│   ├── The Suggested / Current display follows displayUnit (% / dB)
+│   └── setCardValue splits the unit (LUFS / dB / %) into a <span class="unit"> shown small and grey
+├── With Auto off, the apply button shows the Suggested gain in displayUnit; with Auto on, Current and Manual Volume are synced to the gain in force
+├── While Auto is on and no Integrated value has been obtained yet, a Fallback badge is shown
+├── Per-channel "Auto-follow LUFS" toggle for the kind currently being watched
+├── A failed Auto save shows a localised error and re-fetches the latest state
+├── While an Auto save is in flight, Apply / Manual controls are disabled, and content.js refuses manual gain mutations as well
+├── While audioUnavailable / measurementUnavailable, the reason and the remedy are shown under the
+│   channel row (three wordings, one per cause: the element is held elsewhere / the AudioContext
+│   could not be created / the measurement path alone is unavailable)
+│   (nothing is shown on a page with no resolved channel). Under audioUnavailable, Apply / Manual /
+│   the Auto toggle / measurement reset are disabled and the three cards show unknown.
+│   A gain-save failure takes precedence over this notice, and the hint row is left empty
+├── Manual slider (the slider itself is 0–600%, the displayed value follows displayUnit) + 6 presets (0/50/100/200/400/MAX)
+└── Loads SETTINGS_KEY at startup and reacts immediately to a unit change in options through storage.onChanged
 
 options.html / options.js
-├── Target LUFS スライダー (-30 ~ -6 LUFS, default -18)
-├── 全チャンネルの LUFS 自動追従既定値 (Live / VOD / Clip 別、default OFF)
-├── CM Gain スライダー (-24 ~ +6 dB, default -6 dB)
-├── 表示単位 (% / dB)
-├── ゲインオーバーレイ表示 ON/OFF トグル (default ON)
-├── Saved Channels テーブル (Live / VOD / Clip 3列、Auto 時は最後に適用した Auto gain、削除可)
-├── 初期設定の読込完了まで全設定操作と削除 (全削除・行の ×) を無効化
-└── 各項目だけを Service Worker の設定 mutation で保存し、storage.onChanged で同期
+├── Target LUFS slider (-30 to -6 LUFS, default -18)
+├── Default LUFS auto-follow for all channels (separate for Live / VOD / Clip, default OFF)
+├── Ad gain slider (-24 to +6 dB, default -6 dB)
+├── Display unit (% / dB)
+├── Gain overlay on/off toggle (default ON)
+├── Saved Channels table (three Live / VOD / Clip columns, the last applied Auto gain while Auto is on, deletable)
+├── Every settings control and deletion (clear all, the row ×) is disabled until the initial settings load completes
+└── Saves only the item that changed through the Service Worker's settings mutation, synced through storage.onChanged
 ```
 
 ## i18n
 
-- `_locales/ja/messages.json` — デフォルト日本語
-- `_locales/en/messages.json` — 英語
-- manifest の name/description は `__MSG_` 参照
-- popup/options の UI 文字列は `data-i18n` 属性 + `chrome.i18n.getMessage`
+- `_locales/ja/messages.json` — Japanese, the default
+- `_locales/en/messages.json` — English
+- The manifest's name/description use `__MSG_` references
+- The popup/options UI strings use the `data-i18n` attribute + `chrome.i18n.getMessage`
 
 ## User workflow
 
-1. 配信または VOD を開く → ポップアップで現在種別の「LUFS 自動追従」を ON
-2. Integrated LUFS の測定値が更新されるたび、Target LUFS に対応するゲインへ自動追従
-3. 「測定値をリセット」は現在種別の保存済み LUFS を削除して実行中の計測をゼロから再開する。再開後の計測値は従来どおり保存される
-4. Auto が OFF の種別では「チャンネルに適用」または Manual Volume で従来どおり保存
-5. CM 区間は CM Gain (default -6 dB) が追加で適用される
-6. Manual Volume スライダーで任意のゲインに変更も可
+1. Open a stream or a VOD → turn on "Auto-follow LUFS" for the current kind in the popup
+2. Each time the Integrated LUFS reading updates, the gain follows the one that matches Target LUFS
+3. "Reset measurement" deletes the stored LUFS for the current kind and restarts the running measurement from zero. Readings taken after the restart are stored as before
+4. For a kind with Auto off, "Apply to channel" or Manual Volume stores the gain as before
+5. During an ad break the Ad gain (default -6 dB) is applied on top
+6. The Manual Volume slider can set any gain
 
 ## File overview
 
 | File | Role |
 |------|------|
 | `manifest.json` | MV3 manifest. permissions: storage. host: twitch.tv |
-| `page-bridge.js` | MAIN world. AudioContext + LUFS + fetch hook (GraphQL) + Worker hook (CM の cue) + CM 要素へのゲイン |
-| `audio-worklet.js` | K-weighted MS 累積 (100ms ブロック) |
-| `content.js` | ISOLATED world. ゲイン管理、Channel resolution、Storage |
-| `utils.js` | 共通定数・ユーティリティ (popup/options/test 共有) |
+| `page-bridge.js` | MAIN world. AudioContext + LUFS + fetch hook (GraphQL) + Worker hook (ad cues) + gain on the ad element |
+| `audio-worklet.js` | K-weighted MS accumulation (100ms blocks) |
+| `content.js` | ISOLATED world. Gain management, channel resolution, storage |
+| `utils.js` | Shared constants and utilities (popup/options/test) |
 | `popup.html` / `popup.js` | Popup UI |
-| `options.html` / `options.js` | 設定画面 |
-| `background.js` | Service worker (install defaults + channelVolumes / settings 単一ライター) |
-| `channel-store.js` | channelVolumes mutation・直列化・仮 ID マージ |
-| `settings-store.js` | autoLoudnessSettings のフィールド mutation・直列化 |
+| `options.html` / `options.js` | Settings page |
+| `background.js` | Service worker (install defaults + single writer for channelVolumes / settings) |
+| `channel-store.js` | channelVolumes mutations, serialisation, provisional-ID merging |
+| `settings-store.js` | Per-field mutations of autoLoudnessSettings, serialisation |
 | `_locales/` | i18n (ja, en) |
 | `icons/` | 16/48/128 px PNG (Twitch purple 3-bar meter) |
-| `gen_icons.py` | アイコン生成 (Python Pillow) |
-| `gen_screenshots.py` | スクリーンショット生成 (PIL 直接描画, 640×400 ja/en → `docs/screenshots/`)。`--check` は書き込まず、追跡先までのパスの各成分と画像が通常ファイルか → PNG 構造 (署名・チャンク・IDAT の zlib ストリーム) → チャンクの並び → IHDR の大きさ → IDAT 以外のバイト列 → RGBA 画素、の順に見る (デコーダに渡すのは最後)。差は exit 1、描けない環境は exit 3。`--out <dir>` は書き込み先を差し替える。知らない引数・`--check` と `--out` の同時指定 (順不同)・`--out` の重複・フラグの形をした値・ディレクトリになれない行き先 (既存の非ディレクトリ・行き先の無いリンク・非ディレクトリの親) は exit 2 で拒否する。引数の間違いは Pillow / 書体の読取失敗より先に答える (import と書体解決自体はモジュール読み込み時で、失敗は持ち帰って引数解析の後に exit 3) (`--chek` が上書きにならないように)。追跡先までのパスに実体ディレクトリでない成分があれば、描画も `--check` も exit 1 で何もしない。ファイルシステムに断られたときも traceback にしない — `--out` で名指しされた行き先は exit 2 (それが追跡先と同じでも)、引数なしの追跡先は exit 1。断られた場所ごとに言い分ける (控えのために読めない・作業ディレクトリへ描けない・行き先へ書けない) |
-| `pack.py` | Chrome Web Store 用 zip 生成 (manifest からの参照グラフで選択、`--list` で選択結果のみ出力) |
-| `PRIVACY_POLICY.md` / `PRIVACY_POLICY_JA.md` | プライバシーポリシー (審査・README リンク用, EN/JA) |
-| `docs/security-audit.md` | セキュリティ監査レポート |
-| `docs/screenshots/` | `gen_screenshots.py` の出力。README とストア掲載の両方が使う (拡張機能には同梱しない)。追跡しているのは `tools/fonts/` の M PLUS 1p で描いたもの。生成器はその 2 書体だけを使い、無ければ止まる (別の書体で描くと 6 枚とも差し替わるため)。6 枚を作業ディレクトリで描き切ってから移し、移動が 1 つでも失敗したら置換前の姿 (通常ファイル / リンク / 無かった) へ最後まで戻すので、描画・置換のどちらで止まっても追跡先は前回のまま。描画名がディレクトリを指すリンクのときは、移動がその中へ入れてしまうため置換の前に断る。控えには通常ファイルをコピーし、リンクはリンクとして置く (置けなければ 1 枚も動かさずに断り、画像と控えの両端を名指しする — copy2 は読んで書く 1 回の呼び出しで、どちらが断ったかは呼び出し側から分からない)。戻すこと自体を断られたときは、戻せなかった名前と前は何だったか (リンクは指し先も) を言い、前があった名前が残っていれば控えを残して場所を名乗る (前が無かった名前だけなら消す)。控えを片付けられなかったときは exit 0 にしない (exit 0 が言えるのは「この走行が置いた控えは残っていない」までで、元からある非 PNG については何も言わない — `--check` も .png しか数えない)。CI は `--check` で描き直して画素比較する |
-| `tools/fonts/` | 描画に使う M PLUS 1p (Regular / Bold) と OFL.txt。google/fonts の `ofl/mplus1p` から取得 (commit `66a36c8`)。CI と各マシンで同じ画素を得るためにリポジトリへ入れている |
-| `test.js` | ユニットテスト (`node test.js`) — utils と store に加え、content.js / page-bridge.js / popup.js / options.js / background.js を VM 上の harness で走らせる |
+| `gen_icons.py` | Icon generation (Python Pillow) |
+| `gen_screenshots.py` | Screenshot generation (drawn directly with PIL, 640×400 ja/en → `docs/screenshots/`). `--check` writes nothing and looks, in order, at each component of the path to the tracked file and whether the image is a regular file → PNG structure (signature, chunks, the IDAT zlib stream) → chunk order → IHDR dimensions → the bytes outside IDAT → RGBA pixels (the decoder comes last). A difference is exit 1, an environment that cannot draw is exit 3. `--out <dir>` replaces the destination. An unknown argument, `--check` and `--out` given together (in either order), a repeated `--out`, a value shaped like a flag, and a destination that cannot become a directory (an existing non-directory, a link with no target, a non-directory parent) are refused with exit 2. An argument mistake is answered before a Pillow or typeface load failure (the import and the typeface resolution themselves happen at module load; the failure is carried forward and exits 3 after argument parsing) so that `--chek` does not overwrite. If any component of the path to the tracked file is not a real directory, neither drawing nor `--check` does anything and it exits 1. A refusal from the filesystem is not a traceback either — a destination named with `--out` is exit 2 (even when it is the tracked location), and the tracked location with no argument is exit 1. Each place that refused is named separately (the backup could not be read / the working directory could not be drawn into / the destination could not be written) |
+| `pack.py` | Builds the Chrome Web Store zip (selection follows the reference graph from the manifest; `--list` prints the selection only) |
+| `PRIVACY_POLICY.md` / `PRIVACY_POLICY_JA.md` | Privacy policy (for review and the README link, EN/JA) |
+| `docs/en/security-audit.md` / `docs/ja/security-audit.md` | Security audit report (EN/JA) |
+| `docs/screenshots/` | Output of `gen_screenshots.py`. Used by the README and by the store listing (not bundled into the extension). What is tracked is drawn with the M PLUS 1p faces in `tools/fonts/`. The generator uses those two faces and stops when they are absent (drawing with a different face would replace every one of the six images). The six are drawn to completion in a working directory before being moved, and if one move fails the tracked names are restored to what they were (regular file / link / absent) all the way back, so a stop during drawing or during replacement leaves the tracked files as they were. When the drawn name is a link pointing at a directory, the move would land inside it, so the replacement is refused first. Regular files are copied into the backup and links are placed as links (if one cannot be placed, nothing is moved and the two ends are named — the image and the backup — since copy2 is a single call that reads and writes and the caller cannot tell which end refused). When the restore itself is refused, the name that could not be restored and what was there before it (including a link's target) are stated, and if a name that had something before still exists the backup is kept and its location named (a name that had nothing before is deleted). A backup that could not be cleaned up does not exit 0 (exit 0 says only that this run left no backup behind, and says nothing about a non-PNG that was already there — `--check` counts only .png). CI redraws with `--check` and compares pixels |
+| `tools/fonts/` | The M PLUS 1p faces used for drawing (Regular / Bold) and OFL.txt. Taken from `ofl/mplus1p` in google/fonts (commit `66a36c8`). Kept in the repository so that CI and each machine produce the same pixels |
+| `test.js` | Unit tests (`node test.js`) — utils and the stores, plus content.js / page-bridge.js / popup.js / options.js / background.js run in a VM harness |
 
 ## Key design decisions
 
-- **自前 LUFS 計測**: Twitch は loudness API を提供しないため、Web Audio API で BS.1770-4 K-weighting + ゲーテッド integrated LUFS を計測。yt-channel-volume の loudnessDb 受動取得と対称な能動計測モデル
-- **AudioWorklet (not ScriptProcessor)**: ScriptProcessor は deprecated。100ms 単位の L²+R² 累積を Worklet スレッドで実行し、main thread で window 形成
-- **K-weighting フィルタ係数**: BS.1770-4 規格の 48kHz 係数をベースに、AudioContext.sampleRate が 48k 以外の場合は bilinear 逆変換 → 再 bilinear で再設計 (redesignBiquad)
-- **Integrated LUFS の索引更新**: 現在のチャンネルと種別に保存された LUFS を、その値が立つ窓数分 (下限・上限は「計測のセッション跨ぎ」) の初期サンプルとして復元する。直近 1 時間のブロックをリングバッファに保持し、絶対ゲート通過値を部分木の合計・件数付き平衡木へ格納する。絶対ゲート後の平均から相対ゲート -10 LU を毎回求め、しきい値以上の合計・件数を O(log n) で取得するため、入力順序に依存せず二段ゲートを維持する。CM 区間中は Integrated 統計に含めない (本編の代表値が CM で汚染されないため)
-- **計測のセッション跨ぎ**: 保存済み LUFS は、それが立つ窓数 (`lastLufsWindows`) と一緒に保存し、次の計測はその件数分の窓としてシードする。1 窓としてシードすると新しい音声が毎秒 10 窓入って 1 秒で押し流し、Auto が本編 0.4 秒ぶんの Integrated からゲインを決めることになる。窓数の下限は 300 窓 (30 秒)、上限は 1800 窓 (3 分)。上限をリングバッファと同じ 1 時間に置くと、シードは同一値の点質量なので相対ゲートがその値に固定され、配信側が本当にレベルを下げたときに 20 分以上 Integrated が動かない。3 分なら同じ長さの視聴でシードと同じ重みに達する。窓数を持たない保存値 (拡張更新前) と読めない窓数は下限で重み付けする。報告する窓数は相対ゲートを通った窓だけを数え、シードの分はそれが名乗ってきた窓数で置き換える。下限の嵩上げ分を測ったことにせず、ゲートが外した窓と、リングバッファが追い出した窓も数えないため。どの窓がシードのものかは水準ではなくゲーティング窓の連番で判別する (索引は水準をキーにするので、シードと同じ水準の音声はシードと同じ節点に入る)
-- **GainNode, not HTMLMediaElement.volume**: volume は 1.0 でクリップする。GainNode で 0.0–6.0 (0–600%) を提供
-- **MAIN world + ISOLATED world 分離**: Twitch の CSP は inline script を禁止するため、AudioContext と fetch hook は page-bridge.js (MAIN world, document_start) で実行
-- **Channel ID 戦略**: 
-  - Live は owner 応答前のみ URL の login (`login:<name>`) を使用し、GraphQL `user.id` 解決後は VOD / Clip と同じ数値 ID へ統合
-  - VOD / Clip は GraphQL レスポンスの `owner.id` / `broadcaster.id` (数値、不変)。フォールバックは `vod-owner:<videoId>` / `clip-owner:<slug>`
-  - 数値 ID を取得できない間だけ種別固有の仮 ID を使い、取得後は永続 alias で正準化する
-- **仮 ID → 確定 ID 遷移**: page-bridge が GraphQL リクエスト時点の content kind/id を owner イベントへ付与。content.js は現在 URL と一致した応答だけを受理し、初期設定の読込中でも `login:<name>` / `vod-owner:<videoId>` / `clip-owner:<slug>` を Service Worker 内で数値 ID へマージしてから currentChannel を切り替える。各 gain / Auto / LUFS フィールドは単一ライターが採番した更新順序で競合解決し、別タブの最新保存も維持する。仮 ID の正準 ID 対応は Storage に永続化し、content の読取と Worker の書込の両方で解決する
-- **Saved Channels のチャンネル不変条件**: 数値 owner ID と login が対応する場合は 1 行へ統合し、保存・表示するリンクは常に `https://www.twitch.tv/<login>` とする。既存の Live/VOD 重複行は拡張更新時の正規化 mutation で移行する
-- **channelVolumes 単一ライター**: aggregate key の read-modify-write は background.js → channel-store.js のキューだけが実行。content scripts と options は mutation message を送り、複数タブの LUFS キャッシュ保存と Auto/手動設定保存が古い全体オブジェクトで互いを上書きしないようにする。失敗の理由は 3 つに分かれる。**ストア自身が投げた例外は `reason` を名乗り**、呼び出し側の入力が適用できないものは `invalid-mutation`、保存済みの状態が mutation を担えないもの (alias の循環・更新番号の枯渇) は `stored-state-invalid`。名乗りの無い reject は storage 由来として `storage-update-failed` / `settings-update-failed` を返す (例外の型では分けない — `TypeError` は入力の検証と保存済み状態の異常の両方で投げる)。知らない `type` のメッセージには応答せず、届いた `type` を log に残す (応答すると後から足したリスナーの応答を奪うため)。`background.js` が `importScripts` で読む 2 つのスクリプトは 1 つの global を共有するため、トップレベルの名前を重複させない (`node test.js` が両ファイルの宣言を突き合わせる)
-- **設定のフィールド単位保存**: options は初期ロード完了後に操作を有効化し、変更した設定フィールドだけを background.js → settings-store.js の単一キューへ送る。複数の設定タブが異なる項目を古い表示状態から変更しても、`autoLoudnessSettings` 全体を置換せず最新値へマージする
-- **保存済みの値を反映してから画面を出す**: popup / options は `body.initializing` で読み込み中の画面を隠し、i18n の適用と保存済み設定の描画が終わってから外す (options は読込が失敗しても外す — 出ない画面は操作もできない)。初期化中は `body.initializing *` (と `::before` / `::after`) の `transition: none !important` で全ての遷移を止める — セレクタの列挙は書き忘れたコントロールを取りこぼし、`!important` が無いと個々のセレクタに詳細度で負ける。遷移は値を書いた時点で走り始めるので、残りが画面上で動いて「表示してから更新された」ように見える。読込が失敗した画面は読めなかったもの (保存済み設定) を名乗る。チャンネル一覧について答えるのはその一覧を読めたときだけで、読めたと言えるのは初回の読み取りと、変更通知 (一覧そのものを運ぶ) の 2 つ。どちらも無いうちは「保存済みチャンネルなし」もチャンネルテーブルも markup のまま出さない。失敗が確定した後の変更通知は取らない (再読込を促している画面に別タブの書き込みが載るため)。確定前に届いた通知は既に画面にあり、そのまま残る。破壊的操作 (全削除・行の ×) は読込が成功したときだけ有効になり、ハンドラ側でも未完了の読込からの mutation を拒否する。読込には 3 秒の期限があり、超えたら失敗と同じ扱いで画面を出す (settle しない読込で画面が出ないままになるのを防ぐ)。期限後に届いた読み取りは画面へ入れない。読込が書き込むまで画面に出ているのは markup の値なので、markup の初期値は background.js が install する既定値と一致させる (`node test.js` が両者を照合する)
-- **CM 区間検出**: 独立した 2 つの指標を使う
-  - プレイヤーの cue: メディアエンジンは worker で動き、再生する CM ごとに cue をページへ post する。`Worker` コンストラクタを包んで message リスナーを足し、`rollType` と `startTime` / `endTime` を持つ cue を読む。この 2 つは attach している要素の media 時刻で、CM の終わりと一致する。CM 中はプレイヤーがもう 1 つ動いて自分の CM を別の時間軸で cue するため、再生位置がその区間に入っている cue だけを受け取る。**受理の範囲と CM 判定は別**で、受理は開始 1 秒前から、CM 中の判定は開始以降 — 早く届いた cue が本編に CM Gain を掛けない。CM を通り過ぎたら区間を捨てるので、再生位置が戻っても同じ CM は開かない
-  - cue の保持期間: cue は media と要素に属する。計測リセット (popup の操作や owner ID 確定でも走る) では捨てず、次の 2 つでだけ捨てる。**どちらも「その事象が無効にするものを全部」捨てる** — 片側だけ消すと、cue も DOM 指標も効かない状態や、前の media の指標が新しい media の CM として残る状態になる
-    - 要素の差し替え: cue の時刻と「この media は cue されるか」(`adCueSeen`) の両方
-    - `mediaChanged` (SPA 遷移): 上に加えて DOM 指標の状態。content.js 側も `requestedAdActive` を落として bridge と揃え、さらに **遷移の時点で出ている CM 指標の要素を控え、その要素そのものは新 media の指標として扱わない**。遷移の瞬間はまだ旧プレイヤーがページにあり、その間に別の DOM 変化が起きると observer が旧指標を新 media の CM として報告してしまうため。真偽値ではなく要素で持つのは、MutationObserver が旧要素の除去と新要素の追加を 1 回の callback にまとめることがあり、その場合「指標が消えた瞬間」を観測できないため。控えた要素が DOM を離れたら外す (同じ要素が置き直されたら新 media のものとして受け取る)
-      控えるのは **最後に DOM を読んだ時点で出ていた要素** で、遷移の時点でページを読み直さない。読み直す実装は「いつ読むか」がページ側の処理順と競合する (同じタスクでプレイヤーが差し替わる・ページ側の popstate リスナーが先に動く・同一 URL の History 呼び出しが混ざる) ため、読む時点を持たない形にしてある。DOM を読むのは常に遷移の処理より前なので、そこに出ていた指標は旧 media のものになる。これを成り立たせる要素が 3 つある:
-      - `pushState` / `replaceState` のフックは URL を動かす前に DOM を読み直す (まだ観測されていない指標が旧 media のものとして控えられる)
-      - 遷移を見る MutationObserver を CM 指標の observer より先に登録する (遷移を運ぶ batch は、新 media に対して読まれる)
-      - 遷移の処理の最後に DOM を読み直す (遷移と同じ batch で入った指標が、次の DOM 変化を待たずに通知される)
-  - pod の途切れ: 1 回の CM に複数の creative が入ると、前の creative の終わりと次の cue の間に再生位置が進む。cue が pod の最後の creative だと言っている (`podPosition` >= `podCount` - 1) ときだけ終わりで閉じ、それ以外 (途中を示す、または値が読めない) は次の cue を 0.4 秒だけ待つ。来なければそこで閉じる
-  - DOM: `[data-a-target="video-ad-countdown"]` / `[data-test-selector="ad-banner-default-text"]` の有無
-- **2 つの指標の使い分け**: cue は CM の最初の音声とほぼ同時に届き、CM の終わりも正確に示す。DOM 指標は CM の最初の音声より遅れて現れ、CM 後も DOM に残ることがある。したがって cue を 1 つでも受け取った media では cue だけで開閉し、cue の来ない media (VOD のクライアント側挿入の CM) では DOM 指標へ戻る
-- **CM 要素**: VOD の CM は本編要素を停止させたまま別の `<video>` で再生され、その要素は本編要素の volume を無視して自前の volume で鳴る。本編要素が停止していて別の要素が鳴っているときは、その要素にも `MediaElementSource` + `GainNode` を挟み、`baseline * adGainOffset * (本編 volume / 当該要素の volume)` を掛ける。CM が終わればゲインを 1.0 へ戻し、要素が DOM から消えたら切り離す。計測はこの要素からは採らない
-- **CM 中の挙動**: GainNode に baseline × adGainOffset (dB → gain) を適用。Integrated 計測は CM 中スキップして本編の値を保持。CM 終了時点のブロックは CM 音声を含みうるため、CM 明けはゲーティング窓が CM を離れるまでの 4 窓も Integrated から除外する。CM 開始側は DOM マーカーが CM の最初の音声より遅れて現れるため、検出時点で直近 5 窓 (0.5 秒) を取り消す。取り消す区間に境界スキップで既に除外した窓が入っていれば、その数だけ取り消す数から引く — 積んでいない窓は取り消せず、要求した数をそのまま渡すと代わりに本編の窓が消える。取り消す窓数は観測できたマーカーの遅れに合わせる — 本編の窓まで消すと、その水準がゲートの母集団から抜けて Integrated が動く
-- **プレイヤー音量の相殺**: 計測タップは `sourceNode` 直後で、Twitch のプレイヤー音量 (`video.volume`) はその上流に掛かる。ブロックの MS を volume² で割り、Integrated LUFS を常に音量 1.0 基準にする。視聴者がスライダーを下げても算出ゲインは上がらない。音量変更を跨ぐゲーティング窓は CM 境界と同じ仕組みで除外する
-- **保存済み値の基準**: 音量 1.0 基準で測った値だけが基準名を持つ。保存済み LUFS は `lastLufsRef`、保存済み Auto gain は `autoGainRef` と、それぞれ自分のフィールドの更新番号でマージされる (共用すると ID 統合で値と基準の組が入れ替わる)。窓数 `lastLufsWindows` も `lastLufsRef` と同じく LUFS 側に属し、その値が勝った側のものが残る。基準の無い値 (拡張更新前の保存) は計測の初期サンプルに使わず、基準の無い Auto gain も起動時に適用しない。手動ゲインは視聴者自身の設定なので従来どおり適用する
-- **計測値が無い間の Suggested gain**: ゲート通過値が 1 つも無い間は `suggestedGain` が 1.0 を返し、ゲインを上げる提案をしない
-- **createMediaElementSource**: `<video>` に対し 1 回のみ呼び出し可能。他拡張 (FrankerFaceZ Compressor 等) が先に取ると失敗する。失敗した video は `WeakSet` で除外し、他の video にフォールバック。attach できなかった video では GainNode もプレイヤーの音声経路に入らないため、`attach-failed` を content.js が受けて popup に理由と対処を表示し、適用中ゲインの表示 (オーバーレイ) を取り下げる。フォールバック先へ attach できても、握られた要素がページに残る限り音量はその要素で鳴り続けるため、`attached` の `takenElsewhere` で通知を維持する
-- **AudioContext を作れない場合**: 生成が失敗した試行はキャッシュせず、次の attach で作り直す。失敗の通知は状態が変わったときだけ 1 回送る (リトライごとには送らない)。`cause: 'audio-context'` を付けて他拡張との競合と区別し、popup は再読み込みを促す別文言を出す
-- **音声経路が無い間の計測値**: `attach-failed` 後や `takenElsewhere` の間に届く lufs は、視聴者が聞いている要素のものではないため破棄する (保存も Auto 追従もしない)。復帰した時点で計測を初期化する — bridge のリングバッファには別要素のブロックが残っている
-- **計測経路だけ落ちた場合**: worklet の読込・接続に失敗しても GainNode は経路内にあるため、`attached` の `measuring: false` で計測のみ不可と伝え、音量調整が効く旨を含む別の文言を出す
-- **attach のリトライ**: video 要素は document_start 時点では存在しないため、`scheduleAttach()` で 1s 間隔のループ。`clearStaleAttachment()` が DOM から消えた video を検出して再 attach を許可 (Twitch SPA で video が入れ替わるケース対応)。SPA navigation 時にも content.js が `attach` を再送
-- **measurement chain の接続点**: `attach()` は `ensureContext()` を await し、その await が `audioWorklet.addModule()` の解決まで含むため、attach 時点で worklet の可否は確定している。読込に失敗した attach は `measuring: false` を報告し、以降その attachment に計測経路は付かない
-- **SPA navigation**: history.pushState/replaceState フック + popstate + MutationObserver の 3 段構え。URL 変更で resetMeasurement + 種別判定再実行 + attach 再送
-- **計測リセットの世代番号**: content.js は resetMeasurement を送るたびに世代番号を進め、page-bridge はその番号を以降の lufs 通知へ付与する。content.js は現在の世代より古い通知を破棄するため、リセット送信前に page-bridge が算出したブロックが保存済み LUFS を復活させない
-- **Live/VOD/Clip 別ゲイン**: 配信は時間帯で音作りが変わるため種別ごとに別管理。同チャンネルの過去 VOD のゲインを現 Live にコピーしない
-- **Twitch reserved paths**: `/directory`, `/settings`, `/videos`, `/p`, `/jobs` 等は live channel として誤検出しないよう TWITCH_RESERVED_PATHS で除外
-- **予約名の扱い**: Chrome が「パッケージ化されていない拡張機能を読み込む」で拒否するのはルート直下の `_` 始まりの名前だけで、下位ディレクトリの `_metadata` 等は読み込めてしまう (`_locales` はルートでも許される)。`test.js` の走査はそれより厳しく、パッケージを組む元のツリー (リポジトリから `.git` / `node_modules` とルート直下の `work/` / `.claude/` を除いた範囲) であれば深さに関わらず報告する。zip に入らない `docs/` 等も対象に含む
-- **パッケージの選択は参照グラフ**: `pack.py` は manifest から辿れるもの (content_scripts の js と css / web_accessible_resources / service_worker / options_page と options_ui.page / action.default_popup / icons と action.default_icon) と、その HTML の `<script src>` と `<link href>` の css・worker の `importScripts`、および `_locales/<locale>/messages.json` だけを選ぶ。参照されないファイルは拡張子に関わらず入らない。パスは 1 箇所の resolver を通し、絶対パス・`..`・途中のディレクトリを含むシンボリックリンクで実体がパッケージ外へ出るものは失敗させる (壊れた zip も、外部ファイルを同梱した zip も黙って作らない)
-- **CSP 対応**: AudioWorklet モジュールは web_accessible_resources で公開する。page-bridge は MAIN world でページ自身のスクリプトと window を共有し、init も含む全コマンドをページが送れるため、モジュール URL を受け取らず自分のスタックフレームから拡張 origin を取り、`<origin>/audio-worklet.js` を読み込む。origin を取れないときはモジュールを読み込まない
-- **NaN/Infinity ガード**: 計測値が無限大・NaN の場合は gain 1.0 にフォールバック
+- **Own LUFS measurement**: Twitch provides no loudness API, so BS.1770-4 K-weighting + gated integrated LUFS are measured with the Web Audio API. An active measurement model, symmetric to yt-channel-volume's passive read of loudnessDb
+- **AudioWorklet (not ScriptProcessor)**: ScriptProcessor is deprecated. The L²+R² accumulation over 100ms units runs on the worklet thread, and the windows are formed on the main thread
+- **K-weighting filter coefficients**: based on the 48kHz coefficients of BS.1770-4; when AudioContext.sampleRate is not 48k, the filters are redesigned by an inverse bilinear transform followed by a fresh bilinear transform (redesignBiquad)
+- **Indexed Integrated LUFS updates**: the LUFS stored for the current channel and kind is restored as initial samples worth the window count the value stands on (the floor and the cap are in "Measurement across sessions"). The last hour of blocks is held in a ring buffer, and values that pass the absolute gate are stored in a balanced tree carrying subtree sums and counts. The relative gate of -10 LU is derived from the post-absolute-gate mean each time, and the sum and count at or above the threshold are obtained in O(log n), so the two-stage gate holds regardless of input order. An ad break is left out of the Integrated statistics (so an ad does not contaminate the programme's representative value)
+- **Measurement across sessions**: the stored LUFS is saved together with the window count it stands on (`lastLufsWindows`), and the next measurement is seeded with that many windows. Seeded as a single window, new audio arriving at 10 windows per second washes it away within a second, and Auto would set the gain from an Integrated value covering 0.4 seconds of the programme. The floor is 300 windows (30 seconds) and the cap is 1800 windows (3 minutes). With the cap at the ring buffer's own hour, the seed is a point mass at one value, so the relative gate pins to that value and the Integrated value would not move for over 20 minutes after the broadcaster genuinely lowers their level. At 3 minutes, watching for the same length of time reaches the seed's weight. A stored value with no window count (from before the extension update), and a window count that cannot be read, are weighted at the floor. The reported window count counts only windows that passed the relative gate, and the seed's share is replaced by the window count it arrived with — the padding up to the floor is not reported as measured, and windows the gate dropped and windows the ring buffer evicted are left uncounted. Which windows belong to the seed is decided from the gating window's sequence number rather than from its level (the index is keyed on level, so audio at the seed's level lands on the seed's node)
+- **GainNode, not HTMLMediaElement.volume**: volume clips at 1.0. The GainNode provides 0.0–6.0 (0–600%)
+- **MAIN world / ISOLATED world split**: Twitch's CSP forbids inline script, so the AudioContext and the fetch hook run in page-bridge.js (MAIN world, document_start)
+- **Channel ID strategy**: 
+  - Live uses the login from the URL (`login:<name>`) only before the owner response arrives, and merges into the same numeric ID as VOD / Clip once GraphQL `user.id` resolves
+  - VOD / Clip use `owner.id` / `broadcaster.id` from the GraphQL response (numeric, immutable). The fallbacks are `vod-owner:<videoId>` / `clip-owner:<slug>`
+  - A kind-specific provisional ID is used only while the numeric ID is unavailable, and a persistent alias canonicalises it afterwards
+- **Provisional ID → confirmed ID transition**: page-bridge stamps the owner event with the content kind/id current at the time of the GraphQL request. content.js accepts only a response matching the current URL, and — even while the initial settings load is still running — merges `login:<name>` / `vod-owner:<videoId>` / `clip-owner:<slug>` into the numeric ID inside the Service Worker before switching currentChannel. Each gain / Auto / LUFS field resolves conflicts by the update order the single writer assigns, so the newest save from another tab survives. The provisional-to-canonical ID mapping is persisted in storage and resolved on content's reads and on the Worker's writes alike
+- **Saved Channels channel invariant**: where a numeric owner ID and a login correspond, they are merged into one row, and the link stored and shown is always `https://www.twitch.tv/<login>`. Existing duplicate Live/VOD rows are migrated by a normalisation mutation on extension update
+- **Single writer for channelVolumes**: the read-modify-write of the aggregate key is performed by the background.js → channel-store.js queue alone. Content scripts and options send mutation messages, so that LUFS cache saves from several tabs and Auto/manual setting saves do not overwrite each other with a stale whole object. Failures fall into three reasons. **An exception the store itself threw states a `reason`**: input from the caller that cannot be applied is `invalid-mutation`, and stored state that cannot carry the mutation (an alias cycle, an exhausted update number) is `stored-state-invalid`. A reject with no such statement is treated as coming from storage and returns `storage-update-failed` / `settings-update-failed` (the exception type does not separate them — `TypeError` is thrown by input validation and by a stored-state anomaly alike). A message with an unknown `type` gets no response, and the `type` that arrived is logged (responding would steal the response of a listener added later). The two scripts `background.js` pulls in with `importScripts` share one global, so top-level names must not collide (`node test.js` cross-checks the declarations in the two files)
+- **Per-field settings saves**: options enables its controls once the initial load completes and sends only the settings field that changed to the background.js → settings-store.js queue. When several settings tabs change different items from a stale view, `autoLoudnessSettings` is merged into the newest value instead of being replaced entire
+- **Show the screen after the stored values are in it**: popup / options hide the loading screen with `body.initializing` and remove it once i18n has been applied and the stored settings have been rendered (options removes it even when the load fails — a screen that never appears cannot be operated either). During initialisation, `transition: none !important` on `body.initializing *` (and `::before` / `::after`) stops every transition — enumerating selectors misses a control someone forgot to list, and without `!important` an individual selector wins on specificity. A transition starts running the moment its value is written, so the rest animates on screen and reads as "shown first, updated afterwards". A screen whose load failed names what it could not read (the stored settings). It answers about the channel list only when it could read that list, and two things count as having read it: the initial read, and a change notification (which carries the list itself). Until one of them arrives, neither "No saved channels" nor the channel table is shown as it stands in the markup. A change notification arriving after the failure is settled is not taken (it would put another tab's write onto a screen that is asking for a reload). A notification that arrived before then is already on screen and stays. Destructive actions (clear all, the row ×) become enabled only when the load succeeded, and the handler also refuses a mutation coming from an incomplete load. The load has a 3-second deadline, after which the screen is shown as if the load had failed (so a load that never settles does not leave the screen hidden). A read arriving after the deadline is not put on screen. What is on screen until the load writes to it is the markup's values, so the markup's initial values are kept equal to the defaults background.js installs (`node test.js` checks the two against each other)
+- **Ad-break detection**: two independent signals are used
+  - The player's cue: the media engine runs in a worker and posts a cue to the page for each ad it plays. The `Worker` constructor is wrapped to add a message listener, and cues carrying `rollType` and `startTime` / `endTime` are read. Those two are in the media time of the attached element and coincide with the end of the ad. During an ad a second player runs and cues its own ads on another timeline, so only a cue whose span contains the playback position is taken. **The acceptance window and the ad verdict are separate**: acceptance starts 1 second before the start, the in-ad verdict at the start — so a cue that arrives early does not put the Ad gain on the programme. The span is discarded once the ad is passed, so the same ad does not reopen when the playback position moves back
+  - How long a cue is held: a cue belongs to a media and an element. A measurement reset (which also runs on a popup action or when the owner ID is confirmed) does not discard it; two events do. **Each of them discards everything that event invalidates** — clearing one side alone leaves a state where neither the cue nor the DOM indicator has any effect, or one where the previous media's indicator survives as the new media's ad
+    - Element replacement: the cue times and whether this media is cued at all (`adCueSeen`)
+    - `mediaChanged` (SPA navigation): the above plus the state of the DOM indicator. content.js clears `requestedAdActive` as well to stay aligned with the bridge, and further **notes the ad-indicator element present at the moment of the navigation, and does not treat that element itself as an indicator for the new media**. At the instant of the navigation the old player is still in the page, and another DOM change during that time would have the observer report the old indicator as the new media's ad. It is held as an element rather than a boolean because MutationObserver sometimes folds the removal of the old element and the addition of the new one into one callback, and then the moment the indicator disappeared is not observable. The note is dropped once the element leaves the DOM (the same element put back is taken as belonging to the new media)
+      What is noted is **the element present at the last DOM read**, and the page is not re-read at the moment of the navigation. An implementation that re-reads has its "when to read" racing the page's own ordering (the player is replaced in the same task, the page's own popstate listener runs first, History calls on the same URL are mixed in), so the design has no read moment at all. The DOM is always read before the navigation is handled, so an indicator present there belongs to the old media. Three pieces make that hold:
+      - The `pushState` / `replaceState` hooks re-read the DOM before the URL moves (an indicator not yet observed is noted as belonging to the old media)
+      - The MutationObserver watching for navigation is registered before the ad-indicator observer (the batch carrying the navigation is read against the new media)
+      - The DOM is re-read at the end of handling the navigation (an indicator that arrived in the same batch is reported without waiting for the next DOM change)
+  - Gaps within a pod: when one ad break holds several creatives, the playback position advances between the end of one creative and the next cue. The break is closed at its end only when the cue says it is the pod's last creative (`podPosition` >= `podCount` - 1); otherwise (it indicates a middle position, or the value cannot be read) the next cue is awaited for 0.4 seconds. If none arrives, the break closes there
+  - DOM: the presence of `[data-a-target="video-ad-countdown"]` / `[data-test-selector="ad-banner-default-text"]`
+- **Choosing between the two signals**: a cue arrives at practically the same time as the ad's first audio, and marks the end of the ad exactly. The DOM indicator appears later than the ad's first audio and can stay in the DOM after the ad. So a media that has received even one cue opens and closes on cues alone, and a media that receives no cue (a client-side ad on a VOD) falls back to the DOM indicator
+- **The ad element**: an ad on a VOD plays in a separate `<video>` while the main element stays paused, and that element ignores the main element's volume and sounds at its own. When the main element is paused and another element is sounding, a `MediaElementSource` + `GainNode` is inserted on that element too and `baseline * adGainOffset * (main volume / that element's volume)` is applied. The gain returns to 1.0 when the ad ends, and the chain is detached once the element leaves the DOM. No measurement is taken from this element
+- **Behaviour during an ad**: baseline × adGainOffset (dB → gain) is applied to the GainNode. Integrated measurement is skipped during the ad, holding the programme's value. The block at the moment the ad ends can contain ad audio, so after the ad the 4 windows it takes for the gating window to leave the ad are excluded from Integrated as well. On the ad-start side the DOM marker appears later than the ad's first audio, so the last 5 windows (0.5 seconds) are withdrawn at detection time. If the withdrawn span contains windows the boundary skip already excluded, that count is subtracted from the number withdrawn — a window that was never added cannot be withdrawn, and passing the requested number through would delete a programme window instead. The number of windows withdrawn matches the marker delay that was observed — deleting programme windows too takes that level out of the gate's population and moves the Integrated value
+- **Cancelling the player volume**: the measurement tap sits directly after `sourceNode`, and Twitch's player volume (`video.volume`) applies upstream of it. Each block's MS is divided by volume², keeping the Integrated LUFS referenced to volume 1.0. Lowering the slider does not raise the computed gain. A gating window that straddles a volume change is excluded by the same mechanism as an ad boundary
+- **The reference a stored value carries**: only a value taken against volume 1.0 carries a reference name. The stored LUFS merges with `lastLufsRef` and the stored Auto gain with `autoGainRef`, each by its own field's update number (sharing one number would swap the value/reference pairs during ID merging). The window count `lastLufsWindows` belongs to the LUFS side like `lastLufsRef`, and the one from the side whose value won is kept. A value with no reference (stored before the extension update) is not used as an initial measurement sample, and an Auto gain with no reference is not applied at startup. A manual gain is the viewer's own setting and is applied as before
+- **Suggested gain while there is no reading**: while no gated value exists, `suggestedGain` returns 1.0 and suggests no gain increase
+- **createMediaElementSource**: callable once per `<video>`. It fails when another extension (FrankerFaceZ Compressor and the like) took it first. A video that failed is excluded through a `WeakSet` and the attach falls back to another video. On a video that could not be attached the GainNode is outside the player's audio path too, so content.js receives `attach-failed`, shows the reason and the remedy in the popup, and withdraws the display of the gain in force (the overlay). Even when the fallback attach succeeds, the audio keeps sounding through the held element for as long as it remains in the page, so the notice is kept up through `takenElsewhere` on `attached`
+- **When the AudioContext cannot be created**: a failed attempt is not cached, and the next attach builds it again. The failure notice is sent once, when the state changes (not on every retry). `cause: 'audio-context'` distinguishes it from a conflict with another extension, and the popup shows a different wording asking for a reload
+- **Readings while there is no audio path**: a lufs arriving after `attach-failed` or during `takenElsewhere` is not from the element the viewer is hearing, so it is discarded (neither stored nor followed by Auto). Measurement is reset at the moment it recovers — the bridge's ring buffer still holds blocks from the other element
+- **When only the measurement path is down**: the GainNode is in the path even when the worklet fails to load or connect, so `measuring: false` on `attached` reports that measurement alone is unavailable, and a different wording states that volume control still works
+- **Attach retries**: the video element does not exist at document_start, so `scheduleAttach()` loops at 1s intervals. `clearStaleAttachment()` detects a video that left the DOM and allows a re-attach (for the case where Twitch's SPA swaps the video). content.js also sends `attach` again on SPA navigation
+- **Where the measurement chain is connected**: `attach()` awaits `ensureContext()`, and that await covers the resolution of `audioWorklet.addModule()`, so whether the worklet is available is settled by attach time. An attach whose load failed reports `measuring: false`, and no measurement path is added to that attachment afterwards
+- **SPA navigation**: three layers — the history.pushState/replaceState hooks + popstate + MutationObserver. A URL change triggers resetMeasurement + a fresh kind classification + another `attach`
+- **The epoch number of a measurement reset**: content.js advances the epoch number each time it sends resetMeasurement, and page-bridge stamps that number on the lufs notifications that follow. content.js discards a notification older than the current epoch, so a block page-bridge computed before the reset was sent does not revive the stored LUFS
+- **Separate gain per Live/VOD/Clip**: a stream's sound changes with the time of day, so each kind is managed separately. The gain of a past VOD on the same channel is not copied onto the current Live
+- **Twitch reserved paths**: `/directory`, `/settings`, `/videos`, `/p`, `/jobs` and the like are excluded through TWITCH_RESERVED_PATHS so they are not misread as a live channel
+- **Reserved names**: what Chrome refuses under "Load unpacked" is a name beginning with `_` directly at the root, while `_metadata` and the like in a subdirectory do load (`_locales` is allowed even at the root). The scan in `test.js` is stricter: within the tree the package is built from (the repository minus `.git` / `node_modules` and the root-level `work/` / `.claude/`), it reports such a name at any depth. `docs/` and other directories that stay out of the zip are covered too
+- **Packaging selects by reference graph**: `pack.py` selects what the manifest reaches (the js and css of content_scripts / web_accessible_resources / service_worker / options_page and options_ui.page / action.default_popup / icons and action.default_icon), plus the `<script src>` and the `<link href>` css of those HTML files, a worker's `importScripts`, and `_locales/<locale>/messages.json` — nothing else. A file nothing references stays out whatever its extension. Paths go through a single resolver, and an absolute path, a `..`, or a symlink (including one on an intermediate directory) whose target leaves the package is made to fail (neither a broken zip nor a zip carrying an outside file is produced silently)
+- **CSP**: the AudioWorklet module is exposed through web_accessible_resources. page-bridge shares the window with the page's own scripts in the MAIN world, and the page can send it any command including init, so it takes no module URL: it reads the extension origin from its own stack frame and loads `<origin>/audio-worklet.js`. With no origin available it loads no module
+- **NaN/Infinity guard**: a reading of infinity or NaN falls back to gain 1.0
 
 ## Commands
 
@@ -248,48 +250,56 @@ options.html / options.js
 # Regenerate icons
 python3 gen_icons.py
 
-# Regenerate store screenshots (docs/screenshots/ へ書く。README が参照する)
+# Regenerate store screenshots (writes into docs/screenshots/, which the README points at)
 python3 gen_screenshots.py
 
-# 追跡中の画像がいま描くものと同じか確認 (書き込まない。CI と同じコマンド)
+# Check whether the tracked images match what is drawn now (writes nothing; the command CI runs)
 python3 gen_screenshots.py --check
 
 # Run tests
 node test.js
 
-# Python 構文検査 (__pycache__ を生成しない)
+# Python syntax check (leaves no __pycache__ behind)
 python3 -B -c "import ast,pathlib; [ast.parse(p.read_text()) for p in pathlib.Path('.').glob('*.py')]"
 
 # Package for Chrome Web Store
 python3 pack.py
 
-# 同梱されるファイルだけを確認する (zip は書かない)
+# List the files that get bundled (writes no zip)
 python3 pack.py --list
 ```
+
+## Conventions
+
+- Documentation is maintained in English and Japanese, English first: `README.md` / `README.ja.md` at the root, `docs/en/` / `docs/ja/` under `docs`. Both members of a pair carry the same headings in the same order. This overrides the global CLAUDE.md default of writing documentation in Japanese
+- `PRIVACY_POLICY.md` keeps its name because the Chrome Web Store listing links to it by path. `PRIVACY_POLICY_JA.md` keeps its name because the README pair and the English policy point at it
+- `CLAUDE.md` is English only and has no Japanese counterpart
+- Commit subjects and bodies are English, as Conventional Commits. Pull request titles and bodies are English too
+- Issue templates are one English set, with a note at the top saying Japanese is welcome
 
 ## Development notes
 
 - Gain value 1.0 = 100% (passthrough). Range 0.0–6.0
-- unpacked extension のルートでは `python3 -m py_compile` を実行しない。Chrome が拒否する `__pycache__` を生成するため、Python 構文検査は上記の AST parse を使う (`node test.js` が走査する範囲は「予約名の扱い」節)
-- `popup.html` / `options.html` は i18n 抽出器が読める形に限る: HTML コメント・`<template>`・`<textarea>` / `<iframe>` / `<xmp>` / `<noembed>` / `<noframes>` / `<noscript>` / `<plaintext>` を置かず、ページが使う raw text 要素 `<title>` / `<style>` / `<script>` は名前の直後に `>` を置いて閉じ (`</titles>` のように名前が続く形は別要素で、raw text を閉じずに以降を飲み込む)、`data-i18n` は小文字 + 引用符付きで書き、属性を載せる要素はテキストだけを持つ (`applyI18n` が `textContent` を代入するため)。キーとそれを載せた要素 (タグ名・`id`・`class` トークン) の対応は `node test.js` がスナップショットで固定する
+- Do not run `python3 -m py_compile` at the root of the unpacked extension. It generates the `__pycache__` Chrome refuses, so use the AST parse above for the Python syntax check (the range `node test.js` scans is in "Reserved names")
+- `popup.html` / `options.html` stay in a shape the i18n extractor can read: no HTML comments, `<template>`, `<textarea>` / `<iframe>` / `<xmp>` / `<noembed>` / `<noframes>` / `<noscript>` / `<plaintext>`; the raw text elements the pages do use — `<title>` / `<style>` / `<script>` — are closed with `>` directly after the name (a form where the name continues, such as `</titles>`, is a different element and swallows what follows without closing the raw text); `data-i18n` is written lowercase and quoted; and an element carrying the attribute holds text alone (`applyI18n` assigns to `textContent`). The mapping from a key to the element carrying it (tag name, `id`, `class` tokens) is pinned by a snapshot in `node test.js`
 - AudioContext may be `suspended` until first user interaction (Chrome autoplay policy) — content.js sends `resume` on first click capture
-- BS.1770 reference is 48 kHz. Chrome の AudioContext は通常 48000 だが、サンプルレート変動には redesignBiquad で対応
-- Storage keys: `autoLoudnessSettings` (target LUFS, ad gain, display unit, kind 別 Auto 既定値), `channelVolumes` (per-channel saved gains + kind 別 Auto + lastLufs cache と測定窓数), `channelVolumeAliases` (仮 ID → 正準 ID), `channelVolumeSequence` (永続更新番号)
+- BS.1770 reference is 48 kHz. Chrome's AudioContext is normally 48000, and a varying sample rate is handled by redesignBiquad
+- Storage keys: `autoLoudnessSettings` (target LUFS, ad gain, display unit, per-kind Auto defaults), `channelVolumes` (per-channel saved gains + per-kind Auto + the lastLufs cache and its window count), `channelVolumeAliases` (provisional ID → canonical ID), `channelVolumeSequence` (persistent update number)
 - Storage format: `channelVolumes.{id}` = `{ name, login, gainLive, gainVod, gainClip, autoGainLive, autoGainVod, autoGainClip, autoApplyLoudnessLive, autoApplyLoudnessVod, autoApplyLoudnessClip, url, lastLufs: { live, vod, clip }, lastLufsRef: { live, vod, clip }, lastLufsWindows: { live, vod, clip }, autoGainRef: { live, vod, clip }, lastMeasuredAt, __fieldVersions }`
-- 旧形式の単一フィールドは channel-store.js が書き込み時に展開して削除する (`gain` → `expandLegacyGain`、`autoApplyLoudness` → `expandLegacyAuto`)。読み取り側の `extractGainForKind` は展開前のエントリを読むためのフォールバックで、書き戻さない
-- popup は `DISPLAY_UPDATE_INTERVAL_MS` ごとに getState をポーリングし LUFS / Suggested / Current カードを更新。Auto gain も同じ周期を上限として更新する。Manual slider は Auto ON の間だけ適用中 gain へ同期し、Auto OFF の通常ポーリングでは更新しない。Auto OFF では初回表示・「チャンネルに適用」・Auto 切替・表示単位変更・ユーザー操作時だけ同期する。計測自体は popup の開閉に依存せず、Twitch ページが開いている限り常時走る
-- 拡張機能の再ロードで chrome.runtime が無効化された場合、popup は `reloadPageNeeded` を表示して F5 を促す
-- 計測パイプラインの診断: DevTools Console で `[TCV]` ログを確認。`waiting for <video>` → `attached to video` → `measurement chain ready` → `first measurement block received` の順に出る。`createMediaElementSource failed` で止まる場合は他拡張競合 (技術的限界)。この状態は popup の通知と `getState` の audioUnavailable に出る。以降のリトライは `no attachable <video>; the player audio is held elsewhere` を出す (`waiting for <video>` は要素そのものが無いときだけ)。`audio context unavailable` / `audio context resume failed` / `audio context stayed <state> after resume` も同じ経路の診断
-- CM 境界・音量変更の診断: `[TCV] ad detected in DOM` (DOM 検出と `video.currentTime`)、`[TCV] ad cue from the player` (cue の `rollType`・media 時刻の区間・受け取った時点の再生位置・pod 内の位置)、`[TCV] ad element attached` (CM 要素へ繋いだときの当該 volume と本編 volume)、`[TCV] gate boundary` / `[TCV] gate resumed` (境界の理由・volume・muted・再生位置と、除外した窓数・直近 4 窓の LUFS)、`[TCV] ad start rollback` (要求した窓数・境界スキップと重なって引いた窓数・取り消した窓数と各窓の LUFS。`exhausted` は要求した窓数だけ遡れたかで、偽なら計測開始が近く区間がそこで止まっている) を Console で追う。別の理由で打ち切られた skip はその時点までの除外数を次の `gate boundary` の `superseded` / `droppedBefore` に載せる
-- 失敗した操作の診断: 失敗は起きた画面ごとに名前付きで残る。ページ側 (Twitch のタブの Console) は `[TCV] failed to save gain` (遷移後に表示しているものではなく、保存しようとしたチャンネルを名乗る) / `[TCV] failed to save Auto setting` / `[TCV] failed to reset measurement` と、終端のハンドラが出す `[TCV] failed to handle a bridge message` / `[TCV] failed to handle a route change` / `[TCV] failed to start up` / `[TCV] unknown command`。popup 側 (popup の DevTools) は `[TCV] suggested gain request failed` / `[TCV] gain request failed` / `[TCV] Auto setting request failed` / `[TCV] measurement reset request failed` で、content.js が返した reason が付く。options 側 (設定画面の DevTools) は `[TCV] failed to delete the channel` / `[TCV] failed to clear the saved channels`。Service Worker 側 (拡張の Service Worker の DevTools) は `[TCV] channelVolumes mutation failed` / `[TCV] settings mutation failed` (storage 側) と、`[TCV] channelVolumes mutation rejected as invalid` / `[TCV] settings mutation rejected as invalid` (呼び出し側の入力)、`[TCV] channelVolumes mutation blocked by the stored state` / `[TCV] settings mutation blocked by the stored state` (保存済みの状態)、それに `[TCV] unknown message type`
+- The legacy single fields are expanded and deleted by channel-store.js at write time (`gain` → `expandLegacyGain`, `autoApplyLoudness` → `expandLegacyAuto`). On the read side, `extractGainForKind` is a fallback for reading an entry before expansion, and writes nothing back
+- The popup polls getState every `DISPLAY_UPDATE_INTERVAL_MS` and updates the LUFS / Suggested / Current cards. The Auto gain updates at that period at most. The Manual slider syncs to the gain in force only while Auto is on, and the ordinary polling with Auto off leaves it alone. With Auto off it syncs on the first display, on "Apply to channel", on an Auto toggle, on a display-unit change and on user input. The measurement itself does not depend on the popup being open, and runs for as long as a Twitch page is open
+- When reloading the extension invalidates chrome.runtime, the popup shows `reloadPageNeeded` and asks for F5
+- Diagnosing the measurement pipeline: read the `[TCV]` logs in the DevTools Console. They appear in the order `waiting for <video>` → `attached to video` → `measurement chain ready` → `first measurement block received`. Stopping at `createMediaElementSource failed` is a conflict with another extension (a technical limit). That state surfaces in the popup notice and in `getState`'s audioUnavailable. Later retries print `no attachable <video>; the player audio is held elsewhere` (`waiting for <video>` appears only when the element itself is absent). `audio context unavailable` / `audio context resume failed` / `audio context stayed <state> after resume` diagnose the same path
+- Diagnosing ad boundaries and volume changes: follow these in the Console — `[TCV] ad detected in DOM` (the DOM detection and `video.currentTime`), `[TCV] ad cue from the player` (the cue's `rollType`, the span in media time, the playback position when it arrived, the position within the pod), `[TCV] ad element attached` (that element's volume and the main volume when the ad element was connected), `[TCV] gate boundary` / `[TCV] gate resumed` (the reason for the boundary, volume, muted, playback position, the number of windows excluded and the LUFS of the last 4 windows), `[TCV] ad start rollback` (the number of windows requested, the number subtracted for overlapping the boundary skip, the number withdrawn and the LUFS of each — `exhausted` says whether the requested number of windows could be walked back, and false means the start of measurement is near and the span stops there). A skip cut short for another reason carries its exclusion count up to that point into `superseded` / `droppedBefore` on the next `gate boundary`
+- Diagnosing a failed action: a failure is left named, on the screen it happened on. The page side (the Console of the Twitch tab) has `[TCV] failed to save gain` (which names the channel it tried to save, not the one on screen after a navigation) / `[TCV] failed to save Auto setting` / `[TCV] failed to reset measurement`, plus the terminal handlers' `[TCV] failed to handle a bridge message` / `[TCV] failed to handle a route change` / `[TCV] failed to start up` / `[TCV] unknown command`. The popup side (the popup's DevTools) has `[TCV] suggested gain request failed` / `[TCV] gain request failed` / `[TCV] Auto setting request failed` / `[TCV] measurement reset request failed`, carrying the reason content.js returned. The options side (the settings page's DevTools) has `[TCV] failed to delete the channel` / `[TCV] failed to clear the saved channels`. The Service Worker side (the extension's Service Worker DevTools) has `[TCV] channelVolumes mutation failed` / `[TCV] settings mutation failed` (from storage), `[TCV] channelVolumes mutation rejected as invalid` / `[TCV] settings mutation rejected as invalid` (the caller's input), `[TCV] channelVolumes mutation blocked by the stored state` / `[TCV] settings mutation blocked by the stored state` (the stored state), and `[TCV] unknown message type`
 
 ## Existing extensions (reference)
 
-| 拡張機能 | 方式 | 永続化 | 備考 |
+| Extension | Approach | Persistence | Notes |
 |---------|------|--------|------|
-| Volume Sound Normalizer Pro | DynamicsCompressor + GainNode (LUFS 計測なし) | YT/Twitch channelId | AudioNode 配線の参考 |
-| TwitchPerChannelAudio | React internal mediaPlayerInstance.setVolume() | login 名 | React fiber アクセス例 (壊れやすい) |
-| FrankerFaceZ Compressor | グローバル DynamicsCompressor | グローバル | per-channel ではない |
-| Hearably Twitch Volume Booster | MSE intercept + multiband compressor | タブ単位 | クローズドソース |
+| Volume Sound Normalizer Pro | DynamicsCompressor + GainNode (no LUFS measurement) | YT/Twitch channelId | Reference for AudioNode wiring |
+| TwitchPerChannelAudio | React internal mediaPlayerInstance.setVolume() | login name | Example of React fiber access (fragile) |
+| FrankerFaceZ Compressor | Global DynamicsCompressor | Global | Not per-channel |
+| Hearably Twitch Volume Booster | MSE intercept + multiband compressor | Per tab | Closed source |
 
-本プロジェクトは「Twitch 公式 API に頼らず自前 LUFS 計測 + 種別別永続化 + CM 区間の別ゲイン」を組み合わせ、既存実装が触れていない領域を狙う。
+This project combines its own LUFS measurement without relying on an official Twitch API, per-kind persistence, and a separate gain during ad breaks, targeting an area the existing implementations do not cover.

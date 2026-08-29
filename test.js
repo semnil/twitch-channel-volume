@@ -179,6 +179,7 @@ test('the store package carries only the files the extension loads', () => {
     write('icons/source.svg');
     write('_locales/ja/notes.txt');
     write('docs/security-audit.md');
+    write('docs/en/security-audit.md');
     write('node_modules/_cache/index.js');
     fs.symlinkSync(path.join(fixture, 'content.js'), path.join(fixture, 'linked.js'));
     for (const name of SCRATCH_DIRS) write(path.join(name, 'session', '_metadata', 'note.txt'));
@@ -1732,6 +1733,125 @@ test('privacy policies list exactly the manifest permissions', () => {
       [...text.matchAll(/\*\*host_permissions\*\* \(`([^`]+)`\)/g)].map((m) => m[1])
     );
     assert.deepEqual([...declared].sort(), [...hosts].sort(), `${file} host rows`);
+    // The host row is one of them; a policy that names a permission the manifest
+    // does not ask for, or drops one it does, is the other half of "exactly".
+    const rows = new Set(
+      [...text.matchAll(/^\| \*\*([A-Za-z_]+)\*\*/gm)].map((m) => m[1])
+    );
+    assert.deepEqual([...rows].sort(), [...manifest.permissions, 'host_permissions'].sort(),
+      `${file} permission rows`);
+  }
+});
+
+// The generator's own source names the scenes it draws and the languages it
+// draws them in; reading it here is what ties each README to its own images.
+function drawnScreenshots() {
+  const source = fs.readFileSync(path.join(__dirname, 'gen_screenshots.py'), 'utf8');
+  const outDir = source.match(/^OUT_DIR = os\.path\.join\(ROOT, '([^']+)', '([^']+)'\)$/m);
+  const scenes = [...source.matchAll(/img\.save\(os\.path\.join\(out_dir, f'([a-z_]+)_\{lang\}\.png'\)\)/g)]
+    .map((m) => m[1]);
+  const langs = source.match(/for lang in \(([^)]+)\):/);
+  assert.ok(outDir, 'gen_screenshots.py declares OUT_DIR beside itself');
+  assert.ok(scenes.length > 0, 'gen_screenshots.py names the scenes it saves');
+  assert.ok(langs, 'gen_screenshots.py names the languages it draws');
+  return {
+    dir: `${outDir[1]}/${outDir[2]}`,
+    scenes,
+    langs: [...langs[1].matchAll(/'([^']+)'/g)].map((m) => m[1])
+  };
+}
+
+// From the directory rather than a literal pair: a README added without a
+// language of its own is one this still reads.
+const README_FILES = fs.readdirSync(__dirname)
+  .filter((name) => /^README(\.[a-z][a-z-]*)?\.md$/.test(name)).sort();
+const EMBED = /!\[[^\]]*\]\(\s*([^)\s]+)(?:\s+"[^"]*")?\s*\)|<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/g;
+
+test('each README shows its own language, and every image it shows exists', () => {
+  const { dir, scenes, langs } = drawnScreenshots();
+  const suffixed = new Map(README_FILES.filter((name) => name !== 'README.md')
+    .map((name) => [name, name.slice('README.'.length, -'.md'.length)]));
+  const spare = langs.filter((lang) => ![...suffixed.values()].includes(lang));
+  assert.ok(README_FILES.includes('README.md') && spare.length === 1,
+    'exactly one language the generator draws is the unsuffixed README');
+  const readmeLang = new Map([['README.md', spare[0]], ...suffixed]);
+  assert.deepEqual([...readmeLang.values()].sort(), [...langs].sort(),
+    'every language the generator draws has a README of its own');
+  // A count over the two files together is satisfied by either one of them, so
+  // each is held to the full set of its own language.
+  for (const [file, lang] of readmeLang) {
+    const embeds = [...fs.readFileSync(path.join(__dirname, file), 'utf8').matchAll(EMBED)]
+      .map((m) => m[1] || m[2]).filter((image) => !/^https?:/.test(image));
+    for (const image of embeds) {
+      assert.ok(fs.existsSync(path.join(__dirname, image)),
+        `${file} embeds ${image}, which must exist`);
+    }
+    assert.deepEqual([...new Set(embeds.filter((image) => image.startsWith(`${dir}/`)))].sort(),
+      scenes.map((scene) => `${dir}/${scene}_${lang}.png`).sort(),
+      `${file} shows every ${lang} screenshot and no other language's`);
+  }
+});
+
+test('the documentation pairs keep their names, their shape and their links', () => {
+  // The Chrome Web Store listing links to PRIVACY_POLICY.md by path.
+  for (const file of ['PRIVACY_POLICY.md', 'PRIVACY_POLICY_JA.md']) {
+    assert.ok(fs.existsSync(path.join(__dirname, file)), `${file} keeps its name`);
+  }
+  assert.ok(!fs.existsSync(path.join(__dirname, 'CLAUDE.ja.md')),
+    'CLAUDE.md has no Japanese counterpart');
+
+  const read = (file) => fs.readFileSync(path.join(__dirname, file), 'utf8');
+  const headings = (text) => {
+    const levels = [];
+    let fence = false;
+    for (const line of text.split('\n')) {
+      if (/^\s*```/.test(line)) { fence = !fence; continue; }
+      const head = fence ? null : line.match(/^(#{1,6}) /);
+      if (head) { levels.push(head[1].length); }
+    }
+    return levels;
+  };
+  // Cell counts per row: the labels are translations, so position is the only
+  // key. A row moved within a table reads the same from here.
+  const tableShape = (text) => text.split('\n')
+    .filter((line) => /^\s*\|/.test(line)).map((line) => line.split('|').length);
+
+  const PAIRS = [
+    ['README.md', 'README.ja.md'],
+    ['docs/en/security-audit.md', 'docs/ja/security-audit.md'],
+    ['PRIVACY_POLICY.md', 'PRIVACY_POLICY_JA.md']
+  ];
+  for (const [en, ja] of PAIRS) {
+    for (const file of [en, ja]) {
+      assert.ok(fs.existsSync(path.join(__dirname, file)), `${file} is one half of a pair`);
+    }
+    assert.deepEqual(headings(read(ja)), headings(read(en)),
+      `${ja} carries the same headings as ${en}, in the same order`);
+    assert.deepEqual(tableShape(read(ja)), tableShape(read(en)),
+      `${ja} carries the same table rows as ${en}, in the same order`);
+  }
+
+  for (const file of [...new Set(PAIRS.flat())]) {
+    const from = path.dirname(path.join(__dirname, file));
+    for (const [, target] of read(file).matchAll(/\]\(\s*([^)\s#]+)/g)) {
+      if (/^(https?:|mailto:)/.test(target)) { continue; }
+      assert.ok(fs.existsSync(path.resolve(from, target)),
+        `${file} links to ${target}, which must exist`);
+    }
+  }
+});
+
+test('the issue templates are English, with the note that says Japanese is welcome', () => {
+  const directory = path.join(__dirname, '.github/ISSUE_TEMPLATE');
+  const templates = fs.readdirSync(directory).filter((name) => name.endsWith('.md'));
+  assert.ok(templates.length > 0, 'there are issue templates to read');
+  for (const name of templates) {
+    const text = fs.readFileSync(path.join(directory, name), 'utf8');
+    const note = text.split('\n').filter((line) => line.includes('日本語で構いません'));
+    assert.equal(note.length, 1, `${name} carries the note that Japanese is welcome`);
+    const rest = text.split('\n').filter((line) => !line.includes('日本語で構いません')).join('\n');
+    assert.ok(!/[぀-ヿ一-鿿]/.test(rest),
+      `${name} is English apart from that note`);
   }
 });
 

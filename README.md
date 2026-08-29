@@ -9,6 +9,8 @@ bounds in the element's own timeline. The extension wraps the `Worker` construct
 itself is created from the argument the page passed, untouched. Where no cue arrives — a client-side ad on a VOD — the
 player's ad indicator in the DOM stands in.
 
+> 日本語版は [README.ja.md](README.ja.md) を参照してください.
+
 ## Screenshots
 
 Drawn from the extension's own colours and strings by `gen_screenshots.py`; the same images are used on the Chrome Web Store listing.
