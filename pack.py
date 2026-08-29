@@ -99,8 +99,9 @@ def _references_within(root, relative):
 
 def selected_files(root):
     """Yield (path, arcname) for every file the package carries."""
+    manifest = json.loads(_read(root, 'manifest.json'))
     pending = ['manifest.json']
-    pending.extend(_manifest_references(json.loads(_read(root, 'manifest.json'))))
+    pending.extend(_manifest_references(manifest))
     selected = []
     while pending:
         relative = posixpath.normpath(pending.pop(0))
@@ -115,30 +116,44 @@ def selected_files(root):
     for relative in sorted(selected):
         yield _packaged(root, relative), relative
 
+    # Chrome resolves every __MSG_ placeholder against the default locale and
+    # declines to load an extension whose default locale holds no messages, so
+    # that one file is required rather than carried when it happens to be there.
+    default_locale = manifest.get('default_locale')
+    required = (posixpath.join(LOCALE_DIR, default_locale, LOCALE_FILE)
+                if default_locale else None)
+    carried = set()
     locales = _host(root, LOCALE_DIR)
     if os.path.isdir(locales):
         for locale in sorted(os.listdir(locales)):
             relative = posixpath.join(LOCALE_DIR, locale, LOCALE_FILE)
             full = _packaged(root, relative)
             if os.path.isfile(full):
+                carried.add(relative)
                 yield full, relative
+    if required and required not in carried:
+        raise SystemExit(f'the default locale carries no messages: {required}')
 
     for relative in DISTRIBUTION_FILES:
         full = _packaged(root, relative)
-        if os.path.isfile(full):
-            yield full, relative
+        if not os.path.isfile(full):
+            raise SystemExit(f'the package has to carry this and it is missing: {relative}')
+        yield full, relative
 
 
 def pack():
     root = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(root, 'manifest.json')) as f:
         version = json.load(f)['version']
+    # Every name is resolved before anything is written. A refusal partway
+    # through would otherwise leave a half-built package where the last one was.
+    files = list(selected_files(root))
     out = f'twitch-channel-volume-{version}.zip'
     out_path = os.path.join(root, out)
     if os.path.exists(out_path):
         os.remove(out_path)
     with zipfile.ZipFile(out_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for full, arcname in selected_files(root):
+        for full, arcname in files:
             zf.write(full, arcname)
             print(f'  + {arcname}')
     print(f'\n=> {out}')
@@ -146,7 +161,7 @@ def pack():
 
 def list_files():
     root = os.path.dirname(os.path.abspath(__file__))
-    for _full, arcname in selected_files(root):
+    for _full, arcname in list(selected_files(root)):
         print(arcname)
 
 

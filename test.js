@@ -281,6 +281,61 @@ test('the names inside the package are POSIX on Windows too', () => {
   }
 });
 
+test('the store package refuses to leave out what it has to carry', () => {
+  // The release workflow runs pack.py and uploads what it writes without
+  // running any of this, so an omission that still exits 0 ships.
+  const runPack = (box, args) => spawnSync('python3', ['-B', 'pack.py', ...args],
+    { cwd: box, encoding: 'utf8' });
+  const buildMinimal = () => {
+    const box = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'tcv-required-'));
+    fs.copyFileSync(path.join(__dirname, 'pack.py'), path.join(box, 'pack.py'));
+    fs.writeFileSync(path.join(box, 'manifest.json'), JSON.stringify({
+      manifest_version: 3,
+      version: '0.0.0',
+      default_locale: 'ja',
+      name: '__MSG_extName__',
+      content_scripts: [{ js: ['content.js'] }]
+    }));
+    fs.writeFileSync(path.join(box, 'content.js'), '');
+    fs.mkdirSync(path.join(box, '_locales/ja'), { recursive: true });
+    fs.writeFileSync(path.join(box, '_locales/ja/messages.json'), '{}');
+    fs.writeFileSync(path.join(box, 'LICENSE'), 'MIT License\n');
+    return box;
+  };
+
+  const whole = buildMinimal();
+  const listed = runPack(whole, ['--list']);
+  assert.equal(listed.status, 0, listed.stderr);
+  assert.deepEqual(
+    listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean).sort(),
+    ['LICENSE', '_locales/ja/messages.json', 'content.js', 'manifest.json']);
+  fs.rmSync(whole, { recursive: true, force: true });
+
+  for (const [missing, remove] of [
+    ['the licence', (box) => fs.rmSync(path.join(box, 'LICENSE'))],
+    ["the default locale's messages", (box) => fs.rmSync(path.join(box, '_locales/ja/messages.json'))],
+    ['_locales itself', (box) => fs.rmSync(path.join(box, '_locales'), { recursive: true })]
+  ]) {
+    const box = buildMinimal();
+    // A package built earlier stands here, so a refusal has something to spare.
+    const built = runPack(box, []);
+    assert.equal(built.status, 0, built.stderr);
+    const zip = path.join(box, 'twitch-channel-volume-0.0.0.zip');
+    const before = fs.statSync(zip).size;
+    remove(box);
+    for (const args of [['--list'], []]) {
+      const refused = runPack(box, args);
+      assert.notEqual(refused.status, 0,
+        `pack.py ${args.join(' ')} refuses a package missing ${missing}`);
+      assert.doesNotMatch(refused.stdout || '', /^\s*\+ /m,
+        `pack.py names nothing as packed when ${missing} is missing`);
+    }
+    assert.ok(fs.existsSync(zip) && fs.statSync(zip).size === before,
+      `the package built before is left alone when ${missing} is missing`);
+    fs.rmSync(box, { recursive: true, force: true });
+  }
+});
+
 test('the store package refuses a reference that leaves it', () => {
   // A path that resolves outside the package would carry a file nobody
   // reviewed into the store zip under a name that looks local.
