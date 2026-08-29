@@ -1,5 +1,6 @@
 """Pack extension for Chrome Web Store submission."""
 import zipfile
+import ntpath
 import os
 import json
 import posixpath
@@ -66,11 +67,14 @@ def _page_references(text):
 def _resolve(root, relative):
     """Absolute host path of a packaged file, or None when it leaves the package.
 
-    The path is rejected when it is absolute, carries a backslash, climbs out
-    with .., or reaches its target through a symbolic link at any point — the
-    final name or a parent directory alike.
+    The path is rejected when it is absolute, carries a backslash or a drive
+    letter, climbs out with .., or reaches its target through a symbolic link at
+    any point — the final name or a parent directory alike. A drive letter reads
+    as relative to posixpath and resolves against the same drive on Windows, so
+    "C:/content.js" would package the file "content.js" names, under a path
+    Chrome does not accept.
     """
-    if '\\' in relative or posixpath.isabs(relative):
+    if '\\' in relative or posixpath.isabs(relative) or ntpath.splitdrive(relative)[0]:
         return None
     normalized = posixpath.normpath(relative)
     real_root = os.path.realpath(root)
@@ -150,10 +154,10 @@ def selected_files(root):
     # declines to load an extension whose default locale holds no messages, so
     # that one file is required rather than carried when it happens to be there.
     default_locale = manifest.get('default_locale')
+    locales = _host(root, LOCALE_DIR)
     required = (posixpath.join(LOCALE_DIR, default_locale, LOCALE_FILE)
                 if default_locale else None)
     carried = set()
-    locales = _host(root, LOCALE_DIR)
     if os.path.isdir(locales):
         for locale in sorted(os.listdir(locales)):
             relative = posixpath.join(LOCALE_DIR, locale, LOCALE_FILE)

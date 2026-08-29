@@ -225,7 +225,7 @@ test('the store package carries only the files the extension loads', () => {
     write('manifest.json', JSON.stringify({
       manifest_version: 3,
       version: '1.0.0',
-      content_scripts: [{ js: ['utils.js', 'content.js'] }],
+        content_scripts: [{ js: ['utils.js', 'content.js'] }],
       web_accessible_resources: [{ resources: ['audio-worklet.js'] }],
       background: { service_worker: 'background.js' },
       action: { default_popup: 'popup.html', default_icon: { 16: 'icons/icon16.png' } }
@@ -310,6 +310,48 @@ test('the store package carries only the files the extension loads', () => {
   });
 });
 
+test('a reference naming a drive is refused under Windows path semantics', () => {
+  // A drive letter reads as relative to posixpath, and on Windows it resolves
+  // against the same drive — so `C:/content.js` would package what `content.js`
+  // names, under a path Chrome does not accept. On this host it merely misses,
+  // which is why the reference is put to pack.py under Windows path semantics.
+  const driveProbe = [
+    'import ntpath, os, builtins, types, importlib.util',
+    'spec = importlib.util.spec_from_file_location("packmod", "pack.py")',
+    'mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)',
+    'real, real_open, real_os = os.path, builtins.open, os',
+    'ROOT = "C:" + chr(92) + "repo"',
+    'here = real.realpath(".")',
+    'host = lambda p: p.replace(ROOT, here).replace(chr(92), "/")',
+    'win = lambda p: p.replace(here, ROOT).replace("/", chr(92))',
+    'class W:',
+    '    isabs, normpath, join, dirname = ntpath.isabs, ntpath.normpath, ntpath.join, ntpath.dirname',
+    '    realpath = staticmethod(lambda p: win(real.realpath(host(p))))',
+    '    isfile = staticmethod(lambda p: real.isfile(host(p)))',
+    '    isdir = staticmethod(lambda p: real.isdir(host(p)))',
+    '    abspath = staticmethod(lambda p: win(real.abspath(host(p))))',
+    'mod.os = types.SimpleNamespace(path=W, listdir=lambda p: real_os.listdir(host(p)),',
+    '                               remove=real_os.remove, sep=chr(92))',
+    'mod.open = lambda p, *a, **k: real_open(host(p), *a, **k)',
+    'for name in ["content.js", "C:/content.js", "C:content.js", "c:content.js"]:',
+    '    print(name, mod._resolve(ROOT, name) is not None)'
+  ].join('\n');
+  const run = spawnSync('python3', ['-B', '-c', driveProbe],
+    { cwd: __dirname, encoding: 'utf8' });
+  if (run.error) {
+    console.log(`  (drive-letter check skipped: ${run.error.message})`);
+    return;
+  }
+  assert.equal(run.status, 0, `the drive-letter probe runs — ${(run.stderr || '').trim()}`);
+  const answers = Object.fromEntries((run.stdout || '').trim().split('\n')
+    .filter(Boolean).map((line) => line.split(' ')));
+  assert.equal(answers['content.js'], 'True',
+    'a path inside the package still resolves under Windows path semantics');
+  for (const named of ['C:/content.js', 'C:content.js', 'c:content.js']) {
+    assert.equal(answers[named], 'False', `${named} names a drive and is refused`);
+  }
+});
+
 test('the names inside the package are POSIX on Windows too', () => {
   // A zip entry uses forward slashes and the manifest spells its references
   // that way, so those are one name. Windows is where they would not be, and
@@ -354,10 +396,18 @@ test('the store package refuses to leave out what it has to carry', () => {
     ['LICENSE', '_locales/ja/messages.json', 'content.js', 'manifest.json']);
   fs.rmSync(whole, { recursive: true, force: true });
 
-  for (const [missing, remove] of [
-    ['the licence', (box) => fs.rmSync(path.join(box, 'LICENSE'))],
-    ["the default locale's messages", (box) => fs.rmSync(path.join(box, '_locales/ja/messages.json'))],
-    ['_locales itself', (box) => fs.rmSync(path.join(box, '_locales'), { recursive: true })]
+  const editManifest = (box, change) => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(box, 'manifest.json'), 'utf8'));
+    change(manifest);
+    fs.writeFileSync(path.join(box, 'manifest.json'), JSON.stringify(manifest));
+  };
+  for (const [broken, breakIt] of [
+    ['the licence gone', (box) => fs.rmSync(path.join(box, 'LICENSE'))],
+    ["the default locale's messages gone",
+      (box) => fs.rmSync(path.join(box, '_locales/ja/messages.json'))],
+    ['_locales gone', (box) => fs.rmSync(path.join(box, '_locales'), { recursive: true })],
+    ['a manifest reference naming a drive rather than a path inside the package',
+      (box) => editManifest(box, (m) => { m.content_scripts = [{ js: ['C:/content.js'] }]; })]
   ]) {
     const box = buildMinimal();
     // A package built earlier stands here, so a refusal has something to spare.
@@ -365,16 +415,16 @@ test('the store package refuses to leave out what it has to carry', () => {
     assert.equal(built.status, 0, built.stderr);
     const zip = path.join(box, 'twitch-channel-volume-0.0.0.zip');
     const before = fs.statSync(zip).size;
-    remove(box);
+    breakIt(box);
     for (const args of [['--list'], []]) {
       const refused = runPack(box, args);
       assert.notEqual(refused.status, 0,
-        `pack.py ${args.join(' ')} refuses a package missing ${missing}`);
+        `pack.py ${args.join(' ')} refuses a package with ${broken}`);
       assert.doesNotMatch(refused.stdout || '', /^\s*\+ /m,
-        `pack.py names nothing as packed when ${missing} is missing`);
+        `pack.py names nothing as packed with ${broken}`);
     }
     assert.ok(fs.existsSync(zip) && fs.statSync(zip).size === before,
-      `the package built before is left alone when ${missing} is missing`);
+      `the package built before is left alone with ${broken}`);
     fs.rmSync(box, { recursive: true, force: true });
   }
 });
@@ -400,10 +450,11 @@ test('the store package refuses a reference that leaves it', () => {
     });
     return result;
   };
-  const manifest = (references) => JSON.stringify({
+  const manifest = (references, extra = {}) => JSON.stringify({
     manifest_version: 3,
     version: '1.0.0',
-    content_scripts: [{ js: references }]
+    content_scripts: [{ js: references }],
+    ...extra
   });
 
   try {
@@ -440,7 +491,8 @@ test('the store package refuses a reference that leaves it', () => {
     // The locale directories are listed rather than referenced, and one of
     // them can be a link just as easily.
     const linkedLocaleDir = run((fixture) => {
-      fs.writeFileSync(path.join(fixture, 'manifest.json'), manifest([]));
+      fs.writeFileSync(path.join(fixture, 'manifest.json'),
+        manifest([], { default_locale: 'ja' }));
       fs.mkdirSync(path.join(fixture, '_locales'));
       fs.symlinkSync(outside, path.join(fixture, '_locales', 'ja'));
     });
@@ -448,7 +500,8 @@ test('the store package refuses a reference that leaves it', () => {
     assert.match(linkedLocaleDir.stderr, /_locales\/ja\/messages\.json/);
 
     const linkedLocaleRoot = run((fixture) => {
-      fs.writeFileSync(path.join(fixture, 'manifest.json'), manifest([]));
+      fs.writeFileSync(path.join(fixture, 'manifest.json'),
+        manifest([], { default_locale: 'ja' }));
       fs.symlinkSync(outside, path.join(fixture, '_locales'));
     });
     assert.notEqual(linkedLocaleRoot.status, 0);
@@ -459,11 +512,14 @@ test('the store package refuses a reference that leaves it', () => {
 
 test('the store package refuses a reference it cannot pack', () => {
   withFixtureDir('tcv-pack-missing-', (fixture) => {
-    fs.writeFileSync(path.join(fixture, 'manifest.json'), JSON.stringify({
-      manifest_version: 3,
-      version: '1.0.0',
-      content_scripts: [{ js: ['content.js'] }]
-    }));
+    const writeManifest = (extra = {}) => fs.writeFileSync(
+      path.join(fixture, 'manifest.json'), JSON.stringify({
+        manifest_version: 3,
+        version: '1.0.0',
+        content_scripts: [{ js: ['content.js'] }],
+        ...extra
+      }));
+    writeManifest();
     fs.copyFileSync(path.join(__dirname, 'pack.py'), path.join(fixture, 'pack.py'));
 
     // A zip built around a missing file is a broken extension, not a smaller one.
@@ -486,6 +542,9 @@ test('the store package refuses a reference it cannot pack', () => {
     assert.match(linked.stderr, /content\.js/);
 
     // The locale files are found rather than referenced, and get the same rule.
+    // A _locales directory has to be named by a default_locale, so this case
+    // names one to reach the rule it is about.
+    writeManifest({ default_locale: 'ja' });
     fs.unlinkSync(path.join(fixture, 'content.js'));
     fs.writeFileSync(path.join(fixture, 'content.js'), '//');
     fs.mkdirSync(path.join(fixture, '_locales', 'ja'), { recursive: true });
