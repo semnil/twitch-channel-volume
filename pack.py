@@ -96,6 +96,9 @@ BY_NAME = (('.html', 'page'), ('.js', 'script'), ('.css', 'style'))
 # A resource entry carrying one of these is matched against the package rather
 # than opened, so it names no one file.
 PATTERN = re.compile(r'[*?]')
+CSS_COMMENT = re.compile(r'/\*.*?\*/', re.S)
+CSS_IMPORT = re.compile(r'@import\s+(?:url\(\s*)?(["\']?)([^"\')\s;]+)\1')
+CSS_URL = re.compile(r'url\(\s*(["\']?)([^"\')]+?)\1\s*\)')
 
 
 def _host(root, relative):
@@ -348,6 +351,21 @@ def _manifest_references(manifest):
                                    if value.endswith(suffix)), 'asset')
 
 
+def _style_references(text):
+    """What a stylesheet pulls in: what it imports and what url() names.
+
+    A target Chrome substitutes a message into names no file here, and one
+    that is a fragment of the sheet itself names none either.
+    """
+    body = CSS_COMMENT.sub(' ', text)
+    for pattern, kind in ((CSS_IMPORT, 'style'), (CSS_URL, 'asset')):
+        for _quote, target in pattern.findall(body):
+            target = target.strip()
+            if not target or target.startswith('#') or '__MSG_' in target:
+                continue
+            yield target, kind
+
+
 def _references_within(root, relative, kind):
     """Paths the given file pulls in, relative to the package root.
 
@@ -361,6 +379,8 @@ def _references_within(root, relative, kind):
     elif kind == 'script':
         for call in IMPORT_SCRIPTS.findall(_read(root, relative)):
             found.extend((name, 'script') for name in QUOTED.findall(call))
+    elif kind == 'style':
+        found = _style_references(_read(root, relative))
     for reference, held in found:
         if reference.startswith(REMOTE):
             continue
