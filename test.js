@@ -1010,6 +1010,7 @@ test('the store package refuses a reference that leaves it', () => {
       fs.writeFileSync(sibling, 'SIBLING');
     });
     assert.notEqual(climbing.status, 0);
+    assert.match(climbing.stderr, /\.\.\/secret\.js/);
 
     // Absolute and pointing at a path with no link anywhere in it: the only
     // thing standing between it and the zip is the rule against absolute paths.
@@ -1040,6 +1041,7 @@ test('the store package refuses a reference that leaves it', () => {
       fs.symlinkSync(outside, path.join(fixture, '_locales'));
     });
     assert.notEqual(linkedLocaleRoot.status, 0);
+    assert.match(linkedLocaleRoot.stderr, /_locales\//);
   } finally {
     fs.rmSync(outside, { recursive: true, force: true });
   }
