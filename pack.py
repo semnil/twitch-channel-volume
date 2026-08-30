@@ -26,13 +26,20 @@ IMPORT_SCRIPTS = re.compile(r'importScripts\(([^)]*)\)')
 # manifest and in every packaged stylesheet. Its own predefined messages carry
 # an @@ prefix and need no catalog.
 MESSAGE_PLACEHOLDER = re.compile(r'__MSG_([A-Za-z0-9_@]+)__')
-MESSAGE_NAME = re.compile(r'^[A-Za-z0-9_]+$')
+# A message name carries letters, digits, _ and @; only a leading @@ is Chrome's.
+# A placeholder name carries no @ at all, and a message refers to one as $NAME$,
+# with $$ standing for a literal $ and a bare $1 meaning nothing here.
+MESSAGE_NAME = re.compile(r'^[A-Za-z0-9_@]+$')
+PLACEHOLDER_NAME = re.compile(r'^[A-Za-z0-9_]+$')
+PLACEHOLDER_USE = re.compile(r'\$([A-Za-z0-9_]+)\$')
 # The messages Chrome defines itself. A name under @@ that is not one of these is
 # a variable it reports as used and not defined.
 PREDEFINED_MESSAGES = frozenset({
     '@@extension_id', '@@ui_locale', '@@bidi_dir', '@@bidi_reversed_dir',
     '@@bidi_start_edge', '@@bidi_end_edge',
 })
+# Chrome reads this one everywhere except the manifest.
+OUTSIDE_MANIFEST_ONLY = frozenset({'@@extension_id'})
 # The locale names Chrome carries. A directory named anything else is one it
 # ignores, which leaves an extension asking for messages with no default locale.
 CHROME_LOCALES = frozenset('''
@@ -98,7 +105,7 @@ def _catalog(relative, text):
                f'{type(loaded).__name__}, not an object')
     answered = {}
     for name, entry in loaded.items():
-        if not MESSAGE_NAME.match(name):
+        if not MESSAGE_NAME.match(name) or name.startswith('@@'):
             refuse(f'names a message Chrome cannot read: {name!r}')
         # Chrome matches a name without regard to case, so two that differ only
         # there are one name with two answers.
@@ -113,16 +120,24 @@ def _catalog(relative, text):
         description = entry.get('description')
         if description is not None and not isinstance(description, str):
             refuse(f'gives {name} a description that is not text')
-        placeholders = entry.get('placeholders')
-        if placeholders is None:
-            continue
+        # A key written as null is a key the author wrote, not one left out.
+        placeholders = entry['placeholders'] if 'placeholders' in entry else {}
         if not isinstance(placeholders, dict):
             refuse(f'gives {name} placeholders that are not an object')
         for holder, shape in placeholders.items():
+            if not PLACEHOLDER_NAME.match(holder):
+                refuse(f'names a placeholder Chrome cannot read: {name}.{holder}')
             if not isinstance(shape, dict) or not isinstance(shape.get('content'), str):
                 refuse(f'gives {name}.{holder} no content')
             if shape.get('example') is not None and not isinstance(shape['example'], str):
                 refuse(f'gives {name}.{holder} an example that is not text')
+        # $$ stands for a literal $, so it names nothing; a bare $1 is not a
+        # reference either, having no closing $.
+        defined = {holder.lower() for holder in placeholders}
+        used = set(PLACEHOLDER_USE.findall(entry['message'].replace('$$', '')))
+        undefined = sorted(use for use in used if use.lower() not in defined)
+        if undefined:
+            refuse(f'gives {name} no placeholder named {undefined[0]}')
     return set(answered)
 
 
@@ -235,11 +250,17 @@ def selected_files(root):
             yield entry
 
     # What the extension asks the default locale to answer for. Chrome reads
-    # these in the manifest and in the stylesheets it serves.
-    wanted = _placeholders(_read(root, 'manifest.json'))
+    # these in the manifest and in the stylesheets it serves, and reads one of
+    # its own everywhere but the manifest, so the two are kept apart.
+    from_manifest = _placeholders(_read(root, 'manifest.json'))
+    wanted = set(from_manifest)
     for relative in selected:
         if relative.endswith('.css'):
             wanted |= _placeholders(_read(root, relative))
+    elsewhere = sorted(from_manifest & OUTSIDE_MANIFEST_ONLY)
+    if elsewhere:
+        raise SystemExit(f'the manifest uses {elsewhere[0]}, which Chrome reads '
+                         f'everywhere but there')
 
     # Chrome requires these to agree. An extension carrying a _locales directory
     # has to name a default_locale; one asking for a message has to name it too;
