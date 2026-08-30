@@ -192,25 +192,108 @@ const pageReferences = (text) => {
   }
   return found;
 };
-  const references = [
-    ...['manifest.json', 'background.js']
-      .map((name) => fs.readFileSync(path.join(__dirname, name), 'utf8')),
-    ...['popup.html', 'options.html'].flatMap((name) =>
-      pageReferences(fs.readFileSync(path.join(__dirname, name), 'utf8')))
-  ].join('\n');
-  for (const arcname of packaged) {
-    // A name inside the package is POSIX whatever the host writes it on.
-    const segments = arcname.split('/');
-    if (segments.length === 1) {
-      if (arcname === 'manifest.json' || distribution.includes(arcname)) continue;
-      assert.match(arcname, /\.(js|html)$/, `${arcname} is not a script or a page`);
-      assert.ok(references.includes(arcname), `${arcname} is packaged but nothing loads it`);
-      continue;
+  const manifest = readJson('manifest.json');
+  // pack.py declares the keys it follows; this reads that declaration and
+  // resolves every one of them itself. The two share the list of keys and
+  // nothing else — the reading, the parsing and the spelling are separate here —
+  // so a key added to the walk cannot leave this behind.
+  const DECLARED_KINDS = new Set(['page', 'script', 'style', 'asset', 'named']);
+  const declaredKeys = (() => {
+    const source = fs.readFileSync(path.join(__dirname, 'pack.py'), 'utf8');
+    const table = source.match(/^MANIFEST_REFERENCES = \(([\s\S]*?)^\)$/m);
+    assert.ok(table, 'pack.py declares the keys it follows in MANIFEST_REFERENCES');
+    const rows = Array.from(table[1].matchAll(/\(\(([^)]*)\),\s*'([a-z]+)'\)/g),
+      ([, steps, kind]) => ({
+        path: Array.from(steps.matchAll(/'([^']*)'/g), m => m[1]),
+        kind
+      }));
+    assert.ok(rows.length > 0, 'the declared table holds keys');
+    for (const { kind } of rows) {
+      assert.ok(DECLARED_KINDS.has(kind),
+        `pack.py walks a ${kind} and this test does not know that kind`);
     }
-    const shipped =
-      (segments[0] === 'icons' && segments.length === 2 && arcname.endsWith('.png')) ||
-      (segments[0] === '_locales' && segments.length === 3 && segments[2] === 'messages.json');
-    assert.ok(shipped, `${arcname} is not a path the extension loads`);
+    return rows;
+  })();
+  const valuesAt = (value, steps) => {
+    if (!steps.length) { return typeof value === 'string' ? [value] : []; }
+    const [step, ...rest] = steps;
+    const isObject = value !== null && typeof value === 'object';
+    if (step === '*') {
+      return isObject && !Array.isArray(value)
+        ? Object.values(value).flatMap(held => valuesAt(held, rest)) : [];
+    }
+    if (step === '[]') {
+      return Array.isArray(value) ? value.flatMap(held => valuesAt(held, rest)) : [];
+    }
+    return isObject && step in value ? valuesAt(value[step], rest) : [];
+  };
+  // A resource entry Chrome matches against the package names no one file.
+  const A_PATTERN = /[*?]/;
+  const BY_NAME = [['.html', 'page'], ['.js', 'script'], ['.css', 'style']];
+  const kindOfName = name =>
+    (BY_NAME.find(([suffix]) => name.endsWith(suffix)) || [null, 'asset'])[1];
+  const namedByManifest = declaredKeys.flatMap(({ path, kind }) =>
+    valuesAt(manifest, path)
+      .filter(value => !A_PATTERN.test(value))
+      .map(value => ({ value, kind: kind === 'named' ? kindOfName(value) : kind })));
+  const importedBy = text => Array.from(
+    text.matchAll(/importScripts\(([^)]*)\)/g),
+    ([, call]) => Array.from(call.matchAll(/['"]([^'"]+)['"]/g), m => m[1])).flat();
+  const styleReferences = text => Array.from(
+    text.replace(/\/\*[\s\S]*?\*\//g, ' ')
+      .matchAll(/(?:@import\s+(?:url\(\s*)?|url\(\s*)(["']?)([^"')\s;]+)\1/g),
+    m => m[2]).filter(target => !/^(https?:|\/\/|data:|#)/.test(target)
+      && !target.includes('__MSG_'));
+  // What the extension loads, followed from the manifest through the files it
+  // names, each of them parsed here rather than by pack.py.
+  const referenced = new Set(['manifest.json']);
+  {
+    const pending = namedByManifest.slice();
+    while (pending.length) {
+      const { value, kind } = pending.shift();
+      if (referenced.has(value)) { continue; }
+      referenced.add(value);
+      if (kind === 'asset' || !fs.existsSync(__dirname + '/' + value)) { continue; }
+      const text = fs.readFileSync(__dirname + '/' + value, 'utf8');
+      const base = value.includes('/') ? value.slice(0, value.lastIndexOf('/') + 1) : '';
+      const found = kind === 'page' ? pageReferences(text)
+        : kind === 'script' ? importedBy(text) : styleReferences(text);
+      for (const reference of found) {
+        pending.push({ value: base + reference, kind: kindOfName(reference) });
+      }
+    }
+  }
+  // Every file the manifest names is in the package, and everything in the
+  // package is named. The first half is the one a forgotten key makes silent.
+  // Read without the declared table: a string in the manifest that names a file
+  // in the tree is a file the extension loads. A key left out of that table is
+  // silent to every check that reads it, and this is what stays awake.
+  const namesAFile = [];
+  (function walkStrings(value) {
+    if (typeof value === 'string') {
+      if (/^[\w][\w./-]*$/.test(value) && fs.existsSync(__dirname + '/' + value)
+        && fs.statSync(__dirname + '/' + value).isFile()) {
+        namesAFile.push(value);
+      }
+    } else if (value !== null && typeof value === 'object') {
+      Object.values(value).forEach(walkStrings);
+    }
+  })(manifest);
+  assert.ok(namesAFile.length > 0, 'the manifest names files that are in the tree');
+  for (const value of namesAFile) {
+    assert.ok(packaged.includes(value),
+      `${value} is named by the manifest and must be packed`);
+  }
+  for (const { value } of namedByManifest) {
+    assert.ok(packaged.includes(value),
+      `${value} is named by the manifest and must be packed`);
+    assert.ok(fs.existsSync(path.join(__dirname, value)), `${value} exists`);
+  }
+  for (const arcname of packaged) {
+    if (distribution.includes(arcname)) { continue; }
+    // A name inside the package is POSIX whatever the host writes it on.
+    if (/^_locales\/[^/]+\/messages\.json$/.test(arcname)) { continue; }
+    assert.ok(referenced.has(arcname), `${arcname} is packaged but nothing loads it`);
   }
 
   // Every locale the tree carries is one the package carries. An extension
