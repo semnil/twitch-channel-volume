@@ -532,12 +532,18 @@ test('the store package refuses to leave out what it has to carry', () => {
       (box) => writeCatalog(box,
         { extName: { message: 'x $A$', placeholders: { a: { example: 'y' } } } }),
       /gives extName\.a no content/],
-    ['a default_locale Chrome does not carry',
+    ['a default_locale that is no locale at all',
       (box) => {
         fs.renameSync(`${box}/_locales/ja`, `${box}/_locales/jp`);
         editManifest(box, m => { m.default_locale = 'jp'; });
       },
-      /is not a locale Chrome carries: 'jp'/],
+      /is not a locale the store carries: 'jp'/],
+    ['a locale the browser loads and the store does not carry',
+      (box) => {
+        fs.renameSync(`${box}/_locales/ja`, `${box}/_locales/nb`);
+        editManifest(box, m => { m.default_locale = 'nb'; });
+      },
+      /is not a locale the store carries: 'nb'/],
     // Chrome reads a JSON number as a double. NaN and the infinities are
     // Python's spelling of a number rather than JSON's, and a literal too
     // large for a double is one Chrome declines to read at all.
@@ -769,6 +775,13 @@ test('the store package refuses to leave out what it has to carry', () => {
       editManifest(box, m => {
         m.content_scripts = [{ js: ['content.js'], css: ['styles.css'] }];
       });
+    }],
+    // The Norwegian the store does carry, which is the name an extension
+    // reaching for nb is told to use instead. Without this the rule above
+    // could refuse every locale and stay green.
+    ['a locale the store carries under a name of its own', (box) => {
+      fs.renameSync(`${box}/_locales/ja`, `${box}/_locales/no`);
+      editManifest(box, m => { m.default_locale = 'no'; });
     }],
     // Outside the fields Chrome localizes, a reference is not a reference:
     // the string reaches the browser as it stands, a file name included.

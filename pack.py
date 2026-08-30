@@ -39,9 +39,11 @@ PREDEFINED_MESSAGES = frozenset({
 })
 RESERVED_IN_A_CATALOG = PREDEFINED_MESSAGES - {'@@extension_id'}
 NOT_SUPPLIED_TO_THE_MANIFEST = frozenset({'@@extension_id'})
-# The locale names Chrome carries. A directory named anything else is one it
-# ignores, which leaves an extension asking for messages with no default locale.
-CHROME_LOCALES = frozenset('''
+# The locale names the Chrome Web Store carries. An extension is localized to
+# one of these, and where the locale its author wants is not among them the
+# closest one that is stands in for it. What the browser loads is a wider set
+# than what the store takes, so this is the one a package is held to.
+CHROME_WEB_STORE_LOCALES = frozenset('''
     am ar bg bn ca cs da de el en en_AU en_GB en_US es es_419 et fa fi fil fr gu
     he hi hr hu id it ja kn ko lt lv ml mr ms nl no pl pt_BR pt_PT ro ru sk sl sr
     sv sw ta te th tr uk vi zh_CN zh_TW
@@ -406,8 +408,8 @@ def selected_files(root):
                   or posixpath.normpath(default_locale) != default_locale):
         raise SystemExit(f'default_locale is not one name under {LOCALE_DIR}: '
                          f'{default_locale!r}')
-    if named and default_locale not in CHROME_LOCALES:
-        raise SystemExit(f'default_locale is not a locale Chrome carries: '
+    if named and default_locale not in CHROME_WEB_STORE_LOCALES:
+        raise SystemExit(f'default_locale is not a locale the store carries: '
                          f'{default_locale!r}')
     locales = _host(root, LOCALE_DIR)
     if os.path.isdir(locales) and not named:
