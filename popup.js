@@ -111,13 +111,15 @@
   }
 
   // The display polls every second and a page that cannot answer goes on not
-  // answering, so the reason is named once per stretch rather than once per
-  // poll, and again after the next request arrives.
-  let stateRequestFailureReported = false;
+  // answering, so a reason is named once for the stretch it lasts rather than
+  // once per poll, and again after the next request arrives. A reason that
+  // takes over from another within one stretch is its own thing to say.
+  let stateRequestFailureNamed = '';
 
   function reportStateRequestFailure(reason) {
-    if (stateRequestFailureReported) return;
-    stateRequestFailureReported = true;
+    const named = String(reason);
+    if (named === stateRequestFailureNamed) return;
+    stateRequestFailureNamed = named;
     console.warn('[TCV] state request failed', reason);
   }
 
@@ -133,7 +135,7 @@
         return null;
       }
       const res = await chrome.tabs.sendMessage(tab.id, { cmd: 'getState' });
-      stateRequestFailureReported = false;
+      stateRequestFailureNamed = '';
       return res;
     } catch (err) {
       // A content script that was never injected, a tab that has gone and a

@@ -6970,6 +6970,53 @@ test('popup leaves its own message up when the tab it re-reads is gone', async (
   );
 });
 
+test('popup names a reason that takes over from another', async () => {
+  const harness = createPopupHarness({ tabUrl: '' });
+  await flushTasks(8);
+  const named = () => harness.warnings
+    .filter((args) => args[0] === '[TCV] state request failed')
+    .map((args) => String(args[1]));
+
+  assert.deepEqual(named(), ['no Twitch tab to ask']);
+
+  // The tab comes back and the page is the one that cannot answer now. Nothing
+  // arrived in between, so a stretch that reports once would say nothing.
+  harness.setTabUrl('https://www.twitch.tv/somechannel');
+  harness.breakSendMessage('Could not establish connection.');
+  await harness.poll();
+  assert.equal(named().length, 2);
+  assert.match(named()[1], /Could not establish connection/);
+
+  // The same reason again is still the same thing to say.
+  await harness.poll();
+  assert.equal(named().length, 2);
+});
+
+test('popup keeps a save in flight from being failed by the read after it', async () => {
+  const harness = createPopupHarness({ deferAutoSave: true });
+  await flushTasks(8);
+  harness.el('autoApplyToggle').checked = true;
+  const fired = harness.fire('autoApplyToggle', 'change');
+  await flushTasks(8);
+
+  // The page dies while the save is in flight, so the state read that follows
+  // it cannot even ask which tab is active.
+  harness.breakTabQuery('Extension context invalidated.');
+  await harness.releaseAutoSave();
+  await fired;
+
+  // The save landed. What failed afterwards is not what the viewer did.
+  assert.deepEqual(
+    harness.warnings.filter((args) => args[0] === '[TCV] Auto setting request failed'),
+    []
+  );
+  assert.equal(harness.el('autoError').classList.contains('hidden'), true);
+  assert.equal(
+    harness.warnings.filter((args) => args[0] === '[TCV] state request failed').length,
+    1
+  );
+});
+
 test('popup keeps a save that worked from reading as one that failed', async () => {
   const harness = createPopupHarness();
   await flushTasks(8);
