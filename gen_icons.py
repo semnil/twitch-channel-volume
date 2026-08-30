@@ -39,7 +39,8 @@ def load_font(size):
             return ImageFont.truetype(path, size)
         except OSError:
             continue
-    return ImageFont.load_default()
+    raise SystemExit('no face here to draw the mark with. Looked for:\n  '
+                     + '\n  '.join(FONT_PATHS))
 
 
 def draw_icon(size):

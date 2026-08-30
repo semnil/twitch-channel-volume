@@ -427,6 +427,28 @@ test('the icons are drawn beside the script or not at all', () => {
     });
   });
 
+  // The same script with nowhere to find a face. It runs wherever pillow is,
+  // so this half needs no system font of its own.
+  withFixtureDir('tcv-faceless-', (faceless) => {
+    fs.mkdirSync(path.join(faceless, 'icons'));
+    const withoutAFace = source.replace(/^FONT_PATHS = \[[^\]]*\]/m,
+      "FONT_PATHS = ['/no/such/face.ttf']");
+    assert.notEqual(withoutAFace, source,
+      'gen_icons.py lists the faces it looks for in FONT_PATHS');
+    fs.writeFileSync(path.join(faceless, 'gen_icons.py'), withoutAFace);
+    const refused = spawnSync('python3', ['-B', path.join(faceless, 'gen_icons.py')],
+      { cwd: faceless, encoding: 'utf8' });
+    if (refused.error || refused.status === 3) {
+      console.log(`  (faceless check skipped: ${(refused.error || refused.stderr || '').toString().trim()})`);
+      return;
+    }
+    assert.notEqual(refused.status, 0,
+      'gen_icons.py turns down a machine with no face to draw with');
+    assert.match(refused.stderr, /no face here to draw the mark with/);
+    assert.match(refused.stderr, /no\/such\/face\.ttf/);
+    assert.deepEqual(fs.readdirSync(path.join(faceless, 'icons')), [],
+      'nothing is saved under the brand letter when there is no face for it');
+  });
 });
 
 test('a reference naming a drive is refused under Windows path semantics', () => {
