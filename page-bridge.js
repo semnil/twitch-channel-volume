@@ -94,6 +94,7 @@
   // audio path even after a different element attaches.
   const takenVideos = [];
   let contextFailureReported = false;
+  let resumeRefusalReported = false;
   let reportedTakenElsewhere = false;
   let attachAttempts = 0;
 
@@ -292,6 +293,14 @@
     }, '*');
   }
 
+  function postContextState() {
+    window.postMessage({
+      type: MSG_OUT,
+      event: 'audio-context',
+      state: ctx ? ctx.state : 'none'
+    }, '*');
+  }
+
   function postAd(active) {
     window.postMessage({
       type: MSG_OUT,
@@ -430,6 +439,8 @@
       gain.connect(ctx.destination);
       // The retry can land mid-ad, and baselineGain alone is the content level.
       applyEffectiveGain();
+      ctx.addEventListener('statechange', postContextState);
+      postContextState();
     } catch (err) {
       console.warn('[TCV] audio context unavailable', err);
       ctx = null;
@@ -1075,13 +1086,24 @@
         break;
       case 'resume':
         try {
+          await ensureContext();
           await ctx?.resume();
           if (ctx && ctx.state !== 'running') {
-            console.warn('[TCV] audio context stayed', ctx.state, 'after resume');
+            // Every gesture asks again until the context runs, and a context
+            // that will not move answers every one of them.
+            if (!resumeRefusalReported) {
+              resumeRefusalReported = true;
+              console.warn('[TCV] audio context stayed', ctx.state, 'after resume');
+            }
+          } else {
+            resumeRefusalReported = false;
           }
         } catch (err) {
           console.warn('[TCV] audio context resume failed', err);
         }
+        // A context that was already running changes no state, and the answer
+        // is what tells content.js to stop asking.
+        postContextState();
         break;
     }
   });

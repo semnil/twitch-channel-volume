@@ -1519,6 +1519,7 @@ function createContentHarness({
   failChannelMutationOperation = ''
 } = {}) {
   const listeners = {};
+  const documentListeners = {};
   const storageListeners = [];
   const commands = [];
   const warnings = [];
@@ -1600,7 +1601,17 @@ function createContentHarness({
     createElement() {
       return { style: { cssText: '' }, textContent: '', parentNode: null, previousElementSibling: null };
     },
-    addEventListener() {},
+    addEventListener(type, listener, options) {
+      const list = (documentListeners[type] ||= []);
+      if (list.some((entry) => entry.listener === listener)) return;
+      list.push({ listener, once: !!(options && options.once) });
+    },
+    removeEventListener(type, listener) {
+      const list = documentListeners[type];
+      if (!list) return;
+      const at = list.findIndex((entry) => entry.listener === listener);
+      if (at >= 0) list.splice(at, 1);
+    },
     contains(node) { return volumeRow.children.has(node); }
   };
   class MutationObserver {
@@ -1735,6 +1746,19 @@ function createContentHarness({
     async dispatchMessage(data) {
       await Promise.all((listeners.message || []).map((listener) => listener({ source: window, data })));
     },
+    async dispatchDocument(type) {
+      for (const entry of (documentListeners[type] || []).slice()) {
+        // A listener registered with `once` is gone the moment it is called.
+        if (entry.once) {
+          const list = documentListeners[type];
+          const at = list.indexOf(entry);
+          if (at >= 0) list.splice(at, 1);
+        }
+        entry.listener({ type });
+      }
+      await flushTasks();
+    },
+    documentListenerCount(type) { return (documentListeners[type] || []).length; },
     async dispatchStorage(changes) {
       for (const listener of storageListeners) listener(changes);
       await flushTasks();
@@ -2210,6 +2234,8 @@ const BRIDGE_SCRIPT_URL = 'chrome-extension://abcdefghijklmnopabcdefghijklmnop/p
 
 function createPageBridgeHarness({
   scriptUrl = BRIDGE_SCRIPT_URL,
+  contextStartsSuspended = false,
+  contextRefusesResume = false,
   mediaElementSourceTaken = false,
   extraFreeVideo = false,
   audioContextThrows = false,
@@ -2278,6 +2304,9 @@ function createPageBridgeHarness({
   });
   const gainNodes = [];
   const sourcedElements = [];
+  const warnings = [];
+  let refusesResume = contextRefusesResume;
+  let builtContext = null;
   class AudioWorkletNode {
     constructor() {
       measurementPort = { onmessage: null };
@@ -2291,7 +2320,11 @@ function createPageBridgeHarness({
       if (contextThrows) throw new DOMException('too many contexts', 'NotSupportedError');
       this.sampleRate = 48000;
       this.currentTime = 0;
-      this.state = 'running';
+      // Chrome starts a context suspended until the page has been interacted
+      // with.
+      this.state = contextStartsSuspended ? 'suspended' : 'running';
+      this.listeners = {};
+      builtContext = this;
       this.destination = {};
       this.audioWorklet = {
         addModule: async (url) => {
@@ -2328,7 +2361,13 @@ function createPageBridgeHarness({
       sourcedElements.push(element);
       return audioNode();
     }
-    async resume() {}
+    addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
+    async resume() {
+      // What Chrome does with a context the page has earned no gesture for.
+      if (refusesResume || this.state === 'running') return;
+      this.state = 'running';
+      fire(this, 'statechange');
+    }
   }
   const window = {
     AudioContext,
@@ -2350,7 +2389,11 @@ function createPageBridgeHarness({
   const context = vm.createContext({
     AudioWorkletNode,
     clearInterval(id) { timers.delete(id); },
-    console: { warn() {}, error() {}, info(...args) { logs.push(args); } },
+    console: {
+      warn(...args) { warnings.push(args); },
+      error() {},
+      info(...args) { logs.push(args); }
+    },
     document: {
       querySelectorAll(selector) { return selector === 'video' ? videos : []; }
     },
@@ -2385,6 +2428,12 @@ function createPageBridgeHarness({
     location,
     messages,
     logs,
+    warnings,
+    refuseResume(value) { refusesResume = value; },
+    suspendContext() {
+      builtContext.state = 'suspended';
+      fire(builtContext, 'statechange');
+    },
     workletModules,
     fetch: (...args) => window.fetch(...args),
     fetchCalls,
@@ -3590,6 +3639,118 @@ test('content reports the player audio the bridge could not attach to', async ()
   await harness.dispatchMessage({ type: '__twitch_channel_volume__', event: 'loaded' });
   state = await harness.dispatchRuntime({ cmd: 'getState' });
   assert.equal(state.audioUnavailable, false);
+});
+
+test('content asks for a resume on a keypress as well as on a click', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  const resumes = () => harness.commands.filter((command) => command.cmd === 'resume').length;
+
+  // The viewer unmutes with the player's keyboard shortcut and never clicks.
+  await harness.dispatchDocument('keydown');
+  assert.equal(resumes(), 1);
+});
+
+test('content keeps asking for a resume until the context runs', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  const resumes = () => harness.commands.filter((command) => command.cmd === 'resume').length;
+
+  // The first gesture can land before the context exists, and answers with a
+  // state that is not running.
+  await harness.dispatchDocument('click');
+  assert.equal(resumes(), 1);
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'audio-context',
+    state: 'suspended'
+  });
+
+  await harness.dispatchDocument('click');
+  assert.equal(resumes(), 2);
+});
+
+test('content stops asking for a resume once the context runs', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  const resumes = () => harness.commands.filter((command) => command.cmd === 'resume').length;
+
+  await harness.dispatchDocument('click');
+  assert.equal(resumes(), 1);
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'audio-context',
+    state: 'running'
+  });
+  assert.equal(harness.documentListenerCount('click'), 0);
+  assert.equal(harness.documentListenerCount('keydown'), 0);
+
+  await harness.dispatchDocument('click');
+  await harness.dispatchDocument('keydown');
+  assert.equal(resumes(), 1);
+
+  // A context that stops running is asked for again.
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'audio-context',
+    state: 'suspended'
+  });
+  await harness.dispatchDocument('keydown');
+  assert.equal(resumes(), 2);
+});
+
+test('page bridge reports the state of the context it built', async () => {
+  const harness = createPageBridgeHarness({ contextStartsSuspended: true });
+  await harness.dispatchCommand('init');
+  const states = () => harness.messages
+    .filter((message) => message.event === 'audio-context')
+    .map((message) => message.state);
+  assert.deepEqual(states(), ['suspended']);
+
+  await harness.dispatchCommand('resume');
+  // The state change and the answer to the command both carry it.
+  assert.equal(states().at(-1), 'running');
+});
+
+test('page bridge names a context that will not resume once, not once a gesture', async () => {
+  const harness = createPageBridgeHarness({ contextStartsSuspended: true, contextRefusesResume: true });
+  await harness.dispatchCommand('init');
+  const refusals = () => harness.warnings
+    .filter((entry) => entry[0] === '[TCV] audio context stayed').length;
+
+  // Every click and every keypress asks again for as long as it stays put.
+  for (let i = 0; i < 5; i++) await harness.dispatchCommand('resume');
+  assert.equal(refusals(), 1);
+
+  harness.refuseResume(false);
+  await harness.dispatchCommand('resume');
+  assert.equal(refusals(), 1);
+
+  // A context that ran and stopped again is a state worth naming afresh.
+  harness.refuseResume(true);
+  harness.suspendContext();
+  await harness.dispatchCommand('resume');
+  assert.equal(refusals(), 2);
+});
+
+test('page bridge answers a resume for a context that was already running', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.dispatchCommand('init');
+  await harness.dispatchCommand('resume');
+  assert.equal(
+    harness.messages.filter((message) => message.event === 'audio-context').at(-1).state,
+    'running'
+  );
+});
+
+test('page bridge builds the context a resume arrives before', async () => {
+  const harness = createPageBridgeHarness({ contextStartsSuspended: true });
+  // No init: the gesture is the first thing the bridge is asked to act on.
+  await harness.dispatchCommand('resume');
+  assert.equal(
+    harness.messages.filter((message) => message.event === 'audio-context').at(-1).state,
+    'running'
+  );
 });
 
 const ATTACH_FAILED = {
