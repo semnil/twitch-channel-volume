@@ -2252,12 +2252,18 @@ function createPageBridgeHarness({
   const logs = [];
   const workletModules = [];
   const listeners = {};
-  const location = { href: 'https://www.twitch.tv/videos/100' };
+  const pageHref = 'https://www.twitch.tv/videos/100';
+  const location = { href: pageHref, origin: new URL(pageHref).origin };
   const videos = [];
   const makeVideo = (props = {}) => {
     const listeners = {};
     return {
-      src: 'https://example.test/video',
+      // The player element takes its media from a MediaSource, so it carries
+      // no URL of its own.
+      src: '',
+      currentSrc: '',
+      srcObject: {},
+      crossOrigin: null,
       readyState: 4,
       clientWidth: 1920,
       clientHeight: 1080,
@@ -2281,7 +2287,6 @@ function createPageBridgeHarness({
   let video = makeVideo();
   videos.push(video);
   const freeVideo = makeVideo({
-    src: 'https://example.test/free-video',
     clientWidth: 320,
     clientHeight: 180
   });
@@ -2491,7 +2496,14 @@ function createPageBridgeHarness({
     setPaused(value) { video.paused = value; },
     currentVideo: () => video,
     addVideo(props = {}) {
-      const extra = makeVideo({ src: 'https://ads.example/creative.mp4', ...props });
+      // A creative comes from another origin, and the element that plays one
+      // asks for it in CORS mode.
+      const extra = makeVideo({
+        src: 'https://ads.example/creative.mp4',
+        srcObject: null,
+        crossOrigin: 'anonymous',
+        ...props
+      });
       videos.push(extra);
       return extra;
     },
