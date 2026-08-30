@@ -557,6 +557,14 @@ test('the store package refuses to leave out what it has to carry', () => {
     ['an integer larger than a number holds',
       (box) => appendRaw(box, `"x":1${'0'.repeat(400)}`),
       /is not readable as JSON: 10+ is out of the range a number holds/],
+    // A comment stands between the tokens it separated. Dropped outright it
+    // joins them into one the author never wrote.
+    ['a number a block comment splits',
+      (box) => appendRaw(box, '"x":1/**/2'),
+      /manifest\.json is not readable as JSON: Expecting ',' delimiter/],
+    ['a keyword a block comment splits',
+      (box) => appendRaw(box, '"x":tr/**/ue'),
+      /manifest\.json is not readable as JSON: Expecting value/],
     ['a message under @@ that Chrome does not define',
       (box) => editManifest(box, m => { m.description = '__MSG_@@bogus__'; }),
       /the manifest uses @@bogus, which .* does not answer for/],

@@ -220,6 +220,7 @@ def _without_comments(text):
                 if stop < 0:
                     raise ValueError('a block comment is never closed')
                 index = stop + 2
+                out.append(' ')
                 continue
         out.append(character)
         index += 1
