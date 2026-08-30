@@ -94,6 +94,7 @@
   // audio path even after a different element attaches.
   const takenVideos = [];
   let contextFailureReported = false;
+  let resumeRefusalReported = false;
   let reportedTakenElsewhere = false;
   let attachAttempts = 0;
 
@@ -292,6 +293,14 @@
     }, '*');
   }
 
+  function postContextState() {
+    window.postMessage({
+      type: MSG_OUT,
+      event: 'audio-context',
+      state: ctx ? ctx.state : 'none'
+    }, '*');
+  }
+
   function postAd(active) {
     window.postMessage({
       type: MSG_OUT,
@@ -379,7 +388,7 @@
     return Math.min(MAX_SEED_WINDOWS, saved);
   }
 
-  function resetMeasurement(initialIntegratedLufs, epoch, initialIntegratedWindows) {
+  function resetMeasurement(initialIntegratedLufs, epoch, initialIntegratedWindows, seedWindowLimit) {
     if (Number.isFinite(epoch)) measurementEpoch = epoch;
     blocks.length = 0;
     integratedBlockStart = 0;
@@ -398,9 +407,14 @@
     // every observed window, so a rollback does not reach them.
     // Values below the absolute gate reach the ring buffer but not the index,
     // so they never contribute to Integrated.
-    seedClaimedWindows = savedWindowCount(initialIntegratedWindows);
+    // The caller may hold the seed to a weight of its own, and that weight is
+    // the whole of it: the floor does not raise it back.
+    const limit = Number.isSafeInteger(seedWindowLimit) && seedWindowLimit > 0
+      ? seedWindowLimit
+      : MAX_SEED_WINDOWS;
+    seedClaimedWindows = Math.min(limit, savedWindowCount(initialIntegratedWindows));
     seedMeanSquare = initialMeanSquare;
-    const seedWindows = Math.max(MIN_SEED_WINDOWS, seedClaimedWindows);
+    const seedWindows = Math.min(limit, Math.max(MIN_SEED_WINDOWS, seedClaimedWindows));
     for (let i = 0; i < seedWindows; i++) {
       appendIntegratedBlock(initialMeanSquare, windowsObserved);
     }
@@ -430,6 +444,8 @@
       gain.connect(ctx.destination);
       // The retry can land mid-ad, and baselineGain alone is the content level.
       applyEffectiveGain();
+      ctx.addEventListener('statechange', postContextState);
+      postContextState();
     } catch (err) {
       console.warn('[TCV] audio context unavailable', err);
       ctx = null;
@@ -1063,7 +1079,12 @@
         setDomAdActive(data.active);
         break;
       case 'resetMeasurement':
-        resetMeasurement(data.initialIntegratedLufs, data.epoch, data.initialIntegratedWindows);
+        resetMeasurement(
+          data.initialIntegratedLufs,
+          data.epoch,
+          data.initialIntegratedWindows,
+          data.seedWindowLimit
+        );
         break;
       case 'mediaChanged':
         // New media answers for itself: the old cues mean nothing against its
@@ -1075,13 +1096,24 @@
         break;
       case 'resume':
         try {
+          await ensureContext();
           await ctx?.resume();
           if (ctx && ctx.state !== 'running') {
-            console.warn('[TCV] audio context stayed', ctx.state, 'after resume');
+            // Every gesture asks again until the context runs, and a context
+            // that will not move answers every one of them.
+            if (!resumeRefusalReported) {
+              resumeRefusalReported = true;
+              console.warn('[TCV] audio context stayed', ctx.state, 'after resume');
+            }
+          } else {
+            resumeRefusalReported = false;
           }
         } catch (err) {
           console.warn('[TCV] audio context resume failed', err);
         }
+        // A context that was already running changes no state, and the answer
+        // is what tells content.js to stop asking.
+        postContextState();
         break;
     }
   });

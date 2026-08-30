@@ -207,9 +207,11 @@
   function sendResetMeasurement(seed) {
     measurementEpoch++;
     lastAutoGainUpdateAt = -Infinity;
+    const seedWindowLimit = seedWindowLimitForKind(currentChannel.kind);
     sendCmd({
       cmd: 'resetMeasurement',
       epoch: measurementEpoch,
+      ...(seedWindowLimit ? { seedWindowLimit } : {}),
       ...(seed ? {
         initialIntegratedLufs: seed.lufs,
         ...(seed.windows ? { initialIntegratedWindows: seed.windows } : {})
@@ -503,6 +505,9 @@
         break;
       case 'ad':
         adActive = !!data.active;
+        break;
+      case 'audio-context':
+        listenForResumeGesture(data.state !== 'running');
         break;
     }
   }
@@ -851,7 +856,25 @@
     }
   });
 
-  document.addEventListener('click', () => sendCmd({ cmd: 'resume' }), { once: true, capture: true });
+  // A suspended context passes no audio, and the media element source puts it
+  // between the player and the speakers. A gesture that arrives before the
+  // context exists cannot resume it, and unmuting from the keyboard sends no
+  // click, so both gestures are heard until the bridge reports it running.
+  function requestAudioContextResume() {
+    sendCmd({ cmd: 'resume' });
+  }
+
+  function listenForResumeGesture(listening) {
+    if (listening) {
+      document.addEventListener('click', requestAudioContextResume, true);
+      document.addEventListener('keydown', requestAudioContextResume, true);
+    } else {
+      document.removeEventListener('click', requestAudioContextResume, true);
+      document.removeEventListener('keydown', requestAudioContextResume, true);
+    }
+  }
+
+  listenForResumeGesture(true);
 
   setInterval(updateGainOverlay, 2000);
 
