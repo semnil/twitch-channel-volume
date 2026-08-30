@@ -483,11 +483,8 @@ test('the store package refuses to leave out what it has to carry', () => {
     ['a message the manifest asks for that the catalog does not answer',
       (box) => editManifest(box, m => { m.name = '__MSG_absentKey__'; }),
       /the manifest uses absentKey, which .* does not answer for/],
-    ['a reference spelled with escapes that nothing answers', (box) => {
-      const manifest = readBoxJson(box);
-      fs.writeFileSync(`${box}/manifest.json`,
-        JSON.stringify(manifest).replace('}', ', "description": "__MSG_\\u0061bsent__"}'));
-    },
+    ['a reference spelled with escapes that nothing answers',
+      (box) => appendRaw(box, '"description":"__MSG_\\u0061bsent__"'),
       /the manifest uses absent, which .* does not answer for/],
     ['a message a packaged stylesheet asks for that the catalog does not answer',
       (box) => {
@@ -565,6 +562,22 @@ test('the store package refuses to leave out what it has to carry', () => {
     ['a keyword a block comment splits',
       (box) => appendRaw(box, '"x":tr/**/ue'),
       /manifest\.json is not readable as JSON: Expecting value/],
+    // Every field Chrome localizes is asked, not the first of them alone.
+    ['a title the action asks for that the catalog does not answer',
+      (box) => editManifest(box, m => {
+        m.action = { default_title: '__MSG_absentTitle__' };
+      }),
+      /the manifest uses absentTitle, which .* does not answer for/],
+    ['a description a command asks for that the catalog does not answer',
+      (box) => editManifest(box, m => {
+        m.commands = { go: { description: '__MSG_absentCommand__' } };
+      }),
+      /the manifest uses absentCommand, which .* does not answer for/],
+    ['a name an input component asks for that the catalog does not answer',
+      (box) => editManifest(box, m => {
+        m.input_components = [{ name: '__MSG_absentComponent__' }];
+      }),
+      /the manifest uses absentComponent, which .* does not answer for/],
     ['a message under @@ that Chrome does not define',
       (box) => editManifest(box, m => { m.description = '__MSG_@@bogus__'; }),
       /the manifest uses @@bogus, which .* does not answer for/],
@@ -734,9 +747,7 @@ test('the store package refuses to leave out what it has to carry', () => {
     }],
     ['a reference spelled with escapes that the catalog answers', (box) => {
       writeCatalog(box, { extName: { message: 'x' }, absent: { message: 'y' } });
-      const manifest = readBoxJson(box);
-      fs.writeFileSync(`${box}/manifest.json`,
-        JSON.stringify(manifest).replace('}', ', "description": "__MSG_\\u0061bsent__"}'));
+      appendRaw(box, '"description":"__MSG_\\u0061bsent__"');
     }],
     ['a reference in an object key rather than a value',
       (box) => editManifest(box, m => { m['__MSG_absent__'] = 'x'; })],
@@ -758,7 +769,17 @@ test('the store package refuses to leave out what it has to carry', () => {
       editManifest(box, m => {
         m.content_scripts = [{ js: ['content.js'], css: ['styles.css'] }];
       });
-    }]
+    }],
+    // Outside the fields Chrome localizes, a reference is not a reference:
+    // the string reaches the browser as it stands, a file name included.
+    ['a content script named like a message', (box) => {
+      fs.renameSync(`${box}/content.js`, `${box}/__MSG_absent__.js`);
+      editManifest(box, m => {
+        m.content_scripts = [{ js: ['__MSG_absent__.js'] }];
+      });
+    }],
+    ['a reference in a field Chrome leaves as it stands',
+      (box) => editManifest(box, m => { m.author = { email: '__MSG_absent__' }; })]
   ]) {
     const box = buildMinimal();
     arrange(box);

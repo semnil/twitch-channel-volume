@@ -46,6 +46,25 @@ CHROME_LOCALES = frozenset('''
     he hi hr hu id it ja kn ko lt lv ml mr ms nl no pl pt_BR pt_PT ro ru sk sl sr
     sv sw ta te th tr uk vi zh_CN zh_TW
 '''.split())
+# Where Chrome substitutes a message into the manifest. Everywhere else the
+# string reaches the browser as it stands — a content script named
+# __MSG_asset__.js is loaded under that name — so a reference outside these is
+# not a reference. A step of '*' is every key of an object and '[]' every
+# element of a list.
+LOCALIZED_FIELDS = (
+    ('name',),
+    ('description',),
+    ('short_name',),
+    ('action', 'default_title'),
+    ('browser_action', 'default_title'),
+    ('page_action', 'default_title'),
+    ('omnibox', 'keyword'),
+    ('commands', '*', 'description'),
+    ('chrome_settings_overrides', 'search_provider', 'name'),
+    ('chrome_settings_overrides', 'search_provider', 'keyword'),
+    ('file_browser_handlers', '[]', 'default_title'),
+    ('input_components', '[]', 'name'),
+)
 QUOTED = re.compile(r'[\'"]([^\'"]+)[\'"]')
 REMOTE = ('http:', 'https:', '//', 'data:', 'chrome-extension:')
 
@@ -227,21 +246,33 @@ def _without_comments(text):
     return ''.join(out)
 
 
-def _string_values(value):
-    """Every string a decoded JSON value holds, object keys aside.
+def _at(value, path):
+    """Every string the given path reaches, which is none where it does not lead."""
+    if not path:
+        if isinstance(value, str):
+            yield value
+        return
+    step, rest = path[0], path[1:]
+    if step == '*':
+        if isinstance(value, dict):
+            for held in value.values():
+                yield from _at(held, rest)
+    elif step == '[]':
+        if isinstance(value, list):
+            for held in value:
+                yield from _at(held, rest)
+    elif isinstance(value, dict) and step in value:
+        yield from _at(value[step], rest)
 
-    A reference lives in a value Chrome localizes, so this is what the walk is
-    given: the raw text carries comments Chrome has already dropped and escapes
-    it has already decoded, and its keys are not fields it localizes.
+
+def _localized_values(manifest):
+    """What the manifest asks the catalog for, read as the values it decoded to.
+
+    The decoded manifest is what Chrome localizes: the raw text still carries
+    the comments it dropped and the escapes it resolved.
     """
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, dict):
-        for held in value.values():
-            yield from _string_values(held)
-    elif isinstance(value, list):
-        for held in value:
-            yield from _string_values(held)
+    for path in LOCALIZED_FIELDS:
+        yield from _at(manifest, path)
 
 
 def _number(literal):
@@ -349,9 +380,9 @@ def selected_files(root):
     # What the extension asks the default locale to answer for. Chrome reads
     # these in the manifest and in the stylesheets it serves, and reads one of
     # its own everywhere but the manifest, so the two are kept apart.
-    # The manifest is read as the values it decoded to; a stylesheet is not JSON
-    # and is read as it stands.
-    asking = [('the manifest', list(_string_values(manifest)),
+    # The manifest is read as the fields it localizes hold once decoded; a
+    # stylesheet is not JSON and is read as it stands.
+    asking = [('the manifest', list(_localized_values(manifest)),
                NOT_SUPPLIED_TO_THE_MANIFEST)]
     asking += [(relative, [_read(root, relative)], frozenset())
                for relative in selected if relative.endswith('.css')]
