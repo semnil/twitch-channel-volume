@@ -442,6 +442,21 @@ test('the store package refuses to leave out what it has to carry', () => {
     ['default_locale written as a directory that means the one above',
       (box) => editManifest(box, (m) => { m.default_locale = '..'; }),
       /default_locale is not one name under _locales: '\.\.'/],
+    ['a message the manifest asks for that the catalog does not answer',
+      (box) => editManifest(box, (m) => { m.name = '__MSG_absentKey__'; }),
+      /does not answer for: absentKey/],
+    ['a message a packaged stylesheet asks for that the catalog does not answer',
+      (box) => {
+        fs.writeFileSync(path.join(box, 'styles.css'),
+          'body { content: "__MSG_absentKey__" }\n');
+        editManifest(box, (m) => {
+          m.content_scripts = [{ js: ['content.js'], css: ['styles.css'] }];
+        });
+      },
+      /does not answer for: absentKey/],
+    ['a catalog that is not JSON',
+      (box) => fs.writeFileSync(path.join(box, '_locales/ja/messages.json'), '{ broken'),
+      /messages\.json is not a message catalog/]
   ]) {
     const box = buildMinimal();
     // A package built earlier stands here, so a refusal has something to spare.

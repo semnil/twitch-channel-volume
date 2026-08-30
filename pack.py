@@ -206,17 +206,30 @@ def selected_files(root):
     required = (posixpath.join(LOCALE_DIR, default_locale, LOCALE_FILE)
                 if named else None)
     seen_locales = set()
+    catalogs = {}
     if os.path.isdir(locales):
         for locale in sorted(os.listdir(locales)):
             relative = posixpath.join(LOCALE_DIR, locale, LOCALE_FILE)
             full = _packaged(root, relative)
             if os.path.isfile(full):
+                # A catalog Chrome cannot read is one it refuses the whole
+                # extension over, so it is read here rather than copied.
+                try:
+                    catalogs[locale] = json.loads(_read(root, relative))
+                except ValueError as unreadable:
+                    raise SystemExit(f'{relative} is not a message catalog: {unreadable}')
                 seen_locales.add(relative)
                 entry = carry(full, relative)
                 if entry:
                     yield entry
     if required and required not in seen_locales:
         raise SystemExit(f'the default locale carries no messages: {required}')
+    if wanted:
+        # Message names are matched without regard to case, as Chrome matches them.
+        answered = {name.lower() for name in catalogs.get(default_locale, {})}
+        unanswered = sorted(name for name in wanted if name.lower() not in answered)
+        if unanswered:
+            raise SystemExit(f'{required} does not answer for: {", ".join(unanswered)}')
 
     for relative in DISTRIBUTION_FILES:
         full = _packaged(root, relative)
