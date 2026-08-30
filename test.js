@@ -432,6 +432,11 @@ test('the store package refuses to leave out what it has to carry', () => {
   const writeCatalog = (box, catalog) =>
     fs.writeFileSync(path.join(box, '_locales/ja/messages.json'), JSON.stringify(catalog));
   const readBoxJson = (box) => JSON.parse(fs.readFileSync(`${box}/manifest.json`, 'utf8'));
+  // A value the manifest carries as it stands. JSON.stringify spells no
+  // NaN, no comment and no escape, and the manifest is where Chrome reads
+  // all three.
+  const appendRaw = (box, raw) => fs.writeFileSync(`${box}/manifest.json`,
+    `${JSON.stringify(readBoxJson(box)).slice(0, -1)},${raw}}`);
   const editManifest = (box, change) => {
     const manifest = JSON.parse(fs.readFileSync(path.join(box, 'manifest.json'), 'utf8'));
     change(manifest);
@@ -536,6 +541,22 @@ test('the store package refuses to leave out what it has to carry', () => {
         editManifest(box, m => { m.default_locale = 'jp'; });
       },
       /is not a locale Chrome carries: 'jp'/],
+    // Chrome reads a JSON number as a double. NaN and the infinities are
+    // Python's spelling of a number rather than JSON's, and a literal too
+    // large for a double is one Chrome declines to read at all.
+    ['a manifest holding a number only Python reads',
+      (box) => appendRaw(box, '"x":NaN'),
+      /manifest\.json is not readable as JSON: NaN is not a JSON value/],
+    ['a catalog holding a number only Python reads',
+      (box) => fs.writeFileSync(`${box}/_locales/ja/messages.json`,
+        '{"extName":{"message":"x","description":Infinity}}'),
+      /messages\.json is not readable as JSON: Infinity is not a JSON value/],
+    ['a fraction larger than a number holds',
+      (box) => appendRaw(box, '"x":1e400'),
+      /is not readable as JSON: 1e400 is out of the range a number holds/],
+    ['an integer larger than a number holds',
+      (box) => appendRaw(box, `"x":1${'0'.repeat(400)}`),
+      /is not readable as JSON: 10+ is out of the range a number holds/],
     ['a message under @@ that Chrome does not define',
       (box) => editManifest(box, m => { m.description = '__MSG_@@bogus__'; }),
       /the manifest uses @@bogus, which .* does not answer for/],

@@ -1,5 +1,6 @@
 """Pack extension for Chrome Web Store submission."""
 import zipfile
+import math
 import ntpath
 import os
 import json
@@ -242,10 +243,30 @@ def _string_values(value):
             yield from _string_values(held)
 
 
+def _number(literal):
+    """Chrome reads a JSON number as a double and refuses one that will not fit."""
+    number = float(literal)
+    if not math.isfinite(number):
+        raise ValueError(f'{literal} is out of the range a number holds')
+    return number
+
+
+def _integer(literal):
+    _number(literal)
+    return int(literal)
+
+
+def _not_a_value(literal):
+    """NaN and the infinities are Python's spelling of a number, not JSON's."""
+    raise ValueError(f'{literal} is not a JSON value')
+
+
 def _json(relative, text):
     """Read JSON the way Chrome reads it: a byte order mark and comments allowed."""
     try:
-        return json.loads(_without_comments(text.lstrip('\ufeff')))
+        return json.loads(_without_comments(text.lstrip('\ufeff')),
+                          parse_constant=_not_a_value, parse_float=_number,
+                          parse_int=_integer)
     except ValueError as unreadable:
         raise SystemExit(f'{relative} is not readable as JSON: {unreadable}')
 
