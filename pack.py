@@ -225,6 +225,23 @@ def _without_comments(text):
     return ''.join(out)
 
 
+def _string_values(value):
+    """Every string a decoded JSON value holds, object keys aside.
+
+    A reference lives in a value Chrome localizes, so this is what the walk is
+    given: the raw text carries comments Chrome has already dropped and escapes
+    it has already decoded, and its keys are not fields it localizes.
+    """
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for held in value.values():
+            yield from _string_values(held)
+    elif isinstance(value, list):
+        for held in value:
+            yield from _string_values(held)
+
+
 def _json(relative, text):
     """Read JSON the way Chrome reads it: a byte order mark and comments allowed."""
     try:
@@ -310,12 +327,14 @@ def selected_files(root):
     # What the extension asks the default locale to answer for. Chrome reads
     # these in the manifest and in the stylesheets it serves, and reads one of
     # its own everywhere but the manifest, so the two are kept apart.
-    asking = [('the manifest', _read(root, 'manifest.json'),
+    # The manifest is read as the values it decoded to; a stylesheet is not JSON
+    # and is read as it stands.
+    asking = [('the manifest', list(_string_values(manifest)),
                NOT_SUPPLIED_TO_THE_MANIFEST)]
-    asking += [(relative, _read(root, relative), frozenset())
+    asking += [(relative, [_read(root, relative)], frozenset())
                for relative in selected if relative.endswith('.css')]
     predefined = {name.lower() for name in PREDEFINED_MESSAGES}
-    wanted = {name for _label, text, _withheld in asking
+    wanted = {name for _label, texts, _withheld in asking for text in texts
               for name in _messages_used(text, '__MSG_', '__')[0]
               if name.lower() not in predefined}
 
@@ -364,12 +383,13 @@ def selected_files(root):
     # Chrome has an extension id, so only a catalog can answer for that one
     # there; everywhere else it is supplied.
     answered_by = catalogs.get(default_locale, set())
-    for label, text, withheld in asking:
+    for label, texts, withheld in asking:
         known = answered_by | (predefined - withheld)
-        _seen, missing = _messages_used(text, '__MSG_', '__', known)
-        if missing:
-            raise SystemExit(f'{label} uses {missing}, which '
-                             f'{required or "no catalog"} does not answer for')
+        for text in texts:
+            _seen, missing = _messages_used(text, '__MSG_', '__', known)
+            if missing:
+                raise SystemExit(f'{label} uses {missing}, which '
+                                 f'{required or "no catalog"} does not answer for')
 
     for relative in DISTRIBUTION_FILES:
         full = _packaged(root, relative)
