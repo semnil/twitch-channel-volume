@@ -507,6 +507,30 @@ test('the store package refuses to leave out what it has to carry', () => {
     ['a doubled dollar around a name nothing defines',
       (box) => writeCatalog(box, { extName: { message: '$$NAME$$' } }),
       /gives extName no placeholder named NAME/],
+    // A name is matched whole: Chromium walks every character of it, while a
+    // pattern anchored with $ stops before a trailing newline.
+    ['a message name ending in a newline',
+      (box) => writeCatalog(box, { extName: { message: 'x' }, 'trailing\n': { message: 'y' } }),
+      /names a message Chrome cannot read/],
+    ['a placeholder name ending in a newline',
+      (box) => writeCatalog(box,
+        { extName: { message: 'x', placeholders: { 'a\n': { content: '$1' } } } }),
+      /names a placeholder Chrome cannot read/],
+    // Chrome supplies the reserved five and refuses a catalog that answers for
+    // one of them, without regard to case. The extension id is not among them.
+    ['a catalog answering for a message Chrome reserves',
+      (box) => writeCatalog(box,
+        { extName: { message: 'x' }, '@@ui_locale': { message: 'y' } }),
+      /answers for @@ui_locale, which Chrome reserves/],
+    ['a catalog answering for a reserved name spelled in capitals',
+      (box) => writeCatalog(box,
+        { extName: { message: 'x' }, '@@BIDI_DIR': { message: 'y' } }),
+      /answers for @@BIDI_DIR, which Chrome reserves/],
+    // The manifest is localized before Chrome has an extension id, so the name
+    // is matched there without regard to case as everywhere else.
+    ['the extension id asked for in capitals in the manifest',
+      (box) => editManifest(box, m => { m.description = '__MSG_@@EXTENSION_ID__'; }),
+      /the manifest uses @@EXTENSION_ID/],
     ['two references sharing a delimiter, one of them undefined',
       (box) => writeCatalog(box, { extName: { message: '$A$$B$',
         placeholders: { ab: { content: '$1' } } } }),
@@ -578,6 +602,30 @@ test('the store package refuses to leave out what it has to carry', () => {
     ['a catalog answering for a name under @@', (box) => {
       writeCatalog(box, { extName: { message: 'x' }, '@@custom': { message: 'y' } });
       editManifest(box, m => { m.description = '__MSG_@@custom__'; });
+    }],
+    // The extension id is the catalog's to answer for: Chrome does not supply
+    // it to the manifest, and refusing the name outright would take this too.
+    ['a catalog answering for the extension id, asked for in the manifest', (box) => {
+      writeCatalog(box,
+        { extName: { message: 'x' }, '@@extension_id': { message: 'y' } });
+      editManifest(box, m => { m.description = '__MSG_@@extension_id__'; });
+    }],
+    // A candidate that is not a name is passed over rather than refused, so a
+    // reference whose name ends in a newline names nothing at all. It goes in
+    // a stylesheet because the manifest is read as the JSON text it is, where
+    // a newline is written as an escape and never reaches a candidate.
+    ['a reference whose candidate is not a name', (box) => {
+      fs.writeFileSync(`${box}/styles.css`, 'body { content: "__MSG_abc\n__" }\n');
+      editManifest(box, m => {
+        m.content_scripts = [{ js: ['content.js'], css: ['styles.css'] }];
+      });
+    }],
+    ['the extension id asked for in capitals from a stylesheet', (box) => {
+      fs.writeFileSync(`${box}/styles.css`,
+        'body { background: url("__MSG_@@EXTENSION_ID__") }\n');
+      editManifest(box, m => {
+        m.content_scripts = [{ js: ['content.js'], css: ['styles.css'] }];
+      });
     }]
   ]) {
     const box = buildMinimal();
