@@ -121,10 +121,7 @@ def _catalog(relative, text):
     def refuse(complaint):
         raise SystemExit(f'{relative} {complaint}')
 
-    try:
-        loaded = json.loads(text)
-    except ValueError as unreadable:
-        refuse(f'is not a message catalog: {unreadable}')
+    loaded = _json(relative, text)
     if not isinstance(loaded, dict):
         refuse(f'is not a message catalog: the top level is a '
                f'{type(loaded).__name__}, not an object')
@@ -189,6 +186,53 @@ def _packaged(root, relative):
     return full
 
 
+def _without_comments(text):
+    """The text with its comments taken out and its string literals left alone.
+
+    Chrome reads a manifest and a catalog with a parser that allows // and
+    /* */. Taking them out by pattern would take the // out of a URL and the /*
+    out of a message, so the string states are walked instead.
+    """
+    out, index, length = [], 0, len(text)
+    while index < length:
+        character = text[index]
+        if character == '"':
+            start = index
+            index += 1
+            while index < length:
+                if text[index] == '\\':
+                    index += 2
+                    continue
+                if text[index] == '"':
+                    index += 1
+                    break
+                index += 1
+            out.append(text[start:index])
+            continue
+        if character == '/' and index + 1 < length:
+            if text[index + 1] == '/':
+                stop = text.find('\n', index)
+                index = length if stop < 0 else stop
+                continue
+            if text[index + 1] == '*':
+                stop = text.find('*/', index + 2)
+                if stop < 0:
+                    raise ValueError('a block comment is never closed')
+                index = stop + 2
+                continue
+        out.append(character)
+        index += 1
+    return ''.join(out)
+
+
+def _json(relative, text):
+    """Read JSON the way Chrome reads it: a byte order mark and comments allowed."""
+    try:
+        return json.loads(_without_comments(text.lstrip('\ufeff')))
+    except ValueError as unreadable:
+        raise SystemExit(f'{relative} is not readable as JSON: {unreadable}')
+
+
 def _read(root, relative):
     with open(_host(root, relative), encoding='utf-8') as handle:
         return handle.read()
@@ -231,7 +275,7 @@ def _references_within(root, relative):
 
 def selected_files(root):
     """Yield (path, arcname) for every file the package carries."""
-    manifest = json.loads(_read(root, 'manifest.json'))
+    manifest = _json('manifest.json', _read(root, 'manifest.json'))
     pending = ['manifest.json']
     pending.extend(_manifest_references(manifest))
     selected = []
@@ -338,8 +382,7 @@ def selected_files(root):
 
 def pack():
     root = os.path.dirname(os.path.abspath(__file__))
-    with open(os.path.join(root, 'manifest.json')) as f:
-        version = json.load(f)['version']
+    version = _json('manifest.json', _read(root, 'manifest.json'))['version']
     # Every name is resolved before anything is written. A refusal partway
     # through would otherwise leave a half-built package where the last one was.
     files = list(selected_files(root))
