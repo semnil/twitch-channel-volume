@@ -26,6 +26,36 @@ function readStoredKeys(stored, keys) {
 // files. pack.py keeps them out of the store package too.
 const SCRATCH_DIRS = new Set(['work', '.claude']);
 
+// Chrome reads a manifest and a catalog with a byte order mark and with
+// comments, so this suite reads them that way too. Written as a scanner over
+// characters rather than as pack.py's states, so the two agreeing is evidence.
+const readJson = file => {
+  const text = fs.readFileSync(path.join(__dirname, file), 'utf8').replace(/^\uFEFF/, '');
+  let out = '', i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '"') {
+      out += ch; i++;
+      while (i < text.length) {
+        if (text[i] === '\\') { out += text.slice(i, i + 2); i += 2; continue; }
+        out += text[i];
+        if (text[i] === '"') { i++; break; }
+        i++;
+      }
+      continue;
+    }
+    if (ch === '/' && text[i + 1] === '/') { const n = text.indexOf('\n', i); i = n < 0 ? text.length : n; continue; }
+    if (ch === '/' && text[i + 1] === '*') {
+      const n = text.indexOf('*/', i + 2);
+      assert.ok(n >= 0, `${file} closes every block comment it opens`);
+      i = n < 0 ? text.length : n + 2;
+      continue;
+    }
+    out += ch; i++;
+  }
+  return JSON.parse(out);
+};
+
 function withFixtureDir(prefix, body) {
   const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), prefix));
   try {
@@ -384,7 +414,9 @@ test('the store package refuses to leave out what it has to carry', () => {
     }));
     fs.writeFileSync(path.join(box, 'content.js'), '');
     fs.mkdirSync(path.join(box, '_locales/ja'), { recursive: true });
-    fs.writeFileSync(path.join(box, '_locales/ja/messages.json'), '{}');
+    // The manifest asks for extName, so the catalog answers for it.
+    fs.writeFileSync(path.join(box, '_locales/ja/messages.json'),
+      JSON.stringify({ extName: { message: 'Minimal' } }));
     fs.writeFileSync(path.join(box, 'LICENSE'), 'MIT License\n');
     return box;
   };
@@ -397,12 +429,23 @@ test('the store package refuses to leave out what it has to carry', () => {
     ['LICENSE', '_locales/ja/messages.json', 'content.js', 'manifest.json']);
   fs.rmSync(whole, { recursive: true, force: true });
 
+  const writeCatalog = (box, catalog) =>
+    fs.writeFileSync(path.join(box, '_locales/ja/messages.json'), JSON.stringify(catalog));
+  const readBoxJson = (box) => JSON.parse(fs.readFileSync(`${box}/manifest.json`, 'utf8'));
+  // A value the manifest carries as it stands. JSON.stringify spells no
+  // NaN, no comment and no escape, and the manifest is where Chrome reads
+  // all three.
+  const appendRaw = (box, raw) => fs.writeFileSync(`${box}/manifest.json`,
+    `${JSON.stringify(readBoxJson(box)).slice(0, -1)},${raw}}`);
   const editManifest = (box, change) => {
     const manifest = JSON.parse(fs.readFileSync(path.join(box, 'manifest.json'), 'utf8'));
     change(manifest);
     fs.writeFileSync(path.join(box, 'manifest.json'), JSON.stringify(manifest));
   };
-  for (const [broken, breakIt] of [
+  // The third entry, where a case carries one, is what the refusal has to say.
+  // Without it a rule can be deleted and a later check refuses the same input for
+  // another reason, and the case cannot tell the two apart.
+  for (const [broken, breakIt, diagnosis] of [
     ['the licence gone', (box) => fs.rmSync(path.join(box, 'LICENSE'))],
     ["the default locale's messages gone",
       (box) => fs.rmSync(path.join(box, '_locales/ja/messages.json'))],
@@ -418,7 +461,186 @@ test('the store package refuses to leave out what it has to carry', () => {
     ['default_locale naming a directory that is not there',
       (box) => editManifest(box, (m) => { m.default_locale = 'de'; })],
     ['a manifest reference naming a drive rather than a path inside the package',
-      (box) => editManifest(box, (m) => { m.content_scripts = [{ js: ['C:/content.js'] }]; })]
+      (box) => editManifest(box, (m) => { m.content_scripts = [{ js: ['C:/content.js'] }]; })],
+    // Chrome resolves __MSG_name__ against the default locale's catalog, in the
+    // manifest and in the stylesheets it serves. A placeholder with nothing to
+    // resolve it against is an extension it declines to load.
+    ['a message the manifest asks for and no locale assets at all',
+      (box) => {
+        fs.rmSync(`${box}/_locales`, { recursive: true });
+        editManifest(box, m => { delete m.default_locale; });
+      },
+      /asks for extName and names no default_locale/],
+    ['default_locale written as null',
+      (box) => editManifest(box, m => { m.default_locale = null; }),
+      /default_locale is not a locale name: None/],
+    ['default_locale written as a path rather than a name',
+      (box) => editManifest(box, m => { m.default_locale = 'ja/'; }),
+      /default_locale is not one name under _locales: 'ja\/'/],
+    ['default_locale written as a directory that means the one above',
+      (box) => editManifest(box, m => { m.default_locale = '..'; }),
+      /default_locale is not one name under _locales: '\.\.'/],
+    ['a message the manifest asks for that the catalog does not answer',
+      (box) => editManifest(box, m => { m.name = '__MSG_absentKey__'; }),
+      /the manifest uses absentKey, which .* does not answer for/],
+    ['a reference spelled with escapes that nothing answers',
+      (box) => appendRaw(box, '"description":"__MSG_\\u0061bsent__"'),
+      /the manifest uses absent, which .* does not answer for/],
+    ['a message a packaged stylesheet asks for that the catalog does not answer',
+      (box) => {
+        fs.writeFileSync(`${box}/styles.css`, 'body { content: "__MSG_absentKey__" }\n');
+        editManifest(box, m => {
+          m.content_scripts = [{ js: ['content.js'], css: ['styles.css'] }];
+        });
+      },
+      /styles\.css uses absentKey, which .* does not answer for/],
+    ['a catalog that is not JSON',
+      (box) => fs.writeFileSync(`${box}/_locales/ja/messages.json`, '{ broken'),
+      /messages\.json is not readable as JSON/],
+    // Chrome's parser allows comments; it does not allow a trailing comma or
+    // a block comment left open.
+    ['a trailing comma in a catalog',
+      (box) => fs.writeFileSync(`${box}/_locales/ja/messages.json`,
+        '{ "extName": { "message": "x" }, }'),
+      /messages\.json is not readable as JSON/],
+    ['a block comment a catalog never closes',
+      (box) => fs.writeFileSync(`${box}/_locales/ja/messages.json`,
+        '{ /* "extName": { "message": "x" } }'),
+      /never closed/],
+    ['a trailing comma in the manifest',
+      (box) => fs.writeFileSync(`${box}/manifest.json`,
+        '{ "manifest_version": 3, "version": "0.0.0", }'),
+      /manifest\.json is not readable as JSON/],
+    // Chrome reads the catalog rather than taking it on faith, and declines to
+    // load the extension over any of these.
+    ['a catalog whose top level is not an object',
+      (box) => writeCatalog(box, [{ extName: { message: 'x' } }]),
+      /is not a message catalog: the top level is a list/],
+    ['an entry with no message element',
+      (box) => writeCatalog(box, { extName: { description: 'x' } }),
+      /gives extName no message element/],
+    ['an entry whose message is not text',
+      (box) => writeCatalog(box, { extName: { message: 7 } }),
+      /gives extName no message element/],
+    ['an entry that is not an object',
+      (box) => writeCatalog(box, { extName: 'x' }),
+      /gives extName a str, not an object/],
+    ['a name Chrome cannot read',
+      (box) => writeCatalog(box, { 'ext-name': { message: 'x' }, extName: { message: 'y' } }),
+      /names a message Chrome cannot read/],
+    ['a placeholder with no content',
+      (box) => writeCatalog(box,
+        { extName: { message: 'x $A$', placeholders: { a: { example: 'y' } } } }),
+      /gives extName\.a no content/],
+    ['a default_locale that is no locale at all',
+      (box) => {
+        fs.renameSync(`${box}/_locales/ja`, `${box}/_locales/jp`);
+        editManifest(box, m => { m.default_locale = 'jp'; });
+      },
+      /is not a locale the store carries: 'jp'/],
+    ['a locale the browser loads and the store does not carry',
+      (box) => {
+        fs.renameSync(`${box}/_locales/ja`, `${box}/_locales/nb`);
+        editManifest(box, m => { m.default_locale = 'nb'; });
+      },
+      /is not a locale the store carries: 'nb'/],
+    // Chrome reads a JSON number as a double. NaN and the infinities are
+    // Python's spelling of a number rather than JSON's, and a literal too
+    // large for a double is one Chrome declines to read at all.
+    ['a manifest holding a number only Python reads',
+      (box) => appendRaw(box, '"x":NaN'),
+      /manifest\.json is not readable as JSON: NaN is not a JSON value/],
+    ['a catalog holding a number only Python reads',
+      (box) => fs.writeFileSync(`${box}/_locales/ja/messages.json`,
+        '{"extName":{"message":"x","description":Infinity}}'),
+      /messages\.json is not readable as JSON: Infinity is not a JSON value/],
+    ['a fraction larger than a number holds',
+      (box) => appendRaw(box, '"x":1e400'),
+      /is not readable as JSON: 1e400 is out of the range a number holds/],
+    ['an integer larger than a number holds',
+      (box) => appendRaw(box, `"x":1${'0'.repeat(400)}`),
+      /is not readable as JSON: 10+ is out of the range a number holds/],
+    // A comment stands between the tokens it separated. Dropped outright it
+    // joins them into one the author never wrote.
+    ['a number a block comment splits',
+      (box) => appendRaw(box, '"x":1/**/2'),
+      /manifest\.json is not readable as JSON: Expecting ',' delimiter/],
+    ['a keyword a block comment splits',
+      (box) => appendRaw(box, '"x":tr/**/ue'),
+      /manifest\.json is not readable as JSON: Expecting value/],
+    // Every field Chrome localizes is asked, not the first of them alone.
+    ['a title the action asks for that the catalog does not answer',
+      (box) => editManifest(box, m => {
+        m.action = { default_title: '__MSG_absentTitle__' };
+      }),
+      /the manifest uses absentTitle, which .* does not answer for/],
+    ['a description a command asks for that the catalog does not answer',
+      (box) => editManifest(box, m => {
+        m.commands = { go: { description: '__MSG_absentCommand__' } };
+      }),
+      /the manifest uses absentCommand, which .* does not answer for/],
+    ['a name an input component asks for that the catalog does not answer',
+      (box) => editManifest(box, m => {
+        m.input_components = [{ name: '__MSG_absentComponent__' }];
+      }),
+      /the manifest uses absentComponent, which .* does not answer for/],
+    ['a message under @@ that Chrome does not define',
+      (box) => editManifest(box, m => { m.description = '__MSG_@@bogus__'; }),
+      /the manifest uses @@bogus, which .* does not answer for/],
+    ['the one message Chrome reads everywhere but the manifest, in the manifest',
+      (box) => editManifest(box, m => { m.description = '__MSG_@@extension_id__'; }),
+      /the manifest uses @@extension_id/],
+    ['a message referring to a placeholder nothing defines',
+      (box) => writeCatalog(box, { extName: { message: 'hello $WHO$' } }),
+      /gives extName no placeholder named WHO/],
+    ['placeholders written as null',
+      (box) => writeCatalog(box, { extName: { message: 'x', placeholders: null } }),
+      /gives extName placeholders that are not an object/],
+    ['a placeholder Chrome cannot read',
+      (box) => writeCatalog(box, { extName: { message: 'x $BAD_NAME$',
+        placeholders: { 'bad-name': { content: '$1' } } } }),
+      /names a placeholder Chrome cannot read/],
+    // A doubled delimiter opens an empty candidate rather than escaping
+    // anything, so $$NAME$$ asks for NAME; and two references share a
+    // delimiter, so $A$$B$ is A then B.
+    ['a doubled dollar around a name nothing defines',
+      (box) => writeCatalog(box, { extName: { message: '$$NAME$$' } }),
+      /gives extName no placeholder named NAME/],
+    // A name is matched whole: Chromium walks every character of it, while a
+    // pattern anchored with $ stops before a trailing newline.
+    ['a message name ending in a newline',
+      (box) => writeCatalog(box, { extName: { message: 'x' }, 'trailing\n': { message: 'y' } }),
+      /names a message Chrome cannot read/],
+    ['a placeholder name ending in a newline',
+      (box) => writeCatalog(box,
+        { extName: { message: 'x', placeholders: { 'a\n': { content: '$1' } } } }),
+      /names a placeholder Chrome cannot read/],
+    // Chrome supplies the reserved five and refuses a catalog that answers for
+    // one of them, without regard to case. The extension id is not among them.
+    ['a catalog answering for a message Chrome reserves',
+      (box) => writeCatalog(box,
+        { extName: { message: 'x' }, '@@ui_locale': { message: 'y' } }),
+      /answers for @@ui_locale, which Chrome reserves/],
+    ['a catalog answering for a reserved name spelled in capitals',
+      (box) => writeCatalog(box,
+        { extName: { message: 'x' }, '@@BIDI_DIR': { message: 'y' } }),
+      /answers for @@BIDI_DIR, which Chrome reserves/],
+    // The manifest is localized before Chrome has an extension id, so the name
+    // is matched there without regard to case as everywhere else.
+    ['the extension id asked for in capitals in the manifest',
+      (box) => editManifest(box, m => { m.description = '__MSG_@@EXTENSION_ID__'; }),
+      /the manifest uses @@EXTENSION_ID/],
+    ['two references sharing a delimiter, one of them undefined',
+      (box) => writeCatalog(box, { extName: { message: '$A$$B$',
+        placeholders: { ab: { content: '$1' } } } }),
+      /gives extName no placeholder named A/],
+    // The second reference is what the shared delimiter opens, so it has to be
+    // the one that fails here: a walk restarting past the delimiter never
+    // reaches it.
+    ['the second of two references sharing a delimiter undefined',
+      (box) => writeCatalog(box, { extName: { message: '$A$$B$',
+        placeholders: { a: { content: '$1' } } } }),
+      /gives extName no placeholder named B/]
   ]) {
     const box = buildMinimal();
     // A package built earlier stands here, so a refusal has something to spare.
@@ -437,9 +659,170 @@ test('the store package refuses to leave out what it has to carry', () => {
       // wrong with the package.
       assert.doesNotMatch(refused.stderr || '', /Traceback \(most recent call last\)/,
         `pack.py says what is wrong with ${broken}, instead of raising`);
+      if (diagnosis) {
+        assert.match(refused.stderr || '', diagnosis,
+          `pack.py names what is wrong with ${broken}`);
+      }
     }
     assert.ok(fs.existsSync(zip) && fs.statSync(zip).size === before,
       `the package built before is left alone with ${broken}`);
+    fs.rmSync(box, { recursive: true, force: true });
+  }
+
+  // Four shapes Chrome reads without complaint. Each is a rule the checks above
+  // could over-reach into: a name with an @ in it, Chrome's own message where
+  // it is allowed, a literal dollar, and a positional argument in a
+  // placeholder's content.
+  for (const [shape, arrange] of [
+    ['a message named with an @ in it', (box) => {
+      writeCatalog(box, { 'foo@bar': { message: 'x' } });
+      editManifest(box, m => { m.name = '__MSG_foo@bar__'; });
+    }],
+    ['the extension id read from a stylesheet', (box) => {
+      fs.writeFileSync(`${box}/styles.css`,
+        'body { background: url("__MSG_@@extension_id__") }\n');
+      editManifest(box, m => {
+        m.content_scripts = [{ js: ['content.js'], css: ['styles.css'] }];
+      });
+    }],
+    ['a positional argument in a placeholder', (box) => writeCatalog(box,
+      { extName: { message: 'hi $WHO$', placeholders: { who: { content: '$1' } } } })],
+    ['two references sharing a delimiter, both defined', (box) => writeCatalog(box,
+      { extName: { message: '$A$$B$',
+        placeholders: { a: { content: '$1' }, b: { content: '$2' } } } })],
+    ['a placeholder named with an @ in it', (box) => writeCatalog(box,
+      { extName: { message: '$A@B$', placeholders: { 'a@b': { content: '$1' } } } })],
+    ['a description that is not text',
+      (box) => writeCatalog(box, { extName: { message: 'x', description: 7 } })],
+    ['an example that is not text', (box) => writeCatalog(box,
+      { extName: { message: 'x $A$', placeholders: { a: { content: '$1', example: 7 } } } })],
+    ['two names differing only in case', (box) => writeCatalog(box,
+      { extName: { message: 'x' }, EXTNAME: { message: 'y' } })],
+    ['a catalog answering for a name under @@', (box) => {
+      writeCatalog(box, { extName: { message: 'x' }, '@@custom': { message: 'y' } });
+      editManifest(box, m => { m.description = '__MSG_@@custom__'; });
+    }],
+    // The extension id is the catalog's to answer for: Chrome does not supply
+    // it to the manifest, and refusing the name outright would take this too.
+    ['a catalog answering for the extension id, asked for in the manifest', (box) => {
+      writeCatalog(box,
+        { extName: { message: 'x' }, '@@extension_id': { message: 'y' } });
+      editManifest(box, m => { m.description = '__MSG_@@extension_id__'; });
+    }],
+    // A candidate that is not a name is passed over rather than refused, so a
+    // reference whose name ends in a newline names nothing at all. It goes in
+    // a stylesheet because the manifest is read as the JSON text it is, where
+    // a newline is written as an escape and never reaches a candidate.
+    // Chrome reads both files with a byte order mark and with comments, and
+    // reads neither the // in a URL nor the /* in a message as one.
+    ['a byte order mark on the manifest', (box) => {
+      const text = fs.readFileSync(`${box}/manifest.json`, 'utf8');
+      fs.writeFileSync(`${box}/manifest.json`, '\uFEFF' + text);
+    }],
+    ['a byte order mark on the catalog', (box) => {
+      const text = fs.readFileSync(`${box}/_locales/ja/messages.json`, 'utf8');
+      fs.writeFileSync(`${box}/_locales/ja/messages.json`, '\uFEFF' + text);
+    }],
+    ['a line comment in the manifest', (box) => {
+      const text = fs.readFileSync(`${box}/manifest.json`, 'utf8');
+      fs.writeFileSync(`${box}/manifest.json`, '{\n  // what this is\n' + text.slice(1));
+    }],
+    ['a line comment in the catalog', (box) => fs.writeFileSync(
+      `${box}/_locales/ja/messages.json`,
+      '{\n  // the name\n  "extName": { "message": "x" }\n}')],
+    ['a block comment in the catalog', (box) => fs.writeFileSync(
+      `${box}/_locales/ja/messages.json`,
+      '{\n  /* the name */\n  "extName": { "message": "x" }\n}')],
+    // The manifest is walked as the values it decoded to: a reference inside a
+    // comment is one Chrome dropped before parsing, a reference spelled with
+    // escapes is one it decoded, and an object key is not a field it localizes.
+    ['a reference nothing answers, inside a line comment', (box) => {
+      const text = fs.readFileSync(`${box}/manifest.json`, 'utf8');
+      fs.writeFileSync(`${box}/manifest.json`,
+        '{\n  // "description": "__MSG_absent__"\n' + text.slice(1));
+    }],
+    ['a reference nothing answers, inside a block comment', (box) => {
+      const text = fs.readFileSync(`${box}/manifest.json`, 'utf8');
+      fs.writeFileSync(`${box}/manifest.json`,
+        '{\n  /* "description": "__MSG_absent__" */\n' + text.slice(1));
+    }],
+    ['the extension id inside a comment', (box) => {
+      const text = fs.readFileSync(`${box}/manifest.json`, 'utf8');
+      fs.writeFileSync(`${box}/manifest.json`,
+        '{\n  // "description": "__MSG_@@extension_id__"\n' + text.slice(1));
+    }],
+    ['a reference spelled with escapes that the catalog answers', (box) => {
+      writeCatalog(box, { extName: { message: 'x' }, absent: { message: 'y' } });
+      appendRaw(box, '"description":"__MSG_\\u0061bsent__"');
+    }],
+    ['a reference in an object key rather than a value',
+      (box) => editManifest(box, m => { m['__MSG_absent__'] = 'x'; })],
+    ['a comment opener inside a string value', (box) => {
+      editManifest(box, m => { m.homepage_url = 'https://example.com/*'; });
+      // The escaped quote is the point: a scanner that does not step over it
+      // ends the string early and reads the // after it as a comment.
+      writeCatalog(box, { extName: { message: 'a \" b // c /* d' } });
+    }],
+    ['a reference whose candidate is not a name', (box) => {
+      fs.writeFileSync(`${box}/styles.css`, 'body { content: "__MSG_abc\n__" }\n');
+      editManifest(box, m => {
+        m.content_scripts = [{ js: ['content.js'], css: ['styles.css'] }];
+      });
+    }],
+    ['the extension id asked for in capitals from a stylesheet', (box) => {
+      fs.writeFileSync(`${box}/styles.css`,
+        'body { background: url("__MSG_@@EXTENSION_ID__") }\n');
+      editManifest(box, m => {
+        m.content_scripts = [{ js: ['content.js'], css: ['styles.css'] }];
+      });
+    }],
+    // The Norwegian the store does carry, which is the name an extension
+    // reaching for nb is told to use instead. Without this the rule above
+    // could refuse every locale and stay green.
+    ['a locale the store carries under a name of its own', (box) => {
+      fs.renameSync(`${box}/_locales/ja`, `${box}/_locales/no`);
+      editManifest(box, m => { m.default_locale = 'no'; });
+    }],
+    // Outside the fields Chrome localizes, a reference is not a reference:
+    // the string reaches the browser as it stands, a file name included.
+    ['a content script named like a message', (box) => {
+      fs.renameSync(`${box}/content.js`, `${box}/__MSG_absent__.js`);
+      editManifest(box, m => {
+        m.content_scripts = [{ js: ['__MSG_absent__.js'] }];
+      });
+    }],
+    ['a reference in a field Chrome leaves as it stands',
+      (box) => editManifest(box, m => { m.author = { email: '__MSG_absent__' }; })]
+  ]) {
+    const box = buildMinimal();
+    arrange(box);
+    const listed = runPack(box, ['--list']);
+    assert(listed.status === 0,
+      `${shape} packs — ${(listed.stderr || '').trim()}`);
+    fs.rmSync(box, { recursive: true, force: true });
+  }
+
+  // A message Chrome defines itself needs no catalog entry. Without this the
+  // rule above could refuse every @@ name and stay green.
+  {
+    const box = buildMinimal();
+    editManifest(box, (m) => { m.description = '__MSG_@@ui_locale__'; });
+    const listed = runPack(box, ['--list']);
+    assert.equal(listed.status, 0, listed.stderr);
+    fs.rmSync(box, { recursive: true, force: true });
+  }
+
+  // Asking for no message, an extension needs no catalog and no locale name.
+  // Without this the contract above could refuse everything and stay green.
+  {
+    const box = buildMinimal();
+    fs.rmSync(path.join(box, '_locales'), { recursive: true });
+    editManifest(box, (m) => { delete m.default_locale; m.name = 'Plain'; });
+    const listed = runPack(box, ['--list']);
+    assert.equal(listed.status, 0, listed.stderr);
+    assert.deepEqual(
+      listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean).sort(),
+      ['LICENSE', 'content.js', 'manifest.json']);
     fs.rmSync(box, { recursive: true, force: true });
   }
 
@@ -2036,7 +2419,7 @@ test('no message is declared that nothing mentions, and both locales agree', () 
 });
 
 test('privacy policies list exactly the manifest permissions', () => {
-  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, 'manifest.json'), 'utf8'));
+  const manifest = readJson('manifest.json');
   // The audit report cites this test for what the extension asks for.
   assert.deepEqual(manifest.permissions, ['storage']);
   assert.deepEqual(manifest.host_permissions, ['*://*.twitch.tv/*']);
@@ -2172,7 +2555,7 @@ test('the issue templates are English, with the note that says Japanese is welco
 });
 
 test('the page is given the worklet module and nothing else', () => {
-  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, 'manifest.json'), 'utf8'));
+  const manifest = readJson('manifest.json');
   // The audit report cites this test for what the extension exposes to the page.
   assert.deepEqual(
     manifest.web_accessible_resources.flatMap((entry) => entry.resources),
