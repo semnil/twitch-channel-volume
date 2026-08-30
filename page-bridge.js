@@ -388,7 +388,7 @@
     return Math.min(MAX_SEED_WINDOWS, saved);
   }
 
-  function resetMeasurement(initialIntegratedLufs, epoch, initialIntegratedWindows) {
+  function resetMeasurement(initialIntegratedLufs, epoch, initialIntegratedWindows, seedWindowLimit) {
     if (Number.isFinite(epoch)) measurementEpoch = epoch;
     blocks.length = 0;
     integratedBlockStart = 0;
@@ -407,9 +407,14 @@
     // every observed window, so a rollback does not reach them.
     // Values below the absolute gate reach the ring buffer but not the index,
     // so they never contribute to Integrated.
-    seedClaimedWindows = savedWindowCount(initialIntegratedWindows);
+    // The caller may hold the seed to a weight of its own, and that weight is
+    // the whole of it: the floor does not raise it back.
+    const limit = Number.isSafeInteger(seedWindowLimit) && seedWindowLimit > 0
+      ? seedWindowLimit
+      : MAX_SEED_WINDOWS;
+    seedClaimedWindows = Math.min(limit, savedWindowCount(initialIntegratedWindows));
     seedMeanSquare = initialMeanSquare;
-    const seedWindows = Math.max(MIN_SEED_WINDOWS, seedClaimedWindows);
+    const seedWindows = Math.min(limit, Math.max(MIN_SEED_WINDOWS, seedClaimedWindows));
     for (let i = 0; i < seedWindows; i++) {
       appendIntegratedBlock(initialMeanSquare, windowsObserved);
     }
@@ -1074,7 +1079,12 @@
         setDomAdActive(data.active);
         break;
       case 'resetMeasurement':
-        resetMeasurement(data.initialIntegratedLufs, data.epoch, data.initialIntegratedWindows);
+        resetMeasurement(
+          data.initialIntegratedLufs,
+          data.epoch,
+          data.initialIntegratedWindows,
+          data.seedWindowLimit
+        );
         break;
       case 'mediaChanged':
         // New media answers for itself: the old cues mean nothing against its

@@ -207,9 +207,11 @@
   function sendResetMeasurement(seed) {
     measurementEpoch++;
     lastAutoGainUpdateAt = -Infinity;
+    const seedWindowLimit = seedWindowLimitForKind(currentChannel.kind);
     sendCmd({
       cmd: 'resetMeasurement',
       epoch: measurementEpoch,
+      ...(seedWindowLimit ? { seedWindowLimit } : {}),
       ...(seed ? {
         initialIntegratedLufs: seed.lufs,
         ...(seed.windows ? { initialIntegratedWindows: seed.windows } : {})

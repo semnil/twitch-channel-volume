@@ -4449,6 +4449,35 @@ test('channel store refuses a window count that is not a positive integer', asyn
   }
 });
 
+test('content names the weight a clip seed may carry', async () => {
+  const harness = createContentHarness({
+    href: 'https://www.twitch.tv/streamer/clip/AbcDef',
+    channelVolumes: { 'clip-owner:AbcDef': { name: 'Streamer', ...measured({ clip: -16 }, 900) } }
+  });
+  await flushTasks();
+
+  const resets = harness.commands.filter((command) => command.cmd === 'resetMeasurement');
+  assert.ok(resets.length >= 1);
+  // The number itself, so that a limit nobody sends does not read as a match.
+  assert.equal(u.CLIP_SEED_WINDOW_LIMIT, 50);
+  assert.equal(resets.at(-1).seedWindowLimit, 50);
+  assert.equal(resets.at(-1).initialIntegratedLufs, -16);
+});
+
+// The other half of the pair above: the limit belongs to Clip alone.
+test('content leaves a VOD seed the weight it was measured over', async () => {
+  const harness = createContentHarness({
+    href: 'https://www.twitch.tv/videos/100',
+    channelVolumes: { 'vod-owner:100': { name: '100', ...measured({ vod: -16 }, 900) } }
+  });
+  await flushTasks();
+
+  const resets = harness.commands.filter((command) => command.cmd === 'resetMeasurement');
+  assert.ok(resets.length >= 1);
+  assert.equal(resets.at(-1).seedWindowLimit, undefined);
+  assert.equal(resets.at(-1).initialIntegratedWindows, 900);
+});
+
 test('content seeds the measurement once the owner ID resolves', async () => {
   const harness = createContentHarness({
     href: 'https://www.twitch.tv/videos/100',
@@ -9230,6 +9259,62 @@ test('page bridge weighs a saved LUFS by the windows it was measured over', asyn
     // The floor is not a measurement, so it is not reported as one.
     assert.equal(posted.integratedWindows, expectedReported, `seed of ${savedWindows}`);
   }
+});
+
+test('page bridge holds a seed to the weight the reset names', async () => {
+  const savedLufs = -20;
+  const nextMeanSquare = 0.1;
+  const savedMeanSquare = Math.pow(10, (savedLufs + 0.691) / 10);
+
+  // [limit named, count stored with the value, windows the seed weighs, windows reported back]
+  for (const [limit, savedWindows, expectedSeed, expectedReported] of [
+    [50, 200, 50, 51], [50, 20, 50, 21], [50, undefined, 50, 1],
+    [50, 1800, 50, 51],
+    // A limit above the floor is not what the seed weighs; the floor still is.
+    [600, 200, 300, 201],
+    // A limit that says nothing leaves the floor and the cap where they were.
+    [0, 200, 300, 201], [undefined, 200, 300, 201], [-5, 200, 300, 201]
+  ]) {
+    const harness = createPageBridgeHarness();
+    await harness.startMeasurement();
+    harness.messages.length = 0;
+    await harness.dispatchCommand('resetMeasurement', {
+      initialIntegratedLufs: savedLufs,
+      ...(savedWindows === undefined ? {} : { initialIntegratedWindows: savedWindows }),
+      ...(limit === undefined ? {} : { seedWindowLimit: limit })
+    });
+    for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(nextMeanSquare);
+
+    const expected = u.meanSquareToLufs(
+      (savedMeanSquare * expectedSeed + nextMeanSquare) / (expectedSeed + 1)
+    );
+    const posted = harness.messages.at(-1);
+    const where = `limit ${limit} over ${savedWindows}`;
+    assert.ok(Math.abs(posted.integrated - expected) < 1e-12, where);
+    assert.equal(posted.integratedWindows, expectedReported, where);
+  }
+});
+
+// The seed is the whole error until the clip's own audio outweighs it, and a
+// clip runs out before a live-sized seed does.
+test('page bridge lets a clip-sized seed go within the clip', async () => {
+  const readings = [];
+  for (const limit of [50, 0]) {
+    const harness = createPageBridgeHarness();
+    await harness.startMeasurement();
+    await harness.dispatchCommand('resetMeasurement', {
+      initialIntegratedLufs: -24,
+      initialIntegratedWindows: 200,
+      ...(limit ? { seedWindowLimit: limit } : {})
+    });
+    // Twenty seconds of a clip at -14 against a stored value ten below it.
+    for (let i = 0; i < 200; i++) harness.emitMeasurementBlock(Math.pow(10, (-14 + 0.691) / 10));
+    readings.push(harness.messages.at(-1).integrated);
+  }
+  const [held, floored] = readings;
+  assert.ok(held > floored, `${held} should have moved further than ${floored}`);
+  assert.ok(Math.abs(held - -14) < 1, `${held} should be within 1 LU of the clip`);
+  assert.ok(Math.abs(floored - -14) > 2, `${floored} should still be held by the seed`);
 });
 
 test('page bridge ignores a saved window count it cannot read', async () => {
