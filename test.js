@@ -588,6 +588,18 @@ test('the store package refuses to leave out what it has to carry', () => {
       (box) => writeCatalog(box,
         { extName: { message: 'x $A$', placeholders: { a: { example: 'y' } } } }),
       /gives extName\.a no content/],
+    // A backslash is an ordinary character in a name on this host and a
+    // separator on the one the package is written for. The file is on disk
+    // under that very name, so what refuses it is the rule and not its
+    // absence.
+    ['a reference spelled with a backslash',
+      (box) => {
+        fs.writeFileSync(`${box}/sub\\content.js`, '');
+        editManifest(box, m => {
+          m.content_scripts = [{ js: ['content.js', 'sub\\content.js'] }];
+        });
+      },
+      /reference leaves the package: sub\\content\.js/],
     ['a default_locale that is no locale at all',
       (box) => {
         fs.renameSync(`${box}/_locales/ja`, `${box}/_locales/jp`);
