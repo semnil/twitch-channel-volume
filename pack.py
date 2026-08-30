@@ -335,6 +335,18 @@ def _json(relative, text):
         raise SystemExit(f'{relative} is not readable as JSON: {unreadable}')
 
 
+def _chrome_reads_the_version(version):
+    """Chrome reads a version as one to four numbers, each below 2**32, the
+    first of them written without a leading zero."""
+    if not isinstance(version, str):
+        return False
+    parts = version.split('.')
+    return (len(parts) <= 4
+            and all(part.isascii() and part.isdigit() and int(part) < 2 ** 32
+                    for part in parts)
+            and parts[0] == str(int(parts[0])))
+
+
 def _read(root, relative):
     with open(_host(root, relative), encoding='utf-8') as handle:
         return handle.read()
@@ -390,6 +402,9 @@ def _references_within(root, relative, kind):
 def selected_files(root):
     """Yield (path, arcname) for every file the package carries."""
     manifest = _json('manifest.json', _read(root, 'manifest.json'))
+    version = manifest.get('version')
+    if not _chrome_reads_the_version(version):
+        raise SystemExit(f'version is not one Chrome reads: {version!r}')
     pending = [('manifest.json', 'asset')]
     pending.extend(_manifest_references(manifest))
     selected = {}
@@ -500,10 +515,10 @@ def selected_files(root):
 
 def pack():
     root = os.path.dirname(os.path.abspath(__file__))
-    version = _json('manifest.json', _read(root, 'manifest.json'))['version']
     # Every name is resolved before anything is written. A refusal partway
     # through would otherwise leave a half-built package where the last one was.
     files = list(selected_files(root))
+    version = _json('manifest.json', _read(root, 'manifest.json'))['version']
     out = f'twitch-channel-volume-{version}.zip'
     out_path = os.path.join(root, out)
     # Built beside the target and moved onto it. Resolving the names first

@@ -734,6 +734,27 @@ test('the store package refuses to leave out what it has to carry', () => {
         });
       },
       /reference leaves the package: sub\\content\.js/],
+    // Chrome reads a version as one to four numbers, each below 2**32, the
+    // first written without a leading zero. Its own message about the range
+    // says 0 to 65536, which is not the bound it applies.
+    ['a version carrying a prerelease suffix',
+      (box) => editManifest(box, m => { m.version = '1.0.0-rc1'; }),
+      /version is not one Chrome reads: '1\.0\.0-rc1'/],
+    ['a version whose first part carries a leading zero',
+      (box) => editManifest(box, m => { m.version = '01.1.0'; }),
+      /version is not one Chrome reads: '01\.1\.0'/],
+    ['a version part past the largest number one holds',
+      (box) => editManifest(box, m => { m.version = '1.0.4294967296'; }),
+      /version is not one Chrome reads: '1\.0\.4294967296'/],
+    ['a version of five parts',
+      (box) => editManifest(box, m => { m.version = '1.0.0.0.0'; }),
+      /version is not one Chrome reads: '1\.0\.0\.0\.0'/],
+    ['a version written as a number rather than text',
+      (box) => editManifest(box, m => { m.version = 100; }),
+      /version is not one Chrome reads: 100/],
+    ['a version with no version at all',
+      (box) => editManifest(box, m => { delete m.version; }),
+      /version is not one Chrome reads: None/],
     ['a default_locale that is no locale at all',
       (box) => {
         fs.renameSync(`${box}/_locales/ja`, `${box}/_locales/jp`);
@@ -978,6 +999,14 @@ test('the store package refuses to leave out what it has to carry', () => {
         m.content_scripts = [{ js: ['content.js'], css: ['styles.css'] }];
       });
     }],
+    // The three sides of the version rule that a stricter one would refuse.
+    // Without these, refusing every version would stay green.
+    ['a version of four parts',
+      (box) => editManifest(box, m => { m.version = '1.0.0.0'; })],
+    ['a leading zero in a part that is not the first',
+      (box) => editManifest(box, m => { m.version = '1.01.0'; })],
+    ['a version part at the largest number one holds',
+      (box) => editManifest(box, m => { m.version = '4294967295'; })],
     // The Norwegian the store does carry, which is the name an extension
     // reaching for nb is told to use instead. Without this the rule above
     // could refuse every locale and stay green.
