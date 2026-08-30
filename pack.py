@@ -69,6 +69,33 @@ LOCALIZED_FIELDS = (
 )
 QUOTED = re.compile(r'[\'"]([^\'"]+)[\'"]')
 REMOTE = ('http:', 'https:', '//', 'data:', 'chrome-extension:')
+# Where the manifest names a file inside the package, and what that file is: a
+# page is read for what it pulls in, a script for what it imports, a stylesheet
+# for what it reaches, and an asset is carried as it stands. A resource exposed
+# to the page can be any of them and the key does not say, so the name decides.
+# A step of '*' is every key of an object and '[]' every element of a list.
+MANIFEST_REFERENCES = (
+    (('content_scripts', '[]', 'js', '[]'), 'script'),
+    (('content_scripts', '[]', 'css', '[]'), 'style'),
+    (('background', 'service_worker'), 'script'),
+    (('action', 'default_popup'), 'page'),
+    (('options_page',), 'page'),
+    (('options_ui', 'page'), 'page'),
+    (('devtools_page',), 'page'),
+    (('side_panel', 'default_path'), 'page'),
+    (('chrome_url_overrides', '*'), 'page'),
+    (('sandbox', 'pages', '[]'), 'page'),
+    (('action', 'default_icon', '*'), 'asset'),
+    (('icons', '*'), 'asset'),
+    (('storage', 'managed_schema'), 'asset'),
+    (('declarative_net_request', 'rule_resources', '[]', 'path'), 'asset'),
+    (('web_accessible_resources', '[]', 'resources', '[]'), 'named'),
+)
+# What a name says a file is, where the key does not say.
+BY_NAME = (('.html', 'page'), ('.js', 'script'), ('.css', 'style'))
+# A resource entry carrying one of these is matched against the package rather
+# than opened, so it names no one file.
+PATTERN = re.compile(r'[*?]')
 
 
 def _host(root, relative):
@@ -94,12 +121,12 @@ class _PageReferences(HTMLParser):
         if tag == 'script':
             source = attributes.get('src')
             if source:
-                self.found.append(source)
+                self.found.append((source, 'script'))
         elif tag == 'link':
             href = attributes.get('href')
             rel = (attributes.get('rel') or '').lower().split()
             if href and ('stylesheet' in rel or href.endswith('.css')):
-                self.found.append(href)
+                self.found.append((href, 'style'))
 
 
 def _messages_used(text, begin, end, known=None):
@@ -311,55 +338,51 @@ def _read(root, relative):
 
 
 def _manifest_references(manifest):
-    for entry in manifest.get('content_scripts', []):
-        yield from entry.get('js', [])
-        yield from entry.get('css', [])
-    for entry in manifest.get('web_accessible_resources', []):
-        yield from entry.get('resources', [])
-    worker = manifest.get('background', {}).get('service_worker')
-    if worker:
-        yield worker
-    for key in ('options_page',):
-        if manifest.get(key):
-            yield manifest[key]
-    if manifest.get('options_ui', {}).get('page'):
-        yield manifest['options_ui']['page']
-    if manifest.get('action', {}).get('default_popup'):
-        yield manifest['action']['default_popup']
-    yield from manifest.get('icons', {}).values()
-    yield from manifest.get('action', {}).get('default_icon', {}).values()
+    """Every file the manifest names, with what the key says it is."""
+    for path, kind in MANIFEST_REFERENCES:
+        for value in _at(manifest, path):
+            if kind != 'named':
+                yield value, kind
+            elif not PATTERN.search(value):
+                yield value, next((named for suffix, named in BY_NAME
+                                   if value.endswith(suffix)), 'asset')
 
 
-def _references_within(root, relative):
-    """Paths the given page or script pulls in, relative to the package root."""
+def _references_within(root, relative, kind):
+    """Paths the given file pulls in, relative to the package root.
+
+    What a file is read as comes from how it was reached, not from what it is
+    called: Chrome loads a page named options.htm as a page.
+    """
     base = posixpath.dirname(relative)
     found = []
-    if relative.endswith('.html'):
-        found.extend(_page_references(_read(root, relative)))
-    elif relative.endswith('.js'):
+    if kind == 'page':
+        found = _page_references(_read(root, relative))
+    elif kind == 'script':
         for call in IMPORT_SCRIPTS.findall(_read(root, relative)):
-            found.extend(QUOTED.findall(call))
-    for reference in found:
+            found.extend((name, 'script') for name in QUOTED.findall(call))
+    for reference, held in found:
         if reference.startswith(REMOTE):
             continue
-        yield posixpath.normpath(posixpath.join(base, reference))
+        yield posixpath.normpath(posixpath.join(base, reference)), held
 
 
 def selected_files(root):
     """Yield (path, arcname) for every file the package carries."""
     manifest = _json('manifest.json', _read(root, 'manifest.json'))
-    pending = ['manifest.json']
+    pending = [('manifest.json', 'asset')]
     pending.extend(_manifest_references(manifest))
-    selected = []
+    selected = {}
     while pending:
-        relative = posixpath.normpath(pending.pop(0))
-        if relative in selected:
+        relative, kind = pending.pop(0)
+        relative = posixpath.normpath(relative)
+        if kind in selected.get(relative, ()):
             continue
         full = _packaged(root, relative)
         if not os.path.isfile(full):
             raise SystemExit(f'referenced file is missing or not a regular file: {relative}')
-        selected.append(relative)
-        pending.extend(_references_within(root, relative))
+        selected.setdefault(relative, set()).add(kind)
+        pending.extend(_references_within(root, relative, kind))
 
     carried = set()
 
@@ -387,7 +410,7 @@ def selected_files(root):
     asking = [('the manifest', list(_localized_values(manifest)),
                NOT_SUPPLIED_TO_THE_MANIFEST)]
     asking += [(relative, [_read(root, relative)], frozenset())
-               for relative in selected if relative.endswith('.css')]
+               for relative in sorted(selected) if 'style' in selected[relative]]
     predefined = {name.lower() for name in PREDEFINED_MESSAGES}
     wanted = {name for _label, texts, _withheld in asking for text in texts
               for name in _messages_used(text, '__MSG_', '__')[0]
