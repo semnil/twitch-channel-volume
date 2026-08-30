@@ -33,8 +33,7 @@
   let channelVolumes = {};
   let defaultAutoApply = {
     live: DEFAULT_AUTO_APPLY_LOUDNESS,
-    vod: DEFAULT_AUTO_APPLY_LOUDNESS,
-    clip: DEFAULT_AUTO_APPLY_LOUDNESS
+    vod: DEFAULT_AUTO_APPLY_LOUDNESS
   };
 
   function setSettingsControlsDisabled(disabled) {
@@ -43,7 +42,6 @@
       'adGainDb',
       'defaultAutoLiveToggle',
       'defaultAutoVodToggle',
-      'defaultAutoClipToggle',
       'overlayToggle',
       'clearAllBtn'
     ]) {
@@ -63,9 +61,7 @@
       autoApplyLoudnessLiveDefault:
         settings.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS,
       autoApplyLoudnessVodDefault:
-        settings.autoApplyLoudnessVodDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS,
-      autoApplyLoudnessClipDefault:
-        settings.autoApplyLoudnessClipDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS
+        settings.autoApplyLoudnessVodDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS
     };
     const target = currentSettings.targetLufs;
     $('targetLufs').value = String(target);
@@ -75,7 +71,7 @@
     $('adGainValue').textContent = (adDb > 0 ? '+' : '') + adDb + ' dB';
     displayUnit = currentSettings.displayUnit;
     setActiveUnit(displayUnit);
-    for (const kind of ['live', 'vod', 'clip']) {
+    for (const kind of ['live', 'vod']) {
       defaultAutoApply[kind] = currentSettings[autoApplyDefaultFieldForKind(kind)];
       $(`defaultAuto${kind[0].toUpperCase()}${kind.slice(1)}Toggle`).checked =
         defaultAutoApply[kind];
@@ -131,12 +127,10 @@
         : esc(name);
       const live = formatChannelGain(entry, 'live');
       const vod = formatChannelGain(entry, 'vod');
-      const clip = formatChannelGain(entry, 'clip');
       tr.innerHTML = `
         <td class="ch-name">${link}</td>
         <td class="${live.className}">${live.text}</td>
         <td class="${vod.className}">${vod.text}</td>
-        <td class="${clip.className}">${clip.text}</td>
         <td style="text-align:right;"><button class="ch-del" data-id="${esc(id)}"${settingsReady ? '' : ' disabled'} title="${esc(msg('delete'))}">&times;</button></td>
       `;
       body.appendChild(tr);
@@ -263,7 +257,7 @@
     void updateSettings({ adGainDb: Number(e.target.value) });
   });
 
-  for (const kind of ['live', 'vod', 'clip']) {
+  for (const kind of ['live', 'vod']) {
     const id = `defaultAuto${kind[0].toUpperCase()}${kind.slice(1)}Toggle`;
     const toggle = $(id);
     toggle.addEventListener('change', async () => {

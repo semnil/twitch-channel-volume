@@ -2,7 +2,7 @@
 
 Chrome extension (MV3) that auto-balances per-channel volume on Twitch using real-time **ITU-R BS.1770 LUFS** measurement of the playing audio. Separate gain is applied during ad breaks.
 
-Twitch does not publish any loudness metadata (no `loudnessDb`-equivalent API, no HLS audio metadata), so the extension measures the playing `<video>` directly via Web Audio API and persists the resulting gain per channel × media kind (Live / VOD / Clip).
+Twitch does not publish any loudness metadata (no `loudnessDb`-equivalent API, no HLS audio metadata), so the extension measures the playing `<video>` directly via Web Audio API and persists the resulting gain per channel × media kind (Live / VOD). Clips are left alone.
 
 The player runs its media engine in a Web Worker and posts a cue for each ad it is about to play, carrying the break's
 bounds in the element's own timeline. The extension wraps the `Worker` constructor to listen for those cues; the worker
@@ -30,13 +30,14 @@ Drawn from the extension's own colours and strings by `gen_screenshots.py`; the 
 ## Features
 
 - **Real-time LUFS metering**: Momentary (400 ms), Short-term (3 s), Integrated (BS.1770 absolute and relative gates with indexed updates)
-- **Per-channel LUFS auto-follow**: Optional Live / VOD / Clip controls continuously follow the measured Integrated LUFS and Target LUFS
+- **Per-channel LUFS auto-follow**: Optional Live / VOD controls continuously follow the measured Integrated LUFS and Target LUFS
 - **Measurement reset**: Discards the current media kind's measurement history and restarts it from zero. The stored value tracks the restarted measurement from its first block onward; saved gains are unchanged
-- **Per-channel manual gain**: Save gain per Live / VOD / Clip kind; applied automatically on revisit and used while Auto is waiting for measurement
-- **Global Auto defaults**: Independent Live / VOD / Clip defaults apply only when a channel kind has neither an explicit Auto choice nor a manual gain
+- **Per-channel manual gain**: Save gain per Live / VOD kind; applied automatically on revisit and used while Auto is waiting for measurement
+- **Global Auto defaults**: Independent Live / VOD defaults apply only when a channel kind has neither an explicit Auto choice nor a manual gain
 - **Ad-break handling**: Reads the ad cues the player's media engine posts, and its ad indicator in the DOM. A
   client-side ad plays in its own element at its own volume, and the ad gain reaches that element too
-- **Pipeline notices**: Three states get their own message instead of an endless "measuring" hint — another script already holds the player's audio, the audio context would not start, or only the measurement path failed to come up (gain still applies in the last one). The popup states which one happened and what to do about it
+- **Clips play untouched**: Twitch serves every clip from another origin outside CORS mode, and Web Audio hands back silence for such an element, so the extension stays out of a clip's audio path. Clips keep no gain, no Auto setting and no measurement, and the popup says so in one line instead of showing controls that cannot do anything
+- **Pipeline notices**: Each state gets its own message instead of an endless "measuring" hint — another script already holds the player's audio, the media is served from another origin, the audio context would not start, or only the measurement path failed to come up (gain still applies in the last one). The popup states which one happened and what to do about it
 - **0–600 % gain range** via Web Audio `GainNode` (HTML5 `video.volume` would cap at 1.0)
 - **No external dependencies** — pure JavaScript, no bundler
 
@@ -66,7 +67,7 @@ Install from the [Chrome Web Store](https://chromewebstore.google.com/detail/twi
 
 ## Usage
 
-1. Open a Twitch stream, VOD, or clip
+1. Open a Twitch stream or VOD
 2. Click the extension icon and enable **Auto-follow LUFS** for the current kind
 3. The gain follows the current Integrated LUFS toward Target LUFS as measurement stabilizes
 4. Use **Reset measurement** to discard the current kind's measurement history and restart it from zero
@@ -77,7 +78,7 @@ Install from the [Chrome Web Store](https://chromewebstore.google.com/detail/twi
 ## Settings
 
 - **Target LUFS**: Reference loudness used to compute gain (default −18 LUFS, range −30 to −6)
-- **Auto-follow defaults**: Independent defaults for Live / VOD / Clip (all off by default)
+- **Auto-follow defaults**: Independent defaults for Live / VOD (both off by default)
 - **CM Gain**: Extra gain applied during ad breaks (default −6 dB)
 - **Display unit**: % or dB
 - **Gain overlay**: Shows the applied gain next to the player's volume slider (on by default)

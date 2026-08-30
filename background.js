@@ -69,8 +69,7 @@ chrome.runtime.onInstalled.addListener(() => {
       displayUnit: '%',
       showGainOverlay: true,
       autoApplyLoudnessLiveDefault: false,
-      autoApplyLoudnessVodDefault: false,
-      autoApplyLoudnessClipDefault: false
+      autoApplyLoudnessVodDefault: false
     }
   }).catch((error) => {
     console.error('[TCV] default settings initialization failed', error);

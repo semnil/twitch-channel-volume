@@ -45,7 +45,6 @@ function formatAutoGain(gain, displayUnit, autoLabel = 'Auto') {
 
 function gainFieldForKind(kind) {
   if (kind === 'vod') return 'gainVod';
-  if (kind === 'clip') return 'gainClip';
   return 'gainLive';
 }
 
@@ -58,7 +57,6 @@ function extractGainForKind(entry, kind) {
 
 function autoGainFieldForKind(kind) {
   if (kind === 'vod') return 'autoGainVod';
-  if (kind === 'clip') return 'autoGainClip';
   return 'autoGainLive';
 }
 
@@ -72,18 +70,8 @@ function extractAutoDisplayGain(entry, kind) {
   return referencedAutoGainForKind(entry, kind) ?? extractGainForKind(entry, kind);
 }
 
-// A clip runs for a few tens of seconds, and its stored value carries at most
-// this many windows, so the clip being played reaches the same weight while it
-// is still playing. Live and VOD carry theirs unlimited.
-const CLIP_SEED_WINDOW_LIMIT = 50;
-
-function seedWindowLimitForKind(kind) {
-  return kind === 'clip' ? CLIP_SEED_WINDOW_LIMIT : 0;
-}
-
 function autoApplyFieldForKind(kind) {
   if (kind === 'vod') return 'autoApplyLoudnessVod';
-  if (kind === 'clip') return 'autoApplyLoudnessClip';
   return 'autoApplyLoudnessLive';
 }
 
@@ -186,9 +174,6 @@ function ownerMatchesTwitchContent(owner, classified) {
   if (classified.kind === 'vod') {
     return owner.source === 'video' && owner.contentId === String(classified.videoId);
   }
-  if (classified.kind === 'clip') {
-    return owner.source === 'clip' && owner.contentId === classified.slug;
-  }
   return false;
 }
 
@@ -197,7 +182,6 @@ function provisionalChannelIdForContent(classified) {
     return `login:${classified.login}`;
   }
   if (classified?.kind === 'vod') return `vod-owner:${classified.videoId}`;
-  if (classified?.kind === 'clip') return `clip-owner:${classified.slug}`;
   return '';
 }
 
@@ -318,12 +302,12 @@ if (typeof module !== 'undefined' && module.exports) {
     DEFAULT_TARGET_LUFS, DEFAULT_AD_GAIN_DB, DEFAULT_AUTO_APPLY_LOUDNESS,
     ABSOLUTE_GATE_LUFS, RELATIVE_GATE_LU, LUFS_REFERENCE_VOLUME_1,
     DISPLAY_UPDATE_INTERVAL_MS,
-    MIN_GAIN, MAX_GAIN, CLIP_SEED_WINDOW_LIMIT,
+    MIN_GAIN, MAX_GAIN,
     gainToPercent, percentToGain, gainToDb, dbToGain,
     formatGain, formatAutoGain, calcGain, suggestedGain,
     gainFieldForKind, extractGainForKind,
     autoGainFieldForKind, extractAutoGainForKind, extractAutoDisplayGain,
-    autoApplyFieldForKind, autoApplyDefaultFieldForKind, seedWindowLimitForKind,
+    autoApplyFieldForKind, autoApplyDefaultFieldForKind,
     resolveAutoApplySetting, resolvePreferredGain,
     classifyTwitchUrl, ownerMatchesTwitchContent, provisionalChannelIdForContent,
     resolveChannelIdAlias, twitchChannelUrlForEntry,

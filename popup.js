@@ -20,7 +20,7 @@
 
   function syncInteractionDisabledState() {
     const validChannel = !!currentChannel.id &&
-      ['live', 'vod', 'clip'].includes(currentChannel.kind);
+      ['live', 'vod'].includes(currentChannel.kind);
     $('autoApplyToggle').disabled = autoUpdatePending || measurementResetPending ||
       audioUnavailable || !validChannel;
     // Resetting clears the saved measurement, and nothing would rebuild it.
@@ -29,7 +29,10 @@
     if (autoUpdatePending) $('applyBtn').disabled = true;
     if (measurementResetPending) $('applyBtn').disabled = true;
 
-    const manualDisabled = currentAutoApplyLoudness || autoUpdatePending || audioUnavailable;
+    // The gain is saved against a channel, so there is nothing to set on a page
+    // that has none.
+    const manualDisabled = currentAutoApplyLoudness || autoUpdatePending ||
+      audioUnavailable || !validChannel;
     $('manualSection').classList.toggle('disabled', manualDisabled);
     $('manualSlider').disabled = manualDisabled;
     document.querySelectorAll('.presets button').forEach((btn) => {
@@ -42,6 +45,7 @@
   function noticeText() {
     if (!audioUnavailable) return msg('measurementUnavailable');
     if (audioUnavailableCause === 'audio-context') return msg('audioContextUnavailable');
+    if (audioUnavailableCause === 'cross-origin') return msg('audioCrossOriginUnavailable');
     return msg('audioUnavailable');
   }
 
@@ -109,23 +113,30 @@
   async function requestState({ showConnectionError = true } = {}) {
     const tab = await getActiveTab();
     if (!tab?.url || !/twitch\.tv/.test(tab.url)) {
-      if (showConnectionError) showError(msg('openOnTwitch'));
+      if (showConnectionError) showStatus(msg('openOnTwitch'));
       return null;
     }
     try {
       const res = await chrome.tabs.sendMessage(tab.id, { cmd: 'getState' });
       return res;
     } catch (err) {
-      if (showConnectionError) showError(msg('reloadPageNeeded'));
+      if (showConnectionError) showStatus(msg('reloadPageNeeded'));
       return null;
     }
   }
 
-  function showError(text) {
+  // The status line stands in for the whole screen: it answers for a page the
+  // extension does not act on.
+  function showStatus(text) {
     const box = $('errBox');
     box.textContent = text;
     box.classList.remove('hidden');
     $('mainArea').classList.add('hidden');
+  }
+
+  function hideStatus() {
+    $('errBox').classList.add('hidden');
+    $('mainArea').classList.remove('hidden');
   }
 
   function renderState(state) {
@@ -141,6 +152,12 @@
     audioUnavailable = !!state.audioUnavailable;
     audioUnavailableCause = state.audioUnavailableCause || '';
     measurementUnavailable = !audioUnavailable && !!state.measurementUnavailable;
+    // A clip's volume is left to the player, so the screen says that alone.
+    if (ch.kind === 'clip') {
+      showStatus(msg('clipNotAdjustable'));
+      return;
+    }
+    hideStatus();
     // Both notices name the player of a channel, so neither is shown on a page
     // where no channel was resolved.
     const notice = ch.id && (audioUnavailable || measurementUnavailable);
@@ -162,7 +179,6 @@
       let kindLabel = '';
       if (ch.kind === 'live') kindLabel = msg('typeLive');
       else if (ch.kind === 'vod') kindLabel = msg('typeVod');
-      else if (ch.kind === 'clip') kindLabel = msg('typeClip');
       kindEl.textContent = kindLabel;
     } else {
       kindEl.className = 'type-badge hidden';

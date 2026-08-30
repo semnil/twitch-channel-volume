@@ -35,6 +35,12 @@
   "audioContextUnavailable": {
     "message": "このページでオーディオ処理を開始できないため、音量調整と計測ができません。ページを再読み込みしてください"
   },
+  "audioCrossOriginUnavailable": {
+    "message": "この動画の音声は別ドメインから配信されているため、音量調整と計測ができません"
+  },
+  "clipNotAdjustable": {
+    "message": "クリップは音量調整と計測の対象外です。音声はプレイヤーのまま再生されます"
+  },
   "measurementUnavailable": {
     "message": "ラウドネス計測を開始できません。音量調整は有効です。ページを再読み込みしてください"
   },
@@ -130,9 +136,6 @@
   },
   "typeVod": {
     "message": "VOD"
-  },
-  "typeClip": {
-    "message": "Clip"
   },
   "adGain": {
     "message": "CM Gain"

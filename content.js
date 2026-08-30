@@ -1,5 +1,5 @@
 // content.js — ISOLATED world. Bridges page-bridge.js with chrome.storage.
-// Resolves the current channel (Live/VOD/Clip), applies the saved gain, and
+// Resolves the current channel (Live/VOD), applies the saved gain, and
 // continuously updates per-channel integrated LUFS from measurements.
 
 (() => {
@@ -20,7 +20,6 @@
   let showGainOverlay = true;
   let defaultAutoApplyLoudnessLive = DEFAULT_AUTO_APPLY_LOUDNESS;
   let defaultAutoApplyLoudnessVod = DEFAULT_AUTO_APPLY_LOUDNESS;
-  let defaultAutoApplyLoudnessClip = DEFAULT_AUTO_APPLY_LOUDNESS;
   let currentChannelEntry = null;
   let currentAutoApplyLoudness = false;
   let lastLufs;
@@ -35,6 +34,9 @@
   let lastSeenAdIndicators = new Set();
   let audioUnavailable = false;
   let audioUnavailableCause = '';
+  // Causes the popup has a message for. Anything else reads as another script
+  // holding the element.
+  const REPORTED_AUDIO_CAUSES = new Set(['audio-context', 'cross-origin']);
   let measurementUnavailable = false;
   let preferenceRevision = 0;
   let channelMutationQueue = Promise.resolve();
@@ -65,14 +67,11 @@
       s.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
     defaultAutoApplyLoudnessVod =
       s.autoApplyLoudnessVodDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
-    defaultAutoApplyLoudnessClip =
-      s.autoApplyLoudnessClipDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
     sendCmd({ cmd: 'setAdGain', value: dbToGain(currentAdGainDb) });
   }
 
   function defaultAutoApplyForKind(kind) {
     if (kind === 'vod') return defaultAutoApplyLoudnessVod;
-    if (kind === 'clip') return defaultAutoApplyLoudnessClip;
     return defaultAutoApplyLoudnessLive;
   }
 
@@ -207,11 +206,9 @@
   function sendResetMeasurement(seed) {
     measurementEpoch++;
     lastAutoGainUpdateAt = -Infinity;
-    const seedWindowLimit = seedWindowLimitForKind(currentChannel.kind);
     sendCmd({
       cmd: 'resetMeasurement',
       epoch: measurementEpoch,
-      ...(seedWindowLimit ? { seedWindowLimit } : {}),
       ...(seed ? {
         initialIntegratedLufs: seed.lufs,
         ...(seed.windows ? { initialIntegratedWindows: seed.windows } : {})
@@ -375,11 +372,8 @@
       channelId = pendingOwner?.userId ? String(pendingOwner.userId) : `vod-owner:${c.videoId}`;
       login = pendingOwner?.login || '';
       name = pendingOwner?.displayName || login || c.videoId;
-    } else if (c.kind === 'clip') {
-      channelId = pendingOwner?.userId ? String(pendingOwner.userId) : `clip-owner:${c.slug}`;
-      login = pendingOwner?.login || c.login || '';
-      name = pendingOwner?.displayName || login || c.slug;
     }
+    // A clip resolves to no channel: its volume is left to the player.
     url = twitchChannelUrl(login);
     const previousId = currentChannel.id;
     const previousKind = currentChannel.kind;
@@ -475,9 +469,17 @@
         // The gain node reaches the player only through the media element
         // source, so a failed attach stops gain and measurement alike.
         audioUnavailable = true;
-        audioUnavailableCause = data.cause === 'audio-context' ? 'audio-context' : 'element-taken';
+        audioUnavailableCause = REPORTED_AUDIO_CAUSES.has(data.cause) ? data.cause : 'element-taken';
         measurementUnavailable = false;
-        console.warn('[TCV] player audio unavailable', data.cause, data.reason);
+        // Media another origin serves is the one cause with nothing for the
+        // viewer to do about it, so it is kept out of the extension's error
+        // list. The others name an action: disable the extension holding the
+        // element, or reload the page.
+        if (audioUnavailableCause === 'cross-origin') {
+          console.info('[TCV] player audio unavailable', data.cause, data.reason);
+        } else {
+          console.warn('[TCV] player audio unavailable', data.cause, data.reason);
+        }
         updateGainOverlay();
         break;
       case 'lufs':
@@ -583,6 +585,17 @@
     currentAutoApplyLoudness = false;
     clearMeasurementCache();
     lastSavedAt = 0;
+    // A clip's refusal was about the clip's own element, and the bridge reports
+    // the next page's element for itself. Every other notice is kept, whatever
+    // page it is carried across: an SPA navigation that keeps the same element
+    // gets no second report, and an audio context that would not start reports
+    // once per state rather than once per attach, so clearing either here would
+    // drop that notice for good.
+    if (currentChannel.kind === 'clip' && audioUnavailableCause === 'cross-origin') {
+      audioUnavailable = false;
+      audioUnavailableCause = '';
+      measurementUnavailable = false;
+    }
     // New media: the break the player cued for the old one no longer applies.
     // The bridge drops the indicator state with it, so the cache here matches
     // it again and the observer reports the new media's own transitions.
@@ -642,8 +655,6 @@
         next.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
       defaultAutoApplyLoudnessVod =
         next.autoApplyLoudnessVodDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
-      defaultAutoApplyLoudnessClip =
-        next.autoApplyLoudnessClipDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
       const adDb = next.adGainDb ?? DEFAULT_AD_GAIN_DB;
       if (adDb !== currentAdGainDb) {
         currentAdGainDb = adDb;
@@ -689,11 +700,14 @@
           adGainDb: currentAdGainDb,
           autoApplyLoudness: currentAutoApplyLoudness,
           autoApplyLoudnessLive: resolveAutoApplyForKind(currentChannelEntry, 'live'),
-          autoApplyLoudnessVod: resolveAutoApplyForKind(currentChannelEntry, 'vod'),
-          autoApplyLoudnessClip: resolveAutoApplyForKind(currentChannelEntry, 'clip')
+          autoApplyLoudnessVod: resolveAutoApplyForKind(currentChannelEntry, 'vod')
         });
         return;
       case 'setGain':
+        if (!currentChannel.id) {
+          sendResponse({ ok: false, reason: 'channel mismatch' });
+          return;
+        }
         if (autoMutationPending || currentAutoApplyLoudness || audioUnavailable) {
           // A gain saved here would be applied on a later visit without the
           // viewer ever hearing what they set.
@@ -734,7 +748,7 @@
         });
         return true;
       case 'setAutoApplyLoudness': {
-        const kind = ['live', 'vod', 'clip'].includes(req.kind) ? req.kind : currentChannel.kind;
+        const kind = ['live', 'vod'].includes(req.kind) ? req.kind : '';
         if (!currentChannel.id || req.channelId !== currentChannel.id || kind !== currentChannel.kind) {
           sendResponse({ ok: false, reason: 'channel mismatch' });
           return;
@@ -803,7 +817,7 @@
         return true;
       }
       case 'resetMeasurement': {
-        const kind = ['live', 'vod', 'clip'].includes(req.kind) ? req.kind : '';
+        const kind = ['live', 'vod'].includes(req.kind) ? req.kind : '';
         if (!currentChannel.id || req.channelId !== currentChannel.id || kind !== currentChannel.kind) {
           sendResponse({ ok: false, reason: 'channel mismatch' });
           return;

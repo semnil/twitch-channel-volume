@@ -388,7 +388,7 @@
     return Math.min(MAX_SEED_WINDOWS, saved);
   }
 
-  function resetMeasurement(initialIntegratedLufs, epoch, initialIntegratedWindows, seedWindowLimit) {
+  function resetMeasurement(initialIntegratedLufs, epoch, initialIntegratedWindows) {
     if (Number.isFinite(epoch)) measurementEpoch = epoch;
     blocks.length = 0;
     integratedBlockStart = 0;
@@ -407,14 +407,9 @@
     // every observed window, so a rollback does not reach them.
     // Values below the absolute gate reach the ring buffer but not the index,
     // so they never contribute to Integrated.
-    // The caller may hold the seed to a weight of its own, and that weight is
-    // the whole of it: the floor does not raise it back.
-    const limit = Number.isSafeInteger(seedWindowLimit) && seedWindowLimit > 0
-      ? seedWindowLimit
-      : MAX_SEED_WINDOWS;
-    seedClaimedWindows = Math.min(limit, savedWindowCount(initialIntegratedWindows));
+    seedClaimedWindows = savedWindowCount(initialIntegratedWindows);
     seedMeanSquare = initialMeanSquare;
-    const seedWindows = Math.min(limit, Math.max(MIN_SEED_WINDOWS, seedClaimedWindows));
+    const seedWindows = Math.max(MIN_SEED_WINDOWS, seedClaimedWindows);
     for (let i = 0; i < seedWindows; i++) {
       appendIntegratedBlock(initialMeanSquare, windowsObserved);
     }
@@ -492,19 +487,75 @@
     return adElementChains.some((chain) => chain.video === video);
   }
 
+  // A MediaElementAudioSourceNode outputs silence when its element loaded a
+  // cross-origin resource outside CORS mode, and the element's audio does not
+  // return to the player once the node exists. Such an element is left alone.
+  const MEDIA_REACHABLE = 'reachable';
+  const MEDIA_PENDING = 'pending';
+  const MEDIA_CROSS_ORIGIN = 'cross-origin';
+
+  function mediaReach(video) {
+    if (video.srcObject) return MEDIA_REACHABLE;
+    const src = video.currentSrc || video.src || '';
+    if (!src) return MEDIA_PENDING;
+    if (video.crossOrigin) return MEDIA_REACHABLE;
+    try {
+      return new URL(src, location.href).origin === location.origin
+        ? MEDIA_REACHABLE
+        : MEDIA_CROSS_ORIGIN;
+    } catch (err) {
+      return MEDIA_CROSS_ORIGIN;
+    }
+  }
+
+  // The attach loop asks again every second, so a refusal is logged and
+  // reported once per element rather than once per attempt. The ad path keeps
+  // its own record: it reports nothing, and the player path still has its one
+  // report to make about the same element.
+  const crossOriginLogged = new WeakSet();
+  const crossOriginReported = new WeakSet();
+
+  function mayTakeMedia(video, forAd) {
+    const reach = mediaReach(video);
+    if (reach === MEDIA_CROSS_ORIGIN) {
+      if (!crossOriginLogged.has(video)) {
+        crossOriginLogged.add(video);
+        console.info('[TCV] media served from another origin without CORS; the element keeps the player audio path', { ad: !!forAd });
+      }
+      if (!forAd && !crossOriginReported.has(video)) {
+        crossOriginReported.add(video);
+        postReady({
+          event: 'attach-failed',
+          cause: 'cross-origin',
+          reason: 'media is served from another origin without CORS'
+        });
+      }
+    }
+    return reach === MEDIA_REACHABLE;
+  }
+
   function findVideo() {
     const all = document.querySelectorAll('video');
     let best = null;
     for (const v of all) {
       if (attachFailedFor.has(v) || heldAsAdElement(v)) continue;
       if (!v.src && v.readyState === 0) continue;
+      // An element whose media another origin serves is passed over while
+      // another one is there to take. It is read again on the next tick, so an
+      // element that has not loaded yet is not decided here.
+      if (mediaReach(v) === MEDIA_CROSS_ORIGIN) continue;
       if (!best || (v.clientWidth * v.clientHeight) > (best.clientWidth * best.clientHeight)) {
         best = v;
       }
     }
     if (best) return best;
+    // Nothing could be taken, so the element that was passed over is offered
+    // after all: refusing it is what reports it. An element that has loaded
+    // nothing is not that element, and is read again on the next tick.
     for (const v of all) {
-      if (!attachFailedFor.has(v) && !heldAsAdElement(v)) return v;
+      if (attachFailedFor.has(v) || heldAsAdElement(v)) continue;
+      if (!v.src && v.readyState === 0) continue;
+      return v;
     }
     return null;
   }
@@ -593,6 +644,7 @@
 
   async function attach(video) {
     if (!video || attachedVideo === video) return;
+    if (!mayTakeMedia(video, false)) return;
     const c = await ensureContext();
     // Another tick can finish this attach while the context is still being
     // built. The element is ours by then, and taking it again throws.
@@ -609,6 +661,8 @@
       return;
     }
     contextFailureReported = false;
+    // The element can load a different resource while the context is built.
+    if (!mayTakeMedia(video, false)) return;
     try {
       sourceNode = c.createMediaElementSource(video);
     } catch (err) {
@@ -917,6 +971,7 @@
 
   function attachAdElement(video) {
     if (!ctx || ctx.state !== 'running' || attachFailedFor.has(video)) return null;
+    if (!mayTakeMedia(video, true)) return null;
     try {
       const source = ctx.createMediaElementSource(video);
       const node = ctx.createGain();
@@ -1035,20 +1090,6 @@
             contentId: u.login.toLowerCase()
           });
         }
-        // Clip
-        const c = data.clip;
-        if (c?.broadcaster?.id && c?.broadcaster?.login) {
-          postOwner({
-            userId: String(c.broadcaster.id),
-            login: c.broadcaster.login,
-            displayName: c.broadcaster.displayName || c.broadcaster.login,
-            source: 'clip',
-            contentKind: 'clip',
-            contentId: typeof c.slug === 'string'
-              ? c.slug
-              : (requestIdentity?.kind === 'clip' ? requestIdentity.id : '')
-          });
-        }
       } catch (_) {}
     }
   }
@@ -1082,8 +1123,7 @@
         resetMeasurement(
           data.initialIntegratedLufs,
           data.epoch,
-          data.initialIntegratedWindows,
-          data.seedWindowLimit
+          data.initialIntegratedWindows
         );
         break;
       case 'mediaChanged':
