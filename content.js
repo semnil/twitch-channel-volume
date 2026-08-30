@@ -35,6 +35,9 @@
   let lastSeenAdIndicators = new Set();
   let audioUnavailable = false;
   let audioUnavailableCause = '';
+  // Causes the popup has a message for. Anything else reads as another script
+  // holding the element.
+  const REPORTED_AUDIO_CAUSES = new Set(['audio-context', 'cross-origin']);
   let measurementUnavailable = false;
   let preferenceRevision = 0;
   let channelMutationQueue = Promise.resolve();
@@ -475,7 +478,7 @@
         // The gain node reaches the player only through the media element
         // source, so a failed attach stops gain and measurement alike.
         audioUnavailable = true;
-        audioUnavailableCause = data.cause === 'audio-context' ? 'audio-context' : 'element-taken';
+        audioUnavailableCause = REPORTED_AUDIO_CAUSES.has(data.cause) ? data.cause : 'element-taken';
         measurementUnavailable = false;
         console.warn('[TCV] player audio unavailable', data.cause, data.reason);
         updateGainOverlay();

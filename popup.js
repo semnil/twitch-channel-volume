@@ -42,6 +42,7 @@
   function noticeText() {
     if (!audioUnavailable) return msg('measurementUnavailable');
     if (audioUnavailableCause === 'audio-context') return msg('audioContextUnavailable');
+    if (audioUnavailableCause === 'cross-origin') return msg('audioCrossOriginUnavailable');
     return msg('audioUnavailable');
   }
 

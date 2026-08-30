@@ -492,6 +492,47 @@
     return adElementChains.some((chain) => chain.video === video);
   }
 
+  // A MediaElementAudioSourceNode outputs silence when its element loaded a
+  // cross-origin resource outside CORS mode, and the element's audio does not
+  // return to the player once the node exists. Such an element is left alone.
+  const MEDIA_REACHABLE = 'reachable';
+  const MEDIA_PENDING = 'pending';
+  const MEDIA_CROSS_ORIGIN = 'cross-origin';
+
+  function mediaReach(video) {
+    if (video.srcObject) return MEDIA_REACHABLE;
+    const src = video.currentSrc || video.src || '';
+    if (!src) return MEDIA_PENDING;
+    if (video.crossOrigin) return MEDIA_REACHABLE;
+    try {
+      return new URL(src, location.href).origin === location.origin
+        ? MEDIA_REACHABLE
+        : MEDIA_CROSS_ORIGIN;
+    } catch (err) {
+      return MEDIA_CROSS_ORIGIN;
+    }
+  }
+
+  // The attach loop asks again every second, so a refusal is reported once per
+  // element rather than once per attempt.
+  const crossOriginReported = new WeakSet();
+
+  function mayTakeMedia(video, forAd) {
+    const reach = mediaReach(video);
+    if (reach === MEDIA_CROSS_ORIGIN && !crossOriginReported.has(video)) {
+      crossOriginReported.add(video);
+      console.info('[TCV] media served from another origin without CORS; the element keeps the player audio path', { ad: !!forAd });
+      if (!forAd) {
+        postReady({
+          event: 'attach-failed',
+          cause: 'cross-origin',
+          reason: 'media is served from another origin without CORS'
+        });
+      }
+    }
+    return reach === MEDIA_REACHABLE;
+  }
+
   function findVideo() {
     const all = document.querySelectorAll('video');
     let best = null;
@@ -593,6 +634,7 @@
 
   async function attach(video) {
     if (!video || attachedVideo === video) return;
+    if (!mayTakeMedia(video, false)) return;
     const c = await ensureContext();
     // Another tick can finish this attach while the context is still being
     // built. The element is ours by then, and taking it again throws.
@@ -609,6 +651,8 @@
       return;
     }
     contextFailureReported = false;
+    // The element can load a different resource while the context is built.
+    if (!mayTakeMedia(video, false)) return;
     try {
       sourceNode = c.createMediaElementSource(video);
     } catch (err) {
@@ -917,6 +961,7 @@
 
   function attachAdElement(video) {
     if (!ctx || ctx.state !== 'running' || attachFailedFor.has(video)) return null;
+    if (!mayTakeMedia(video, true)) return null;
     try {
       const source = ctx.createMediaElementSource(video);
       const node = ctx.createGain();

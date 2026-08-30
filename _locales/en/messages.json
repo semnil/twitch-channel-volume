@@ -35,6 +35,9 @@
   "audioContextUnavailable": {
     "message": "Audio processing could not start on this page, so volume control and measurement do not run. Reload the page."
   },
+  "audioCrossOriginUnavailable": {
+    "message": "This video's audio is served from another domain, so volume control and measurement do not run on it."
+  },
   "measurementUnavailable": {
     "message": "Loudness measurement cannot start. Volume control still works. Reload the page."
   },

@@ -3967,6 +3967,17 @@ test('content passes on which failure the bridge reported', async () => {
     (await harness.dispatchRuntime({ cmd: 'getState' })).audioUnavailableCause,
     'audio-context'
   );
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'attach-failed',
+    cause: 'cross-origin',
+    reason: 'media is served from another origin without CORS'
+  });
+  assert.equal(
+    (await harness.dispatchRuntime({ cmd: 'getState' })).audioUnavailableCause,
+    'cross-origin'
+  );
 });
 
 test('content refuses gain and Auto writes while the player audio is unavailable', async () => {
@@ -6408,7 +6419,8 @@ test('popup declares the player audio notice with its localized text', () => {
   const ja = JSON.parse(fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json')));
   const en = JSON.parse(fs.readFileSync(path.join(__dirname, '_locales/en/messages.json')));
   for (const [locale, messages] of [['ja', ja], ['en', en]]) {
-    for (const key of ['audioUnavailable', 'audioContextUnavailable', 'measurementUnavailable']) {
+    for (const key of ['audioUnavailable', 'audioContextUnavailable',
+      'audioCrossOriginUnavailable', 'measurementUnavailable']) {
       assert.ok(messages[key]?.message, `${locale} declares ${key}`);
     }
   }
@@ -6494,6 +6506,13 @@ test('popup names the failure it was told about', async () => {
   assert.equal(
     harness.el('audioError').textContent,
     harness.message('audioContextUnavailable')
+  );
+
+  harness.setState({ audioUnavailableCause: 'cross-origin' });
+  await harness.poll();
+  assert.equal(
+    harness.el('audioError').textContent,
+    harness.message('audioCrossOriginUnavailable')
   );
 
   harness.setState({ audioUnavailableCause: 'element-taken' });
@@ -9573,6 +9592,141 @@ test('page bridge reports a context it could not create and builds a new one aft
   const attached = harness.messages.filter((message) => message.event === 'attached');
   assert.equal(attached.length, 1);
   assert.equal(attached[0].measuring, true);
+});
+
+test('page bridge leaves an element whose media another origin serves', async () => {
+  const harness = createPageBridgeHarness();
+  const video = harness.currentVideo();
+  // A Twitch clip plays a file from a CDN, and the element asks for it without
+  // CORS. A source node made for it would output silence, and the element's
+  // audio would not go back to the player.
+  video.srcObject = null;
+  video.src = 'https://clips.example/clip.mp4';
+  video.currentSrc = video.src;
+  await harness.dispatchCommand('init');
+  await harness.dispatchCommand('attach');
+
+  assert.equal(harness.mediaSourceCalls(), 0);
+  const failures = harness.messages.filter((message) => message.event === 'attach-failed');
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].cause, 'cross-origin');
+  // One report per element, not one per retry.
+  await harness.runTimers();
+  assert.equal(harness.messages.filter((message) => message.event === 'attach-failed').length, 1);
+  assert.equal(harness.mediaSourceCalls(), 0);
+});
+
+test('page bridge builds no audio context for an element it will not take', async () => {
+  const harness = createPageBridgeHarness();
+  const video = harness.currentVideo();
+  video.srcObject = null;
+  video.src = 'https://clips.example/clip.mp4';
+  video.currentSrc = video.src;
+  // No init: the attach loop is the only thing that could build a context here.
+  await harness.dispatchCommand('attach');
+
+  assert.deepEqual(harness.messages.filter((message) => message.event === 'audio-context'), []);
+  assert.equal(harness.mediaSourceCalls(), 0);
+});
+
+test('page bridge lets go of an element that changed origin while the context built', async () => {
+  const harness = createPageBridgeHarness({ deferWorkletLoad: true });
+  const video = harness.currentVideo();
+  const init = harness.dispatchCommand('init');
+  const attach = harness.dispatchCommand('attach');
+  await flushTasks(4);
+
+  // The player loads a clip into the same element while the worklet module is
+  // still loading, and the element it was going to take is no longer one it can.
+  video.srcObject = null;
+  video.src = 'https://clips.example/clip.mp4';
+  video.currentSrc = video.src;
+  await harness.releaseWorkletLoad();
+  await Promise.all([init, attach]);
+
+  assert.equal(harness.mediaSourceCalls(), 0);
+  assert.equal(
+    harness.messages.filter((message) => message.event === 'attach-failed')[0]?.cause,
+    'cross-origin'
+  );
+});
+
+test('page bridge takes the element once its media is one it can reach', async () => {
+  const harness = createPageBridgeHarness();
+  const video = harness.currentVideo();
+  video.srcObject = null;
+  video.src = 'https://clips.example/clip.mp4';
+  video.currentSrc = video.src;
+  await harness.dispatchCommand('init');
+  await harness.dispatchCommand('attach');
+  assert.equal(harness.mediaSourceCalls(), 0);
+
+  // The same element goes back to the player's own MediaSource.
+  video.src = '';
+  video.currentSrc = '';
+  video.srcObject = {};
+  await harness.runTimers();
+
+  assert.equal(harness.mediaSourceCalls(), 1);
+  assert.equal(harness.messages.filter((message) => message.event === 'attached').length, 1);
+});
+
+test('page bridge takes a cross-origin element the page asked for in CORS mode', async () => {
+  const harness = createPageBridgeHarness();
+  const video = harness.currentVideo();
+  video.srcObject = null;
+  video.src = 'https://ads.example/creative.mp4';
+  video.currentSrc = video.src;
+  video.crossOrigin = 'anonymous';
+  await harness.dispatchCommand('init');
+  await harness.dispatchCommand('attach');
+
+  assert.equal(harness.mediaSourceCalls(), 1);
+  assert.deepEqual(harness.messages.filter((message) => message.event === 'attach-failed'), []);
+});
+
+test('page bridge takes an element served from the page origin', async () => {
+  const harness = createPageBridgeHarness();
+  const video = harness.currentVideo();
+  video.srcObject = null;
+  video.src = 'https://www.twitch.tv/media/clip.mp4';
+  video.currentSrc = video.src;
+  await harness.dispatchCommand('init');
+  await harness.dispatchCommand('attach');
+
+  assert.equal(harness.mediaSourceCalls(), 1);
+  assert.deepEqual(harness.messages.filter((message) => message.event === 'attach-failed'), []);
+});
+
+test('page bridge waits for an element that has loaded nothing yet', async () => {
+  const harness = createPageBridgeHarness();
+  const video = harness.currentVideo();
+  video.srcObject = null;
+  video.src = '';
+  video.currentSrc = '';
+  await harness.dispatchCommand('init');
+  await harness.dispatchCommand('attach');
+
+  // Nothing is wrong yet: the element has not been told what to play.
+  assert.equal(harness.mediaSourceCalls(), 0);
+  assert.deepEqual(harness.messages.filter((message) => message.event === 'attach-failed'), []);
+
+  video.srcObject = {};
+  await harness.runTimers();
+  assert.equal(harness.mediaSourceCalls(), 1);
+});
+
+test('page bridge does not take an ad element whose media another origin serves', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.setPaused(true);
+  const adVideo = harness.addVideo({ volume: 1, crossOrigin: null });
+  await harness.dispatchCommand('setAdActive', { active: true });
+
+  assert.equal(harness.sourcedElements.includes(adVideo), false);
+  // The player's own element is still measured, and the popup is not told the
+  // player audio is out of reach.
+  assert.deepEqual(harness.messages.filter((message) => message.event === 'attach-failed'), []);
 });
 
 test('page bridge takes the element once when two attach ticks overlap', async () => {

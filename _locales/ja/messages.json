@@ -35,6 +35,9 @@
   "audioContextUnavailable": {
     "message": "このページでオーディオ処理を開始できないため、音量調整と計測ができません。ページを再読み込みしてください"
   },
+  "audioCrossOriginUnavailable": {
+    "message": "この動画の音声は別ドメインから配信されているため、音量調整と計測ができません"
+  },
   "measurementUnavailable": {
     "message": "ラウドネス計測を開始できません。音量調整は有効です。ページを再読み込みしてください"
   },
