@@ -39,10 +39,8 @@
 
   // Each failure has its own remedy: another script holding the element, an
   // audio context that would not start, a measurement path that never came up.
-  // A clip is named as a clip rather than as the domain its audio comes from.
   function noticeText() {
     if (!audioUnavailable) return msg('measurementUnavailable');
-    if (currentChannel.kind === 'clip') return msg('clipNotAdjustable');
     if (audioUnavailableCause === 'audio-context') return msg('audioContextUnavailable');
     if (audioUnavailableCause === 'cross-origin') return msg('audioCrossOriginUnavailable');
     return msg('audioUnavailable');
@@ -112,28 +110,42 @@
   async function requestState({ showConnectionError = true } = {}) {
     const tab = await getActiveTab();
     if (!tab?.url || !/twitch\.tv/.test(tab.url)) {
-      if (showConnectionError) showError(msg('openOnTwitch'));
+      if (showConnectionError) showStatus(msg('openOnTwitch'));
       return null;
     }
     try {
       const res = await chrome.tabs.sendMessage(tab.id, { cmd: 'getState' });
       return res;
     } catch (err) {
-      if (showConnectionError) showError(msg('reloadPageNeeded'));
+      if (showConnectionError) showStatus(msg('reloadPageNeeded'));
       return null;
     }
   }
 
-  function showError(text) {
+  // The status line stands in for the whole screen: it answers for a page the
+  // extension does not act on.
+  function showStatus(text) {
     const box = $('errBox');
     box.textContent = text;
     box.classList.remove('hidden');
     $('mainArea').classList.add('hidden');
   }
 
+  function hideStatus() {
+    $('errBox').classList.add('hidden');
+    $('mainArea').classList.remove('hidden');
+  }
+
   function renderState(state) {
     if (!state) return;
     const ch = state.channel || {};
+    // A clip's volume is left to the player, so the screen says that alone.
+    if (ch.kind === 'clip') {
+      currentChannel = ch;
+      showStatus(msg('clipNotAdjustable'));
+      return;
+    }
+    hideStatus();
     if (currentChannel.id &&
         (ch.id !== currentChannel.id || ch.kind !== currentChannel.kind)) {
       gainSaveError = false;
@@ -144,11 +156,9 @@
     audioUnavailable = !!state.audioUnavailable;
     audioUnavailableCause = state.audioUnavailableCause || '';
     measurementUnavailable = !audioUnavailable && !!state.measurementUnavailable;
-    // Both notices name the player of the content on the page, so neither is
-    // shown where no content was recognised. A clip is recognised without a
-    // channel of its own.
-    const notice = (ch.id || ch.kind === 'clip') &&
-      (audioUnavailable || measurementUnavailable);
+    // Both notices name the player of a channel, so neither is shown on a page
+    // where no channel was resolved.
+    const notice = ch.id && (audioUnavailable || measurementUnavailable);
     $('audioError').classList.toggle('hidden', !notice);
     if (notice) $('audioError').textContent = noticeText();
     const nameEl = $('channelName');
@@ -167,7 +177,6 @@
       let kindLabel = '';
       if (ch.kind === 'live') kindLabel = msg('typeLive');
       else if (ch.kind === 'vod') kindLabel = msg('typeVod');
-      else if (ch.kind === 'clip') kindLabel = msg('typeClip');
       kindEl.textContent = kindLabel;
     } else {
       kindEl.className = 'type-badge hidden';
@@ -211,7 +220,7 @@
       applyButton.disabled =
         currentAutoApplyLoudness || audioUnavailable || !hasIntegrated || !ch.id;
       $('applyHint').textContent = msg('gainSaveFailed');
-    } else if (audioUnavailable && notice) {
+    } else if (audioUnavailable && ch.id) {
       // The notice carries the reason; the hint stays empty.
       applyButton.disabled = true;
       $('applyHint').textContent = '';

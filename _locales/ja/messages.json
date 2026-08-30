@@ -137,9 +137,6 @@
   "typeVod": {
     "message": "VOD"
   },
-  "typeClip": {
-    "message": "Clip"
-  },
   "adGain": {
     "message": "CM Gain"
   },

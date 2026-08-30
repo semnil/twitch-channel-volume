@@ -6647,7 +6647,7 @@ test('popup keeps both notices off a page with no channel', async () => {
   assert.equal(harness.el('applyHint').textContent, harness.message('channelNotDetected'));
 });
 
-test('popup names a clip as outside volume control', async () => {
+test('popup gives a clip the status line instead of the screen', async () => {
   const harness = createPopupHarness({
     state: {
       audioUnavailable: true,
@@ -6657,15 +6657,20 @@ test('popup names a clip as outside volume control', async () => {
   });
   await flushTasks(8);
 
-  // A clip carries no channel, and the notice still answers for the page.
-  assert.equal(harness.el('audioError').classList.contains('hidden'), false);
-  assert.equal(harness.el('audioError').textContent, harness.message('clipNotAdjustable'));
-  assert.equal(harness.el('channelKind').textContent, harness.message('typeClip'));
-  assert.equal(harness.el('applyHint').textContent, '');
-  assert.equal(harness.el('applyBtn').disabled, true);
-  assert.equal(harness.el('autoApplyToggle').disabled, true);
-  assert.equal(harness.el('manualSlider').disabled, true);
-  assert.equal(harness.el('resetMeasurementBtn').disabled, true);
+  assert.equal(harness.el('errBox').textContent, harness.message('clipNotAdjustable'));
+  assert.equal(harness.el('errBox').classList.contains('hidden'), false);
+  assert.equal(harness.el('mainArea').classList.contains('hidden'), true);
+
+  // Twitch's SPA can leave a clip without the popup being closed.
+  harness.setState({
+    audioUnavailable: false,
+    audioUnavailableCause: '',
+    channel: { id: '123', name: 'somechannel', kind: 'live' }
+  });
+  await harness.poll();
+  assert.equal(harness.el('mainArea').classList.contains('hidden'), false);
+  assert.equal(harness.el('errBox').classList.contains('hidden'), true);
+  assert.equal(harness.el('channelName').textContent, 'somechannel');
 });
 
 test('popup names the reason each rejected request came back with', async () => {

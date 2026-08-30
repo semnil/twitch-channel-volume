@@ -36,8 +36,8 @@ Drawn from the extension's own colours and strings by `gen_screenshots.py`; the 
 - **Global Auto defaults**: Independent Live / VOD defaults apply only when a channel kind has neither an explicit Auto choice nor a manual gain
 - **Ad-break handling**: Reads the ad cues the player's media engine posts, and its ad indicator in the DOM. A
   client-side ad plays in its own element at its own volume, and the ad gain reaches that element too
-- **Clips play untouched**: Twitch serves every clip from another origin outside CORS mode, and Web Audio hands back silence for such an element, so the extension stays out of a clip's audio path. Clips keep no gain, no Auto setting and no measurement
-- **Pipeline notices**: Each state gets its own message instead of an endless "measuring" hint — the page is a clip, another script already holds the player's audio, the media is served from another origin, the audio context would not start, or only the measurement path failed to come up (gain still applies in the last one). The popup states which one happened and what to do about it
+- **Clips play untouched**: Twitch serves every clip from another origin outside CORS mode, and Web Audio hands back silence for such an element, so the extension stays out of a clip's audio path. Clips keep no gain, no Auto setting and no measurement, and the popup says so in one line instead of showing controls that cannot do anything
+- **Pipeline notices**: Each state gets its own message instead of an endless "measuring" hint — another script already holds the player's audio, the media is served from another origin, the audio context would not start, or only the measurement path failed to come up (gain still applies in the last one). The popup states which one happened and what to do about it
 - **0–600 % gain range** via Web Audio `GainNode` (HTML5 `video.volume` would cap at 1.0)
 - **No external dependencies** — pure JavaScript, no bundler
 

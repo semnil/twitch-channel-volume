@@ -125,7 +125,7 @@ utils.js (shared, popup/options + content.js + test.js. It is not loaded in the 
 └── HTML escape: esc()
 
 popup.html / popup.js
-├── Channel name + kind badge (Live/VOD/Clip) + ad-detected badge
+├── Channel name + kind badge (Live/VOD) + ad-detected badge
 ├── An icon button (36×36) on the channel row clears the stored LUFS for the current kind and the running measurement. Its label is visually hidden and used as the accessible name, with title for the hover text
 ├── The channel name is truncated to the row width, so the full text is carried in title
 ├── One-row grid of three cards: Integrated LUFS / Suggested gain / Current gain (layout shared with the sibling extensions)
@@ -137,12 +137,15 @@ popup.html / popup.js
 ├── Per-channel "Auto-follow LUFS" toggle for the kind currently being watched
 ├── A failed Auto save shows a localised error and re-fetches the latest state
 ├── While an Auto save is in flight, Apply / Manual controls are disabled, and content.js refuses manual gain mutations as well
+├── On a clip the status line stands in for the whole screen (the same place that answers a
+│   non-Twitch tab and a page needing a reload): mainArea is hidden and the one line says a clip's
+│   volume is left to the player. Leaving the clip brings the screen back
 ├── While audioUnavailable / measurementUnavailable, the reason and the remedy are shown under the
-│   channel row (five wordings: the page is a clip / the element is held elsewhere / the media comes
-│   from another origin / the AudioContext could not be created / the measurement path alone is
-│   unavailable). Nothing is shown on a page whose content was not recognised, and a clip is
-│   recognised without a channel. Under audioUnavailable, Apply / Manual / the Auto toggle /
-│   measurement reset are disabled and the three cards show unknown.
+│   channel row (four wordings, one per cause: the element is held elsewhere / the media comes from
+│   another origin / the AudioContext could not be created / the measurement path alone is
+│   unavailable)
+│   (nothing is shown on a page with no resolved channel). Under audioUnavailable, Apply / Manual /
+│   the Auto toggle / measurement reset are disabled and the three cards show unknown.
 │   A gain-save failure takes precedence over this notice, and the hint row is left empty
 ├── Manual slider (the slider itself is 0–600%, the displayed value follows displayUnit) + 6 presets (0/50/100/200/400/MAX)
 └── Loads SETTINGS_KEY at startup and reacts immediately to a unit change in options through storage.onChanged
@@ -237,7 +240,7 @@ options.html / options.js
 - **Suggested gain while there is no reading**: while no gated value exists, `suggestedGain` returns 1.0 and suggests no gain increase
 - **createMediaElementSource**: callable once per `<video>`. It fails when another extension (FrankerFaceZ Compressor and the like) took it first. A video that failed is excluded through a `WeakSet` and the attach falls back to another video. On a video that could not be attached the GainNode is outside the player's audio path too, so content.js receives `attach-failed`, shows the reason and the remedy in the popup, and withdraws the display of the gain in force (the overlay). Even when the fallback attach succeeds, the audio keeps sounding through the held element for as long as it remains in the page, so the notice is kept up through `takenElsewhere` on `attached`
 - **Media another origin serves**: a `MediaElementAudioSourceNode` outputs silence when its element loaded a cross-origin resource outside CORS mode, and the element's audio does not return to the player once the node exists — so an element like that is left alone rather than taken. Twitch clips are served that way: the clip element plays an MP4 from a CDN and carries no `crossorigin` attribute, while Live and VOD arrive through a `MediaSource` on the page's own origin. An element counts as reachable when it has a `srcObject`, when its resource comes from the page's origin, or when it carries a `crossorigin` attribute; an element that has loaded nothing yet is neither, and the attach loop asks again a second later. The refusal reaches content.js as `attach-failed` with the cause `cross-origin`, which turns off gain and measurement for that element and states it in the popup. content.js logs that cause at info and every other cause at warn (Chrome collects a content script's warnings as extension errors, and this one is the state of every clip page). Asking for the clip in CORS mode instead is not open to us: with `crossorigin` set, the range requests the player makes come back without an `Access-Control-Allow-Origin` header and the clip does not load at all
-- **A clip is not volume-adjusted**: every Twitch clip is served the way above, so the extension has no way to reach a clip's audio, and a clip is out of scope rather than a case that sometimes works. It keeps no channel, no stored gain and no Auto setting, makes no owner lookup, and the popup names the page as a clip instead of naming the domain its audio comes from. The Clip badge stays so the popup can say which page it is answering for
+- **A clip is not volume-adjusted**: every Twitch clip is served the way above, so the extension has no way to reach a clip's audio, and a clip is out of scope rather than a case that sometimes works. It keeps no channel, no stored gain and no Auto setting, makes no owner lookup, and the popup shows the status line alone instead of a screen of controls that cannot do anything
 - **When the AudioContext is suspended**: Chrome starts a context suspended until the page has been interacted with, and the media element source puts that context between the player and the speakers, so the player is silent for as long as it stays suspended. The bridge reports the state on creation, on every change, and as the answer to `resume`; content.js asks for a `resume` on every document `click` and `keydown` in the capture phase until the reported state is `running`, and listens again if it ever stops running. One gesture is not enough to hang the recovery on: a gesture can arrive before the context exists (a `resume` therefore builds one), and a viewer who unmutes with the player's keyboard shortcut sends no click at all. Chrome accepts a resume on the strength of the page having been interacted with at some point, so the resume does not have to run inside the gesture's own task
 - **When the AudioContext cannot be created**: a failed attempt is not cached, and the next attach builds it again. The failure notice is sent once, when the state changes (not on every retry). `cause: 'audio-context'` distinguishes it from a conflict with another extension, and the popup shows a different wording asking for a reload
 - **Readings while there is no audio path**: a lufs arriving after `attach-failed` or during `takenElsewhere` is not from the element the viewer is hearing, so it is discarded (neither stored nor followed by Auto). Measurement is reset at the moment it recovers — the bridge's ring buffer still holds blocks from the other element
