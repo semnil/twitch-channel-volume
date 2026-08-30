@@ -110,16 +110,38 @@
     return tabs[0];
   }
 
+  // The display polls every second and a page that cannot answer goes on not
+  // answering, so the reason is named once per stretch rather than once per
+  // poll, and again after the next request arrives.
+  let stateRequestFailureReported = false;
+
+  function reportStateRequestFailure(reason) {
+    if (stateRequestFailureReported) return;
+    stateRequestFailureReported = true;
+    console.warn('[TCV] state request failed', reason);
+  }
+
   async function requestState({ showConnectionError = true } = {}) {
-    const tab = await getActiveTab();
-    if (!tab?.url || !/twitch\.tv/.test(tab.url)) {
-      if (showConnectionError) showStatus(msg('openOnTwitch'));
-      return null;
-    }
     try {
+      const tab = await getActiveTab();
+      // A tab whose URL the popup can read is one the extension runs in: the
+      // manifest asks for twitch.tv alone and for no tabs permission, so Chrome
+      // withholds the URL of every other tab.
+      if (!tab?.url || !/twitch\.tv/.test(tab.url)) {
+        reportStateRequestFailure('no Twitch tab to ask');
+        if (showConnectionError) showStatus(msg('openOnTwitch'));
+        return null;
+      }
       const res = await chrome.tabs.sendMessage(tab.id, { cmd: 'getState' });
+      stateRequestFailureReported = false;
       return res;
     } catch (err) {
+      // A content script that was never injected, a tab that has gone and a
+      // runtime the reload invalidated all leave the viewer the same one thing
+      // to do, and the status line says that much. The two callers that ask for
+      // no status line keep the message they put up themselves, so the reason
+      // is named here, where the rest of the popup's failures are named.
+      reportStateRequestFailure(err);
       if (showConnectionError) showStatus(msg('reloadPageNeeded'));
       return null;
     }
