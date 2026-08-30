@@ -508,16 +508,22 @@
     }
   }
 
-  // The attach loop asks again every second, so a refusal is reported once per
-  // element rather than once per attempt.
+  // The attach loop asks again every second, so a refusal is logged and
+  // reported once per element rather than once per attempt. The ad path keeps
+  // its own record: it reports nothing, and the player path still has its one
+  // report to make about the same element.
+  const crossOriginLogged = new WeakSet();
   const crossOriginReported = new WeakSet();
 
   function mayTakeMedia(video, forAd) {
     const reach = mediaReach(video);
-    if (reach === MEDIA_CROSS_ORIGIN && !crossOriginReported.has(video)) {
-      crossOriginReported.add(video);
-      console.info('[TCV] media served from another origin without CORS; the element keeps the player audio path', { ad: !!forAd });
-      if (!forAd) {
+    if (reach === MEDIA_CROSS_ORIGIN) {
+      if (!crossOriginLogged.has(video)) {
+        crossOriginLogged.add(video);
+        console.info('[TCV] media served from another origin without CORS; the element keeps the player audio path', { ad: !!forAd });
+      }
+      if (!forAd && !crossOriginReported.has(video)) {
+        crossOriginReported.add(video);
         postReady({
           event: 'attach-failed',
           cause: 'cross-origin',
@@ -534,6 +540,10 @@
     for (const v of all) {
       if (attachFailedFor.has(v) || heldAsAdElement(v)) continue;
       if (!v.src && v.readyState === 0) continue;
+      // An element whose media another origin serves is passed over while
+      // another one is there to take. It is read again on the next tick, so an
+      // element that has not loaded yet is not decided here.
+      if (mediaReach(v) === MEDIA_CROSS_ORIGIN) continue;
       if (!best || (v.clientWidth * v.clientHeight) > (best.clientWidth * best.clientHeight)) {
         best = v;
       }

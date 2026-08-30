@@ -35,6 +35,21 @@ function validateSettingsPatch(patch) {
   return { ...patch };
 }
 
+// A setting kept for a kind the extension no longer has is dropped the next
+// time the settings are written.
+const REMOVED_SETTINGS_FIELDS = ['autoApplyLoudnessClipDefault'];
+
+function withoutRemovedSettings(settings) {
+  let dropped = false;
+  const kept = { ...settings };
+  for (const field of REMOVED_SETTINGS_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(kept, field)) continue;
+    delete kept[field];
+    dropped = true;
+  }
+  return dropped ? kept : settings;
+}
+
 function applySettingsMutation(currentValue, mutation) {
   if (!mutation || typeof mutation !== 'object') {
     throw invalidSettingsMutation('settings mutation must be an object');
@@ -43,10 +58,10 @@ function applySettingsMutation(currentValue, mutation) {
     ? { ...currentValue }
     : {};
   if (mutation.operation === 'patchSettings') {
-    return { ...current, ...validateSettingsPatch(mutation.patch) };
+    return withoutRemovedSettings({ ...current, ...validateSettingsPatch(mutation.patch) });
   }
   if (mutation.operation === 'initializeSettings') {
-    if (Object.keys(current).length > 0) return current;
+    if (Object.keys(current).length > 0) return withoutRemovedSettings(current);
     return validateSettingsPatch(mutation.defaults);
   }
   throw invalidSettingsMutation('unknown settings mutation');

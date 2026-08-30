@@ -1523,6 +1523,7 @@ function createContentHarness({
   const storageListeners = [];
   const commands = [];
   const warnings = [];
+  const infos = [];
   let runtimeMessageListener;
   let runtimeId = 'test-extension';
   let failNextStorageGet = failInitialStorageGet;
@@ -1693,7 +1694,7 @@ function createContentHarness({
     console: {
       warn(...args) { warnings.push(args); },
       error() {},
-      info() {}
+      info(...args) { infos.push(args); }
     },
     Date: HarnessDate,
     document,
@@ -1743,6 +1744,7 @@ function createContentHarness({
     commands,
     stored,
     warnings,
+    infos,
     async dispatchMessage(data) {
       await Promise.all((listeners.message || []).map((listener) => listener({ source: window, data })));
     },
@@ -3170,7 +3172,9 @@ test('resolvePreferredGain follows current LUFS only when Auto is enabled', () =
 
 test('extractGainForKind does not leak a typed gain across media kinds', () => {
   assert.equal(u.extractGainForKind({ gainLive: 0.8 }, 'vod'), null);
-  assert.equal(u.extractGainForKind({ gain: 0.6 }, 'clip'), 0.6);
+  // The gain a version before the per-kind fields wrote answers for any kind.
+  assert.equal(u.extractGainForKind({ gain: 0.6 }, 'vod'), 0.6);
+  assert.equal(u.extractGainForKind({ gain: 0.6, gainVod: 0.4 }, 'vod'), 0.4);
 });
 
 test('classifyTwitchUrl: live channel', () => {
@@ -3603,7 +3607,7 @@ test('content seeds measurement with the saved LUFS for the current media kind',
       'vod-owner:100': {
         name: '100',
         gainVod: 0.5,
-        ...measured({ live: -17, vod: -21, clip: -19 })
+        ...measured({ live: -17, vod: -21 })
       }
     }
   });
@@ -3664,9 +3668,14 @@ test('content keeps the expected clip refusal out of the warnings', async () => 
   });
   let state = await harness.dispatchRuntime({ cmd: 'getState' });
   assert.equal(state.audioUnavailableCause, 'cross-origin');
-  // Chrome collects a content script's warnings as extension errors, and this
-  // one is the state of every clip page.
+  // Chrome collects a content script's warnings as extension errors, and there
+  // is nothing the viewer can do about this one.
   assert.deepEqual(unavailable(), []);
+  // Demoted, not dropped: it is still the record of why the gain stopped.
+  assert.equal(
+    harness.infos.filter((args) => args[0] === '[TCV] player audio unavailable').length,
+    1
+  );
 
   // A cause that asks the viewer to do something is still a warning.
   await harness.dispatchMessage({ type: '__twitch_channel_volume__', event: 'loaded' });
@@ -3679,6 +3688,53 @@ test('content keeps the expected clip refusal out of the warnings', async () => 
   state = await harness.dispatchRuntime({ cmd: 'getState' });
   assert.equal(state.audioUnavailableCause, 'audio-context');
   assert.equal(unavailable().length, 1);
+});
+
+test('content refuses a request for a kind it does not have', async () => {
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/somechannel' });
+  await flushTasks();
+  const before = structuredClone(harness.stored[u.CHANNEL_VOLUMES_KEY]);
+
+  // Clip was a kind of its own until this version. A page still running the
+  // old content script asks for it by name.
+  for (const cmd of ['setAutoApplyLoudness', 'resetMeasurement']) {
+    const res = await harness.dispatchRuntime({
+      cmd, channelId: 'login:somechannel', kind: 'clip', enabled: true
+    });
+    assert.equal(res.ok, false, cmd);
+    assert.equal(res.reason, 'channel mismatch', cmd);
+  }
+  assert.deepEqual(harness.stored[u.CHANNEL_VOLUMES_KEY], before);
+});
+
+test('content refuses a gain with no channel to save it to', async () => {
+  const harness = createContentHarness({ href: 'https://clips.twitch.tv/AbcDef' });
+  await flushTasks();
+  const before = structuredClone(harness.stored[u.CHANNEL_VOLUMES_KEY]);
+
+  const res = await harness.dispatchRuntime({ cmd: 'setGain', gain: 2 });
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, 'channel mismatch');
+  assert.deepEqual(harness.stored[u.CHANNEL_VOLUMES_KEY], before);
+});
+
+test('content drops a clip refusal when the page leaves the clip', async () => {
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/streamer/clip/AbcDef' });
+  await flushTasks();
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'attach-failed',
+    cause: 'cross-origin',
+    reason: 'media is served from another origin without CORS'
+  });
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).audioUnavailable, true);
+
+  // The next page has its own element, and the bridge reports that one for
+  // itself; the clip's refusal would otherwise be shown against it.
+  await harness.navigate('https://www.twitch.tv/streamer');
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.audioUnavailable, false);
+  assert.equal(state.audioUnavailableCause, '');
 });
 
 test('content asks for a resume on a keypress as well as on a click', async () => {
@@ -5315,6 +5371,45 @@ test('channel store drops what a clip stored the next time it writes', () => {
   assert.equal(stored['123456'].gainClip, 1.4);
 });
 
+test('channel store refuses a mutation for a kind it no longer has', () => {
+  for (const operation of ['saveGain', 'saveAuto', 'saveMeasurement', 'clearMeasurement']) {
+    assert.throws(() => channelStore.applyChannelVolumesMutation({}, {
+      operation, channelId: '123', kind: 'clip', gain: 1.2, enabled: true, lufs: -18,
+      reference: u.LUFS_REFERENCE_VOLUME_1
+    }), /kind must be live or vod/, operation);
+  }
+});
+
+test('settings drop the default kept for a kind the extension no longer has', () => {
+  const stored = {
+    targetLufs: -18,
+    autoApplyLoudnessLiveDefault: true,
+    autoApplyLoudnessClipDefault: true
+  };
+  assert.deepEqual(settingsStore.applySettingsMutation(stored, {
+    operation: 'patchSettings', patch: { displayUnit: 'dB' }
+  }), { targetLufs: -18, autoApplyLoudnessLiveDefault: true, displayUnit: 'dB' });
+  // The Worker sends this one on every update, so it is the migration point.
+  assert.deepEqual(settingsStore.applySettingsMutation(stored, {
+    operation: 'initializeSettings', defaults: { targetLufs: -18 }
+  }), { targetLufs: -18, autoApplyLoudnessLiveDefault: true });
+});
+
+test('every default the worker installs is a field the settings writer accepts', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
+  const literal = /defaults:\s*(\{[\s\S]*?\n {4}\})/.exec(source);
+  assert.ok(literal, 'the install defaults are an object literal in background.js');
+  // eslint-disable-next-line no-new-func
+  const defaults = new Function(`return (${literal[1]});`)();
+  assert.ok(Object.keys(defaults).length > 0);
+  // A key here that the validator table does not carry makes a fresh install
+  // write no settings at all.
+  assert.deepEqual(
+    settingsStore.applySettingsMutation({}, { operation: 'initializeSettings', defaults }),
+    defaults
+  );
+});
+
 test('a newer cleared provisional measurement is not restored during owner merge', () => {
   const provisionalId = 'vod-owner:2770346335';
   const confirmedId = '123456';
@@ -6034,6 +6129,9 @@ test('options disables settings until load and saves only field mutations', () =
   }
   assert.match(html, /<button[^>]+data-unit="%"[^>]*\bdisabled\b/);
   assert.match(html, /<button[^>]+data-unit="dB"[^>]*\bdisabled\b/);
+  // A control carries no data-i18n of its own, so the markup snapshot cannot
+  // see one left behind.
+  assert.doesNotMatch(html, /defaultAutoClip/);
 
   const source = fs.readFileSync(path.join(__dirname, 'options.js'), 'utf8');
   assert.match(source, /type:\s*SETTINGS_MUTATION_MESSAGE/);
@@ -6671,6 +6769,25 @@ test('popup gives a clip the status line instead of the screen', async () => {
   assert.equal(harness.el('mainArea').classList.contains('hidden'), false);
   assert.equal(harness.el('errBox').classList.contains('hidden'), true);
   assert.equal(harness.el('channelName').textContent, 'somechannel');
+});
+
+test('popup clears a failed save across a clip', async () => {
+  const harness = createPopupHarness({ failCommand: 'setGain' });
+  await flushTasks(8);
+  await harness.firePreset(3, 'click');
+  assert.equal(harness.el('applyHint').classList.contains('error'), true);
+
+  // A clip carries no channel id, so the screen it replaces must still count as
+  // the channel being left.
+  harness.setState({ channel: { id: '', kind: 'clip' }, audioUnavailable: true });
+  await harness.poll();
+  harness.setState({
+    channel: { id: '999', name: 'other', kind: 'live' }, audioUnavailable: false
+  });
+  await harness.poll();
+
+  assert.equal(harness.el('applyHint').classList.contains('error'), false);
+  assert.equal(harness.el('applyHint').textContent, harness.message('hintNoLufs'));
 });
 
 test('popup names the reason each rejected request came back with', async () => {
@@ -9687,6 +9804,82 @@ test('page bridge leaves an element whose media another origin serves', async ()
   await harness.runTimers();
   assert.equal(harness.messages.filter((message) => message.event === 'attach-failed').length, 1);
   assert.equal(harness.mediaSourceCalls(), 0);
+});
+
+test('page bridge still reports an element the ad path looked at first', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  const player = harness.currentVideo();
+
+  // The measured element pauses and an ad plays in an element whose media
+  // another origin serves. The ad path says nothing about it.
+  harness.setPaused(true);
+  const adVideo = harness.addVideo({
+    volume: 1, crossOrigin: null, srcObject: null,
+    src: 'https://ads.example/creative.mp4', currentSrc: 'https://ads.example/creative.mp4'
+  });
+  await harness.dispatchCommand('setAdActive', { active: true });
+  assert.equal(harness.sourcedElements.includes(adVideo), false);
+  assert.deepEqual(harness.messages.filter((message) => message.event === 'attach-failed'), []);
+
+  // The player's own element leaves and the attach loop is left with that one.
+  // The report the ad path did not make is still the player path's to make.
+  harness.removeVideo(player);
+  await harness.runTimers();
+  const failures = harness.messages.filter((message) => message.event === 'attach-failed');
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].cause, 'cross-origin');
+});
+
+test('page bridge takes a reachable element beside one it cannot reach', async () => {
+  const harness = createPageBridgeHarness();
+  // The larger element is the one whose media another origin serves, so the
+  // area alone would choose it and the player would go without any gain.
+  const unreachable = harness.currentVideo();
+  unreachable.srcObject = null;
+  unreachable.src = 'https://clips.example/clip.mp4';
+  unreachable.currentSrc = unreachable.src;
+  const reachable = harness.addVideo({
+    src: '', currentSrc: '', srcObject: {}, crossOrigin: null,
+    clientWidth: 640, clientHeight: 360
+  });
+  await harness.dispatchCommand('init');
+  await harness.dispatchCommand('attach');
+
+  assert.equal(harness.mediaSourceCalls(), 1);
+  assert.deepEqual(harness.sourcedElements, [reachable]);
+  assert.equal(harness.sourcedElements.includes(unreachable), false);
+  assert.deepEqual(harness.messages.filter((message) => message.event === 'attach-failed'), []);
+});
+
+test('page bridge reads what an element can carry from the media it loaded', async () => {
+  // [what the element carries, whether the bridge takes it]
+  const shapes = [
+    [{ srcObject: {}, src: '', currentSrc: '' }, true],
+    [{ srcObject: null, src: 'blob:https://www.twitch.tv/9e1c', currentSrc: 'blob:https://www.twitch.tv/9e1c' }, true],
+    [{ srcObject: null, src: '/media/clip.mp4', currentSrc: '/media/clip.mp4' }, true],
+    [{ srcObject: null, src: 'https://clips.example/c.mp4', currentSrc: 'https://clips.example/c.mp4', crossOrigin: 'anonymous' }, true],
+    [{ srcObject: {}, src: 'https://clips.example/c.mp4', currentSrc: 'https://clips.example/c.mp4' }, true],
+    [{ srcObject: null, src: '//cdn.example/c.mp4', currentSrc: '//cdn.example/c.mp4' }, false],
+    [{ srcObject: null, src: 'https://clips.example/c.mp4', currentSrc: 'https://clips.example/c.mp4' }, false],
+    // currentSrc is the resource the element actually loaded.
+    [{ srcObject: null, src: '/media/clip.mp4', currentSrc: 'https://clips.example/c.mp4' }, false],
+    // A src the URL parser refuses is not one the audio can be carried from.
+    [{ srcObject: null, src: 'http://', currentSrc: 'http://' }, false]
+  ];
+  for (const [shape, taken] of shapes) {
+    const harness = createPageBridgeHarness();
+    Object.assign(harness.currentVideo(), { crossOrigin: null, ...shape });
+    await harness.dispatchCommand('init');
+    await harness.dispatchCommand('attach');
+    const where = JSON.stringify(shape);
+    assert.equal(harness.mediaSourceCalls(), taken ? 1 : 0, where);
+    assert.equal(
+      harness.messages.some((message) => message.event === 'attach-failed'),
+      !taken,
+      where
+    );
+  }
 });
 
 test('page bridge builds no audio context for an element it will not take', async () => {

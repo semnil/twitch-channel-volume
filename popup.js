@@ -139,13 +139,6 @@
   function renderState(state) {
     if (!state) return;
     const ch = state.channel || {};
-    // A clip's volume is left to the player, so the screen says that alone.
-    if (ch.kind === 'clip') {
-      currentChannel = ch;
-      showStatus(msg('clipNotAdjustable'));
-      return;
-    }
-    hideStatus();
     if (currentChannel.id &&
         (ch.id !== currentChannel.id || ch.kind !== currentChannel.kind)) {
       gainSaveError = false;
@@ -156,6 +149,12 @@
     audioUnavailable = !!state.audioUnavailable;
     audioUnavailableCause = state.audioUnavailableCause || '';
     measurementUnavailable = !audioUnavailable && !!state.measurementUnavailable;
+    // A clip's volume is left to the player, so the screen says that alone.
+    if (ch.kind === 'clip') {
+      showStatus(msg('clipNotAdjustable'));
+      return;
+    }
+    hideStatus();
     // Both notices name the player of a channel, so neither is shown on a page
     // where no channel was resolved.
     const notice = ch.id && (audioUnavailable || measurementUnavailable);
