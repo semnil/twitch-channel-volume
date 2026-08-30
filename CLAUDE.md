@@ -109,6 +109,8 @@ channel-store.js (service worker helper)
 
 settings-store.js (service worker helper)
 ├── Validates per-field mutations of autoLoudnessSettings
+├── Drops a setting kept for a kind the extension no longer has (`autoApplyLoudnessClipDefault`)
+│   from what it writes, on a patch and on the install-time initialize alike
 └── Serialises the read-modify-write through a single queue, preventing settings tabs from overwriting each other
 
 utils.js (shared, popup/options + content.js + test.js. It is not loaded in the MAIN world, so page-bridge.js carries its own constants)
@@ -148,7 +150,9 @@ popup.html / popup.js
 │   (nothing is shown on a page with no resolved channel). Under audioUnavailable, Apply / Manual /
 │   the Auto toggle / measurement reset are disabled and the three cards show unknown.
 │   A gain-save failure takes precedence over this notice, and the hint row is left empty
-├── Manual slider (the slider itself is 0–600%, the displayed value follows displayUnit) + 6 presets (0/50/100/200/400/MAX)
+├── Manual slider (the slider itself is 0–600%, the displayed value follows displayUnit) + 6 presets (0/50/100/200/400/MAX).
+│   Held to the same channel the Auto toggle and the measurement reset are held to: the gain is saved against a
+│   channel, and content.js refuses a setGain sent without one
 └── Loads SETTINGS_KEY at startup and reacts immediately to a unit change in options through storage.onChanged
 
 options.html / options.js
