@@ -26,6 +26,20 @@ IMPORT_SCRIPTS = re.compile(r'importScripts\(([^)]*)\)')
 # manifest and in every packaged stylesheet. Its own predefined messages carry
 # an @@ prefix and need no catalog.
 MESSAGE_PLACEHOLDER = re.compile(r'__MSG_([A-Za-z0-9_@]+)__')
+MESSAGE_NAME = re.compile(r'^[A-Za-z0-9_]+$')
+# The messages Chrome defines itself. A name under @@ that is not one of these is
+# a variable it reports as used and not defined.
+PREDEFINED_MESSAGES = frozenset({
+    '@@extension_id', '@@ui_locale', '@@bidi_dir', '@@bidi_reversed_dir',
+    '@@bidi_start_edge', '@@bidi_end_edge',
+})
+# The locale names Chrome carries. A directory named anything else is one it
+# ignores, which leaves an extension asking for messages with no default locale.
+CHROME_LOCALES = frozenset('''
+    am ar bg bn ca cs da de el en en_AU en_GB en_US es es_419 et fa fi fil fr gu
+    he hi hr hu id it ja kn ko lt lv ml mr ms nl no pl pt_BR pt_PT ro ru sk sl sr
+    sv sw ta te th tr uk vi zh_CN zh_TW
+'''.split())
 QUOTED = re.compile(r'[\'"]([^\'"]+)[\'"]')
 REMOTE = ('http:', 'https:', '//', 'data:', 'chrome-extension:')
 
@@ -62,9 +76,54 @@ class _PageReferences(HTMLParser):
 
 
 def _placeholders(text):
-    """The message names a text asks the default locale to answer for."""
-    return {name for name in MESSAGE_PLACEHOLDER.findall(text)
-            if not name.startswith('@@')}
+    """The message names a text asks for, Chrome's own among them."""
+    return set(MESSAGE_PLACEHOLDER.findall(text))
+
+
+def _catalog(relative, text):
+    """The names a catalog answers for, or a refusal saying why it answers none.
+
+    Chrome reads this file rather than taking it on faith, and declines to load
+    the extension over any of these, so they are read here too.
+    """
+    def refuse(complaint):
+        raise SystemExit(f'{relative} {complaint}')
+
+    try:
+        loaded = json.loads(text)
+    except ValueError as unreadable:
+        refuse(f'is not a message catalog: {unreadable}')
+    if not isinstance(loaded, dict):
+        refuse(f'is not a message catalog: the top level is a '
+               f'{type(loaded).__name__}, not an object')
+    answered = {}
+    for name, entry in loaded.items():
+        if not MESSAGE_NAME.match(name):
+            refuse(f'names a message Chrome cannot read: {name!r}')
+        # Chrome matches a name without regard to case, so two that differ only
+        # there are one name with two answers.
+        if name.lower() in answered:
+            refuse(f'names {name!r} and {answered[name.lower()]!r}, which Chrome '
+                   f'reads as one name')
+        answered[name.lower()] = name
+        if not isinstance(entry, dict):
+            refuse(f'gives {name} a {type(entry).__name__}, not an object')
+        if not isinstance(entry.get('message'), str):
+            refuse(f'gives {name} no message element')
+        description = entry.get('description')
+        if description is not None and not isinstance(description, str):
+            refuse(f'gives {name} a description that is not text')
+        placeholders = entry.get('placeholders')
+        if placeholders is None:
+            continue
+        if not isinstance(placeholders, dict):
+            refuse(f'gives {name} placeholders that are not an object')
+        for holder, shape in placeholders.items():
+            if not isinstance(shape, dict) or not isinstance(shape.get('content'), str):
+                refuse(f'gives {name}.{holder} no content')
+            if shape.get('example') is not None and not isinstance(shape['example'], str):
+                refuse(f'gives {name}.{holder} an example that is not text')
+    return set(answered)
 
 
 def _page_references(text):
@@ -197,6 +256,16 @@ def selected_files(root):
                   or posixpath.normpath(default_locale) != default_locale):
         raise SystemExit(f'default_locale is not one name under {LOCALE_DIR}: '
                          f'{default_locale!r}')
+    if named and default_locale not in CHROME_LOCALES:
+        raise SystemExit(f'default_locale is not a locale Chrome carries: '
+                         f'{default_locale!r}')
+    # A name under @@ is Chrome's to define. One it does not is a variable it
+    # reports as used and not defined.
+    undefined = sorted(name for name in wanted
+                       if name.startswith('@@') and name not in PREDEFINED_MESSAGES)
+    if undefined:
+        raise SystemExit(f'Chrome defines no message named {undefined[0]}')
+    wanted = {name for name in wanted if not name.startswith('@@')}
     locales = _host(root, LOCALE_DIR)
     if os.path.isdir(locales) and not named:
         raise SystemExit(f'{LOCALE_DIR} is here and the manifest names no default_locale')
@@ -212,12 +281,7 @@ def selected_files(root):
             relative = posixpath.join(LOCALE_DIR, locale, LOCALE_FILE)
             full = _packaged(root, relative)
             if os.path.isfile(full):
-                # A catalog Chrome cannot read is one it refuses the whole
-                # extension over, so it is read here rather than copied.
-                try:
-                    catalogs[locale] = json.loads(_read(root, relative))
-                except ValueError as unreadable:
-                    raise SystemExit(f'{relative} is not a message catalog: {unreadable}')
+                catalogs[locale] = _catalog(relative, _read(root, relative))
                 seen_locales.add(relative)
                 entry = carry(full, relative)
                 if entry:
@@ -226,7 +290,7 @@ def selected_files(root):
         raise SystemExit(f'the default locale carries no messages: {required}')
     if wanted:
         # Message names are matched without regard to case, as Chrome matches them.
-        answered = {name.lower() for name in catalogs.get(default_locale, {})}
+        answered = catalogs.get(default_locale, set())
         unanswered = sorted(name for name in wanted if name.lower() not in answered)
         if unanswered:
             raise SystemExit(f'{required} does not answer for: {", ".join(unanswered)}')
