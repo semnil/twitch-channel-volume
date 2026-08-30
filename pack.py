@@ -383,16 +383,26 @@ def _by_name(value):
 
 
 def _manifest_references(root, manifest):
-    """Every file the manifest names, with what the key says it is."""
+    """Every file the manifest names, with what the key says it is.
+
+    A resource is written from the extension's root, and that root may be
+    written as a leading slash: '/images/*' names what 'images/*' names, and a
+    resource that is nothing but slashes names nothing. It is the one key where
+    a leading slash is not an absolute path.
+    """
     for path, kind in MANIFEST_REFERENCES:
         for value in _at(manifest, path):
             if kind != 'named':
                 yield value, kind
-            elif PATTERN.search(value):
-                for held in _matching(root, value):
+                continue
+            named = value.lstrip('/')
+            if not named:
+                continue
+            if PATTERN.search(named):
+                for held in _matching(root, named):
                     yield held, _by_name(held)
             else:
-                yield value, _by_name(value)
+                yield named, _by_name(named)
 
 
 def _style_references(text):
