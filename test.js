@@ -384,7 +384,9 @@ test('the store package refuses to leave out what it has to carry', () => {
     }));
     fs.writeFileSync(path.join(box, 'content.js'), '');
     fs.mkdirSync(path.join(box, '_locales/ja'), { recursive: true });
-    fs.writeFileSync(path.join(box, '_locales/ja/messages.json'), '{}');
+    // The manifest asks for extName, so the catalog answers for it.
+    fs.writeFileSync(path.join(box, '_locales/ja/messages.json'),
+      JSON.stringify({ extName: { message: 'Minimal' } }));
     fs.writeFileSync(path.join(box, 'LICENSE'), 'MIT License\n');
     return box;
   };
@@ -402,7 +404,10 @@ test('the store package refuses to leave out what it has to carry', () => {
     change(manifest);
     fs.writeFileSync(path.join(box, 'manifest.json'), JSON.stringify(manifest));
   };
-  for (const [broken, breakIt] of [
+  // The third entry, where a case carries one, is what the refusal has to say.
+  // Without it a rule can be deleted and a later check refuses the same input for
+  // another reason, and the case cannot tell the two apart.
+  for (const [broken, breakIt, diagnosis] of [
     ['the licence gone', (box) => fs.rmSync(path.join(box, 'LICENSE'))],
     ["the default locale's messages gone",
       (box) => fs.rmSync(path.join(box, '_locales/ja/messages.json'))],
@@ -418,7 +423,19 @@ test('the store package refuses to leave out what it has to carry', () => {
     ['default_locale naming a directory that is not there',
       (box) => editManifest(box, (m) => { m.default_locale = 'de'; })],
     ['a manifest reference naming a drive rather than a path inside the package',
-      (box) => editManifest(box, (m) => { m.content_scripts = [{ js: ['C:/content.js'] }]; })]
+      (box) => editManifest(box, (m) => { m.content_scripts = [{ js: ['C:/content.js'] }]; })],
+    // Chrome resolves __MSG_name__ against the default locale's catalog, in the
+    // manifest and in the stylesheets it serves. A placeholder with nothing to
+    // resolve it against is an extension it declines to load.
+    ['default_locale written as null',
+      (box) => editManifest(box, (m) => { m.default_locale = null; }),
+      /default_locale is not a locale name: None/],
+    ['default_locale written as a path rather than a name',
+      (box) => editManifest(box, (m) => { m.default_locale = 'ja/'; }),
+      /default_locale is not one name under _locales: 'ja\/'/],
+    ['default_locale written as a directory that means the one above',
+      (box) => editManifest(box, (m) => { m.default_locale = '..'; }),
+      /default_locale is not one name under _locales: '\.\.'/],
   ]) {
     const box = buildMinimal();
     // A package built earlier stands here, so a refusal has something to spare.
@@ -437,6 +454,10 @@ test('the store package refuses to leave out what it has to carry', () => {
       // wrong with the package.
       assert.doesNotMatch(refused.stderr || '', /Traceback \(most recent call last\)/,
         `pack.py says what is wrong with ${broken}, instead of raising`);
+      if (diagnosis) {
+        assert.match(refused.stderr || '', diagnosis,
+          `pack.py names what is wrong with ${broken}`);
+      }
     }
     assert.ok(fs.existsSync(zip) && fs.statSync(zip).size === before,
       `the package built before is left alone with ${broken}`);

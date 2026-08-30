@@ -22,6 +22,10 @@ LOCALE_FILE = 'messages.json'
 # package is one, so the reference walk below never reaching it is not an answer.
 DISTRIBUTION_FILES = ('LICENSE',)
 IMPORT_SCRIPTS = re.compile(r'importScripts\(([^)]*)\)')
+# Chrome substitutes __MSG_name__ from the default locale's catalog, in the
+# manifest and in every packaged stylesheet. Its own predefined messages carry
+# an @@ prefix and need no catalog.
+MESSAGE_PLACEHOLDER = re.compile(r'__MSG_([A-Za-z0-9_@]+)__')
 QUOTED = re.compile(r'[\'"]([^\'"]+)[\'"]')
 REMOTE = ('http:', 'https:', '//', 'data:', 'chrome-extension:')
 
@@ -55,6 +59,12 @@ class _PageReferences(HTMLParser):
             rel = (attributes.get('rel') or '').lower().split()
             if href and ('stylesheet' in rel or href.endswith('.css')):
                 self.found.append(href)
+
+
+def _placeholders(text):
+    """The message names a text asks the default locale to answer for."""
+    return {name for name in MESSAGE_PLACEHOLDER.findall(text)
+            if not name.startswith('@@')}
 
 
 def _page_references(text):
@@ -165,19 +175,26 @@ def selected_files(root):
         if entry:
             yield entry
 
-    # Chrome requires the two to agree. An extension carrying a _locales
-    # directory has to name a default_locale, and the locale it names has to hold
-    # messages — every __MSG_ placeholder resolves against it. Either half alone
-    # is an extension Chrome declines to load. Naming a default_locale with no
-    # _locales at all is refused by the messages check below rather than here.
+    # Chrome requires these to agree. An extension carrying a _locales directory
+    # has to name a default_locale; one asking for a message has to name it too;
+    # and the locale it names has to be one directory under _locales and hold a
+    # catalog that answers. Any of them alone is an extension Chrome declines to
+    # load. A default_locale named with no _locales at all is refused by the
+    # catalog check below rather than here.
+    named = 'default_locale' in manifest
     default_locale = manifest.get('default_locale')
-    if default_locale is not None and not (isinstance(default_locale, str) and default_locale):
+    if named and not (isinstance(default_locale, str) and default_locale):
         raise SystemExit(f'default_locale is not a locale name: {default_locale!r}')
+    if named and (default_locale in ('.', '..') or '/' in default_locale
+                  or ntpath.splitdrive(default_locale)[0]
+                  or posixpath.normpath(default_locale) != default_locale):
+        raise SystemExit(f'default_locale is not one name under {LOCALE_DIR}: '
+                         f'{default_locale!r}')
     locales = _host(root, LOCALE_DIR)
-    if os.path.isdir(locales) and not default_locale:
+    if os.path.isdir(locales) and not named:
         raise SystemExit(f'{LOCALE_DIR} is here and the manifest names no default_locale')
     required = (posixpath.join(LOCALE_DIR, default_locale, LOCALE_FILE)
-                if default_locale else None)
+                if named else None)
     seen_locales = set()
     if os.path.isdir(locales):
         for locale in sorted(os.listdir(locales)):
