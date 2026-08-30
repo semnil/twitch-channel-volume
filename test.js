@@ -427,6 +427,12 @@ test('the store package refuses to leave out what it has to carry', () => {
     // Chrome resolves __MSG_name__ against the default locale's catalog, in the
     // manifest and in the stylesheets it serves. A placeholder with nothing to
     // resolve it against is an extension it declines to load.
+    ['a message the manifest asks for and no locale assets at all',
+      (box) => {
+        fs.rmSync(path.join(box, '_locales'), { recursive: true });
+        editManifest(box, (m) => { delete m.default_locale; });
+      },
+      /asks for extName and names no default_locale/],
     ['default_locale written as null',
       (box) => editManifest(box, (m) => { m.default_locale = null; }),
       /default_locale is not a locale name: None/],
@@ -461,6 +467,20 @@ test('the store package refuses to leave out what it has to carry', () => {
     }
     assert.ok(fs.existsSync(zip) && fs.statSync(zip).size === before,
       `the package built before is left alone with ${broken}`);
+    fs.rmSync(box, { recursive: true, force: true });
+  }
+
+  // Asking for no message, an extension needs no catalog and no locale name.
+  // Without this the contract above could refuse everything and stay green.
+  {
+    const box = buildMinimal();
+    fs.rmSync(path.join(box, '_locales'), { recursive: true });
+    editManifest(box, (m) => { delete m.default_locale; m.name = 'Plain'; });
+    const listed = runPack(box, ['--list']);
+    assert.equal(listed.status, 0, listed.stderr);
+    assert.deepEqual(
+      listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean).sort(),
+      ['LICENSE', 'content.js', 'manifest.json']);
     fs.rmSync(box, { recursive: true, force: true });
   }
 

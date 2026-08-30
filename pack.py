@@ -175,6 +175,13 @@ def selected_files(root):
         if entry:
             yield entry
 
+    # What the extension asks the default locale to answer for. Chrome reads
+    # these in the manifest and in the stylesheets it serves.
+    wanted = _placeholders(_read(root, 'manifest.json'))
+    for relative in selected:
+        if relative.endswith('.css'):
+            wanted |= _placeholders(_read(root, relative))
+
     # Chrome requires these to agree. An extension carrying a _locales directory
     # has to name a default_locale; one asking for a message has to name it too;
     # and the locale it names has to be one directory under _locales and hold a
@@ -193,6 +200,9 @@ def selected_files(root):
     locales = _host(root, LOCALE_DIR)
     if os.path.isdir(locales) and not named:
         raise SystemExit(f'{LOCALE_DIR} is here and the manifest names no default_locale')
+    if wanted and not named:
+        raise SystemExit(f'the extension asks for {sorted(wanted)[0]} and names no '
+                         f'default_locale')
     required = (posixpath.join(LOCALE_DIR, default_locale, LOCALE_FILE)
                 if named else None)
     seen_locales = set()
