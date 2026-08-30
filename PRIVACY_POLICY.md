@@ -12,13 +12,13 @@ Twitch Channel Volume is a Chrome extension that remembers and auto-applies volu
 
 ### Channel Volume Settings
 
-- **What**: Twitch channel identifiers (the numeric owner ID / broadcaster ID once the page has provided it; the login name, video ID or clip slug until then), display names, page URLs, the gain values you set per kind (Live / VOD / Clip), whether auto-follow is switched on for that channel in each of them, and a cache of the most recent loudness measurement with the time it was taken, the number of measurement windows behind it, and a note that it is expressed as if the player's own volume were at full. Alongside these, the extension keeps the mapping from a provisional identifier to the numeric one and a counter that orders field updates.
-- **Purpose**: Used to automatically apply your preferred volume when you open a stream, VOD, or clip from a saved channel.
+- **What**: Twitch channel identifiers (the numeric owner ID / broadcaster ID once the page has provided it; the login name or video ID until then), display names, page URLs, the gain values you set per kind (Live / VOD), whether auto-follow is switched on for that channel in each of them, and a cache of the most recent loudness measurement with the time it was taken, the number of measurement windows behind it, and a note that it is expressed as if the player's own volume were at full. Alongside these, the extension keeps the mapping from a provisional identifier to the numeric one and a counter that orders field updates.
+- **Purpose**: Used to automatically apply your preferred volume when you open a stream or VOD from a saved channel.
 - **Storage**: Saved locally in `chrome.storage.local` on your device. Never transmitted to any external server.
 
 ### Extension Preferences
 
-- **What**: Target LUFS level, ad-break gain (dB), display unit (% or dB), gain overlay toggle, and the auto-follow default for each kind (Live / VOD / Clip).
+- **What**: Target LUFS level, ad-break gain (dB), display unit (% or dB), gain overlay toggle, and the auto-follow default for each kind (Live / VOD).
 - **Purpose**: Customize the extension's behavior according to your preferences.
 - **Storage**: Saved locally in `chrome.storage.local` on your device.
 
@@ -32,7 +32,7 @@ Twitch Channel Volume is a Chrome extension that remembers and auto-applies volu
 
 - **What**: GraphQL responses issued by Twitch itself (to obtain the channel's owner ID / broadcaster ID, login name and display name), the ad cues the player posts to its own page (to learn when an ad break starts and ends), and the presence of the player's ad indicator in the page.
 - **Purpose**: Obtain a persistent channel identifier, name the channel in the popup and the settings page, and detect ad breaks.
-- **Storage**: GraphQL responses and ad cues are not stored. Only the required values are extracted and used: the channel's numeric ID, its login name and display name, the identifier of the content the request was made for (login name for a live channel, video ID for a VOD, slug for a clip), and the start, end, roll type (pre-roll / mid-roll) and the position and count within the pod of an ad break. The numeric ID is the key a channel's settings are kept under, and the display name, the login name and the channel URL built from it are saved in them. The content identifier is saved as well: it stands in as that key until the numeric ID arrives, and once it arrives it stays in the map that points it at the numeric one. What never leaves memory is the ad break itself — its start, end, roll type and pod position are used while the page is open and are not written to storage. Ad identifiers, advertiser names and tracking URLs carried by a cue are not read.
+- **Storage**: GraphQL responses and ad cues are not stored. Only the required values are extracted and used: the channel's numeric ID, its login name and display name, the identifier of the content the request was made for (login name for a live channel, video ID for a VOD), and the start, end, roll type (pre-roll / mid-roll) and the position and count within the pod of an ad break. The numeric ID is the key a channel's settings are kept under, and the display name, the login name and the channel URL built from it are saved in them. The content identifier is saved as well: it stands in as that key until the numeric ID arrives, and once it arrives it stays in the map that points it at the numeric one. What never leaves memory is the ad break itself — its start, end, roll type and pod position are used while the page is open and are not written to storage. Ad identifiers, advertiser names and tracking URLs carried by a cue are not read.
 
 ## Data NOT Collected
 
