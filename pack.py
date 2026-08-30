@@ -147,8 +147,23 @@ def selected_files(root):
         selected.append(relative)
         pending.extend(_references_within(root, relative))
 
+    carried = set()
+
+    def carry(full, relative):
+        """A name reachable more than one way enters the archive once.
+
+        zipfile writes a second entry under the same name and warns on stderr,
+        which the release path does not read.
+        """
+        if relative in carried:
+            return None
+        carried.add(relative)
+        return full, relative
+
     for relative in sorted(selected):
-        yield _packaged(root, relative), relative
+        entry = carry(_packaged(root, relative), relative)
+        if entry:
+            yield entry
 
     # Chrome requires the two to agree. An extension carrying a _locales
     # directory has to name a default_locale, and the locale it names has to hold
@@ -163,22 +178,26 @@ def selected_files(root):
         raise SystemExit(f'{LOCALE_DIR} is here and the manifest names no default_locale')
     required = (posixpath.join(LOCALE_DIR, default_locale, LOCALE_FILE)
                 if default_locale else None)
-    carried = set()
+    seen_locales = set()
     if os.path.isdir(locales):
         for locale in sorted(os.listdir(locales)):
             relative = posixpath.join(LOCALE_DIR, locale, LOCALE_FILE)
             full = _packaged(root, relative)
             if os.path.isfile(full):
-                carried.add(relative)
-                yield full, relative
-    if required and required not in carried:
+                seen_locales.add(relative)
+                entry = carry(full, relative)
+                if entry:
+                    yield entry
+    if required and required not in seen_locales:
         raise SystemExit(f'the default locale carries no messages: {required}')
 
     for relative in DISTRIBUTION_FILES:
         full = _packaged(root, relative)
         if not os.path.isfile(full):
             raise SystemExit(f'the package has to carry this and it is missing: {relative}')
-        yield full, relative
+        entry = carry(full, relative)
+        if entry:
+            yield entry
 
 
 def pack():
@@ -190,12 +209,21 @@ def pack():
     files = list(selected_files(root))
     out = f'twitch-channel-volume-{version}.zip'
     out_path = os.path.join(root, out)
-    if os.path.exists(out_path):
-        os.remove(out_path)
-    with zipfile.ZipFile(out_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for full, arcname in files:
-            zf.write(full, arcname)
-            print(f'  + {arcname}')
+    # Built beside the target and moved onto it. Resolving the names first
+    # answers for a file that is missing, and reading one can still fail — a
+    # write straight into the target would delete the package built last and
+    # leave a shorter one that opens cleanly in its place.
+    staging = out_path + '.part'
+    try:
+        with zipfile.ZipFile(staging, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for full, arcname in files:
+                zf.write(full, arcname)
+                print(f'  + {arcname}')
+        os.replace(staging, out_path)
+    except BaseException:
+        if os.path.exists(staging):
+            os.remove(staging)
+        raise
     print(f'\n=> {out}')
 
 
@@ -206,7 +234,10 @@ def list_files():
 
 
 if __name__ == '__main__':
-    if '--list' in sys.argv:
+    arguments = sys.argv[1:]
+    if arguments == ['--list']:
         list_files()
+    elif arguments:
+        raise SystemExit(f'usage: pack.py [--list] (got: {" ".join(arguments)})')
     else:
         pack()

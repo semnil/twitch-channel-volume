@@ -442,6 +442,75 @@ test('the store package refuses to leave out what it has to carry', () => {
       `the package built before is left alone with ${broken}`);
     fs.rmSync(box, { recursive: true, force: true });
   }
+
+  // Resolving every name answers for one that is missing; reading one can still
+  // fail. What the package built last is worth is that it stays.
+  const entriesIn = (zip) => spawnSync('python3',
+    ['-c', 'import zipfile,sys;print(len(zipfile.ZipFile(sys.argv[1]).namelist()))', zip],
+    { encoding: 'utf8' }).stdout.trim();
+  for (const unreadable of ['LICENSE', '_locales/ja/messages.json']) {
+    const box = buildMinimal();
+    const built = runPack(box, []);
+    assert.equal(built.status, 0, built.stderr);
+    const zip = path.join(box, 'twitch-channel-volume-0.0.0.zip');
+    const before = fs.statSync(zip).size;
+    const entries = entriesIn(zip);
+    fs.chmodSync(path.join(box, unreadable), 0o000);
+    let denied = true;
+    try { fs.readFileSync(path.join(box, unreadable)); denied = false; } catch { /* denied */ }
+    if (!denied) {
+      // Running as a user the mode does not stop, so the case cannot be made.
+      console.log(`  (read-failure check skipped: ${unreadable} is readable at mode 000)`);
+      fs.chmodSync(path.join(box, unreadable), 0o644);
+      fs.rmSync(box, { recursive: true, force: true });
+      continue;
+    }
+    const failed = runPack(box, []);
+    fs.chmodSync(path.join(box, unreadable), 0o644);
+    assert.notEqual(failed.status, 0, `pack.py fails when ${unreadable} cannot be read`);
+    assert.ok(fs.existsSync(zip) && fs.statSync(zip).size === before,
+      `the package built before survives a read failure on ${unreadable}`);
+    assert.equal(entriesIn(zip), entries,
+      `the package built before still carries ${entries} entries`);
+    assert.deepEqual(fs.readdirSync(box).filter((name) => name.endsWith('.part')), [],
+      'a half-built package is not left beside the one that stands');
+    fs.rmSync(box, { recursive: true, force: true });
+  }
+
+  // A name the walk reaches and the locale sweep or DISTRIBUTION_FILES reaches
+  // too. zipfile writes the second entry and warns on stderr, which the release
+  // path does not read.
+  {
+    const box = buildMinimal();
+    const manifest = JSON.parse(fs.readFileSync(path.join(box, 'manifest.json'), 'utf8'));
+    manifest.web_accessible_resources = [
+      { resources: ['LICENSE', '_locales/ja/messages.json'], matches: ['*://*/*'] }
+    ];
+    fs.writeFileSync(path.join(box, 'manifest.json'), JSON.stringify(manifest));
+    const listed = runPack(box, ['--list']);
+    assert.equal(listed.status, 0, listed.stderr);
+    const names = listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+    assert.equal(names.length, new Set(names).size, `each name enters the package once`);
+    fs.rmSync(box, { recursive: true, force: true });
+  }
+
+  // An argument nobody recognised is not an instruction to rewrite the package.
+  {
+    const box = buildMinimal();
+    const built = runPack(box, []);
+    assert.equal(built.status, 0, built.stderr);
+    const zip = path.join(box, 'twitch-channel-volume-0.0.0.zip');
+    const stamp = fs.statSync(zip).mtimeMs;
+    for (const argument of [['--lst'], ['-l'], ['--help'], ['--list', 'extra']]) {
+      const refused = runPack(box, argument);
+      assert.notEqual(refused.status, 0, `pack.py refuses ${argument.join(' ')}`);
+      assert.doesNotMatch(refused.stdout || '', /^\s*\+ /m,
+        `pack.py packs nothing for ${argument.join(' ')}`);
+    }
+    assert.equal(fs.statSync(zip).mtimeMs, stamp,
+      'the package standing there is not rewritten by an argument nobody recognised');
+    fs.rmSync(box, { recursive: true, force: true });
+  }
 });
 
 test('the store package refuses a reference that leaves it', () => {
