@@ -29,7 +29,10 @@
     if (autoUpdatePending) $('applyBtn').disabled = true;
     if (measurementResetPending) $('applyBtn').disabled = true;
 
-    const manualDisabled = currentAutoApplyLoudness || autoUpdatePending || audioUnavailable;
+    // The gain is saved against a channel, so there is nothing to set on a page
+    // that has none.
+    const manualDisabled = currentAutoApplyLoudness || autoUpdatePending ||
+      audioUnavailable || !validChannel;
     $('manualSection').classList.toggle('disabled', manualDisabled);
     $('manualSlider').disabled = manualDisabled;
     document.querySelectorAll('.presets button').forEach((btn) => {

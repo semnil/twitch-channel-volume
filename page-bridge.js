@@ -549,8 +549,13 @@
       }
     }
     if (best) return best;
+    // Nothing could be taken, so the element that was passed over is offered
+    // after all: refusing it is what reports it. An element that has loaded
+    // nothing is not that element, and is read again on the next tick.
     for (const v of all) {
-      if (!attachFailedFor.has(v) && !heldAsAdElement(v)) return v;
+      if (attachFailedFor.has(v) || heldAsAdElement(v)) continue;
+      if (!v.src && v.readyState === 0) continue;
+      return v;
     }
     return null;
   }

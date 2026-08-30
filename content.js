@@ -586,10 +586,12 @@
     clearMeasurementCache();
     lastSavedAt = 0;
     // A clip's refusal was about the clip's own element, and the bridge reports
-    // the next page's element for itself. Every other notice is kept: an SPA
-    // navigation that keeps the same element gets no second report, and
-    // clearing here would drop that notice for good.
-    if (currentChannel.kind === 'clip') {
+    // the next page's element for itself. Every other notice is kept, whatever
+    // page it is carried across: an SPA navigation that keeps the same element
+    // gets no second report, and an audio context that would not start reports
+    // once per state rather than once per attach, so clearing either here would
+    // drop that notice for good.
+    if (currentChannel.kind === 'clip' && audioUnavailableCause === 'cross-origin') {
       audioUnavailable = false;
       audioUnavailableCause = '';
       measurementUnavailable = false;

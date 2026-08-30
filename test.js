@@ -3878,6 +3878,24 @@ test('content keeps the audio notice through the messages that do not answer it'
   assert.equal(harness.gainBadgeText(), null);
 });
 
+test('content carries a notice that is not the clip\'s across a clip', async () => {
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/streamer' });
+  await flushTasks();
+  // Another script holds the player's audio. The bridge reports that once, and
+  // the element it named stays in the page.
+  await harness.dispatchMessage(ATTACH_FAILED);
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).audioUnavailableCause, 'element-taken');
+
+  await harness.navigate('https://www.twitch.tv/streamer/clip/AbcDef');
+  await harness.navigate('https://www.twitch.tv/streamer');
+
+  // Nothing reported it again on the way back, so dropping it here would drop
+  // it for good.
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.audioUnavailable, true);
+  assert.equal(state.audioUnavailableCause, 'element-taken');
+});
+
 test('content asks a restarted bridge to attach before it drops the notice', async () => {
   const harness = createContentHarness();
   await flushTasks();
@@ -6788,6 +6806,21 @@ test('popup clears a failed save across a clip', async () => {
 
   assert.equal(harness.el('applyHint').classList.contains('error'), false);
   assert.equal(harness.el('applyHint').textContent, harness.message('hintNoLufs'));
+});
+
+test('popup leaves the manual controls alone where there is no channel', async () => {
+  const harness = createPopupHarness({
+    state: { channel: { id: '', kind: 'none' } }
+  });
+  await flushTasks(8);
+
+  // The gain is saved against a channel, and content.js refuses one sent
+  // without it, so the slider does not offer a setting that cannot be kept.
+  assert.equal(harness.el('manualSlider').disabled, true);
+  assert.equal(harness.el('manualSection').classList.contains('disabled'), true);
+  assert.equal(harness.el('applyBtn').disabled, true);
+  assert.equal(harness.el('autoApplyToggle').disabled, true);
+  assert.equal(harness.el('applyHint').textContent, harness.message('channelNotDetected'));
 });
 
 test('popup names the reason each rejected request came back with', async () => {
@@ -9826,6 +9859,26 @@ test('page bridge still reports an element the ad path looked at first', async (
   // The report the ad path did not make is still the player path's to make.
   harness.removeVideo(player);
   await harness.runTimers();
+  const failures = harness.messages.filter((message) => message.event === 'attach-failed');
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].cause, 'cross-origin');
+});
+
+test('page bridge reports the element it passed over when the others carry nothing', async () => {
+  const harness = createPageBridgeHarness();
+  // The element the page opens with has loaded nothing yet, and it comes first
+  // in the document.
+  Object.assign(harness.currentVideo(), {
+    src: '', currentSrc: '', srcObject: null, readyState: 0
+  });
+  harness.addVideo({
+    crossOrigin: null, srcObject: null,
+    src: 'https://clips.example/clip.mp4', currentSrc: 'https://clips.example/clip.mp4'
+  });
+  await harness.dispatchCommand('init');
+  await harness.dispatchCommand('attach');
+
+  assert.equal(harness.mediaSourceCalls(), 0);
   const failures = harness.messages.filter((message) => message.event === 'attach-failed');
   assert.equal(failures.length, 1);
   assert.equal(failures[0].cause, 'cross-origin');
