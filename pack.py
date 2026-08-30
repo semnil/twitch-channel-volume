@@ -340,7 +340,8 @@ def _json(relative, text):
 
 def _chrome_reads_the_version(version):
     """Chrome reads a version as one to four numbers, each below 2**32, the
-    first of them written without a leading zero."""
+    first of them written without a leading zero. What a prerelease shows
+    instead goes in version_name, which Chrome reads as any text at all."""
     if not isinstance(version, str):
         return False
     parts = version.split('.')
@@ -436,6 +437,9 @@ def selected_files(root):
     version = manifest.get('version')
     if not _chrome_reads_the_version(version):
         raise SystemExit(f'version is not one Chrome reads: {version!r}')
+    if 'version_name' in manifest and not isinstance(manifest['version_name'], str):
+        raise SystemExit('version_name is not text: '
+                         f'{manifest["version_name"]!r}')
     pending = [('manifest.json', 'asset')]
     pending.extend(_manifest_references(root, manifest))
     selected = {}

@@ -68,14 +68,7 @@ jobs:
           python-version: '3.12'
 
       - name: Verify manifest version matches tag 🔍
-        run: |
-          set -e
-          tag="${GITHUB_REF_NAME#v}"
-          manifest=$(python -c "import json;print(json.load(open('manifest.json'))['version'])")
-          if [[ "$tag" != "$manifest" ]]; then
-            echo "::error::manifest.json version ($manifest) does not match tag ($tag)"
-            exit 1
-          fi
+        run: bash tools/verify-version.sh
 
       - name: Pack Extension 📦
         run: python pack.py

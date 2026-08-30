@@ -632,6 +632,51 @@ test('the package follows every manifest key that names a file', () => {
   });
 });
 
+
+// What version a tag stands for. Chrome reads the manifest's version as numbers
+// alone, so a prerelease shows its name in version_name and keeps the numbers it
+// is built on in version. The release runs this script, so this runs it too.
+test('a tag is met by the version the manifest shows for it', () => {
+  const script = path.join(__dirname, 'tools', 'verify-version.sh');
+  assert.ok(fs.existsSync(script), 'the release script is in the tree');
+  // A step that stopped calling it would leave every case below passing.
+  const release = fs.readFileSync(
+    path.join(__dirname, '.github', 'workflows', 'release.yaml'), 'utf8');
+  assert.ok(release.includes('tools/verify-version.sh'),
+    'the release workflow runs the version script');
+
+  withFixtureDir('tcv-version-', (box) => {
+    const ask = (manifest, tag) => {
+      const at = path.join(box, 'manifest.json');
+      fs.writeFileSync(at, JSON.stringify(manifest));
+      return spawnSync('bash', [script, at, tag], { encoding: 'utf8' });
+    };
+    for (const [shape, manifest, tag, wanted] of [
+      ['a release tag against a numeric version',
+        { version: '1.2.0' }, 'v1.2.0', null],
+      ['a prerelease tag against the name beside the version',
+        { version: '1.2.0', version_name: '1.2.0-rc1' }, 'v1.2.0-rc1', null],
+      ['a tag that is not the version', { version: '1.2.0' }, 'v1.2.1',
+        /does not match tag/],
+      ['a release tag against a manifest showing a prerelease',
+        { version: '1.2.0', version_name: '1.2.0-rc1' }, 'v1.2.0', /does not match tag/],
+      ['a name that is not built on the version',
+        { version: '1.2.0', version_name: '9.9.9-rc1' }, 'v9.9.9-rc1',
+        /does not begin with version/],
+      ['a manifest naming no version', { name: 'p' }, 'v1.2.0', /names no version/]
+    ]) {
+      const run = ask(manifest, tag);
+      const said = (run.stdout || '') + (run.stderr || '');
+      if (wanted === null) {
+        assert.equal(run.status, 0, `${shape} passes — ${said.trim()}`);
+      } else {
+        assert.notEqual(run.status, 0, `${shape} is refused`);
+        assert.match(said, wanted, `${shape} says why`);
+      }
+    }
+  });
+});
+
 test('a reference naming a drive is refused under Windows path semantics', () => {
   // A drive letter reads as relative to posixpath, and on Windows it resolves
   // against the same drive — so `C:/content.js` would package what `content.js`
@@ -850,6 +895,11 @@ test('the store package refuses to leave out what it has to carry', () => {
     ['a version of five parts',
       (box) => editManifest(box, m => { m.version = '1.0.0.0.0'; }),
       /version is not one Chrome reads: '1\.0\.0\.0\.0'/],
+    // A prerelease shows its name in version_name, which Chrome reads as any
+    // text at all and refuses when it is not text.
+    ['a version_name that is not text',
+      (box) => editManifest(box, m => { m.version_name = 7; }),
+      /version_name is not text: 7/],
     ['a version written as a number rather than text',
       (box) => editManifest(box, m => { m.version = 100; }),
       /version is not one Chrome reads: 100/],
@@ -1108,6 +1158,15 @@ test('the store package refuses to leave out what it has to carry', () => {
       (box) => editManifest(box, m => { m.version = '1.01.0'; })],
     ['a version part at the largest number one holds',
       (box) => editManifest(box, m => { m.version = '4294967295'; })],
+    // The shape a prerelease takes: Chrome reads the version and shows the
+    // name. Without this the rule above would refuse the only shape that
+    // lets the prerelease branch of the release grammar build anything.
+    ['a prerelease named beside the version Chrome reads', (box) => {
+      editManifest(box, m => {
+        m.version = '1.2.0';
+        m.version_name = '1.2.0-rc1';
+      });
+    }],
     // The Norwegian the store does carry, which is the name an extension
     // reaching for nb is told to use instead. Without this the rule above
     // could refuse every locale and stay green.
