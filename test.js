@@ -281,8 +281,12 @@ test('the store package carries only the files the extension loads', () => {
     write('utils.js');
     write('content.js');
     write('audio-worklet.js');
-    write('background.js', "importScripts('channel-store.js');\n");
+    // Two arguments, spelled two ways: a walk that stops at the first one
+    // leaves the second out of the package with nothing saying so.
+    write('background.js',
+      'importScripts(\'channel-store.js\', "lib/second.js");\n');
     write('channel-store.js');
+    write('lib/second.js');
     // Spellings a browser reads alike. The expected list below is written out
     // by hand rather than scanned, so it does not inherit whatever this page's
     // markup happens to exercise.
@@ -340,6 +344,7 @@ test('the store package carries only the files the extension loads', () => {
       'channel-store.js',
       'content.js',
       'icons/icon16.png',
+      'lib/second.js',
       'manifest.json',
       'popup.css',
       'popup.html',
