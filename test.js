@@ -3650,6 +3650,37 @@ test('content reports the player audio the bridge could not attach to', async ()
   assert.equal(state.audioUnavailable, false);
 });
 
+test('content keeps the expected clip refusal out of the warnings', async () => {
+  const harness = createContentHarness({ href: 'https://clips.twitch.tv/AbcDef' });
+  await flushTasks();
+  const unavailable = () => harness.warnings
+    .filter((args) => args[0] === '[TCV] player audio unavailable');
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'attach-failed',
+    cause: 'cross-origin',
+    reason: 'media is served from another origin without CORS'
+  });
+  let state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.audioUnavailableCause, 'cross-origin');
+  // Chrome collects a content script's warnings as extension errors, and this
+  // one is the state of every clip page.
+  assert.deepEqual(unavailable(), []);
+
+  // A cause that asks the viewer to do something is still a warning.
+  await harness.dispatchMessage({ type: '__twitch_channel_volume__', event: 'loaded' });
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'attach-failed',
+    cause: 'audio-context',
+    reason: 'audio context unavailable'
+  });
+  state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.audioUnavailableCause, 'audio-context');
+  assert.equal(unavailable().length, 1);
+});
+
 test('content asks for a resume on a keypress as well as on a click', async () => {
   const harness = createContentHarness();
   await flushTasks();

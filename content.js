@@ -471,7 +471,14 @@
         audioUnavailable = true;
         audioUnavailableCause = REPORTED_AUDIO_CAUSES.has(data.cause) ? data.cause : 'element-taken';
         measurementUnavailable = false;
-        console.warn('[TCV] player audio unavailable', data.cause, data.reason);
+        // A clip's media is served from another origin on every Twitch clip,
+        // so that cause is the expected state of the page rather than a fault
+        // to collect in the extension's error list.
+        if (audioUnavailableCause === 'cross-origin') {
+          console.info('[TCV] player audio unavailable', data.cause, data.reason);
+        } else {
+          console.warn('[TCV] player audio unavailable', data.cause, data.reason);
+        }
         updateGainOverlay();
         break;
       case 'lufs':
