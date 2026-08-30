@@ -1,34 +1,84 @@
 """Pack extension for Chrome Web Store submission."""
 import zipfile
+import ntpath
 import os
 import json
+import posixpath
 import re
 import sys
+from html.parser import HTMLParser
 
 # The package is what the extension loads: the manifest, everything the
 # manifest names, what those pages and workers pull in, and the locale files.
 # A file nobody references is not part of it, whatever it is called.
+# Everything below names a packaged file by its path inside the package, which
+# is POSIX whatever the host writes: the manifest spells its references with
+# forward slashes and a zip entry carries them, so the two are one name and
+# only opening a file goes through the host's own separator.
 LOCALE_DIR = '_locales'
 LOCALE_FILE = 'messages.json'
-SCRIPT_SRC = re.compile(r'<script[^>]+src="([^"]+)"')
-STYLE_HREF = re.compile(r'<link[^>]+href="([^"]+)"')
+# What a copy of the extension carries although nothing in it loads them. The
+# MIT text requires the notice to travel with the copies it covers, and a store
+# package is one, so the reference walk below never reaching it is not an answer.
+DISTRIBUTION_FILES = ('LICENSE',)
 IMPORT_SCRIPTS = re.compile(r'importScripts\(([^)]*)\)')
 QUOTED = re.compile(r'[\'"]([^\'"]+)[\'"]')
 REMOTE = ('http:', 'https:', '//', 'data:', 'chrome-extension:')
 
 
-def _resolve(root, relative):
-    """Absolute path of a packaged file, or None when it leaves the package.
+def _host(root, relative):
+    """The host path of a packaged file named by its path inside the package."""
+    return os.path.join(root, *relative.split('/'))
 
-    The path is rejected when it is absolute, climbs out with .., or reaches
-    its target through a symbolic link at any point — the final name or a
-    parent directory alike.
+
+class _PageReferences(HTMLParser):
+    """The scripts and stylesheets a page pulls in.
+
+    The markup is parsed rather than matched. A quoting style, an attribute
+    order or a letter case a pattern did not anticipate is a file that leaves
+    the package with nothing saying so, and a reference inside a comment is one
+    that enters it although the browser never asks for it.
     """
-    if os.path.isabs(relative):
+
+    def __init__(self):
+        super().__init__()
+        self.found = []
+
+    def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        if tag == 'script':
+            source = attributes.get('src')
+            if source:
+                self.found.append(source)
+        elif tag == 'link':
+            href = attributes.get('href')
+            rel = (attributes.get('rel') or '').lower().split()
+            if href and ('stylesheet' in rel or href.endswith('.css')):
+                self.found.append(href)
+
+
+def _page_references(text):
+    parser = _PageReferences()
+    parser.feed(text)
+    parser.close()
+    return parser.found
+
+
+def _resolve(root, relative):
+    """Absolute host path of a packaged file, or None when it leaves the package.
+
+    The path is rejected when it is absolute, carries a backslash or a drive
+    letter, climbs out with .., or reaches its target through a symbolic link at
+    any point — the final name or a parent directory alike. A drive letter reads
+    as relative to posixpath and resolves against the same drive on Windows, so
+    "C:/content.js" would package the file "content.js" names, under a path
+    Chrome does not accept.
+    """
+    if '\\' in relative or posixpath.isabs(relative) or ntpath.splitdrive(relative)[0]:
         return None
-    normalized = os.path.normpath(relative)
+    normalized = posixpath.normpath(relative)
     real_root = os.path.realpath(root)
-    full = os.path.join(real_root, normalized)
+    full = _host(real_root, normalized)
     if os.path.realpath(full) != full:
         return None
     return full
@@ -42,7 +92,7 @@ def _packaged(root, relative):
 
 
 def _read(root, relative):
-    with open(os.path.join(root, relative), encoding='utf-8') as handle:
+    with open(_host(root, relative), encoding='utf-8') as handle:
         return handle.read()
 
 
@@ -68,28 +118,27 @@ def _manifest_references(manifest):
 
 def _references_within(root, relative):
     """Paths the given page or script pulls in, relative to the package root."""
-    base = os.path.dirname(relative)
+    base = posixpath.dirname(relative)
     found = []
     if relative.endswith('.html'):
-        text = _read(root, relative)
-        found.extend(SCRIPT_SRC.findall(text))
-        found.extend(href for href in STYLE_HREF.findall(text) if href.endswith('.css'))
+        found.extend(_page_references(_read(root, relative)))
     elif relative.endswith('.js'):
         for call in IMPORT_SCRIPTS.findall(_read(root, relative)):
             found.extend(QUOTED.findall(call))
     for reference in found:
         if reference.startswith(REMOTE):
             continue
-        yield os.path.normpath(os.path.join(base, reference))
+        yield posixpath.normpath(posixpath.join(base, reference))
 
 
 def selected_files(root):
     """Yield (path, arcname) for every file the package carries."""
+    manifest = json.loads(_read(root, 'manifest.json'))
     pending = ['manifest.json']
-    pending.extend(_manifest_references(json.loads(_read(root, 'manifest.json'))))
+    pending.extend(_manifest_references(manifest))
     selected = []
     while pending:
-        relative = os.path.normpath(pending.pop(0))
+        relative = posixpath.normpath(pending.pop(0))
         if relative in selected:
             continue
         full = _packaged(root, relative)
@@ -99,27 +148,52 @@ def selected_files(root):
         pending.extend(_references_within(root, relative))
 
     for relative in sorted(selected):
-        yield os.path.join(root, relative), relative
+        yield _packaged(root, relative), relative
 
-    locales = os.path.join(root, LOCALE_DIR)
+    # Chrome requires the two to agree. An extension carrying a _locales
+    # directory has to name a default_locale, and the locale it names has to hold
+    # messages — every __MSG_ placeholder resolves against it. Either half alone
+    # is an extension Chrome declines to load. Naming a default_locale with no
+    # _locales at all is refused by the messages check below rather than here.
+    default_locale = manifest.get('default_locale')
+    if default_locale is not None and not (isinstance(default_locale, str) and default_locale):
+        raise SystemExit(f'default_locale is not a locale name: {default_locale!r}')
+    locales = _host(root, LOCALE_DIR)
+    if os.path.isdir(locales) and not default_locale:
+        raise SystemExit(f'{LOCALE_DIR} is here and the manifest names no default_locale')
+    required = (posixpath.join(LOCALE_DIR, default_locale, LOCALE_FILE)
+                if default_locale else None)
+    carried = set()
     if os.path.isdir(locales):
         for locale in sorted(os.listdir(locales)):
-            relative = os.path.join(LOCALE_DIR, locale, LOCALE_FILE)
+            relative = posixpath.join(LOCALE_DIR, locale, LOCALE_FILE)
             full = _packaged(root, relative)
             if os.path.isfile(full):
+                carried.add(relative)
                 yield full, relative
+    if required and required not in carried:
+        raise SystemExit(f'the default locale carries no messages: {required}')
+
+    for relative in DISTRIBUTION_FILES:
+        full = _packaged(root, relative)
+        if not os.path.isfile(full):
+            raise SystemExit(f'the package has to carry this and it is missing: {relative}')
+        yield full, relative
 
 
 def pack():
     root = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(root, 'manifest.json')) as f:
         version = json.load(f)['version']
+    # Every name is resolved before anything is written. A refusal partway
+    # through would otherwise leave a half-built package where the last one was.
+    files = list(selected_files(root))
     out = f'twitch-channel-volume-{version}.zip'
     out_path = os.path.join(root, out)
     if os.path.exists(out_path):
         os.remove(out_path)
     with zipfile.ZipFile(out_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for full, arcname in selected_files(root):
+        for full, arcname in files:
             zf.write(full, arcname)
             print(f'  + {arcname}')
     print(f'\n=> {out}')
@@ -127,7 +201,7 @@ def pack():
 
 def list_files():
     root = os.path.dirname(os.path.abspath(__file__))
-    for _full, arcname in selected_files(root):
+    for _full, arcname in list(selected_files(root)):
         print(arcname)
 
 
