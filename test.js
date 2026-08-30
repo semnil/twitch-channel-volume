@@ -192,25 +192,108 @@ const pageReferences = (text) => {
   }
   return found;
 };
-  const references = [
-    ...['manifest.json', 'background.js']
-      .map((name) => fs.readFileSync(path.join(__dirname, name), 'utf8')),
-    ...['popup.html', 'options.html'].flatMap((name) =>
-      pageReferences(fs.readFileSync(path.join(__dirname, name), 'utf8')))
-  ].join('\n');
-  for (const arcname of packaged) {
-    // A name inside the package is POSIX whatever the host writes it on.
-    const segments = arcname.split('/');
-    if (segments.length === 1) {
-      if (arcname === 'manifest.json' || distribution.includes(arcname)) continue;
-      assert.match(arcname, /\.(js|html)$/, `${arcname} is not a script or a page`);
-      assert.ok(references.includes(arcname), `${arcname} is packaged but nothing loads it`);
-      continue;
+  const manifest = readJson('manifest.json');
+  // pack.py declares the keys it follows; this reads that declaration and
+  // resolves every one of them itself. The two share the list of keys and
+  // nothing else — the reading, the parsing and the spelling are separate here —
+  // so a key added to the walk cannot leave this behind.
+  const DECLARED_KINDS = new Set(['page', 'script', 'style', 'asset', 'named']);
+  const declaredKeys = (() => {
+    const source = fs.readFileSync(path.join(__dirname, 'pack.py'), 'utf8');
+    const table = source.match(/^MANIFEST_REFERENCES = \(([\s\S]*?)^\)$/m);
+    assert.ok(table, 'pack.py declares the keys it follows in MANIFEST_REFERENCES');
+    const rows = Array.from(table[1].matchAll(/\(\(([^)]*)\),\s*'([a-z]+)'\)/g),
+      ([, steps, kind]) => ({
+        path: Array.from(steps.matchAll(/'([^']*)'/g), m => m[1]),
+        kind
+      }));
+    assert.ok(rows.length > 0, 'the declared table holds keys');
+    for (const { kind } of rows) {
+      assert.ok(DECLARED_KINDS.has(kind),
+        `pack.py walks a ${kind} and this test does not know that kind`);
     }
-    const shipped =
-      (segments[0] === 'icons' && segments.length === 2 && arcname.endsWith('.png')) ||
-      (segments[0] === '_locales' && segments.length === 3 && segments[2] === 'messages.json');
-    assert.ok(shipped, `${arcname} is not a path the extension loads`);
+    return rows;
+  })();
+  const valuesAt = (value, steps) => {
+    if (!steps.length) { return typeof value === 'string' ? [value] : []; }
+    const [step, ...rest] = steps;
+    const isObject = value !== null && typeof value === 'object';
+    if (step === '*') {
+      return isObject && !Array.isArray(value)
+        ? Object.values(value).flatMap(held => valuesAt(held, rest)) : [];
+    }
+    if (step === '[]') {
+      return Array.isArray(value) ? value.flatMap(held => valuesAt(held, rest)) : [];
+    }
+    return isObject && step in value ? valuesAt(value[step], rest) : [];
+  };
+  // A resource entry Chrome matches against the package names no one file.
+  const A_PATTERN = /[*?]/;
+  const BY_NAME = [['.html', 'page'], ['.js', 'script'], ['.css', 'style']];
+  const kindOfName = name =>
+    (BY_NAME.find(([suffix]) => name.endsWith(suffix)) || [null, 'asset'])[1];
+  const namedByManifest = declaredKeys.flatMap(({ path, kind }) =>
+    valuesAt(manifest, path)
+      .filter(value => !A_PATTERN.test(value))
+      .map(value => ({ value, kind: kind === 'named' ? kindOfName(value) : kind })));
+  const importedBy = text => Array.from(
+    text.matchAll(/importScripts\(([^)]*)\)/g),
+    ([, call]) => Array.from(call.matchAll(/['"]([^'"]+)['"]/g), m => m[1])).flat();
+  const styleReferences = text => Array.from(
+    text.replace(/\/\*[\s\S]*?\*\//g, ' ')
+      .matchAll(/(?:@import\s+(?:url\(\s*)?|url\(\s*)(["']?)([^"')\s;]+)\1/g),
+    m => m[2]).filter(target => !/^(https?:|\/\/|data:|#)/.test(target)
+      && !target.includes('__MSG_'));
+  // What the extension loads, followed from the manifest through the files it
+  // names, each of them parsed here rather than by pack.py.
+  const referenced = new Set(['manifest.json']);
+  {
+    const pending = namedByManifest.slice();
+    while (pending.length) {
+      const { value, kind } = pending.shift();
+      if (referenced.has(value)) { continue; }
+      referenced.add(value);
+      if (kind === 'asset' || !fs.existsSync(__dirname + '/' + value)) { continue; }
+      const text = fs.readFileSync(__dirname + '/' + value, 'utf8');
+      const base = value.includes('/') ? value.slice(0, value.lastIndexOf('/') + 1) : '';
+      const found = kind === 'page' ? pageReferences(text)
+        : kind === 'script' ? importedBy(text) : styleReferences(text);
+      for (const reference of found) {
+        pending.push({ value: base + reference, kind: kindOfName(reference) });
+      }
+    }
+  }
+  // Every file the manifest names is in the package, and everything in the
+  // package is named. The first half is the one a forgotten key makes silent.
+  // Read without the declared table: a string in the manifest that names a file
+  // in the tree is a file the extension loads. A key left out of that table is
+  // silent to every check that reads it, and this is what stays awake.
+  const namesAFile = [];
+  (function walkStrings(value) {
+    if (typeof value === 'string') {
+      if (/^[\w][\w./-]*$/.test(value) && fs.existsSync(__dirname + '/' + value)
+        && fs.statSync(__dirname + '/' + value).isFile()) {
+        namesAFile.push(value);
+      }
+    } else if (value !== null && typeof value === 'object') {
+      Object.values(value).forEach(walkStrings);
+    }
+  })(manifest);
+  assert.ok(namesAFile.length > 0, 'the manifest names files that are in the tree');
+  for (const value of namesAFile) {
+    assert.ok(packaged.includes(value),
+      `${value} is named by the manifest and must be packed`);
+  }
+  for (const { value } of namedByManifest) {
+    assert.ok(packaged.includes(value),
+      `${value} is named by the manifest and must be packed`);
+    assert.ok(fs.existsSync(path.join(__dirname, value)), `${value} exists`);
+  }
+  for (const arcname of packaged) {
+    if (distribution.includes(arcname)) { continue; }
+    // A name inside the package is POSIX whatever the host writes it on.
+    if (/^_locales\/[^/]+\/messages\.json$/.test(arcname)) { continue; }
+    assert.ok(referenced.has(arcname), `${arcname} is packaged but nothing loads it`);
   }
 
   // Every locale the tree carries is one the package carries. An extension
@@ -451,6 +534,157 @@ test('the icons are drawn beside the script or not at all', () => {
   });
 });
 
+
+// Every key that names a file is followed, a page is read for what it pulls in
+// whatever it is called, and a stylesheet is read for what it reaches.
+test('the package follows every manifest key that names a file', () => {
+  withFixtureDir('tcv-keys-', (fixture) => {
+    const write = (relative, body = relative) => {
+      const target = path.join(fixture, relative);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, body);
+    };
+    write('manifest.json', JSON.stringify({
+      manifest_version: 3,
+      version: '1.0.0',
+      action: { default_popup: 'popup.htm' },
+      devtools_page: 'devtools.html',
+      side_panel: { default_path: 'panel.html' },
+      chrome_url_overrides: { newtab: 'newtab.html' },
+      sandbox: { pages: ['sandboxed.html'] },
+      storage: { managed_schema: 'schema.json' },
+      declarative_net_request: {
+        rule_resources: [{ id: 'r', enabled: true, path: 'rules.json' }]
+      },
+      content_scripts: [{ js: ['content.js'], css: ['styles.css'] }],
+      web_accessible_resources: [
+        { resources: ['exposed.js', '/loose.png', '//spare.js', '/',
+                      'images/*.png', '/lib/*.js'],
+          matches: ['https://example.com/*'] }
+      ]
+    }));
+    // Chrome loads a page under whatever name the key gives it.
+    write('popup.htm', '<script src="popup.js"></script>\n');
+    write('popup.js');
+    write('devtools.html');
+    write('panel.html');
+    write('newtab.html');
+    write('sandboxed.html');
+    write('schema.json', '{}');
+    write('rules.json', '[]');
+    write('content.js');
+    write('exposed.js');
+    write('styles.css', '@import "theme.css";\n'
+      + 'body { background: url(bg.png) }\n'
+      + '/* url(commented.png) */\n'
+      + 'a { background: url("https://example.com/remote.png") }\n'
+      + 'b { background: url(#within) }\n'
+      + 'c { background: url("__MSG_@@extension_id__/asset.png") }\n');
+    write('theme.css', 'body { color: red }\n');
+    write('bg.png');
+    // In a comment, remote, a fragment of the sheet, and a name Chrome
+    // substitutes a message into: none of them is a file this can resolve.
+    write('commented.png');
+    // A resource entry is a pattern Chrome matches against the extension's
+    // own files, so what it names is packed. The three beside it are the
+    // ones it does not name: a different extension, a different directory,
+    // and one the pattern reaches only because '*' passes over a slash.
+    write('images/logo.png');
+    write('images/deep/inner.png');
+    write('images/notes.txt');
+    // The pattern has to name the whole of what it matches: this one begins
+    // with a name it does name and goes on past it.
+    write('images/logo.png.bak');
+    // What a pattern names is read by what it is: this one imports, and
+    // what it imports is packed with it.
+    write('lib/helper.js', "importScripts('inner.js');\n");
+    write('lib/inner.js');
+    write('lib/notes.txt');
+    // A resource is written from the extension's root, and the documented
+    // form writes that root as a leading slash: '/loose.png' and '/lib/*.js'
+    // name what 'loose.png' and 'lib/*.js' name. A slash on its own names
+    // nothing, and one written twice is still the root.
+    write('loose.png');
+    write('spare.js');
+    write('stray.png');
+    write('LICENSE', 'MIT License\n');
+    fs.copyFileSync(path.join(__dirname, 'pack.py'), path.join(fixture, 'pack.py'));
+
+    const listed = spawnSync('python3', ['-B', 'pack.py', '--list'],
+      { cwd: fixture, encoding: 'utf8' });
+    assert.equal(listed.status, 0, listed.stderr);
+    assert.deepEqual(
+      listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean).sort(),
+      [
+      'LICENSE', 'bg.png', 'content.js', 'devtools.html', 'exposed.js',
+      'images/deep/inner.png', 'images/logo.png', 'lib/helper.js', 'lib/inner.js',
+      'loose.png', 'manifest.json', 'newtab.html', 'panel.html', 'popup.htm',
+      'popup.js', 'rules.json', 'sandboxed.html', 'schema.json', 'spare.js',
+      'styles.css', 'theme.css'
+    ]);
+
+    // Each of these says the key was walked rather than the file happening to
+    // be carried some other way.
+    // A pattern cannot name a file that is not there, so what says it was
+    // matched is that the file is in the list above and its neighbours are
+    // not. These are the names that fail when the key stops being walked.
+    for (const gone of ['panel.html', 'rules.json', 'schema.json', 'theme.css',
+      'bg.png', 'exposed.js', 'popup.js', 'lib/inner.js']) {
+      fs.rmSync(path.join(fixture, gone));
+      const refused = spawnSync('python3', ['-B', 'pack.py', '--list'],
+        { cwd: fixture, encoding: 'utf8' });
+      assert.notEqual(refused.status, 0, `pack.py refuses a package missing ${gone}`);
+      assert.match(refused.stderr, new RegExp(gone.replace('.', '\\.')));
+      write(gone);
+    }
+  });
+});
+
+
+// What version a tag stands for. Chrome reads the manifest's version as numbers
+// alone, so a prerelease shows its name in version_name and keeps the numbers it
+// is built on in version. The release runs this script, so this runs it too.
+test('a tag is met by the version the manifest shows for it', () => {
+  const script = path.join(__dirname, 'tools', 'verify-version.sh');
+  assert.ok(fs.existsSync(script), 'the release script is in the tree');
+  // A step that stopped calling it would leave every case below passing.
+  const release = fs.readFileSync(
+    path.join(__dirname, '.github', 'workflows', 'release.yaml'), 'utf8');
+  assert.ok(release.includes('tools/verify-version.sh'),
+    'the release workflow runs the version script');
+
+  withFixtureDir('tcv-version-', (box) => {
+    const ask = (manifest, tag) => {
+      const at = path.join(box, 'manifest.json');
+      fs.writeFileSync(at, JSON.stringify(manifest));
+      return spawnSync('bash', [script, at, tag], { encoding: 'utf8' });
+    };
+    for (const [shape, manifest, tag, wanted] of [
+      ['a release tag against a numeric version',
+        { version: '1.2.0' }, 'v1.2.0', null],
+      ['a prerelease tag against the name beside the version',
+        { version: '1.2.0', version_name: '1.2.0-rc1' }, 'v1.2.0-rc1', null],
+      ['a tag that is not the version', { version: '1.2.0' }, 'v1.2.1',
+        /does not match tag/],
+      ['a release tag against a manifest showing a prerelease',
+        { version: '1.2.0', version_name: '1.2.0-rc1' }, 'v1.2.0', /does not match tag/],
+      ['a name that is not built on the version',
+        { version: '1.2.0', version_name: '9.9.9-rc1' }, 'v9.9.9-rc1',
+        /does not begin with version/],
+      ['a manifest naming no version', { name: 'p' }, 'v1.2.0', /names no version/]
+    ]) {
+      const run = ask(manifest, tag);
+      const said = (run.stdout || '') + (run.stderr || '');
+      if (wanted === null) {
+        assert.equal(run.status, 0, `${shape} passes — ${said.trim()}`);
+      } else {
+        assert.notEqual(run.status, 0, `${shape} is refused`);
+        assert.match(said, wanted, `${shape} says why`);
+      }
+    }
+  });
+});
+
 test('a reference naming a drive is refused under Windows path semantics', () => {
   // A drive letter reads as relative to posixpath, and on Windows it resolves
   // against the same drive — so `C:/content.js` would package what `content.js`
@@ -642,6 +876,13 @@ test('the store package refuses to leave out what it has to carry', () => {
       (box) => writeCatalog(box,
         { extName: { message: 'x $A$', placeholders: { a: { example: 'y' } } } }),
       /gives extName\.a no content/],
+    // Outside a resource entry a leading slash is an absolute path, and an
+    // absolute path names a file the package cannot carry.
+    ['a reference beginning at the root of the host',
+      (box) => editManifest(box, m => {
+        m.content_scripts = [{ js: ['/content.js'] }];
+      }),
+      /reference leaves the package: \/content\.js/],
     // A backslash is an ordinary character in a name on this host and a
     // separator on the one the package is written for. The file is on disk
     // under that very name, so what refuses it is the rule and not its
@@ -654,6 +895,32 @@ test('the store package refuses to leave out what it has to carry', () => {
         });
       },
       /reference leaves the package: sub\\content\.js/],
+    // Chrome reads a version as one to four numbers, each below 2**32, the
+    // first written without a leading zero. Its own message about the range
+    // says 0 to 65536, which is not the bound it applies.
+    ['a version carrying a prerelease suffix',
+      (box) => editManifest(box, m => { m.version = '1.0.0-rc1'; }),
+      /version is not one Chrome reads: '1\.0\.0-rc1'/],
+    ['a version whose first part carries a leading zero',
+      (box) => editManifest(box, m => { m.version = '01.1.0'; }),
+      /version is not one Chrome reads: '01\.1\.0'/],
+    ['a version part past the largest number one holds',
+      (box) => editManifest(box, m => { m.version = '1.0.4294967296'; }),
+      /version is not one Chrome reads: '1\.0\.4294967296'/],
+    ['a version of five parts',
+      (box) => editManifest(box, m => { m.version = '1.0.0.0.0'; }),
+      /version is not one Chrome reads: '1\.0\.0\.0\.0'/],
+    // A prerelease shows its name in version_name, which Chrome reads as any
+    // text at all and refuses when it is not text.
+    ['a version_name that is not text',
+      (box) => editManifest(box, m => { m.version_name = 7; }),
+      /version_name is not text: 7/],
+    ['a version written as a number rather than text',
+      (box) => editManifest(box, m => { m.version = 100; }),
+      /version is not one Chrome reads: 100/],
+    ['a version with no version at all',
+      (box) => editManifest(box, m => { delete m.version; }),
+      /version is not one Chrome reads: None/],
     ['a default_locale that is no locale at all',
       (box) => {
         fs.renameSync(`${box}/_locales/ja`, `${box}/_locales/jp`);
@@ -896,6 +1163,23 @@ test('the store package refuses to leave out what it has to carry', () => {
         'body { background: url("__MSG_@@EXTENSION_ID__") }\n');
       editManifest(box, m => {
         m.content_scripts = [{ js: ['content.js'], css: ['styles.css'] }];
+      });
+    }],
+    // The three sides of the version rule that a stricter one would refuse.
+    // Without these, refusing every version would stay green.
+    ['a version of four parts',
+      (box) => editManifest(box, m => { m.version = '1.0.0.0'; })],
+    ['a leading zero in a part that is not the first',
+      (box) => editManifest(box, m => { m.version = '1.01.0'; })],
+    ['a version part at the largest number one holds',
+      (box) => editManifest(box, m => { m.version = '4294967295'; })],
+    // The shape a prerelease takes: Chrome reads the version and shows the
+    // name. Without this the rule above would refuse the only shape that
+    // lets the prerelease branch of the release grammar build anything.
+    ['a prerelease named beside the version Chrome reads', (box) => {
+      editManifest(box, m => {
+        m.version = '1.2.0';
+        m.version_name = '1.2.0-rc1';
       });
     }],
     // The Norwegian the store does carry, which is the name an extension

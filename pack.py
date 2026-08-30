@@ -69,6 +69,39 @@ LOCALIZED_FIELDS = (
 )
 QUOTED = re.compile(r'[\'"]([^\'"]+)[\'"]')
 REMOTE = ('http:', 'https:', '//', 'data:', 'chrome-extension:')
+# Where the manifest names a file inside the package, and what that file is: a
+# page is read for what it pulls in, a script for what it imports, a stylesheet
+# for what it reaches, and an asset is carried as it stands. A resource exposed
+# to the page can be any of them and the key does not say, so the name decides.
+# A step of '*' is every key of an object and '[]' every element of a list.
+MANIFEST_REFERENCES = (
+    (('content_scripts', '[]', 'js', '[]'), 'script'),
+    (('content_scripts', '[]', 'css', '[]'), 'style'),
+    (('background', 'service_worker'), 'script'),
+    (('action', 'default_popup'), 'page'),
+    (('options_page',), 'page'),
+    (('options_ui', 'page'), 'page'),
+    (('devtools_page',), 'page'),
+    (('side_panel', 'default_path'), 'page'),
+    (('chrome_url_overrides', '*'), 'page'),
+    (('sandbox', 'pages', '[]'), 'page'),
+    (('action', 'default_icon', '*'), 'asset'),
+    (('icons', '*'), 'asset'),
+    (('storage', 'managed_schema'), 'asset'),
+    (('declarative_net_request', 'rule_resources', '[]', 'path'), 'asset'),
+    (('web_accessible_resources', '[]', 'resources', '[]'), 'named'),
+)
+# What a name says a file is, where the key does not say.
+BY_NAME = (('.html', 'page'), ('.js', 'script'), ('.css', 'style'))
+# A resource entry carrying one of these is a pattern Chrome matches against
+# the extension's own files rather than a name it opens. What it matches has to
+# be in the package, so it is matched against the tree here, with '*' standing
+# for any run of characters and '/' among them: a file carried that nothing
+# asks for costs room, and one left out is a resource the page cannot load.
+PATTERN = re.compile(r'[*?]')
+CSS_COMMENT = re.compile(r'/\*.*?\*/', re.S)
+CSS_IMPORT = re.compile(r'@import\s+(?:url\(\s*)?(["\']?)([^"\')\s;]+)\1')
+CSS_URL = re.compile(r'url\(\s*(["\']?)([^"\')]+?)\1\s*\)')
 
 
 def _host(root, relative):
@@ -94,12 +127,12 @@ class _PageReferences(HTMLParser):
         if tag == 'script':
             source = attributes.get('src')
             if source:
-                self.found.append(source)
+                self.found.append((source, 'script'))
         elif tag == 'link':
             href = attributes.get('href')
             rel = (attributes.get('rel') or '').lower().split()
             if href and ('stylesheet' in rel or href.endswith('.css')):
-                self.found.append(href)
+                self.found.append((href, 'style'))
 
 
 def _messages_used(text, begin, end, known=None):
@@ -305,61 +338,131 @@ def _json(relative, text):
         raise SystemExit(f'{relative} is not readable as JSON: {unreadable}')
 
 
+def _chrome_reads_the_version(version):
+    """Chrome reads a version as one to four numbers, each below 2**32, the
+    first of them written without a leading zero. What a prerelease shows
+    instead goes in version_name, which Chrome reads as any text at all."""
+    if not isinstance(version, str):
+        return False
+    parts = version.split('.')
+    return (len(parts) <= 4
+            and all(part.isascii() and part.isdigit() and int(part) < 2 ** 32
+                    for part in parts)
+            and parts[0] == str(int(parts[0])))
+
+
 def _read(root, relative):
     with open(_host(root, relative), encoding='utf-8') as handle:
         return handle.read()
 
 
-def _manifest_references(manifest):
-    for entry in manifest.get('content_scripts', []):
-        yield from entry.get('js', [])
-        yield from entry.get('css', [])
-    for entry in manifest.get('web_accessible_resources', []):
-        yield from entry.get('resources', [])
-    worker = manifest.get('background', {}).get('service_worker')
-    if worker:
-        yield worker
-    for key in ('options_page',):
-        if manifest.get(key):
-            yield manifest[key]
-    if manifest.get('options_ui', {}).get('page'):
-        yield manifest['options_ui']['page']
-    if manifest.get('action', {}).get('default_popup'):
-        yield manifest['action']['default_popup']
-    yield from manifest.get('icons', {}).values()
-    yield from manifest.get('action', {}).get('default_icon', {}).values()
+def _matching(root, pattern):
+    """Every file under the package root that a resource pattern names."""
+    shape = re.compile(''.join(
+        '.*' if part == '*' else '.' if part == '?' else re.escape(part)
+        for part in re.split(r'([*?])', pattern)))
+    found = []
+    for base, directories, files in os.walk(root):
+        # A name beginning with a dot is one Chrome's own packer leaves out.
+        directories[:] = sorted(name for name in directories
+                                if not name.startswith('.'))
+        held = os.path.relpath(base, root)
+        prefix = '' if held == os.curdir else held.replace(os.sep, '/') + '/'
+        for name in sorted(files):
+            if name.startswith('.'):
+                continue
+            relative = prefix + name
+            if shape.fullmatch(relative):
+                found.append(relative)
+    return found
 
 
-def _references_within(root, relative):
-    """Paths the given page or script pulls in, relative to the package root."""
+def _by_name(value):
+    return next((named for suffix, named in BY_NAME
+                 if value.endswith(suffix)), 'asset')
+
+
+def _manifest_references(root, manifest):
+    """Every file the manifest names, with what the key says it is.
+
+    A resource is written from the extension's root, and that root may be
+    written as a leading slash: '/images/*' names what 'images/*' names, and a
+    resource that is nothing but slashes names nothing. It is the one key where
+    a leading slash is not an absolute path.
+    """
+    for path, kind in MANIFEST_REFERENCES:
+        for value in _at(manifest, path):
+            if kind != 'named':
+                yield value, kind
+                continue
+            named = value.lstrip('/')
+            if not named:
+                continue
+            if PATTERN.search(named):
+                for held in _matching(root, named):
+                    yield held, _by_name(held)
+            else:
+                yield named, _by_name(named)
+
+
+def _style_references(text):
+    """What a stylesheet pulls in: what it imports and what url() names.
+
+    A target Chrome substitutes a message into names no file here, and one
+    that is a fragment of the sheet itself names none either.
+    """
+    body = CSS_COMMENT.sub(' ', text)
+    for pattern, kind in ((CSS_IMPORT, 'style'), (CSS_URL, 'asset')):
+        for _quote, target in pattern.findall(body):
+            target = target.strip()
+            if not target or target.startswith('#') or '__MSG_' in target:
+                continue
+            yield target, kind
+
+
+def _references_within(root, relative, kind):
+    """Paths the given file pulls in, relative to the package root.
+
+    What a file is read as comes from how it was reached, not from what it is
+    called: Chrome loads a page named options.htm as a page.
+    """
     base = posixpath.dirname(relative)
     found = []
-    if relative.endswith('.html'):
-        found.extend(_page_references(_read(root, relative)))
-    elif relative.endswith('.js'):
+    if kind == 'page':
+        found = _page_references(_read(root, relative))
+    elif kind == 'script':
         for call in IMPORT_SCRIPTS.findall(_read(root, relative)):
-            found.extend(QUOTED.findall(call))
-    for reference in found:
+            found.extend((name, 'script') for name in QUOTED.findall(call))
+    elif kind == 'style':
+        found = _style_references(_read(root, relative))
+    for reference, held in found:
         if reference.startswith(REMOTE):
             continue
-        yield posixpath.normpath(posixpath.join(base, reference))
+        yield posixpath.normpath(posixpath.join(base, reference)), held
 
 
 def selected_files(root):
     """Yield (path, arcname) for every file the package carries."""
     manifest = _json('manifest.json', _read(root, 'manifest.json'))
-    pending = ['manifest.json']
-    pending.extend(_manifest_references(manifest))
-    selected = []
+    version = manifest.get('version')
+    if not _chrome_reads_the_version(version):
+        raise SystemExit(f'version is not one Chrome reads: {version!r}')
+    if 'version_name' in manifest and not isinstance(manifest['version_name'], str):
+        raise SystemExit('version_name is not text: '
+                         f'{manifest["version_name"]!r}')
+    pending = [('manifest.json', 'asset')]
+    pending.extend(_manifest_references(root, manifest))
+    selected = {}
     while pending:
-        relative = posixpath.normpath(pending.pop(0))
-        if relative in selected:
+        relative, kind = pending.pop(0)
+        relative = posixpath.normpath(relative)
+        if kind in selected.get(relative, ()):
             continue
         full = _packaged(root, relative)
         if not os.path.isfile(full):
             raise SystemExit(f'referenced file is missing or not a regular file: {relative}')
-        selected.append(relative)
-        pending.extend(_references_within(root, relative))
+        selected.setdefault(relative, set()).add(kind)
+        pending.extend(_references_within(root, relative, kind))
 
     carried = set()
 
@@ -387,7 +490,7 @@ def selected_files(root):
     asking = [('the manifest', list(_localized_values(manifest)),
                NOT_SUPPLIED_TO_THE_MANIFEST)]
     asking += [(relative, [_read(root, relative)], frozenset())
-               for relative in selected if relative.endswith('.css')]
+               for relative in sorted(selected) if 'style' in selected[relative]]
     predefined = {name.lower() for name in PREDEFINED_MESSAGES}
     wanted = {name for _label, texts, _withheld in asking for text in texts
               for name in _messages_used(text, '__MSG_', '__')[0]
@@ -457,10 +560,10 @@ def selected_files(root):
 
 def pack():
     root = os.path.dirname(os.path.abspath(__file__))
-    version = _json('manifest.json', _read(root, 'manifest.json'))['version']
     # Every name is resolved before anything is written. A refusal partway
     # through would otherwise leave a half-built package where the last one was.
     files = list(selected_files(root))
+    version = _json('manifest.json', _read(root, 'manifest.json'))['version']
     out = f'twitch-channel-volume-{version}.zip'
     out_path = os.path.join(root, out)
     # Built beside the target and moved onto it. Resolving the names first
