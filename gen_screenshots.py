@@ -189,9 +189,9 @@ STRINGS = {
         'saved': 'SAVED CHANNELS',
         'col_channel': 'CHANNEL',
         'channels': [
-            ('Game Stream TV', 'Auto (63%)', '80%', '—'),
-            ('雑談ラジオ', '120%', '—', 'Auto (95%)'),
-            ('Music Box', 'Auto (55%)', '70%', '—'),
+            ('Game Stream TV', 'Auto (63%)', '80%'),
+            ('雑談ラジオ', '120%', '—'),
+            ('Music Box', 'Auto (55%)', '70%'),
         ],
         'stream_title': '【雑談】ゲーム配信のあとに少しだけ',
         'viewers': '1,234 人が視聴中',
@@ -218,9 +218,9 @@ STRINGS = {
         'saved': 'SAVED CHANNELS',
         'col_channel': 'CHANNEL',
         'channels': [
-            ('Game Stream TV', 'Auto (63%)', '80%', '—'),
-            ('Talk Radio', '120%', '—', 'Auto (95%)'),
-            ('Music Box', 'Auto (55%)', '70%', '—'),
+            ('Game Stream TV', 'Auto (63%)', '80%'),
+            ('Talk Radio', '120%', '—'),
+            ('Music Box', 'Auto (55%)', '70%'),
         ],
         'stream_title': 'Just chatting after the game',
         'viewers': '1,234 watching',
@@ -363,10 +363,10 @@ def screenshot_settings(lang, out_dir):
     draw.line([(sx + 20, ry + 31), (sx + sw - 20, ry + 31)], fill=BORDER)
     ry += 36
 
-    # Auto-follow defaults for Live / VOD / Clip.
+    # Auto-follow defaults for Live / VOD.
     def type_switches(y):
-        gx = sx + sw - 245
-        states = (('LIVE', True), ('VOD', False), ('CLIP', True))
+        gx = sx + sw - 167
+        states = (('LIVE', True), ('VOD', False))
         for label, enabled in states:
             draw.text((gx, y), label, fill=GRAY, font=FONT_XS)
             track_x = gx + 30
@@ -409,24 +409,23 @@ def screenshot_settings(lang, out_dir):
     rr(draw, [sx, cy, sx + sw, cy + ch], 10, POPUP_BG)
     draw.text((sx + 20, cy + 14), s['saved'], fill=GRAY, font=FONT_SM)
 
-    # Header row: CHANNEL | Live | VOD | Clip
+    # Header row: CHANNEL | Live | VOD
     hy = cy + 31
-    col_live, col_vod, col_clip = sx + 270, sx + 370, sx + 465
+    col_live, col_vod = sx + 370, sx + 465
     draw.text((sx + 20, hy), s['col_channel'], fill=HINT, font=FONT_SM)
-    for cxh, t in ((col_live, 'LIVE'), (col_vod, 'VOD'), (col_clip, 'CLIP')):
+    for cxh, t in ((col_live, 'LIVE'), (col_vod, 'VOD')):
         draw.text((cxh, hy), t, fill=HINT, font=FONT_SM)
     draw.line([(sx + 20, hy + 18), (sx + sw - 20, hy + 18)], fill=BORDER)
 
     ry = hy + 23
     delete_x = sx + sw - 36
-    for name, live, vod, clip in s['channels']:
+    for name, live, vod in s['channels']:
         draw.text((sx + 20, ry), name, fill=TEAL, font=FONT)
-        for cxh, v in ((col_live, live), (col_vod, vod), (col_clip, clip)):
+        for cxh, v in ((col_live, live), (col_vod, vod)):
             color = TEAL if v.startswith('Auto') else (PINK if v != '—' else HINT)
             draw.text((cxh, ry), v, fill=color, font=FONT_BOLD)
             end = cxh + draw.textlength(v, font=FONT_BOLD)
-            limit = delete_x if cxh == col_clip else next(
-                c for c in (col_vod, col_clip) if c > cxh)
+            limit = delete_x if cxh == col_vod else col_vod
             assert end + 8 <= limit, f'{lang}: {v!r} runs into the next column'
         draw.text((delete_x, ry - 2), '×', fill=HINT, font=FONT_LG)
         ry += 23

@@ -18,8 +18,7 @@ const SETTINGS_VALIDATORS = {
   displayUnit: (value) => value === '%' || value === 'dB',
   showGainOverlay: (value) => typeof value === 'boolean',
   autoApplyLoudnessLiveDefault: (value) => typeof value === 'boolean',
-  autoApplyLoudnessVodDefault: (value) => typeof value === 'boolean',
-  autoApplyLoudnessClipDefault: (value) => typeof value === 'boolean'
+  autoApplyLoudnessVodDefault: (value) => typeof value === 'boolean'
 };
 
 function validateSettingsPatch(patch) {

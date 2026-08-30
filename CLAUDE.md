@@ -32,7 +32,7 @@ page-bridge.js (MAIN world content script, document_start)
 │   origin, or a `crossorigin` attribute. Media another origin serves outside CORS mode
 │   (a Twitch clip) is left to the player and reported as `attach-failed` / `cross-origin`
 ├── Fetch hook (GraphQL only):
-│   └── gql.twitch.tv → extracts user.id / video.owner.id / clip.broadcaster.id plus the
+│   └── gql.twitch.tv → extracts user.id / video.owner.id plus the
 │       content kind/id current at request time
 ├── Worker hook: wraps `Worker` only to add a message listener. The worker is constructed
 │   with the arguments the page passed
@@ -64,14 +64,14 @@ content.js (ISOLATED world content script, document_idle)
 ├── Channel resolution:
 │   ├── live: the login name from the URL (`login:<name>`) / the numeric ID once GraphQL user.id resolves
 │   ├── vod: GraphQL owner.id (`<numeric>`) / fallback `vod-owner:<videoId>`
-│   └── clip: GraphQL broadcaster.id / fallback `clip-owner:<slug>`
-├── Matches the owner response against the current login / videoId / clip slug and merges the provisional ID's settings into the numeric ID
-├── Automatic application of the stored gain (managed separately per Live/VOD/Clip kind)
-├── LUFS auto-follow: while the per-channel × Live/VOD/Clip Auto setting is on, the baseline gain is
+│   └── clip: none. A clip carries no channel, no stored value and no owner lookup
+├── Matches the owner response against the current login / videoId and merges the provisional ID's settings into the numeric ID
+├── Automatic application of the stored gain (managed separately per Live/VOD kind)
+├── LUFS auto-follow: while the per-channel × Live/VOD Auto setting is on, the baseline gain is
 │   recomputed from the distance to Target LUFS, no more often than the popup's display period (1 second)
 ├── Gain overlay: a span is inserted as the **next sibling** of `.volume-slider__slider-container`. The mute wrapper and the slider container are siblings in a flex row inside the player controls, so the span sits directly to the right of the slider container. Visibility follows the parent `[data-a-target="player-controls"][data-a-visible]` toggle by itself (it is embedded inside the player controls). Shown only while gain ≠ 1.0 and an audio chain exists; the display is fixed to `%` and does not follow displayUnit
 ├── Measurement is seeded from the stored LUFS at startup, on SPA navigation and also once the owner ID resolves. Whether a re-seed is needed is decided from the channel ID after alias resolution and the kind.
-│   The stored window count (`lastLufsWindows`) is passed with it and the bridge uses it as the seed's weight, held to what the kind allows (`seedWindowLimit`). A stored value with no window count (from before the extension update) is weighted at the bridge's floor
+│   The stored window count (`lastLufsWindows`) is passed with it and the bridge uses it as the seed's weight. A stored value with no window count (from before the extension update) is weighted at the bridge's floor
 ├── A measurement reset advances the epoch number before it is sent, and lufs notifications from an older epoch are discarded
 ├── On SPA navigation `mediaChanged` is sent first and `requestedAdActive` is cleared to stay aligned
 │   with the bridge. The ad-indicator element present **at the last DOM read** is noted, and that
@@ -86,10 +86,10 @@ content.js (ISOLATED world content script, document_idle)
 ├── Handles chrome.tabs.sendMessage from the popup as `getState` / `setGain` / `setAutoApplyLoudness` / `resetMeasurement` / `resume`, and answers an unknown cmd with `unknown command` (options sends delete and clear-all straight to the Service Worker)
 └── Storage
     ├── autoLoudnessSettings: { targetLufs, adGainDb, displayUnit, showGainOverlay,
-    │     autoApplyLoudnessLiveDefault, autoApplyLoudnessVodDefault, autoApplyLoudnessClipDefault }
-    ├── channelVolumes: { [channelId]: { name, login, gainLive, gainVod, gainClip,
-          autoGainLive, autoGainVod, autoGainClip,
-          autoApplyLoudnessLive, autoApplyLoudnessVod, autoApplyLoudnessClip,
+    │     autoApplyLoudnessLiveDefault, autoApplyLoudnessVodDefault }
+    ├── channelVolumes: { [channelId]: { name, login, gainLive, gainVod,
+          autoGainLive, autoGainVod,
+          autoApplyLoudnessLive, autoApplyLoudnessVod,
           url, lastLufs, lastLufsRef, lastLufsWindows, autoGainRef, lastMeasuredAt, __fieldVersions } }
     ├── channelVolumeAliases: { [loginOrContentProvisionalId]: canonicalOwnerId }
     └── channelVolumeSequence: persistent counter for the field update order
@@ -138,21 +138,22 @@ popup.html / popup.js
 ├── A failed Auto save shows a localised error and re-fetches the latest state
 ├── While an Auto save is in flight, Apply / Manual controls are disabled, and content.js refuses manual gain mutations as well
 ├── While audioUnavailable / measurementUnavailable, the reason and the remedy are shown under the
-│   channel row (three wordings, one per cause: the element is held elsewhere / the AudioContext
-│   could not be created / the measurement path alone is unavailable)
-│   (nothing is shown on a page with no resolved channel). Under audioUnavailable, Apply / Manual /
-│   the Auto toggle / measurement reset are disabled and the three cards show unknown.
+│   channel row (five wordings: the page is a clip / the element is held elsewhere / the media comes
+│   from another origin / the AudioContext could not be created / the measurement path alone is
+│   unavailable). Nothing is shown on a page whose content was not recognised, and a clip is
+│   recognised without a channel. Under audioUnavailable, Apply / Manual / the Auto toggle /
+│   measurement reset are disabled and the three cards show unknown.
 │   A gain-save failure takes precedence over this notice, and the hint row is left empty
 ├── Manual slider (the slider itself is 0–600%, the displayed value follows displayUnit) + 6 presets (0/50/100/200/400/MAX)
 └── Loads SETTINGS_KEY at startup and reacts immediately to a unit change in options through storage.onChanged
 
 options.html / options.js
 ├── Target LUFS slider (-30 to -6 LUFS, default -18)
-├── Default LUFS auto-follow for all channels (separate for Live / VOD / Clip, default OFF)
+├── Default LUFS auto-follow for all channels (separate for Live / VOD, default OFF)
 ├── Ad gain slider (-24 to +6 dB, default -6 dB)
 ├── Display unit (% / dB)
 ├── Gain overlay on/off toggle (default ON)
-├── Saved Channels table (three Live / VOD / Clip columns, the last applied Auto gain while Auto is on, deletable)
+├── Saved Channels table (two Live / VOD columns, the last applied Auto gain while Auto is on, deletable)
 ├── Every settings control and deletion (clear all, the row ×) is disabled until the initial settings load completes
 └── Saves only the item that changed through the Service Worker's settings mutation, synced through storage.onChanged
 ```
@@ -205,14 +206,14 @@ options.html / options.js
 - **K-weighting filter coefficients**: based on the 48kHz coefficients of BS.1770-4; when AudioContext.sampleRate is not 48k, the filters are redesigned by an inverse bilinear transform followed by a fresh bilinear transform (redesignBiquad)
 - **Indexed Integrated LUFS updates**: the LUFS stored for the current channel and kind is restored as initial samples worth the window count the value stands on (the floor and the cap are in "Measurement across sessions"). The last hour of blocks is held in a ring buffer, and values that pass the absolute gate are stored in a balanced tree carrying subtree sums and counts. The relative gate of -10 LU is derived from the post-absolute-gate mean each time, and the sum and count at or above the threshold are obtained in O(log n), so the two-stage gate holds regardless of input order. An ad break is left out of the Integrated statistics (so an ad does not contaminate the programme's representative value)
 - **Measurement across sessions**: the stored LUFS is saved together with the window count it stands on (`lastLufsWindows`), and the next measurement is seeded with that many windows. Seeded as a single window, new audio arriving at 10 windows per second washes it away within a second, and Auto would set the gain from an Integrated value covering 0.4 seconds of the programme. The floor is 300 windows (30 seconds) and the cap is 1800 windows (3 minutes). With the cap at the ring buffer's own hour, the seed is a point mass at one value, so the relative gate pins to that value and the Integrated value would not move for over 20 minutes after the broadcaster genuinely lowers their level. At 3 minutes, watching for the same length of time reaches the seed's weight. A stored value with no window count (from before the extension update), and a window count that cannot be read, are weighted at the floor. The reported window count counts only windows that passed the relative gate, and the seed's share is replaced by the window count it arrived with — the padding up to the floor is not reported as measured, and windows the gate dropped and windows the ring buffer evicted are left uncounted. Which windows belong to the seed is decided from the gating window's sequence number rather than from its level (the index is keyed on level, so audio at the seed's level lands on the seed's node)
-- **What a clip's seed may weigh**: a clip runs for a few tens of seconds, and two clips of one channel are measured tens of seconds apart in a broadcast rather than in one continuous session, so their levels differ by several dB. A seed weighed at the floor outlasts the clip carrying it, and the gain is still travelling when the clip ends. `resetMeasurement` carries the weight the kind allows in `seedWindowLimit`, and Clip names 50 windows (5 seconds) — below the floor, so the floor does not raise it back. Live and VOD name none and keep the floor and the cap as they are. The limit holds the reported window count as well: the value does not stand on more windows than it was allowed to weigh. A limit at or above the floor is not what the seed weighs; the floor still is
 - **GainNode, not HTMLMediaElement.volume**: volume clips at 1.0. The GainNode provides 0.0–6.0 (0–600%)
 - **MAIN world / ISOLATED world split**: Twitch's CSP forbids inline script, so the AudioContext and the fetch hook run in page-bridge.js (MAIN world, document_start)
 - **Channel ID strategy**: 
-  - Live uses the login from the URL (`login:<name>`) only before the owner response arrives, and merges into the same numeric ID as VOD / Clip once GraphQL `user.id` resolves
-  - VOD / Clip use `owner.id` / `broadcaster.id` from the GraphQL response (numeric, immutable). The fallbacks are `vod-owner:<videoId>` / `clip-owner:<slug>`
+  - Live uses the login from the URL (`login:<name>`) only before the owner response arrives, and merges into the same numeric ID as VOD once GraphQL `user.id` resolves
+  - VOD uses `owner.id` from the GraphQL response (numeric, immutable). The fallback is `vod-owner:<videoId>`
+  - A clip has no ID of any kind: nothing is stored for it, so nothing needs a key
   - A kind-specific provisional ID is used only while the numeric ID is unavailable, and a persistent alias canonicalises it afterwards
-- **Provisional ID → confirmed ID transition**: page-bridge stamps the owner event with the content kind/id current at the time of the GraphQL request. content.js accepts only a response matching the current URL, and — even while the initial settings load is still running — merges `login:<name>` / `vod-owner:<videoId>` / `clip-owner:<slug>` into the numeric ID inside the Service Worker before switching currentChannel. Each gain / Auto / LUFS field resolves conflicts by the update order the single writer assigns, so the newest save from another tab survives. The provisional-to-canonical ID mapping is persisted in storage and resolved on content's reads and on the Worker's writes alike
+- **Provisional ID → confirmed ID transition**: page-bridge stamps the owner event with the content kind/id current at the time of the GraphQL request. content.js accepts only a response matching the current URL, and — even while the initial settings load is still running — merges `login:<name>` / `vod-owner:<videoId>` into the numeric ID inside the Service Worker before switching currentChannel. Each gain / Auto / LUFS field resolves conflicts by the update order the single writer assigns, so the newest save from another tab survives. The provisional-to-canonical ID mapping is persisted in storage and resolved on content's reads and on the Worker's writes alike
 - **Saved Channels channel invariant**: where a numeric owner ID and a login correspond, they are merged into one row, and the link stored and shown is always `https://www.twitch.tv/<login>`. Existing duplicate Live/VOD rows are migrated by a normalisation mutation on extension update
 - **Single writer for channelVolumes**: the read-modify-write of the aggregate key is performed by the background.js → channel-store.js queue alone. Content scripts and options send mutation messages, so that LUFS cache saves from several tabs and Auto/manual setting saves do not overwrite each other with a stale whole object. Failures fall into three reasons. **An exception the store itself threw states a `reason`**: input from the caller that cannot be applied is `invalid-mutation`, and stored state that cannot carry the mutation (an alias cycle, an exhausted update number) is `stored-state-invalid`. A reject with no such statement is treated as coming from storage and returns `storage-update-failed` / `settings-update-failed` (the exception type does not separate them — `TypeError` is thrown by input validation and by a stored-state anomaly alike). A message with an unknown `type` gets no response, and the `type` that arrived is logged (responding would steal the response of a listener added later). The two scripts `background.js` pulls in with `importScripts` share one global, so top-level names must not collide (`node test.js` cross-checks the declarations in the two files)
 - **Per-field settings saves**: options enables its controls once the initial load completes and sends only the settings field that changed to the background.js → settings-store.js queue. When several settings tabs change different items from a stale view, `autoLoudnessSettings` is merged into the newest value instead of being replaced entire
@@ -236,6 +237,7 @@ options.html / options.js
 - **Suggested gain while there is no reading**: while no gated value exists, `suggestedGain` returns 1.0 and suggests no gain increase
 - **createMediaElementSource**: callable once per `<video>`. It fails when another extension (FrankerFaceZ Compressor and the like) took it first. A video that failed is excluded through a `WeakSet` and the attach falls back to another video. On a video that could not be attached the GainNode is outside the player's audio path too, so content.js receives `attach-failed`, shows the reason and the remedy in the popup, and withdraws the display of the gain in force (the overlay). Even when the fallback attach succeeds, the audio keeps sounding through the held element for as long as it remains in the page, so the notice is kept up through `takenElsewhere` on `attached`
 - **Media another origin serves**: a `MediaElementAudioSourceNode` outputs silence when its element loaded a cross-origin resource outside CORS mode, and the element's audio does not return to the player once the node exists — so an element like that is left alone rather than taken. Twitch clips are served that way: the clip element plays an MP4 from a CDN and carries no `crossorigin` attribute, while Live and VOD arrive through a `MediaSource` on the page's own origin. An element counts as reachable when it has a `srcObject`, when its resource comes from the page's origin, or when it carries a `crossorigin` attribute; an element that has loaded nothing yet is neither, and the attach loop asks again a second later. The refusal reaches content.js as `attach-failed` with the cause `cross-origin`, which turns off gain and measurement for that element and states it in the popup. Asking for the clip in CORS mode instead is not open to us: with `crossorigin` set, the range requests the player makes come back without an `Access-Control-Allow-Origin` header and the clip does not load at all
+- **A clip is not volume-adjusted**: every Twitch clip is served the way above, so the extension has no way to reach a clip's audio, and a clip is out of scope rather than a case that sometimes works. It keeps no channel, no stored gain and no Auto setting, makes no owner lookup, and the popup names the page as a clip instead of naming the domain its audio comes from. The Clip badge stays so the popup can say which page it is answering for
 - **When the AudioContext is suspended**: Chrome starts a context suspended until the page has been interacted with, and the media element source puts that context between the player and the speakers, so the player is silent for as long as it stays suspended. The bridge reports the state on creation, on every change, and as the answer to `resume`; content.js asks for a `resume` on every document `click` and `keydown` in the capture phase until the reported state is `running`, and listens again if it ever stops running. One gesture is not enough to hang the recovery on: a gesture can arrive before the context exists (a `resume` therefore builds one), and a viewer who unmutes with the player's keyboard shortcut sends no click at all. Chrome accepts a resume on the strength of the page having been interacted with at some point, so the resume does not have to run inside the gesture's own task
 - **When the AudioContext cannot be created**: a failed attempt is not cached, and the next attach builds it again. The failure notice is sent once, when the state changes (not on every retry). `cause: 'audio-context'` distinguishes it from a conflict with another extension, and the popup shows a different wording asking for a reload
 - **Readings while there is no audio path**: a lufs arriving after `attach-failed` or during `takenElsewhere` is not from the element the viewer is hearing, so it is discarded (neither stored nor followed by Auto). Measurement is reset at the moment it recovers — the bridge's ring buffer still holds blocks from the other element
@@ -244,7 +246,7 @@ options.html / options.js
 - **Where the measurement chain is connected**: `attach()` awaits `ensureContext()`, and that await covers the resolution of `audioWorklet.addModule()`, so whether the worklet is available is settled by attach time. An attach whose load failed reports `measuring: false`, and no measurement path is added to that attachment afterwards
 - **SPA navigation**: three layers — the history.pushState/replaceState hooks + popstate + MutationObserver. A URL change triggers resetMeasurement + a fresh kind classification + another `attach`
 - **The epoch number of a measurement reset**: content.js advances the epoch number each time it sends resetMeasurement, and page-bridge stamps that number on the lufs notifications that follow. content.js discards a notification older than the current epoch, so a block page-bridge computed before the reset was sent does not revive the stored LUFS
-- **Separate gain per Live/VOD/Clip**: a stream's sound changes with the time of day, so each kind is managed separately. The gain of a past VOD on the same channel is not copied onto the current Live
+- **Separate gain per Live/VOD**: a stream's sound changes with the time of day, so each kind is managed separately. The gain of a past VOD on the same channel is not copied onto the current Live
 - **Twitch reserved paths**: `/directory`, `/settings`, `/videos`, `/p`, `/jobs` and the like are excluded through TWITCH_RESERVED_PATHS so they are not misread as a live channel
 - **Reserved names**: what Chrome refuses under "Load unpacked" is a name beginning with `_` directly at the root, while `_metadata` and the like in a subdirectory do load (`_locales` is allowed even at the root). The scan in `test.js` is stricter: within the tree the package is built from (the repository minus `.git` / `node_modules` and the root-level `work/` / `.claude/`), it reports such a name at any depth. `docs/` and other directories that stay out of the zip are covered too
 - **Packaging selects by reference graph**: `pack.py` selects what the manifest reaches (the js and css of content_scripts / web_accessible_resources / service_worker / options_page and options_ui.page / action.default_popup / icons and action.default_icon), plus the `<script src>` and the `<link href>` css of those HTML files, a worker's `importScripts`, and `_locales/<locale>/messages.json` — nothing else. A file nothing references stays out whatever its extension. Paths go through a single resolver, and an absolute path, a `..`, or a symlink (including one on an intermediate directory) whose target leaves the package is made to fail (neither a broken zip nor a zip carrying an outside file is produced silently)
@@ -295,7 +297,8 @@ python3 pack.py --list
 - AudioContext starts `suspended` until the page has been interacted with (Chrome autoplay policy). The recovery is under "When the AudioContext is suspended"
 - BS.1770 reference is 48 kHz. Chrome's AudioContext is normally 48000, and a varying sample rate is handled by redesignBiquad
 - Storage keys: `autoLoudnessSettings` (target LUFS, ad gain, display unit, per-kind Auto defaults), `channelVolumes` (per-channel saved gains + per-kind Auto + the lastLufs cache and its window count), `channelVolumeAliases` (provisional ID → canonical ID), `channelVolumeSequence` (persistent update number)
-- Storage format: `channelVolumes.{id}` = `{ name, login, gainLive, gainVod, gainClip, autoGainLive, autoGainVod, autoGainClip, autoApplyLoudnessLive, autoApplyLoudnessVod, autoApplyLoudnessClip, url, lastLufs: { live, vod, clip }, lastLufsRef: { live, vod, clip }, lastLufsWindows: { live, vod, clip }, autoGainRef: { live, vod, clip }, lastMeasuredAt, __fieldVersions }`
+- Storage format: `channelVolumes.{id}` = `{ name, login, gainLive, gainVod, autoGainLive, autoGainVod, autoApplyLoudnessLive, autoApplyLoudnessVod, url, lastLufs: { live, vod }, lastLufsRef: { live, vod }, lastLufsWindows: { live, vod }, autoGainRef: { live, vod }, lastMeasuredAt, __fieldVersions }`
+- A clip field left by an earlier version (`gainClip`, `autoGainClip`, `autoApplyLoudnessClip`, the `clip` key of `lastLufs` / `lastLufsRef` / `lastLufsWindows` / `autoGainRef`, and their `__fieldVersions` entries) is dropped by `withoutClipFields` the next time channel-store.js writes. `lastMeasuredAt` goes with the last `lastLufs` value on the row
 - The legacy single fields are expanded and deleted by channel-store.js at write time (`gain` → `expandLegacyGain`, `autoApplyLoudness` → `expandLegacyAuto`). On the read side, `extractGainForKind` is a fallback for reading an entry before expansion, and writes nothing back
 - The popup polls getState every `DISPLAY_UPDATE_INTERVAL_MS` and updates the LUFS / Suggested / Current cards. The Auto gain updates at that period at most. The Manual slider syncs to the gain in force only while Auto is on, and the ordinary polling with Auto off leaves it alone. With Auto off it syncs on the first display, on "Apply to channel", on an Auto toggle, on a display-unit change and on user input. The measurement itself does not depend on the popup being open, and runs for as long as a Twitch page is open
 - When reloading the extension invalidates chrome.runtime, the popup shows `reloadPageNeeded` and asks for F5

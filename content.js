@@ -20,7 +20,6 @@
   let showGainOverlay = true;
   let defaultAutoApplyLoudnessLive = DEFAULT_AUTO_APPLY_LOUDNESS;
   let defaultAutoApplyLoudnessVod = DEFAULT_AUTO_APPLY_LOUDNESS;
-  let defaultAutoApplyLoudnessClip = DEFAULT_AUTO_APPLY_LOUDNESS;
   let currentChannelEntry = null;
   let currentAutoApplyLoudness = false;
   let lastLufs;
@@ -68,14 +67,11 @@
       s.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
     defaultAutoApplyLoudnessVod =
       s.autoApplyLoudnessVodDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
-    defaultAutoApplyLoudnessClip =
-      s.autoApplyLoudnessClipDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
     sendCmd({ cmd: 'setAdGain', value: dbToGain(currentAdGainDb) });
   }
 
   function defaultAutoApplyForKind(kind) {
     if (kind === 'vod') return defaultAutoApplyLoudnessVod;
-    if (kind === 'clip') return defaultAutoApplyLoudnessClip;
     return defaultAutoApplyLoudnessLive;
   }
 
@@ -210,11 +206,9 @@
   function sendResetMeasurement(seed) {
     measurementEpoch++;
     lastAutoGainUpdateAt = -Infinity;
-    const seedWindowLimit = seedWindowLimitForKind(currentChannel.kind);
     sendCmd({
       cmd: 'resetMeasurement',
       epoch: measurementEpoch,
-      ...(seedWindowLimit ? { seedWindowLimit } : {}),
       ...(seed ? {
         initialIntegratedLufs: seed.lufs,
         ...(seed.windows ? { initialIntegratedWindows: seed.windows } : {})
@@ -378,11 +372,8 @@
       channelId = pendingOwner?.userId ? String(pendingOwner.userId) : `vod-owner:${c.videoId}`;
       login = pendingOwner?.login || '';
       name = pendingOwner?.displayName || login || c.videoId;
-    } else if (c.kind === 'clip') {
-      channelId = pendingOwner?.userId ? String(pendingOwner.userId) : `clip-owner:${c.slug}`;
-      login = pendingOwner?.login || c.login || '';
-      name = pendingOwner?.displayName || login || c.slug;
     }
+    // A clip resolves to no channel: its volume is left to the player.
     url = twitchChannelUrl(login);
     const previousId = currentChannel.id;
     const previousKind = currentChannel.kind;
@@ -645,8 +636,6 @@
         next.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
       defaultAutoApplyLoudnessVod =
         next.autoApplyLoudnessVodDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
-      defaultAutoApplyLoudnessClip =
-        next.autoApplyLoudnessClipDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
       const adDb = next.adGainDb ?? DEFAULT_AD_GAIN_DB;
       if (adDb !== currentAdGainDb) {
         currentAdGainDb = adDb;
@@ -692,8 +681,7 @@
           adGainDb: currentAdGainDb,
           autoApplyLoudness: currentAutoApplyLoudness,
           autoApplyLoudnessLive: resolveAutoApplyForKind(currentChannelEntry, 'live'),
-          autoApplyLoudnessVod: resolveAutoApplyForKind(currentChannelEntry, 'vod'),
-          autoApplyLoudnessClip: resolveAutoApplyForKind(currentChannelEntry, 'clip')
+          autoApplyLoudnessVod: resolveAutoApplyForKind(currentChannelEntry, 'vod')
         });
         return;
       case 'setGain':
@@ -737,7 +725,7 @@
         });
         return true;
       case 'setAutoApplyLoudness': {
-        const kind = ['live', 'vod', 'clip'].includes(req.kind) ? req.kind : currentChannel.kind;
+        const kind = ['live', 'vod'].includes(req.kind) ? req.kind : currentChannel.kind;
         if (!currentChannel.id || req.channelId !== currentChannel.id || kind !== currentChannel.kind) {
           sendResponse({ ok: false, reason: 'channel mismatch' });
           return;
@@ -806,7 +794,7 @@
         return true;
       }
       case 'resetMeasurement': {
-        const kind = ['live', 'vod', 'clip'].includes(req.kind) ? req.kind : '';
+        const kind = ['live', 'vod'].includes(req.kind) ? req.kind : '';
         if (!currentChannel.id || req.channelId !== currentChannel.id || kind !== currentChannel.kind) {
           sendResponse({ ok: false, reason: 'channel mismatch' });
           return;

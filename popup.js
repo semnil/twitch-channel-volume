@@ -20,7 +20,7 @@
 
   function syncInteractionDisabledState() {
     const validChannel = !!currentChannel.id &&
-      ['live', 'vod', 'clip'].includes(currentChannel.kind);
+      ['live', 'vod'].includes(currentChannel.kind);
     $('autoApplyToggle').disabled = autoUpdatePending || measurementResetPending ||
       audioUnavailable || !validChannel;
     // Resetting clears the saved measurement, and nothing would rebuild it.
@@ -39,8 +39,10 @@
 
   // Each failure has its own remedy: another script holding the element, an
   // audio context that would not start, a measurement path that never came up.
+  // A clip is named as a clip rather than as the domain its audio comes from.
   function noticeText() {
     if (!audioUnavailable) return msg('measurementUnavailable');
+    if (currentChannel.kind === 'clip') return msg('clipNotAdjustable');
     if (audioUnavailableCause === 'audio-context') return msg('audioContextUnavailable');
     if (audioUnavailableCause === 'cross-origin') return msg('audioCrossOriginUnavailable');
     return msg('audioUnavailable');
@@ -142,9 +144,11 @@
     audioUnavailable = !!state.audioUnavailable;
     audioUnavailableCause = state.audioUnavailableCause || '';
     measurementUnavailable = !audioUnavailable && !!state.measurementUnavailable;
-    // Both notices name the player of a channel, so neither is shown on a page
-    // where no channel was resolved.
-    const notice = ch.id && (audioUnavailable || measurementUnavailable);
+    // Both notices name the player of the content on the page, so neither is
+    // shown where no content was recognised. A clip is recognised without a
+    // channel of its own.
+    const notice = (ch.id || ch.kind === 'clip') &&
+      (audioUnavailable || measurementUnavailable);
     $('audioError').classList.toggle('hidden', !notice);
     if (notice) $('audioError').textContent = noticeText();
     const nameEl = $('channelName');
@@ -207,7 +211,7 @@
       applyButton.disabled =
         currentAutoApplyLoudness || audioUnavailable || !hasIntegrated || !ch.id;
       $('applyHint').textContent = msg('gainSaveFailed');
-    } else if (audioUnavailable && ch.id) {
+    } else if (audioUnavailable && notice) {
       // The notice carries the reason; the hint stays empty.
       applyButton.disabled = true;
       $('applyHint').textContent = '';

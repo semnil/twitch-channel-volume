@@ -2836,7 +2836,6 @@ test('the pages mark the elements they are meant to mark', () => {
     ['allChannelsAutoApplyDesc', 'div', '', ['setting-desc']],
     ['typeLive', 'span', 'defaultAutoLiveLabel', ['type-switch-label']],
     ['typeVod', 'span', 'defaultAutoVodLabel', ['type-switch-label']],
-    ['typeClip', 'span', 'defaultAutoClipLabel', ['type-switch-label']],
     ['adGain', 'div', '', ['setting-label']],
     ['adGainDesc', 'div', '', ['setting-desc']],
     ['displayUnit', 'div', '', ['setting-label']],
@@ -2848,7 +2847,6 @@ test('the pages mark the elements they are meant to mark', () => {
     ['colChannel', 'th', '', []],
     ['typeLive', 'th', '', ['right']],
     ['typeVod', 'th', '', ['right']],
-    ['typeClip', 'th', '', ['right']],
     ['noSavedChannels', 'div', 'emptyMsg', ['empty-msg']]
   ]);
 });
@@ -3084,17 +3082,15 @@ test('formatAutoGain shows the last applied Auto gain', () => {
   assert.equal(u.formatAutoGain(0.5, 'dB', '自動'), '自動 (-6.0 dB)');
 });
 
-test('auto-apply fields are independent for Live, VOD, and Clip', () => {
+test('auto-apply fields are independent for Live and VOD', () => {
   assert.equal(u.autoApplyFieldForKind('live'), 'autoApplyLoudnessLive');
   assert.equal(u.autoApplyFieldForKind('vod'), 'autoApplyLoudnessVod');
-  assert.equal(u.autoApplyFieldForKind('clip'), 'autoApplyLoudnessClip');
   assert.equal(
     u.autoApplyDefaultFieldForKind('vod'),
     'autoApplyLoudnessVodDefault'
   );
   assert.equal(u.autoGainFieldForKind('live'), 'autoGainLive');
   assert.equal(u.autoGainFieldForKind('vod'), 'autoGainVod');
-  assert.equal(u.autoGainFieldForKind('clip'), 'autoGainClip');
 });
 
 test('Saved Channels shows the gain that would be applied', () => {
@@ -3128,9 +3124,9 @@ test('resolveAutoApplySetting prioritizes explicit choice, manual gain, then def
     u.resolveAutoApplySetting({ autoApplyLoudnessVod: false }, 'vod', true),
     false
   );
-  assert.equal(u.resolveAutoApplySetting({ gainClip: 0.8 }, 'clip', true), false);
+  assert.equal(u.resolveAutoApplySetting({ gainVod: 0.8 }, 'vod', true), false);
   assert.equal(u.resolveAutoApplySetting({ gainLive: 0.8 }, 'vod', true), true);
-  assert.equal(u.resolveAutoApplySetting({ name: 'Unconfigured' }, 'clip', true), true);
+  assert.equal(u.resolveAutoApplySetting({ name: 'Unconfigured' }, 'vod', true), true);
   assert.equal(u.resolveAutoApplySetting(null, 'live', false), false);
 });
 
@@ -3219,12 +3215,13 @@ test('owner metadata is accepted only for the current Twitch content', () => {
     userId: '123', source: 'video', contentKind: 'vod', contentId: ''
   }, vod), false);
 
+  // A clip carries no channel of its own, so no owner is matched to it.
   const clip = u.classifyTwitchUrl('https://clips.twitch.tv/SomeClipSlug');
   assert.equal(u.ownerMatchesTwitchContent({
     userId: '456', source: 'clip', contentKind: 'clip', contentId: 'SomeClipSlug'
-  }, clip), true);
+  }, clip), false);
   assert.equal(u.provisionalChannelIdForContent(vod), 'vod-owner:2770346335');
-  assert.equal(u.provisionalChannelIdForContent(clip), 'clip-owner:SomeClipSlug');
+  assert.equal(u.provisionalChannelIdForContent(clip), '');
   assert.equal(u.provisionalChannelIdForContent(live), 'login:fixture_channel');
 });
 
@@ -4154,7 +4151,7 @@ test('content does not seed from a measurement taken at an unknown volume', asyn
 });
 
 test('channel store records what an Auto gain was measured against', async () => {
-  for (const kind of ['live', 'vod', 'clip']) {
+  for (const kind of ['live', 'vod']) {
     let stored = { channelVolumes: {} };
     const storage = {
       async get(keys) { return readStoredKeys(stored, keys); },
@@ -4262,7 +4259,7 @@ test('channel store merges an Auto gain and its reference together', async () =>
 });
 
 test('channel store references an Auto gain saved with its measurement', async () => {
-  for (const kind of ['live', 'vod', 'clip']) {
+  for (const kind of ['live', 'vod']) {
     let stored = { channelVolumes: {} };
     const storage = {
       async get(keys) { return readStoredKeys(stored, keys); },
@@ -4472,22 +4469,6 @@ test('channel store refuses a window count that is not a positive integer', asyn
   }
 });
 
-test('content names the weight a clip seed may carry', async () => {
-  const harness = createContentHarness({
-    href: 'https://www.twitch.tv/streamer/clip/AbcDef',
-    channelVolumes: { 'clip-owner:AbcDef': { name: 'Streamer', ...measured({ clip: -16 }, 900) } }
-  });
-  await flushTasks();
-
-  const resets = harness.commands.filter((command) => command.cmd === 'resetMeasurement');
-  assert.ok(resets.length >= 1);
-  // The number itself, so that a limit nobody sends does not read as a match.
-  assert.equal(u.CLIP_SEED_WINDOW_LIMIT, 50);
-  assert.equal(resets.at(-1).seedWindowLimit, 50);
-  assert.equal(resets.at(-1).initialIntegratedLufs, -16);
-});
-
-// The other half of the pair above: the limit belongs to Clip alone.
 test('content leaves a VOD seed the weight it was measured over', async () => {
   const harness = createContentHarness({
     href: 'https://www.twitch.tv/videos/100',
@@ -4497,8 +4478,40 @@ test('content leaves a VOD seed the weight it was measured over', async () => {
 
   const resets = harness.commands.filter((command) => command.cmd === 'resetMeasurement');
   assert.ok(resets.length >= 1);
-  assert.equal(resets.at(-1).seedWindowLimit, undefined);
   assert.equal(resets.at(-1).initialIntegratedWindows, 900);
+});
+
+test('content keeps no channel for a clip', async () => {
+  for (const href of [
+    'https://www.twitch.tv/streamer/clip/AbcDef',
+    'https://clips.twitch.tv/AbcDef'
+  ]) {
+    const harness = createContentHarness({ href });
+    await flushTasks();
+    const before = structuredClone({
+      channels: harness.stored[u.CHANNEL_VOLUMES_KEY],
+      aliases: harness.stored[u.CHANNEL_ALIASES_KEY]
+    });
+    await harness.dispatchMessage({
+      type: '__twitch_channel_volume__',
+      event: 'owner',
+      userId: '777',
+      login: 'streamer',
+      displayName: 'Streamer',
+      source: 'clip',
+      contentKind: 'clip',
+      contentId: 'AbcDef'
+    });
+
+    const state = await harness.dispatchRuntime({ cmd: 'getState' });
+    assert.equal(state.channel.kind, 'clip', href);
+    assert.equal(state.channel.id, '', href);
+    // Nothing about the clip reached storage: no row, and no alias for its slug.
+    assert.deepEqual({
+      channels: harness.stored[u.CHANNEL_VOLUMES_KEY],
+      aliases: harness.stored[u.CHANNEL_ALIASES_KEY]
+    }, before, href);
+  }
 });
 
 test('content seeds the measurement once the owner ID resolves', async () => {
@@ -5025,7 +5038,32 @@ test('GraphQL owner fallback keeps the request-time VOD identity across navigati
             data: {
               video: {
                 owner: { id: '123', login: 'owner', displayName: 'Owner' }
-              },
+              }
+            }
+          };
+        }
+      };
+    }
+  });
+  await flushTasks();
+
+  const owners = harness.messages.filter((message) => message.event === 'owner');
+  assert.equal(owners.length, 1);
+  assert.equal(owners[0].contentKind, 'vod');
+  assert.equal(owners[0].contentId, '100');
+});
+
+test('page bridge reads no owner out of a clip response', async () => {
+  const harness = createPageBridgeHarness();
+  harness.location.href = 'https://clips.twitch.tv/DirectClip';
+  harness.messages.length = 0;
+  harness.fetch('https://gql.twitch.tv/gql');
+  harness.resolveFetch({
+    clone() {
+      return {
+        async json() {
+          return {
+            data: {
               clip: {
                 slug: 'DirectClip',
                 broadcaster: { id: '123', login: 'owner', displayName: 'Owner' }
@@ -5038,12 +5076,7 @@ test('GraphQL owner fallback keeps the request-time VOD identity across navigati
   });
   await flushTasks();
 
-  const owners = harness.messages.filter((message) => message.event === 'owner');
-  assert.equal(owners.length, 2);
-  assert.equal(owners[0].contentKind, 'vod');
-  assert.equal(owners[0].contentId, '100');
-  assert.equal(owners[1].contentKind, 'clip');
-  assert.equal(owners[1].contentId, 'DirectClip');
+  assert.deepEqual(harness.messages.filter((message) => message.event === 'owner'), []);
 });
 
 test('channel aliases resolve persisted direct and chained canonical IDs', () => {
@@ -5189,7 +5222,7 @@ test('clearing a measurement preserves the other media kinds and channel setting
       gainVod: 0.8,
       autoGainVod: 0.9,
       autoApplyLoudnessVod: true,
-      lastLufs: { live: -18, vod: -17, clip: -16 },
+      lastLufs: { live: -18, vod: -17 },
       lastMeasuredAt: 200,
       __fieldVersions: { 'lastLufs.vod': 4 }
     }
@@ -5200,12 +5233,55 @@ test('clearing a measurement preserves the other media kinds and channel setting
     sequence: 9
   });
 
-  assert.deepEqual(state['123456'].lastLufs, { live: -18, clip: -16 });
+  assert.deepEqual(state['123456'].lastLufs, { live: -18 });
   assert.equal(state['123456'].lastMeasuredAt, 200);
   assert.equal(state['123456'].gainVod, 0.8);
   assert.equal(state['123456'].autoGainVod, 0.9);
   assert.equal(state['123456'].autoApplyLoudnessVod, true);
   assert.equal(state['123456'].__fieldVersions['lastLufs.vod'], 9);
+});
+
+test('channel store drops what a clip stored the next time it writes', () => {
+  const stored = {
+    '123456': {
+      name: 'Broadcaster',
+      gainLive: 0.7,
+      gainClip: 1.4,
+      autoGainClip: 1.2,
+      autoApplyLoudnessClip: true,
+      lastLufs: { live: -18, clip: -16 },
+      lastLufsRef: { live: 1, clip: 1 },
+      lastLufsWindows: { live: 400, clip: 50 },
+      autoGainRef: { clip: 1 },
+      lastMeasuredAt: 200,
+      __fieldVersions: { gainLive: 2, gainClip: 3, 'lastLufs.clip': 4 }
+    },
+    '999': {
+      name: 'Clip Only',
+      gainClip: 1.4,
+      lastLufs: { clip: -16 },
+      lastLufsRef: { clip: 1 },
+      lastMeasuredAt: 300,
+      __fieldVersions: { gainClip: 5, 'lastLufs.clip': 6 }
+    }
+  };
+  const state = channelStore.applyChannelVolumesMutation(stored, {
+    operation: 'normalizeChannels'
+  });
+
+  assert.deepEqual(state['123456'], {
+    name: 'Broadcaster',
+    gainLive: 0.7,
+    lastLufs: { live: -18 },
+    lastLufsRef: { live: 1 },
+    lastLufsWindows: { live: 400 },
+    lastMeasuredAt: 200,
+    __fieldVersions: { gainLive: 2 }
+  });
+  // Nothing but the clip is left, so the row keeps only what names the channel.
+  assert.deepEqual(state['999'], { name: 'Clip Only' });
+  // The value read out of storage is not the one that was written back.
+  assert.equal(stored['123456'].gainClip, 1.4);
 });
 
 test('a newer cleared provisional measurement is not restored during owner merge', () => {
@@ -5611,8 +5687,7 @@ test('settings writer preserves unrelated fields across concurrent tabs', async 
       targetLufs: -18,
       displayUnit: '%',
       autoApplyLoudnessLiveDefault: true,
-      autoApplyLoudnessVodDefault: true,
-      autoApplyLoudnessClipDefault: false
+      autoApplyLoudnessVodDefault: false
     }
   };
   const storage = {
@@ -5631,7 +5706,7 @@ test('settings writer preserves unrelated fields across concurrent tabs', async 
     write({ operation: 'patchSettings', patch: { displayUnit: 'dB' } }),
     write({
       operation: 'patchSettings',
-      patch: { autoApplyLoudnessClipDefault: true }
+      patch: { autoApplyLoudnessVodDefault: true }
     })
   ]);
 
@@ -5639,8 +5714,7 @@ test('settings writer preserves unrelated fields across concurrent tabs', async 
     targetLufs: -18,
     displayUnit: 'dB',
     autoApplyLoudnessLiveDefault: true,
-    autoApplyLoudnessVodDefault: true,
-    autoApplyLoudnessClipDefault: true
+    autoApplyLoudnessVodDefault: true
   });
 });
 
@@ -5923,7 +5997,6 @@ test('options disables settings until load and saves only field mutations', () =
     'adGainDb',
     'defaultAutoLiveToggle',
     'defaultAutoVodToggle',
-    'defaultAutoClipToggle',
     'overlayToggle'
   ]) {
     assert.match(html, new RegExp(`<[^>]+id="${id}"[^>]*\\bdisabled\\b`), id);
@@ -6048,7 +6121,7 @@ test('the options markup ships the defaults the extension installs', () => {
   assert.match(tag('adGainDb'), new RegExp(`value="${u.DEFAULT_AD_GAIN_DB}"`));
   assert.match(tag('overlayToggle'), /\bchecked\b/);
   assert.match(html, /<button data-unit="%" class="active"/);
-  for (const kind of ['Live', 'Vod', 'Clip']) {
+  for (const kind of ['Live', 'Vod']) {
     assert.equal(
       installedValue(`autoApplyLoudness${kind}Default`),
       String(u.DEFAULT_AUTO_APPLY_LOUDNESS),
@@ -6066,8 +6139,7 @@ test('options put the stored values on their controls before showing the page', 
       displayUnit: 'dB',
       showGainOverlay: false,
       autoApplyLoudnessLiveDefault: true,
-      autoApplyLoudnessVodDefault: true,
-      autoApplyLoudnessClipDefault: true
+      autoApplyLoudnessVodDefault: true
     },
     channelVolumes: { 123: { name: 'somechannel', login: 'somechannel', gainLive: 1.5 } },
     deferStorage: true
@@ -6084,7 +6156,7 @@ test('options put the stored values on their controls before showing the page', 
   assert.equal(harness.el('adGainDb').value, '-12');
   assert.equal(harness.el('adGainValue').textContent, '-12 dB');
   assert.equal(harness.el('overlayToggle').checked, false);
-  for (const kind of ['Live', 'Vod', 'Clip']) {
+  for (const kind of ['Live', 'Vod']) {
     assert.equal(harness.el(`defaultAuto${kind}Toggle`).checked, true, kind);
   }
   assert.deepEqual(
@@ -6542,6 +6614,27 @@ test('popup keeps both notices off a page with no channel', async () => {
 
   assert.equal(harness.el('audioError').classList.contains('hidden'), true);
   assert.equal(harness.el('applyHint').textContent, harness.message('channelNotDetected'));
+});
+
+test('popup names a clip as outside volume control', async () => {
+  const harness = createPopupHarness({
+    state: {
+      audioUnavailable: true,
+      audioUnavailableCause: 'cross-origin',
+      channel: { id: '', kind: 'clip' }
+    }
+  });
+  await flushTasks(8);
+
+  // A clip carries no channel, and the notice still answers for the page.
+  assert.equal(harness.el('audioError').classList.contains('hidden'), false);
+  assert.equal(harness.el('audioError').textContent, harness.message('clipNotAdjustable'));
+  assert.equal(harness.el('channelKind').textContent, harness.message('typeClip'));
+  assert.equal(harness.el('applyHint').textContent, '');
+  assert.equal(harness.el('applyBtn').disabled, true);
+  assert.equal(harness.el('autoApplyToggle').disabled, true);
+  assert.equal(harness.el('manualSlider').disabled, true);
+  assert.equal(harness.el('resetMeasurementBtn').disabled, true);
 });
 
 test('popup names the reason each rejected request came back with', async () => {
@@ -9290,62 +9383,6 @@ test('page bridge weighs a saved LUFS by the windows it was measured over', asyn
     // The floor is not a measurement, so it is not reported as one.
     assert.equal(posted.integratedWindows, expectedReported, `seed of ${savedWindows}`);
   }
-});
-
-test('page bridge holds a seed to the weight the reset names', async () => {
-  const savedLufs = -20;
-  const nextMeanSquare = 0.1;
-  const savedMeanSquare = Math.pow(10, (savedLufs + 0.691) / 10);
-
-  // [limit named, count stored with the value, windows the seed weighs, windows reported back]
-  for (const [limit, savedWindows, expectedSeed, expectedReported] of [
-    [50, 200, 50, 51], [50, 20, 50, 21], [50, undefined, 50, 1],
-    [50, 1800, 50, 51],
-    // A limit above the floor is not what the seed weighs; the floor still is.
-    [600, 200, 300, 201],
-    // A limit that says nothing leaves the floor and the cap where they were.
-    [0, 200, 300, 201], [undefined, 200, 300, 201], [-5, 200, 300, 201]
-  ]) {
-    const harness = createPageBridgeHarness();
-    await harness.startMeasurement();
-    harness.messages.length = 0;
-    await harness.dispatchCommand('resetMeasurement', {
-      initialIntegratedLufs: savedLufs,
-      ...(savedWindows === undefined ? {} : { initialIntegratedWindows: savedWindows }),
-      ...(limit === undefined ? {} : { seedWindowLimit: limit })
-    });
-    for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(nextMeanSquare);
-
-    const expected = u.meanSquareToLufs(
-      (savedMeanSquare * expectedSeed + nextMeanSquare) / (expectedSeed + 1)
-    );
-    const posted = harness.messages.at(-1);
-    const where = `limit ${limit} over ${savedWindows}`;
-    assert.ok(Math.abs(posted.integrated - expected) < 1e-12, where);
-    assert.equal(posted.integratedWindows, expectedReported, where);
-  }
-});
-
-// The seed is the whole error until the clip's own audio outweighs it, and a
-// clip runs out before a live-sized seed does.
-test('page bridge lets a clip-sized seed go within the clip', async () => {
-  const readings = [];
-  for (const limit of [50, 0]) {
-    const harness = createPageBridgeHarness();
-    await harness.startMeasurement();
-    await harness.dispatchCommand('resetMeasurement', {
-      initialIntegratedLufs: -24,
-      initialIntegratedWindows: 200,
-      ...(limit ? { seedWindowLimit: limit } : {})
-    });
-    // Twenty seconds of a clip at -14 against a stored value ten below it.
-    for (let i = 0; i < 200; i++) harness.emitMeasurementBlock(Math.pow(10, (-14 + 0.691) / 10));
-    readings.push(harness.messages.at(-1).integrated);
-  }
-  const [held, floored] = readings;
-  assert.ok(held > floored, `${held} should have moved further than ${floored}`);
-  assert.ok(Math.abs(held - -14) < 1, `${held} should be within 1 LU of the clip`);
-  assert.ok(Math.abs(floored - -14) > 2, `${floored} should still be held by the seed`);
 });
 
 test('page bridge ignores a saved window count it cannot read', async () => {

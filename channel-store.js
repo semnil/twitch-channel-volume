@@ -1,7 +1,7 @@
 // channel-store.js — Serialized channelVolumes mutations for the service worker.
 
 const CHANNEL_MUTATION_MESSAGE = '__twitch_channel_volume_channel_mutation__';
-const CHANNEL_MUTATION_KINDS = new Set(['live', 'vod', 'clip']);
+const CHANNEL_MUTATION_KINDS = new Set(['live', 'vod']);
 const CHANNEL_ALIASES_KEY = 'channelVolumeAliases';
 const CHANNEL_SEQUENCE_KEY = 'channelVolumeSequence';
 const FIELD_VERSIONS_FIELD = '__fieldVersions';
@@ -25,19 +25,16 @@ function storedStateInvalid(error) {
 
 function storeGainFieldForKind(kind) {
   if (kind === 'vod') return 'gainVod';
-  if (kind === 'clip') return 'gainClip';
   return 'gainLive';
 }
 
 function storeAutoFieldForKind(kind) {
   if (kind === 'vod') return 'autoApplyLoudnessVod';
-  if (kind === 'clip') return 'autoApplyLoudnessClip';
   return 'autoApplyLoudnessLive';
 }
 
 function storeAutoGainFieldForKind(kind) {
   if (kind === 'vod') return 'autoGainVod';
-  if (kind === 'clip') return 'autoGainClip';
   return 'autoGainLive';
 }
 
@@ -49,7 +46,7 @@ function assertChannelId(value, field = 'channelId') {
 
 function assertKind(kind) {
   if (!CHANNEL_MUTATION_KINDS.has(kind)) {
-    throw invalidChannelMutation('kind must be live, vod, or clip');
+    throw invalidChannelMutation('kind must be live or vod');
   }
 }
 
@@ -88,6 +85,49 @@ function expandLegacyAuto(entry) {
   }
   delete entry.autoApplyLoudness;
   return entry;
+}
+
+// Clips are left to the player, so the fields a previous version stored for
+// Clip are dropped the next time the store is written.
+const CLIP_ENTRY_FIELDS = ['gainClip', 'autoGainClip', 'autoApplyLoudnessClip'];
+const CLIP_KIND_CONTAINERS = ['lastLufs', 'lastLufsRef', 'lastLufsWindows', 'autoGainRef'];
+const CLIP_VERSION_FIELDS = [...CLIP_ENTRY_FIELDS, 'lastLufs.clip'];
+
+function withoutClipFields(entry) {
+  if (!entry || typeof entry !== 'object') return entry;
+  const next = { ...entry };
+  const hadLastLufs = Object.prototype.hasOwnProperty.call(next, 'lastLufs');
+  let dropped = false;
+  for (const field of CLIP_ENTRY_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(next, field)) continue;
+    delete next[field];
+    dropped = true;
+  }
+  for (const field of CLIP_KIND_CONTAINERS) {
+    const container = next[field];
+    if (!container || typeof container !== 'object') continue;
+    if (!Object.prototype.hasOwnProperty.call(container, 'clip')) continue;
+    const kept = { ...container };
+    delete kept.clip;
+    if (Object.keys(kept).length) next[field] = kept;
+    else delete next[field];
+    dropped = true;
+  }
+  // The time of the measurement goes with the measurement.
+  if (hadLastLufs && !Object.prototype.hasOwnProperty.call(next, 'lastLufs')) {
+    delete next.lastMeasuredAt;
+  }
+  const versions = next[FIELD_VERSIONS_FIELD];
+  if (versions && typeof versions === 'object') {
+    const kept = { ...versions };
+    for (const field of CLIP_VERSION_FIELDS) delete kept[field];
+    if (Object.keys(kept).length !== Object.keys(versions).length) {
+      if (Object.keys(kept).length) next[FIELD_VERSIONS_FIELD] = kept;
+      else delete next[FIELD_VERSIONS_FIELD];
+      dropped = true;
+    }
+  }
+  return dropped ? next : entry;
 }
 
 function cloneEntry(entry, fallbackName) {
@@ -315,6 +355,10 @@ function normalizeKnownChannelEntries(all) {
     } else {
       copyMetadata(target, channel);
     }
+  }
+  for (const [id, entry] of Object.entries(all)) {
+    const kept = withoutClipFields(entry);
+    if (kept !== entry) all[id] = kept;
   }
   return all;
 }
