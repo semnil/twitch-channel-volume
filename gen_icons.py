@@ -1,5 +1,17 @@
 """Generate extension icons: grey 2-bar meter + Twitch purple top bar with T mark."""
-from PIL import Image, ImageDraw, ImageFont
+import os
+import sys
+
+UNAVAILABLE = 3
+
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except ImportError as err:
+    print(f'{err}. Install pillow to draw the icons.', file=sys.stderr)
+    sys.exit(UNAVAILABLE)
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+OUT_DIR = os.path.join(ROOT, 'icons')
 
 SIZES = [16, 48, 128]
 BG_COLOR = (24, 24, 27)        # Twitch background
@@ -27,7 +39,8 @@ def load_font(size):
             return ImageFont.truetype(path, size)
         except OSError:
             continue
-    return ImageFont.load_default()
+    raise SystemExit('no face here to draw the mark with. Looked for:\n  '
+                     + '\n  '.join(FONT_PATHS))
 
 
 def draw_icon(size):
@@ -67,7 +80,8 @@ def draw_icon(size):
     return img
 
 
-for s in SIZES:
-    img = draw_icon(s)
-    img.save(f'icons/icon{s}.png')
-    print(f'Generated icon{s}.png')
+if __name__ == '__main__':
+    for s in SIZES:
+        img = draw_icon(s)
+        img.save(os.path.join(OUT_DIR, f'icon{s}.png'))
+        print(f'Generated icon{s}.png')

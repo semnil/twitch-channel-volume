@@ -7,6 +7,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const os = require('node:os');
 const { spawnSync } = require('node:child_process');
+const crypto = require('node:crypto');
 const u = require('./utils.js');
 const channelStore = require('./channel-store.js');
 const settingsStore = require('./settings-store.js');
@@ -55,6 +56,20 @@ const readJson = file => {
   }
   return JSON.parse(out);
 };
+
+// What the archive holds, by name and by the digest of its bytes. Reading the
+// bytes is the point: namelist() alone answers for the names only.
+function heldInZip(dir, archive) {
+  const read = spawnSync('python3', ['-c',
+    'import hashlib, sys, zipfile\n'
+    + 'held = zipfile.ZipFile(sys.argv[1])\n'
+    + 'for name in held.namelist():\n'
+    + '    print(name, hashlib.sha256(held.read(name)).hexdigest())',
+    archive], { cwd: dir, encoding: 'utf8' });
+  assert.equal(read.status, 0, read.stderr);
+  return read.stdout.trim().split('\n').filter(Boolean)
+    .map((line) => line.split(' '));
+}
 
 function withFixtureDir(prefix, body) {
   const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), prefix));
@@ -197,6 +212,17 @@ const pageReferences = (text) => {
       (segments[0] === '_locales' && segments.length === 3 && segments[2] === 'messages.json');
     assert.ok(shipped, `${arcname} is not a path the extension loads`);
   }
+
+  // Every locale the tree carries is one the package carries. An extension
+  // shipped with the default locale alone loads and speaks the wrong language
+  // to everyone else, which the rule above would pass.
+  const localeDir = path.join(__dirname, '_locales');
+  const inTree = fs.readdirSync(localeDir)
+    .filter((name) => fs.existsSync(path.join(localeDir, name, 'messages.json')))
+    .map((name) => `_locales/${name}/messages.json`).sort();
+  // Without a second locale, packing the default one alone would satisfy this.
+  assert.ok(inTree.length > 1, 'the tree carries more than one locale');
+  assert.deepEqual(packaged.filter((name) => name.startsWith('_locales/')).sort(), inTree);
 });
 
 test('the scratch roots are ignored at the root and no deeper', () => {
@@ -247,7 +273,9 @@ test('the store package carries only the files the extension loads', () => {
   // pack.py runs for real here: a declaration read out of its source would
   // still pass with the selection that uses it deleted.
   withFixtureDir('tcv-pack-', (fixture) => {
-    const write = (relative, body = 'x') => {
+    // Each file carries its own path as its text, so an entry standing for
+    // another file reads as a different digest below.
+    const write = (relative, body = relative) => {
       const target = path.join(fixture, relative);
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.writeFileSync(target, body);
@@ -264,8 +292,12 @@ test('the store package carries only the files the extension loads', () => {
     write('utils.js');
     write('content.js');
     write('audio-worklet.js');
-    write('background.js', "importScripts('channel-store.js');\n");
+    // Two arguments, spelled two ways: a walk that stops at the first one
+    // leaves the second out of the package with nothing saying so.
+    write('background.js',
+      'importScripts(\'channel-store.js\', "lib/second.js");\n');
     write('channel-store.js');
+    write('lib/second.js');
     // Spellings a browser reads alike. The expected list below is written out
     // by hand rather than scanned, so it does not inherit whatever this page's
     // markup happens to exercise.
@@ -288,6 +320,7 @@ test('the store package carries only the files the extension loads', () => {
     write('popup.js');
     write('icons/icon16.png');
     write('_locales/ja/messages.json', '{}');
+    write('_locales/en/messages.json', '{"a":{"message":"b"}}');
 
     // Nothing references these, whatever their extension says.
     write('review-probe.js');
@@ -316,6 +349,7 @@ test('the store package carries only the files the extension loads', () => {
     const packaged = listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
     const expected = [
       'LICENSE',
+      '_locales/en/messages.json',
       '_locales/ja/messages.json',
       'audio-worklet.js',
       'background.js',
@@ -323,6 +357,7 @@ test('the store package carries only the files the extension loads', () => {
       'channel-store.js',
       'content.js',
       'icons/icon16.png',
+      'lib/second.js',
       'manifest.json',
       'popup.css',
       'popup.html',
@@ -338,6 +373,81 @@ test('the store package carries only the files the extension loads', () => {
       assert.deepEqual(onWindows.slice().sort(), expected.slice().sort(),
         'the fixture packs the same names on either host');
     }
+
+    // The names say nothing about what is under them: a packer writing sixteen
+    // empty entries under these names passes every assertion above. This builds
+    // the archive and reads it.
+    const built = spawnSync('python3', ['-B', 'pack.py'], {
+      cwd: fixture,
+      encoding: 'utf8'
+    });
+    assert.equal(built.status, 0, built.stderr);
+    const held = heldInZip(fixture, 'twitch-channel-volume-1.0.0.zip');
+    assert.deepEqual(held.map(([name]) => name).sort(), expected.slice().sort());
+    for (const [name, digest] of held) {
+      const onDisk = crypto.createHash('sha256')
+        .update(fs.readFileSync(path.join(fixture, ...name.split('/')))).digest('hex');
+      assert.equal(digest, onDisk, `${name} in the package is the file of that name`);
+    }
+    // Without this the comparison above would hold for a packer that wrote
+    // nothing at all, since an empty entry matches an empty file.
+    const ofNothing = crypto.createHash('sha256').update('').digest('hex');
+    assert.ok(held.some(([, digest]) => digest !== ofNothing),
+      'the fixture gives the packer something to get wrong');
+  });
+});
+
+
+// gen_icons.py writes beside itself rather than beside whatever directory it
+// was started from, and where there is no face to draw the mark with it says so
+// instead of saving one drawn with Pillow's own and reporting success.
+test('the icons are drawn beside the script or not at all', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'gen_icons.py'), 'utf8');
+  const committed = fs.readdirSync(path.join(__dirname, 'icons'))
+    .filter((name) => /^icon\d+\.png$/.test(name)).sort();
+  assert.ok(committed.length > 0, 'the tree carries the icons gen_icons.py draws');
+
+  withFixtureDir('tcv-icons-', (beside) => {
+    withFixtureDir('tcv-cwd-', (elsewhere) => {
+      fs.writeFileSync(path.join(beside, 'gen_icons.py'), source);
+      fs.mkdirSync(path.join(beside, 'icons'));
+      // Both directories can take the icons, so which one holds them answers it.
+      fs.mkdirSync(path.join(elsewhere, 'icons'));
+      const drawn = spawnSync('python3', ['-B', path.join(beside, 'gen_icons.py')],
+        { cwd: elsewhere, encoding: 'utf8' });
+      if (drawn.error || drawn.status === 3) {
+        console.log(`  (icon check skipped: ${(drawn.error || drawn.stderr || '').toString().trim()})`);
+        return;
+      }
+      assert.equal(drawn.status, 0, drawn.stderr);
+      assert.deepEqual(fs.readdirSync(path.join(beside, 'icons')).sort(), committed,
+        'gen_icons.py writes the icons beside itself');
+      assert.deepEqual(fs.readdirSync(path.join(elsewhere, 'icons')), [],
+        'gen_icons.py writes nothing under the directory it was started from');
+    });
+  });
+
+  // The same script with nowhere to find a face. It runs wherever pillow is,
+  // so this half needs no system font of its own.
+  withFixtureDir('tcv-faceless-', (faceless) => {
+    fs.mkdirSync(path.join(faceless, 'icons'));
+    const withoutAFace = source.replace(/^FONT_PATHS = \[[^\]]*\]/m,
+      "FONT_PATHS = ['/no/such/face.ttf']");
+    assert.notEqual(withoutAFace, source,
+      'gen_icons.py lists the faces it looks for in FONT_PATHS');
+    fs.writeFileSync(path.join(faceless, 'gen_icons.py'), withoutAFace);
+    const refused = spawnSync('python3', ['-B', path.join(faceless, 'gen_icons.py')],
+      { cwd: faceless, encoding: 'utf8' });
+    if (refused.error || refused.status === 3) {
+      console.log(`  (faceless check skipped: ${(refused.error || refused.stderr || '').toString().trim()})`);
+      return;
+    }
+    assert.notEqual(refused.status, 0,
+      'gen_icons.py turns down a machine with no face to draw with');
+    assert.match(refused.stderr, /no face here to draw the mark with/);
+    assert.match(refused.stderr, /no\/such\/face\.ttf/);
+    assert.deepEqual(fs.readdirSync(path.join(faceless, 'icons')), [],
+      'nothing is saved under the brand letter when there is no face for it');
   });
 });
 
@@ -532,6 +642,18 @@ test('the store package refuses to leave out what it has to carry', () => {
       (box) => writeCatalog(box,
         { extName: { message: 'x $A$', placeholders: { a: { example: 'y' } } } }),
       /gives extName\.a no content/],
+    // A backslash is an ordinary character in a name on this host and a
+    // separator on the one the package is written for. The file is on disk
+    // under that very name, so what refuses it is the rule and not its
+    // absence.
+    ['a reference spelled with a backslash',
+      (box) => {
+        fs.writeFileSync(`${box}/sub\\content.js`, '');
+        editManifest(box, m => {
+          m.content_scripts = [{ js: ['content.js', 'sub\\content.js'] }];
+        });
+      },
+      /reference leaves the package: sub\\content\.js/],
     ['a default_locale that is no locale at all',
       (box) => {
         fs.renameSync(`${box}/_locales/ja`, `${box}/_locales/jp`);
@@ -942,6 +1064,7 @@ test('the store package refuses a reference that leaves it', () => {
       fs.writeFileSync(sibling, 'SIBLING');
     });
     assert.notEqual(climbing.status, 0);
+    assert.match(climbing.stderr, /\.\.\/secret\.js/);
 
     // Absolute and pointing at a path with no link anywhere in it: the only
     // thing standing between it and the zip is the rule against absolute paths.
@@ -972,6 +1095,7 @@ test('the store package refuses a reference that leaves it', () => {
       fs.symlinkSync(outside, path.join(fixture, '_locales'));
     });
     assert.notEqual(linkedLocaleRoot.status, 0);
+    assert.match(linkedLocaleRoot.stderr, /_locales\//);
   } finally {
     fs.rmSync(outside, { recursive: true, force: true });
   }
