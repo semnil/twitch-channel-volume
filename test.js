@@ -212,6 +212,17 @@ const pageReferences = (text) => {
       (segments[0] === '_locales' && segments.length === 3 && segments[2] === 'messages.json');
     assert.ok(shipped, `${arcname} is not a path the extension loads`);
   }
+
+  // Every locale the tree carries is one the package carries. An extension
+  // shipped with the default locale alone loads and speaks the wrong language
+  // to everyone else, which the rule above would pass.
+  const localeDir = path.join(__dirname, '_locales');
+  const inTree = fs.readdirSync(localeDir)
+    .filter((name) => fs.existsSync(path.join(localeDir, name, 'messages.json')))
+    .map((name) => `_locales/${name}/messages.json`).sort();
+  // Without a second locale, packing the default one alone would satisfy this.
+  assert.ok(inTree.length > 1, 'the tree carries more than one locale');
+  assert.deepEqual(packaged.filter((name) => name.startsWith('_locales/')).sort(), inTree);
 });
 
 test('the scratch roots are ignored at the root and no deeper', () => {
@@ -309,6 +320,7 @@ test('the store package carries only the files the extension loads', () => {
     write('popup.js');
     write('icons/icon16.png');
     write('_locales/ja/messages.json', '{}');
+    write('_locales/en/messages.json', '{"a":{"message":"b"}}');
 
     // Nothing references these, whatever their extension says.
     write('review-probe.js');
@@ -337,6 +349,7 @@ test('the store package carries only the files the extension loads', () => {
     const packaged = listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
     const expected = [
       'LICENSE',
+      '_locales/en/messages.json',
       '_locales/ja/messages.json',
       'audio-worklet.js',
       'background.js',
