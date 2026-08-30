@@ -25,13 +25,9 @@ IMPORT_SCRIPTS = re.compile(r'importScripts\(([^)]*)\)')
 # Chrome substitutes __MSG_name__ from the default locale's catalog, in the
 # manifest and in every packaged stylesheet. Its own predefined messages carry
 # an @@ prefix and need no catalog.
-MESSAGE_PLACEHOLDER = re.compile(r'__MSG_([A-Za-z0-9_@]+)__')
-# A message name carries letters, digits, _ and @; only a leading @@ is Chrome's.
-# A placeholder name carries no @ at all, and a message refers to one as $NAME$,
-# with $$ standing for a literal $ and a bare $1 meaning nothing here.
-MESSAGE_NAME = re.compile(r'^[A-Za-z0-9_@]+$')
-PLACEHOLDER_NAME = re.compile(r'^[A-Za-z0-9_]+$')
-PLACEHOLDER_USE = re.compile(r'\$([A-Za-z0-9_]+)\$')
+# Chromium's IsValidName: a message name and a placeholder name alike carry
+# ASCII letters, digits, _ and @, and nothing else.
+NAME = re.compile(r'^[A-Za-z0-9_@]+$')
 # The messages Chrome defines itself. A name under @@ that is not one of these is
 # a variable it reports as used and not defined.
 PREDEFINED_MESSAGES = frozenset({
@@ -82,16 +78,43 @@ class _PageReferences(HTMLParser):
                 self.found.append(href)
 
 
-def _placeholders(text):
-    """The message names a text asks for, Chrome's own among them."""
-    return set(MESSAGE_PLACEHOLDER.findall(text))
+def _messages_used(text, begin, end, known=None):
+    """Walk a text for references the way Chromium's ReplaceVariables walks it.
+
+    It scans for the opening delimiter, takes what runs to the next closing one
+    as a candidate, and passes over anything that is not a name — so two
+    references share a delimiter (`$A$$B$` is A then B) and a doubled delimiter
+    opens an empty candidate rather than escaping anything (`$$NAME$$` asks for
+    NAME). Returns the names it took and the first one `known` does not answer;
+    with no map it answers everything, which is how the names a text asks for
+    are counted.
+    """
+    used, index = [], 0
+    while True:
+        found = text.find(begin, index)
+        if found < 0:
+            return used, None
+        index = found + len(begin)
+        if index >= len(text):
+            return used, None
+        stop = text.find(end, index)
+        if stop < 0:
+            return used, None
+        name = text[index:stop]
+        if not NAME.match(name):
+            continue
+        used.append(name)
+        if known is not None and name.lower() not in known:
+            return used, name
+        index = stop + len(end)
 
 
 def _catalog(relative, text):
     """The names a catalog answers for, or a refusal saying why it answers none.
 
-    Chrome reads this file rather than taking it on faith, and declines to load
-    the extension over any of these, so they are read here too.
+    Only what Chromium refuses is refused here: it reads `message` and
+    `placeholders` and passes over `description` and `example`, and it lowercases
+    a key on the way in rather than objecting to two that differ only in case.
     """
     def refuse(complaint):
         raise SystemExit(f'{relative} {complaint}')
@@ -103,42 +126,29 @@ def _catalog(relative, text):
     if not isinstance(loaded, dict):
         refuse(f'is not a message catalog: the top level is a '
                f'{type(loaded).__name__}, not an object')
-    answered = {}
+    answered = set()
     for name, entry in loaded.items():
-        if not MESSAGE_NAME.match(name) or name.startswith('@@'):
+        if not NAME.match(name):
             refuse(f'names a message Chrome cannot read: {name!r}')
-        # Chrome matches a name without regard to case, so two that differ only
-        # there are one name with two answers.
-        if name.lower() in answered:
-            refuse(f'names {name!r} and {answered[name.lower()]!r}, which Chrome '
-                   f'reads as one name')
-        answered[name.lower()] = name
+        answered.add(name.lower())
         if not isinstance(entry, dict):
             refuse(f'gives {name} a {type(entry).__name__}, not an object')
         if not isinstance(entry.get('message'), str):
             refuse(f'gives {name} no message element')
-        description = entry.get('description')
-        if description is not None and not isinstance(description, str):
-            refuse(f'gives {name} a description that is not text')
         # A key written as null is a key the author wrote, not one left out.
         placeholders = entry['placeholders'] if 'placeholders' in entry else {}
         if not isinstance(placeholders, dict):
             refuse(f'gives {name} placeholders that are not an object')
         for holder, shape in placeholders.items():
-            if not PLACEHOLDER_NAME.match(holder):
+            if not NAME.match(holder):
                 refuse(f'names a placeholder Chrome cannot read: {name}.{holder}')
             if not isinstance(shape, dict) or not isinstance(shape.get('content'), str):
                 refuse(f'gives {name}.{holder} no content')
-            if shape.get('example') is not None and not isinstance(shape['example'], str):
-                refuse(f'gives {name}.{holder} an example that is not text')
-        # $$ stands for a literal $, so it names nothing; a bare $1 is not a
-        # reference either, having no closing $.
-        defined = {holder.lower() for holder in placeholders}
-        used = set(PLACEHOLDER_USE.findall(entry['message'].replace('$$', '')))
-        undefined = sorted(use for use in used if use.lower() not in defined)
-        if undefined:
-            refuse(f'gives {name} no placeholder named {undefined[0]}')
-    return set(answered)
+        _used, missing = _messages_used(
+            entry['message'], '$', '$', {holder.lower() for holder in placeholders})
+        if missing:
+            refuse(f'gives {name} no placeholder named {missing}')
+    return answered
 
 
 def _page_references(text):
@@ -252,15 +262,17 @@ def selected_files(root):
     # What the extension asks the default locale to answer for. Chrome reads
     # these in the manifest and in the stylesheets it serves, and reads one of
     # its own everywhere but the manifest, so the two are kept apart.
-    from_manifest = _placeholders(_read(root, 'manifest.json'))
-    wanted = set(from_manifest)
-    for relative in selected:
-        if relative.endswith('.css'):
-            wanted |= _placeholders(_read(root, relative))
-    elsewhere = sorted(from_manifest & OUTSIDE_MANIFEST_ONLY)
+    asking = [('the manifest', _read(root, 'manifest.json'))]
+    asking += [(relative, _read(root, relative))
+               for relative in selected if relative.endswith('.css')]
+    used = {label: _messages_used(text, '__MSG_', '__')[0] for label, text in asking}
+    elsewhere = sorted(set(used['the manifest']) & OUTSIDE_MANIFEST_ONLY)
     if elsewhere:
         raise SystemExit(f'the manifest uses {elsewhere[0]}, which Chrome reads '
                          f'everywhere but there')
+    predefined = {name.lower() for name in PREDEFINED_MESSAGES}
+    wanted = {name for names in used.values() for name in names
+              if name.lower() not in predefined}
 
     # Chrome requires these to agree. An extension carrying a _locales directory
     # has to name a default_locale; one asking for a message has to name it too;
@@ -280,13 +292,6 @@ def selected_files(root):
     if named and default_locale not in CHROME_LOCALES:
         raise SystemExit(f'default_locale is not a locale Chrome carries: '
                          f'{default_locale!r}')
-    # A name under @@ is Chrome's to define. One it does not is a variable it
-    # reports as used and not defined.
-    undefined = sorted(name for name in wanted
-                       if name.startswith('@@') and name not in PREDEFINED_MESSAGES)
-    if undefined:
-        raise SystemExit(f'Chrome defines no message named {undefined[0]}')
-    wanted = {name for name in wanted if not name.startswith('@@')}
     locales = _host(root, LOCALE_DIR)
     if os.path.isdir(locales) and not named:
         raise SystemExit(f'{LOCALE_DIR} is here and the manifest names no default_locale')
@@ -309,12 +314,15 @@ def selected_files(root):
                     yield entry
     if required and required not in seen_locales:
         raise SystemExit(f'the default locale carries no messages: {required}')
-    if wanted:
-        # Message names are matched without regard to case, as Chrome matches them.
-        answered = catalogs.get(default_locale, set())
-        unanswered = sorted(name for name in wanted if name.lower() not in answered)
-        if unanswered:
-            raise SystemExit(f'{required} does not answer for: {", ".join(unanswered)}')
+    # Every reference resolves against the default catalog and the messages
+    # Chrome defines itself — a name under @@ among them, which a catalog may
+    # answer for as it may any other.
+    known = catalogs.get(default_locale, set()) | predefined
+    for label, text in asking:
+        _seen, missing = _messages_used(text, '__MSG_', '__', known)
+        if missing:
+            raise SystemExit(f'{label} uses {missing}, which '
+                             f'{required or "no catalog"} does not answer for')
 
     for relative in DISTRIBUTION_FILES:
         full = _packaged(root, relative)

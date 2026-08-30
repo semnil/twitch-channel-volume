@@ -431,33 +431,32 @@ test('the store package refuses to leave out what it has to carry', () => {
     // resolve it against is an extension it declines to load.
     ['a message the manifest asks for and no locale assets at all',
       (box) => {
-        fs.rmSync(path.join(box, '_locales'), { recursive: true });
-        editManifest(box, (m) => { delete m.default_locale; });
+        fs.rmSync(`${box}/_locales`, { recursive: true });
+        editManifest(box, m => { delete m.default_locale; });
       },
       /asks for extName and names no default_locale/],
     ['default_locale written as null',
-      (box) => editManifest(box, (m) => { m.default_locale = null; }),
+      (box) => editManifest(box, m => { m.default_locale = null; }),
       /default_locale is not a locale name: None/],
     ['default_locale written as a path rather than a name',
-      (box) => editManifest(box, (m) => { m.default_locale = 'ja/'; }),
+      (box) => editManifest(box, m => { m.default_locale = 'ja/'; }),
       /default_locale is not one name under _locales: 'ja\/'/],
     ['default_locale written as a directory that means the one above',
-      (box) => editManifest(box, (m) => { m.default_locale = '..'; }),
+      (box) => editManifest(box, m => { m.default_locale = '..'; }),
       /default_locale is not one name under _locales: '\.\.'/],
     ['a message the manifest asks for that the catalog does not answer',
-      (box) => editManifest(box, (m) => { m.name = '__MSG_absentKey__'; }),
-      /does not answer for: absentKey/],
+      (box) => editManifest(box, m => { m.name = '__MSG_absentKey__'; }),
+      /the manifest uses absentKey, which .* does not answer for/],
     ['a message a packaged stylesheet asks for that the catalog does not answer',
       (box) => {
-        fs.writeFileSync(path.join(box, 'styles.css'),
-          'body { content: "__MSG_absentKey__" }\n');
-        editManifest(box, (m) => {
+        fs.writeFileSync(`${box}/styles.css`, 'body { content: "__MSG_absentKey__" }\n');
+        editManifest(box, m => {
           m.content_scripts = [{ js: ['content.js'], css: ['styles.css'] }];
         });
       },
-      /does not answer for: absentKey/],
+      /styles\.css uses absentKey, which .* does not answer for/],
     ['a catalog that is not JSON',
-      (box) => fs.writeFileSync(path.join(box, '_locales/ja/messages.json'), '{ broken'),
+      (box) => fs.writeFileSync(`${box}/_locales/ja/messages.json`, '{ broken'),
       /messages\.json is not a message catalog/],
     // Chrome reads the catalog rather than taking it on faith, and declines to
     // load the extension over any of these.
@@ -473,9 +472,6 @@ test('the store package refuses to leave out what it has to carry', () => {
     ['an entry that is not an object',
       (box) => writeCatalog(box, { extName: 'x' }),
       /gives extName a str, not an object/],
-    ['two names Chrome reads as one',
-      (box) => writeCatalog(box, { extName: { message: 'x' }, EXTNAME: { message: 'y' } }),
-      /which Chrome reads as one name/],
     ['a name Chrome cannot read',
       (box) => writeCatalog(box, { 'ext-name': { message: 'x' }, extName: { message: 'y' } }),
       /names a message Chrome cannot read/],
@@ -491,7 +487,7 @@ test('the store package refuses to leave out what it has to carry', () => {
       /is not a locale Chrome carries: 'jp'/],
     ['a message under @@ that Chrome does not define',
       (box) => editManifest(box, m => { m.description = '__MSG_@@bogus__'; }),
-      /Chrome defines no message named @@bogus/],
+      /the manifest uses @@bogus, which .* does not answer for/],
     ['the one message Chrome reads everywhere but the manifest, in the manifest',
       (box) => editManifest(box, m => { m.description = '__MSG_@@extension_id__'; }),
       /the manifest uses @@extension_id/],
@@ -505,10 +501,23 @@ test('the store package refuses to leave out what it has to carry', () => {
       (box) => writeCatalog(box, { extName: { message: 'x $BAD_NAME$',
         placeholders: { 'bad-name': { content: '$1' } } } }),
       /names a placeholder Chrome cannot read/],
-    ['a catalog defining a name under @@, which is Chrome\'s to define',
-      (box) => writeCatalog(box,
-        { extName: { message: 'x' }, '@@extension_id': { message: 'y' } }),
-      /names a message Chrome cannot read: '@@extension_id'/]
+    // A doubled delimiter opens an empty candidate rather than escaping
+    // anything, so $$NAME$$ asks for NAME; and two references share a
+    // delimiter, so $A$$B$ is A then B.
+    ['a doubled dollar around a name nothing defines',
+      (box) => writeCatalog(box, { extName: { message: '$$NAME$$' } }),
+      /gives extName no placeholder named NAME/],
+    ['two references sharing a delimiter, one of them undefined',
+      (box) => writeCatalog(box, { extName: { message: '$A$$B$',
+        placeholders: { ab: { content: '$1' } } } }),
+      /gives extName no placeholder named A/],
+    // The second reference is what the shared delimiter opens, so it has to be
+    // the one that fails here: a walk restarting past the delimiter never
+    // reaches it.
+    ['the second of two references sharing a delimiter undefined',
+      (box) => writeCatalog(box, { extName: { message: '$A$$B$',
+        placeholders: { a: { content: '$1' } } } }),
+      /gives extName no placeholder named B/]
   ]) {
     const box = buildMinimal();
     // A package built earlier stands here, so a refusal has something to spare.
@@ -553,12 +562,23 @@ test('the store package refuses to leave out what it has to carry', () => {
         m.content_scripts = [{ js: ['content.js'], css: ['styles.css'] }];
       });
     }],
-    // Written so that reading $$ as an opening dollar would name a
-    // placeholder: without the escape, $$name$$ holds $name$.
-    ['a literal dollar in a message',
-      (box) => writeCatalog(box, { extName: { message: 'cost $$name$$ each' } })],
     ['a positional argument in a placeholder', (box) => writeCatalog(box,
-      { extName: { message: 'hi $WHO$', placeholders: { who: { content: '$1' } } } })]
+      { extName: { message: 'hi $WHO$', placeholders: { who: { content: '$1' } } } })],
+    ['two references sharing a delimiter, both defined', (box) => writeCatalog(box,
+      { extName: { message: '$A$$B$',
+        placeholders: { a: { content: '$1' }, b: { content: '$2' } } } })],
+    ['a placeholder named with an @ in it', (box) => writeCatalog(box,
+      { extName: { message: '$A@B$', placeholders: { 'a@b': { content: '$1' } } } })],
+    ['a description that is not text',
+      (box) => writeCatalog(box, { extName: { message: 'x', description: 7 } })],
+    ['an example that is not text', (box) => writeCatalog(box,
+      { extName: { message: 'x $A$', placeholders: { a: { content: '$1', example: 7 } } } })],
+    ['two names differing only in case', (box) => writeCatalog(box,
+      { extName: { message: 'x' }, EXTNAME: { message: 'y' } })],
+    ['a catalog answering for a name under @@', (box) => {
+      writeCatalog(box, { extName: { message: 'x' }, '@@custom': { message: 'y' } });
+      editManifest(box, m => { m.description = '__MSG_@@custom__'; });
+    }]
   ]) {
     const box = buildMinimal();
     arrange(box);
