@@ -685,6 +685,28 @@ test('a tag is met by the version the manifest shows for it', () => {
   });
 });
 
+// A tag moves and a commit does not, so every action this repository runs is
+// named by the commit its version tag names, with that version written beside
+// it. Nothing here reaches the network: what the commit is was settled when it
+// was written down, and this only holds the shape.
+test('every action is named by a commit and the version beside it', () => {
+  const workflows = path.join(__dirname, '.github', 'workflows');
+  const files = fs.readdirSync(workflows).filter((name) => /\.ya?ml$/.test(name));
+  assert.ok(files.length > 0, 'the repository carries workflows');
+  let named = 0;
+  for (const name of files) {
+    for (const line of fs.readFileSync(path.join(workflows, name), 'utf8').split('\n')) {
+      if (!/^\s*-?\s*uses:/.test(line)) { continue; }
+      named += 1;
+      assert.match(line,
+        /^\s*-?\s*uses:\s+[\w.-]+\/[\w.-]+@[0-9a-f]{40} # v\d+\.\d+\.\d+\s*$/,
+        `${name} names an action by a commit and the version beside it`);
+    }
+  }
+  // Without this the loop above would pass over a workflow that runs nothing.
+  assert.ok(named > 0, 'the workflows run actions');
+});
+
 test('a reference naming a drive is refused under Windows path semantics', () => {
   // A drive letter reads as relative to posixpath, and on Windows it resolves
   // against the same drive — so `C:/content.js` would package what `content.js`
