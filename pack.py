@@ -93,8 +93,11 @@ MANIFEST_REFERENCES = (
 )
 # What a name says a file is, where the key does not say.
 BY_NAME = (('.html', 'page'), ('.js', 'script'), ('.css', 'style'))
-# A resource entry carrying one of these is matched against the package rather
-# than opened, so it names no one file.
+# A resource entry carrying one of these is a pattern Chrome matches against
+# the extension's own files rather than a name it opens. What it matches has to
+# be in the package, so it is matched against the tree here, with '*' standing
+# for any run of characters and '/' among them: a file carried that nothing
+# asks for costs room, and one left out is a resource the page cannot load.
 PATTERN = re.compile(r'[*?]')
 CSS_COMMENT = re.compile(r'/\*.*?\*/', re.S)
 CSS_IMPORT = re.compile(r'@import\s+(?:url\(\s*)?(["\']?)([^"\')\s;]+)\1')
@@ -352,15 +355,43 @@ def _read(root, relative):
         return handle.read()
 
 
-def _manifest_references(manifest):
+def _matching(root, pattern):
+    """Every file under the package root that a resource pattern names."""
+    shape = re.compile(''.join(
+        '.*' if part == '*' else '.' if part == '?' else re.escape(part)
+        for part in re.split(r'([*?])', pattern)))
+    found = []
+    for base, directories, files in os.walk(root):
+        # A name beginning with a dot is one Chrome's own packer leaves out.
+        directories[:] = sorted(name for name in directories
+                                if not name.startswith('.'))
+        held = os.path.relpath(base, root)
+        prefix = '' if held == os.curdir else held.replace(os.sep, '/') + '/'
+        for name in sorted(files):
+            if name.startswith('.'):
+                continue
+            relative = prefix + name
+            if shape.fullmatch(relative):
+                found.append(relative)
+    return found
+
+
+def _by_name(value):
+    return next((named for suffix, named in BY_NAME
+                 if value.endswith(suffix)), 'asset')
+
+
+def _manifest_references(root, manifest):
     """Every file the manifest names, with what the key says it is."""
     for path, kind in MANIFEST_REFERENCES:
         for value in _at(manifest, path):
             if kind != 'named':
                 yield value, kind
-            elif not PATTERN.search(value):
-                yield value, next((named for suffix, named in BY_NAME
-                                   if value.endswith(suffix)), 'asset')
+            elif PATTERN.search(value):
+                for held in _matching(root, value):
+                    yield held, _by_name(held)
+            else:
+                yield value, _by_name(value)
 
 
 def _style_references(text):
@@ -406,7 +437,7 @@ def selected_files(root):
     if not _chrome_reads_the_version(version):
         raise SystemExit(f'version is not one Chrome reads: {version!r}')
     pending = [('manifest.json', 'asset')]
-    pending.extend(_manifest_references(manifest))
+    pending.extend(_manifest_references(root, manifest))
     selected = {}
     while pending:
         relative, kind = pending.pop(0)

@@ -558,7 +558,8 @@ test('the package follows every manifest key that names a file', () => {
       },
       content_scripts: [{ js: ['content.js'], css: ['styles.css'] }],
       web_accessible_resources: [
-        { resources: ['exposed.js', '*.png'], matches: ['https://example.com/*'] }
+        { resources: ['exposed.js', 'images/*.png', 'lib/*.js'],
+          matches: ['https://example.com/*'] }
       ]
     }));
     // Chrome loads a page under whatever name the key gives it.
@@ -583,8 +584,21 @@ test('the package follows every manifest key that names a file', () => {
     // In a comment, remote, a fragment of the sheet, and a name Chrome
     // substitutes a message into: none of them is a file this can resolve.
     write('commented.png');
-    // A resource entry Chrome matches rather than opens. Expanding it here
-    // would carry a file nothing loads.
+    // A resource entry is a pattern Chrome matches against the extension's
+    // own files, so what it names is packed. The three beside it are the
+    // ones it does not name: a different extension, a different directory,
+    // and one the pattern reaches only because '*' passes over a slash.
+    write('images/logo.png');
+    write('images/deep/inner.png');
+    write('images/notes.txt');
+    // The pattern has to name the whole of what it matches: this one begins
+    // with a name it does name and goes on past it.
+    write('images/logo.png.bak');
+    // What a pattern names is read by what it is: this one imports, and
+    // what it imports is packed with it.
+    write('lib/helper.js', "importScripts('inner.js');\n");
+    write('lib/inner.js');
+    write('lib/notes.txt');
     write('stray.png');
     write('LICENSE', 'MIT License\n');
     fs.copyFileSync(path.join(__dirname, 'pack.py'), path.join(fixture, 'pack.py'));
@@ -596,14 +610,18 @@ test('the package follows every manifest key that names a file', () => {
       listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean).sort(),
       [
       'LICENSE', 'bg.png', 'content.js', 'devtools.html', 'exposed.js',
+      'images/deep/inner.png', 'images/logo.png', 'lib/helper.js', 'lib/inner.js',
       'manifest.json', 'newtab.html', 'panel.html', 'popup.htm', 'popup.js',
       'rules.json', 'sandboxed.html', 'schema.json', 'styles.css', 'theme.css'
     ]);
 
     // Each of these says the key was walked rather than the file happening to
     // be carried some other way.
+    // A pattern cannot name a file that is not there, so what says it was
+    // matched is that the file is in the list above and its neighbours are
+    // not. These are the names that fail when the key stops being walked.
     for (const gone of ['panel.html', 'rules.json', 'schema.json', 'theme.css',
-      'bg.png', 'exposed.js', 'popup.js']) {
+      'bg.png', 'exposed.js', 'popup.js', 'lib/inner.js']) {
       fs.rmSync(path.join(fixture, gone));
       const refused = spawnSync('python3', ['-B', 'pack.py', '--list'],
         { cwd: fixture, encoding: 'utf8' });
