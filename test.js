@@ -2048,8 +2048,15 @@ function createPopupHarness({
   state = {},
   displayUnit = '%',
   deferAutoSave = false,
-  failCommand = ''
+  failCommand = '',
+  tabUrl = 'https://www.twitch.tv/somechannel',
+  sendMessageError = ''
 } = {}) {
+  // A string fails every command, the way a content script that is gone does.
+  // An object fails the commands it names, for the round trip that dies partway.
+  let thrownBySendMessage = sendMessageError;
+  let thrownByTabQuery = '';
+  let activeTabUrl = tabUrl;
   const messages = JSON.parse(
     fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json'), 'utf8')
   );
@@ -2106,9 +2113,17 @@ function createPopupHarness({
 
   const chrome = {
     tabs: {
-      async query() { return [{ id: 1, url: 'https://www.twitch.tv/somechannel' }]; },
+      async query() {
+        if (thrownByTabQuery) throw new Error(thrownByTabQuery);
+        return [activeTabUrl ? { id: 1, url: activeTabUrl } : { id: 1 }];
+      },
       async sendMessage(_tabId, request) {
         sent.push(structuredClone(request));
+        // What Chrome rejects with when nothing is listening in that tab.
+        const thrown = typeof thrownBySendMessage === 'string'
+          ? thrownBySendMessage
+          : thrownBySendMessage?.[request.cmd];
+        if (thrown) throw new Error(thrown);
         if (request.cmd === 'getState') return structuredClone(currentState);
         if (request.cmd === failCommand) {
           return { ok: false, reason: 'storage update failed' };
@@ -2170,6 +2185,9 @@ function createPopupHarness({
         : text;
     },
     setState(next) { currentState = { ...currentState, ...next }; },
+    breakSendMessage(spec) { thrownBySendMessage = spec; },
+    breakTabQuery(message) { thrownByTabQuery = message; },
+    setTabUrl(url) { activeTabUrl = url; },
     async poll() {
       for (const callback of intervals) await callback();
       await flushTasks(8);
@@ -6866,6 +6884,182 @@ test('popup leaves the manual controls alone where there is no channel', async (
   assert.equal(harness.el('applyBtn').disabled, true);
   assert.equal(harness.el('autoApplyToggle').disabled, true);
   assert.equal(harness.el('applyHint').textContent, harness.message('channelNotDetected'));
+});
+
+test('popup says where to open it when the tab is not a Twitch one', async () => {
+  // The manifest asks for twitch.tv alone and for no tabs permission, so Chrome
+  // withholds the URL of every other tab: a tab that is not one of ours arrives
+  // without one rather than with an address to look at.
+  const harness = createPopupHarness({ tabUrl: '' });
+  await flushTasks(8);
+
+  assert.equal(harness.el('errBox').textContent, harness.message('openOnTwitch'));
+  assert.equal(harness.el('errBox').classList.contains('hidden'), false);
+  assert.equal(harness.el('mainArea').classList.contains('hidden'), true);
+  // Nothing is asked of a tab the extension does not run in.
+  assert.deepEqual(harness.sent, []);
+  assert.deepEqual(
+    harness.warnings.filter((args) => args[0] === '[TCV] state request failed')
+      .map((args) => args[1]),
+    ['no Twitch tab to ask']
+  );
+});
+
+test('popup names the reason the page could not answer, once', async () => {
+  const harness = createPopupHarness({
+    sendMessageError: 'Could not establish connection. Receiving end does not exist.'
+  });
+  await flushTasks(8);
+  const named = () => harness.warnings.filter((args) => args[0] === '[TCV] state request failed');
+
+  assert.equal(harness.el('errBox').textContent, harness.message('reloadPageNeeded'));
+  assert.equal(harness.el('mainArea').classList.contains('hidden'), true);
+  // The screen says what to do; the log says what happened.
+  assert.equal(named().length, 1);
+  assert.match(String(named()[0][1]), /Receiving end does not exist/);
+
+  // The display polls every second and the page goes on not answering, so the
+  // reason is named for the stretch, not for each poll.
+  await harness.poll();
+  await harness.poll();
+  assert.equal(named().length, 1);
+  assert.equal(harness.sent.length, 3);
+
+  // It is named again for the next stretch.
+  harness.breakSendMessage('');
+  await harness.poll();
+  assert.equal(named().length, 1);
+  harness.breakSendMessage('Extension context invalidated.');
+  await harness.poll();
+  assert.equal(named().length, 2);
+});
+
+test('popup names a tab it could not even ask for', async () => {
+  const harness = createPopupHarness();
+  await flushTasks(8);
+
+  // Asking which tab is active is the first thing that can fail, and it fails
+  // the same way the rest of the request does.
+  harness.breakTabQuery('Extension context invalidated.');
+  await harness.poll();
+
+  assert.equal(harness.el('errBox').textContent, harness.message('reloadPageNeeded'));
+  assert.equal(harness.el('mainArea').classList.contains('hidden'), true);
+  const named = harness.warnings.filter((args) => args[0] === '[TCV] state request failed');
+  assert.equal(named.length, 1);
+  assert.match(String(named[0][1]), /Extension context invalidated/);
+});
+
+test('popup leaves its own message up when the tab it re-reads is gone', async () => {
+  const harness = createPopupHarness({ failCommand: 'setAutoApplyLoudness' });
+  await flushTasks(8);
+
+  // The save is refused, and by the time the state is re-read the tab has left
+  // Twitch, so Chrome stops answering for its address.
+  harness.setTabUrl('');
+  harness.el('autoApplyToggle').checked = true;
+  await harness.fire('autoApplyToggle', 'change');
+
+  assert.equal(harness.el('autoError').textContent, harness.message('autoSaveFailed'));
+  assert.equal(harness.el('autoError').classList.contains('hidden'), false);
+  assert.equal(harness.el('mainArea').classList.contains('hidden'), false);
+  assert.deepEqual(
+    harness.warnings.filter((args) => args[0] === '[TCV] state request failed')
+      .map((args) => args[1]),
+    ['no Twitch tab to ask']
+  );
+});
+
+test('popup names a reason that takes over from another', async () => {
+  const harness = createPopupHarness({ tabUrl: '' });
+  await flushTasks(8);
+  const named = () => harness.warnings
+    .filter((args) => args[0] === '[TCV] state request failed')
+    .map((args) => String(args[1]));
+
+  assert.deepEqual(named(), ['no Twitch tab to ask']);
+
+  // The tab comes back and the page is the one that cannot answer now. Nothing
+  // arrived in between, so a stretch that reports once would say nothing.
+  harness.setTabUrl('https://www.twitch.tv/somechannel');
+  harness.breakSendMessage('Could not establish connection.');
+  await harness.poll();
+  assert.equal(named().length, 2);
+  assert.match(named()[1], /Could not establish connection/);
+
+  // The same reason again is still the same thing to say.
+  await harness.poll();
+  assert.equal(named().length, 2);
+});
+
+test('popup keeps a save in flight from being failed by the read after it', async () => {
+  const harness = createPopupHarness({ deferAutoSave: true });
+  await flushTasks(8);
+  harness.el('autoApplyToggle').checked = true;
+  const fired = harness.fire('autoApplyToggle', 'change');
+  await flushTasks(8);
+
+  // The page dies while the save is in flight, so the state read that follows
+  // it cannot even ask which tab is active.
+  harness.breakTabQuery('Extension context invalidated.');
+  await harness.releaseAutoSave();
+  await fired;
+
+  // The save landed. What failed afterwards is not what the viewer did.
+  assert.deepEqual(
+    harness.warnings.filter((args) => args[0] === '[TCV] Auto setting request failed'),
+    []
+  );
+  assert.equal(harness.el('autoError').classList.contains('hidden'), true);
+  assert.equal(
+    harness.warnings.filter((args) => args[0] === '[TCV] state request failed').length,
+    1
+  );
+});
+
+test('popup keeps a save that worked from reading as one that failed', async () => {
+  const harness = createPopupHarness();
+  await flushTasks(8);
+
+  // The save lands, and the page dies before the state it asks for next.
+  harness.breakSendMessage({ getState: 'Could not establish connection.' });
+  harness.el('autoApplyToggle').checked = true;
+  await harness.fire('autoApplyToggle', 'change');
+
+  assert.deepEqual(
+    harness.sent.map((message) => message.cmd).filter((cmd) => cmd !== 'getState'),
+    ['setAutoApplyLoudness']
+  );
+  // Reading the state afterwards is not what the viewer just did.
+  assert.equal(harness.el('autoError').classList.contains('hidden'), true);
+  assert.deepEqual(
+    harness.warnings.filter((args) => args[0] === '[TCV] Auto setting request failed'),
+    []
+  );
+  assert.equal(
+    harness.warnings.filter((args) => args[0] === '[TCV] state request failed').length,
+    1
+  );
+});
+
+test('popup leaves its own message up where it asked for no status line', async () => {
+  const harness = createPopupHarness({ failCommand: 'setAutoApplyLoudness' });
+  await flushTasks(8);
+
+  // The save is refused and the state it re-reads afterwards never arrives.
+  harness.breakSendMessage({ getState: 'Could not establish connection.' });
+  harness.el('autoApplyToggle').checked = true;
+  await harness.fire('autoApplyToggle', 'change');
+
+  // What the viewer did is what the screen names; the reload line would take
+  // the whole screen and say nothing about the save.
+  assert.equal(harness.el('autoError').textContent, harness.message('autoSaveFailed'));
+  assert.equal(harness.el('autoError').classList.contains('hidden'), false);
+  assert.equal(harness.el('mainArea').classList.contains('hidden'), false);
+  assert.equal(
+    harness.warnings.filter((args) => args[0] === '[TCV] state request failed').length,
+    1
+  );
 });
 
 test('popup names the reason each rejected request came back with', async () => {
