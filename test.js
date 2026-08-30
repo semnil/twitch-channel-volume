@@ -397,6 +397,38 @@ test('the store package carries only the files the extension loads', () => {
   });
 });
 
+
+// gen_icons.py writes beside itself rather than beside whatever directory it
+// was started from, and where there is no face to draw the mark with it says so
+// instead of saving one drawn with Pillow's own and reporting success.
+test('the icons are drawn beside the script or not at all', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'gen_icons.py'), 'utf8');
+  const committed = fs.readdirSync(path.join(__dirname, 'icons'))
+    .filter((name) => /^icon\d+\.png$/.test(name)).sort();
+  assert.ok(committed.length > 0, 'the tree carries the icons gen_icons.py draws');
+
+  withFixtureDir('tcv-icons-', (beside) => {
+    withFixtureDir('tcv-cwd-', (elsewhere) => {
+      fs.writeFileSync(path.join(beside, 'gen_icons.py'), source);
+      fs.mkdirSync(path.join(beside, 'icons'));
+      // Both directories can take the icons, so which one holds them answers it.
+      fs.mkdirSync(path.join(elsewhere, 'icons'));
+      const drawn = spawnSync('python3', ['-B', path.join(beside, 'gen_icons.py')],
+        { cwd: elsewhere, encoding: 'utf8' });
+      if (drawn.error || drawn.status === 3) {
+        console.log(`  (icon check skipped: ${(drawn.error || drawn.stderr || '').toString().trim()})`);
+        return;
+      }
+      assert.equal(drawn.status, 0, drawn.stderr);
+      assert.deepEqual(fs.readdirSync(path.join(beside, 'icons')).sort(), committed,
+        'gen_icons.py writes the icons beside itself');
+      assert.deepEqual(fs.readdirSync(path.join(elsewhere, 'icons')), [],
+        'gen_icons.py writes nothing under the directory it was started from');
+    });
+  });
+
+});
+
 test('a reference naming a drive is refused under Windows path semantics', () => {
   // A drive letter reads as relative to posixpath, and on Windows it resolves
   // against the same drive — so `C:/content.js` would package what `content.js`
