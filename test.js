@@ -7,6 +7,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const os = require('node:os');
 const { spawnSync } = require('node:child_process');
+const crypto = require('node:crypto');
 const u = require('./utils.js');
 const channelStore = require('./channel-store.js');
 const settingsStore = require('./settings-store.js');
@@ -55,6 +56,20 @@ const readJson = file => {
   }
   return JSON.parse(out);
 };
+
+// What the archive holds, by name and by the digest of its bytes. Reading the
+// bytes is the point: namelist() alone answers for the names only.
+function heldInZip(dir, archive) {
+  const read = spawnSync('python3', ['-c',
+    'import hashlib, sys, zipfile\n'
+    + 'held = zipfile.ZipFile(sys.argv[1])\n'
+    + 'for name in held.namelist():\n'
+    + '    print(name, hashlib.sha256(held.read(name)).hexdigest())',
+    archive], { cwd: dir, encoding: 'utf8' });
+  assert.equal(read.status, 0, read.stderr);
+  return read.stdout.trim().split('\n').filter(Boolean)
+    .map((line) => line.split(' '));
+}
 
 function withFixtureDir(prefix, body) {
   const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), prefix));
@@ -247,7 +262,9 @@ test('the store package carries only the files the extension loads', () => {
   // pack.py runs for real here: a declaration read out of its source would
   // still pass with the selection that uses it deleted.
   withFixtureDir('tcv-pack-', (fixture) => {
-    const write = (relative, body = 'x') => {
+    // Each file carries its own path as its text, so an entry standing for
+    // another file reads as a different digest below.
+    const write = (relative, body = relative) => {
       const target = path.join(fixture, relative);
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.writeFileSync(target, body);
@@ -338,6 +355,27 @@ test('the store package carries only the files the extension loads', () => {
       assert.deepEqual(onWindows.slice().sort(), expected.slice().sort(),
         'the fixture packs the same names on either host');
     }
+
+    // The names say nothing about what is under them: a packer writing sixteen
+    // empty entries under these names passes every assertion above. This builds
+    // the archive and reads it.
+    const built = spawnSync('python3', ['-B', 'pack.py'], {
+      cwd: fixture,
+      encoding: 'utf8'
+    });
+    assert.equal(built.status, 0, built.stderr);
+    const held = heldInZip(fixture, 'twitch-channel-volume-1.0.0.zip');
+    assert.deepEqual(held.map(([name]) => name).sort(), expected.slice().sort());
+    for (const [name, digest] of held) {
+      const onDisk = crypto.createHash('sha256')
+        .update(fs.readFileSync(path.join(fixture, ...name.split('/')))).digest('hex');
+      assert.equal(digest, onDisk, `${name} in the package is the file of that name`);
+    }
+    // Without this the comparison above would hold for a packer that wrote
+    // nothing at all, since an empty entry matches an empty file.
+    const ofNothing = crypto.createHash('sha256').update('').digest('hex');
+    assert.ok(held.some(([, digest]) => digest !== ofNothing),
+      'the fixture gives the packer something to get wrong');
   });
 });
 
