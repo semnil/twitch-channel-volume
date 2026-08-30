@@ -92,6 +92,29 @@ function expandLegacyAuto(entry) {
 const CLIP_ENTRY_FIELDS = ['gainClip', 'autoGainClip', 'autoApplyLoudnessClip'];
 const CLIP_KIND_CONTAINERS = ['lastLufs', 'lastLufsRef', 'lastLufsWindows', 'autoGainRef'];
 const CLIP_VERSION_FIELDS = [...CLIP_ENTRY_FIELDS, 'lastLufs.clip'];
+const CLIP_PROVISIONAL_PREFIX = 'clip-owner:';
+// What a row exists for. The name, the login and the URL describe a channel
+// but are not something the viewer set or the extension measured.
+const ROW_SHARED_VALUE_FIELDS = [
+  'lastLufs', 'lastLufsRef', 'lastLufsWindows', 'autoGainRef', 'lastMeasuredAt',
+  'gain', 'autoApplyLoudness', FIELD_VERSIONS_FIELD
+];
+
+function holdsNoValue(entry) {
+  for (const kind of CHANNEL_MUTATION_KINDS) {
+    for (const field of [
+      storeGainFieldForKind(kind),
+      storeAutoFieldForKind(kind),
+      storeAutoGainFieldForKind(kind)
+    ]) {
+      if (Object.prototype.hasOwnProperty.call(entry, field)) return false;
+    }
+  }
+  for (const field of ROW_SHARED_VALUE_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(entry, field)) return false;
+  }
+  return true;
+}
 
 function withoutClipFields(entry) {
   if (!entry || typeof entry !== 'object') return entry;
@@ -358,7 +381,11 @@ function normalizeKnownChannelEntries(all) {
   }
   for (const [id, entry] of Object.entries(all)) {
     const kept = withoutClipFields(entry);
-    if (kept !== entry) all[id] = kept;
+    if (kept === entry) continue;
+    // A row left holding nothing but the name of the channel was a row for the
+    // clip alone, and the clip is not something this keeps a row for.
+    if (holdsNoValue(kept)) delete all[id];
+    else all[id] = kept;
   }
   return all;
 }
@@ -573,6 +600,11 @@ function createChannelVolumesWriter(
         for (const { fromId, toId } of knownLoginTargets(next)) {
           aliases[fromId] = toId;
         }
+      }
+      // A clip stood in under a name of its own until the numeric ID arrived.
+      // Nothing is kept for a clip now, so the name points at nothing.
+      for (const id of Object.keys(aliases)) {
+        if (id.startsWith(CLIP_PROVISIONAL_PREFIX)) delete aliases[id];
       }
       await storageArea.set({
         [storageKey]: next,

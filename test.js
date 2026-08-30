@@ -5383,10 +5383,55 @@ test('channel store drops what a clip stored the next time it writes', () => {
     lastMeasuredAt: 200,
     __fieldVersions: { gainLive: 2 }
   });
-  // Nothing but the clip is left, so the row keeps only what names the channel.
-  assert.deepEqual(state['999'], { name: 'Clip Only' });
+  // Nothing but the clip was ever kept under that row, so the row goes with it.
+  assert.equal(Object.prototype.hasOwnProperty.call(state, '999'), false);
   // The value read out of storage is not the one that was written back.
   assert.equal(stored['123456'].gainClip, 1.4);
+});
+
+test('channel store keeps a row a clip value was not the whole of', () => {
+  const state = channelStore.applyChannelVolumesMutation({
+    // A row that names a channel and nothing else, with no clip value on it:
+    // this migration is not what empties it, so it is not what removes it.
+    'already-bare': { name: 'Bare', login: 'bare', url: 'https://www.twitch.tv/bare' },
+    // A gain written before the per-kind fields answers for every kind, and it
+    // is not a clip value.
+    legacy: { name: 'Legacy', gain: 0.5, gainClip: 1.4 },
+    // The measurement is gone with the clip, but the Auto choice is not.
+    choice: { name: 'Choice', autoApplyLoudnessLive: true, lastLufs: { clip: -16 } }
+  }, { operation: 'normalizeChannels' });
+
+  assert.deepEqual(state['already-bare'], {
+    name: 'Bare', login: 'bare', url: 'https://www.twitch.tv/bare'
+  });
+  assert.deepEqual(state.legacy, { name: 'Legacy', gain: 0.5 });
+  assert.deepEqual(state.choice, { name: 'Choice', autoApplyLoudnessLive: true });
+});
+
+test('channel store lets go of the name a clip stood in under', async () => {
+  let stored = {
+    channelVolumes: { 123456: { name: 'Broadcaster', gainLive: 0.7 } },
+    channelVolumeAliases: {
+      'clip-owner:AbcDef': '123456',
+      'vod-owner:100': '123456',
+      'login:broadcaster': '123456'
+    }
+  };
+  const storage = {
+    async get(keys) { return readStoredKeys(stored, keys); },
+    async set(update) { stored = { ...stored, ...structuredClone(update) }; }
+  };
+  const write = channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 100);
+  await write({
+    operation: 'saveGain', channelId: '123456', kind: 'live', gain: 0.8
+  });
+
+  // The provisional name a clip carried resolves to nothing that is kept now.
+  // The VOD and Live ones are still how a first visit finds its channel.
+  assert.deepEqual(stored.channelVolumeAliases, {
+    'vod-owner:100': '123456',
+    'login:broadcaster': '123456'
+  });
 });
 
 test('channel store refuses a mutation for a kind it no longer has', () => {
