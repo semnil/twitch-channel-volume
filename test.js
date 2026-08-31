@@ -597,6 +597,9 @@ test('the package follows every manifest key that names a file', () => {
     // The pattern has to name the whole of what it matches: this one begins
     // with a name it does name and goes on past it.
     write('images/logo.png.bak');
+    // Where a pattern names files exactly, those are the files it names:
+    // this one folds onto it and is not among them.
+    write('images/OTHER.PNG');
     // What a pattern names is read by what it is: this one imports, and
     // what it imports is packed with it.
     write('lib/helper.js', "importScripts('inner.js');\n");
@@ -900,6 +903,31 @@ test('the store package refuses to leave out what it has to carry', () => {
       (box) => writeCatalog(box,
         { extName: { message: 'x $A$', placeholders: { a: { example: 'y' } } } }),
       /gives extName\.a no content/],
+    // A pattern that names nothing is one Chrome takes as well. A pattern
+    // that names nothing until the spelling is folded is the tree carrying
+    // the files another way, and the package would go out without them —
+    // which the walk cannot say, because it lists real paths and matches
+    // them, so a spelling that differs reads as nothing to match.
+    ['a resource pattern whose directory the tree spells another way',
+      (box) => {
+        fs.mkdirSync(`${box}/images`);
+        fs.writeFileSync(`${box}/images/logo.png`, 'x');
+        editManifest(box, m => {
+          m.web_accessible_resources = [{ resources: ['Images/*.png'],
+            matches: ['https://example.com/*'] }];
+        });
+      },
+      /the tree spells this another way: Images\/\*\.png/],
+    ['a resource pattern whose extension the tree spells another way',
+      (box) => {
+        fs.mkdirSync(`${box}/images`);
+        fs.writeFileSync(`${box}/images/logo.png`, 'x');
+        editManifest(box, m => {
+          m.web_accessible_resources = [{ resources: ['images/*.PNG'],
+            matches: ['https://example.com/*'] }];
+        });
+      },
+      /the tree spells this another way: images\/\*\.PNG/],
     // A name that is nowhere and a name spelled another way are different
     // mistakes, and each is said as itself.
     ['a reference with no file behind it',
@@ -1217,6 +1245,16 @@ test('the store package refuses to leave out what it has to carry', () => {
       editManifest(box, m => {
         m.version = '1.2.0';
         m.version_name = '1.2.0-rc1';
+      });
+    }],
+    // Naming nothing has nothing to do with spelling: Chrome takes a pattern
+    // that matches no file, so this does too.
+    ['a resource pattern that names nothing', (box) => {
+      fs.mkdirSync(`${box}/images`);
+      fs.writeFileSync(`${box}/images/logo.png`, 'x');
+      editManifest(box, m => {
+        m.web_accessible_resources = [{ resources: ['images/*.svg'],
+          matches: ['https://example.com/*'] }];
       });
     }],
     // The spelling is compared, not folded: a name the tree really carries

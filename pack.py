@@ -381,12 +381,23 @@ def _read(root, relative):
         return handle.read()
 
 
+def _shape(pattern):
+    return ''.join('.*' if part == '*' else '.' if part == '?' else re.escape(part)
+                   for part in re.split(r'([*?])', pattern))
+
+
 def _matching(root, pattern):
-    """Every file under the package root that a resource pattern names."""
-    shape = re.compile(''.join(
-        '.*' if part == '*' else '.' if part == '?' else re.escape(part)
-        for part in re.split(r'([*?])', pattern)))
-    found = []
+    """Every file under the package root that a resource pattern names.
+
+    A pattern naming nothing is one Chrome takes as well, so it is no refusal
+    here. A pattern naming nothing until the spelling is folded is one the tree
+    carries another way, and a host that opens it regardless leaves the files
+    out of the package with nothing saying so. Where the pattern names files
+    exactly, those are the files it names, whatever else folds onto it.
+    """
+    exact = re.compile(_shape(pattern))
+    folded = re.compile(_shape(pattern), re.IGNORECASE)
+    found, only_folded = [], []
     for base, directories, files in os.walk(root):
         # A name beginning with a dot is one Chrome's own packer leaves out.
         directories[:] = sorted(name for name in directories
@@ -397,8 +408,12 @@ def _matching(root, pattern):
             if name.startswith('.'):
                 continue
             relative = prefix + name
-            if shape.fullmatch(relative):
+            if exact.fullmatch(relative):
                 found.append(relative)
+            elif folded.fullmatch(relative):
+                only_folded.append(relative)
+    if not found and only_folded:
+        raise SystemExit(f'the tree spells this another way: {pattern}')
     return found
 
 
