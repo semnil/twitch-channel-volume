@@ -85,6 +85,10 @@ MANIFEST_REFERENCES = (
     (('side_panel', 'default_path'), 'page'),
     (('chrome_url_overrides', '*'), 'page'),
     (('sandbox', 'pages', '[]'), 'page'),
+    # An icon for the action is one path or a size for each of several, and
+    # Chrome takes both spellings. Every other key here refuses the bare
+    # string, so only this one is written twice.
+    (('action', 'default_icon'), 'asset'),
     (('action', 'default_icon', '*'), 'asset'),
     (('icons', '*'), 'asset'),
     (('storage', 'managed_schema'), 'asset'),

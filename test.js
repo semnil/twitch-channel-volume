@@ -547,7 +547,8 @@ test('the package follows every manifest key that names a file', () => {
     write('manifest.json', JSON.stringify({
       manifest_version: 3,
       version: '1.0.0',
-      action: { default_popup: 'popup.htm' },
+      // One path rather than a size for each: the other spelling Chrome takes.
+      action: { default_popup: 'popup.htm', default_icon: 'brand.png' },
       devtools_page: 'devtools.html',
       side_panel: { default_path: 'panel.html' },
       chrome_url_overrides: { newtab: 'newtab.html' },
@@ -582,6 +583,7 @@ test('the package follows every manifest key that names a file', () => {
       + 'c { background: url("__MSG_@@extension_id__/asset.png") }\n');
     write('theme.css', 'body { color: red }\n');
     write('bg.png');
+    write('brand.png');
     // In a comment, remote, a fragment of the sheet, and a name Chrome
     // substitutes a message into: none of them is a file this can resolve.
     write('commented.png');
@@ -616,7 +618,7 @@ test('the package follows every manifest key that names a file', () => {
     assert.deepEqual(
       listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean).sort(),
       [
-      'LICENSE', 'bg.png', 'content.js', 'devtools.html', 'exposed.js',
+      'LICENSE', 'bg.png', 'brand.png', 'content.js', 'devtools.html', 'exposed.js',
       'images/deep/inner.png', 'images/logo.png', 'lib/helper.js', 'lib/inner.js',
       'loose.png', 'manifest.json', 'newtab.html', 'panel.html', 'popup.htm',
       'popup.js', 'rules.json', 'sandboxed.html', 'schema.json', 'spare.js',
@@ -629,7 +631,7 @@ test('the package follows every manifest key that names a file', () => {
     // matched is that the file is in the list above and its neighbours are
     // not. These are the names that fail when the key stops being walked.
     for (const gone of ['panel.html', 'rules.json', 'schema.json', 'theme.css',
-      'bg.png', 'exposed.js', 'popup.js', 'lib/inner.js']) {
+      'bg.png', 'brand.png', 'exposed.js', 'popup.js', 'lib/inner.js']) {
       fs.rmSync(path.join(fixture, gone));
       const refused = spawnSync('python3', ['-B', 'pack.py', '--list'],
         { cwd: fixture, encoding: 'utf8' });
