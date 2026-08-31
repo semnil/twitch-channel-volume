@@ -900,6 +900,19 @@ test('the store package refuses to leave out what it has to carry', () => {
       (box) => writeCatalog(box,
         { extName: { message: 'x $A$', placeholders: { a: { example: 'y' } } } }),
       /gives extName\.a no content/],
+    // A name that is nowhere and a name spelled another way are different
+    // mistakes, and each is said as itself.
+    ['a reference with no file behind it',
+      (box) => fs.rmSync(`${box}/content.js`),
+      /referenced file is missing or not a regular file: content\.js/],
+    // A host that opens a name without regard to case hands back the file
+    // the tree carries, and the package would hold two entries for the one
+    // file — one of them under a name no other host can open.
+    ['a reference the tree spells another way',
+      (box) => editManifest(box, m => {
+        m.content_scripts = [{ js: ['Content.js'] }];
+      }),
+      /the tree spells this another way: Content\.js/],
     // Outside a resource entry a leading slash is an absolute path, and an
     // absolute path names a file the package cannot carry.
     ['a reference beginning at the root of the host',
@@ -1205,6 +1218,13 @@ test('the store package refuses to leave out what it has to carry', () => {
         m.version = '1.2.0';
         m.version_name = '1.2.0-rc1';
       });
+    }],
+    // The spelling is compared, not folded: a name the tree really carries
+    // in capitals is the name that opens it. Without this the rule above
+    // could refuse every reference and stay green.
+    ['a name the tree carries in capitals', (box) => {
+      fs.renameSync(`${box}/content.js`, `${box}/Content.js`);
+      editManifest(box, m => { m.content_scripts = [{ js: ['Content.js'] }]; });
     }],
     // The Norwegian the store does carry, which is the name an extension
     // reaching for nb is told to use instead. Without this the rule above

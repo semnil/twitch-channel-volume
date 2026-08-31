@@ -238,10 +238,31 @@ def _resolve(root, relative):
     return full
 
 
+def _spelled(root, relative):
+    """Whether the tree spells the path the way the reference does.
+
+    A host that opens a name without regard to case hands back a file the tree
+    carries under another spelling, and the package would hold two entries for
+    the one file. A name that is nowhere is the caller's to answer for.
+    """
+    at = root
+    for part in relative.split('/'):
+        try:
+            held = os.listdir(at)
+        except OSError:
+            return True
+        if part not in held:
+            return not any(name.lower() == part.lower() for name in held)
+        at = os.path.join(at, part)
+    return True
+
+
 def _packaged(root, relative):
     full = _resolve(root, relative)
     if full is None:
         raise SystemExit(f'reference leaves the package: {relative}')
+    if not _spelled(os.path.realpath(root), relative):
+        raise SystemExit(f'the tree spells this another way: {relative}')
     return full
 
 
