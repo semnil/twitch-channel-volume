@@ -764,6 +764,22 @@ test('a release is built from a commit that passed what CI runs', () => {
   }
 });
 
+// A run that is not making a release has a branch name where the tag would be,
+// so the tag and the manifest are compared exactly where a release is made
+// from them — which is the flag create-release is already gated on.
+test('the tag is compared with the manifest where a release is made', () => {
+  const release = fs.readFileSync(
+    path.join(__dirname, '.github/workflows/release.yaml'), 'utf8');
+  const gate = "if: needs.check-event.outputs.validTag == 'true'";
+  const gated = release.split('\n').filter((line) => line.trim() === gate).length;
+  assert.equal(gated, 2,
+    `the version check and the release read one flag — found ${gated} line(s) reading it`);
+  const verify = release.indexOf('run: bash tools/verify-version.sh');
+  assert.ok(verify > -1, 'the release workflow runs the version script');
+  assert.ok(release.lastIndexOf(gate, verify) > release.lastIndexOf('- name:', verify),
+    'the version check is the step that flag stands on');
+});
+
 test('a reference naming a drive is refused under Windows path semantics', () => {
   // A drive letter reads as relative to posixpath, and on Windows it resolves
   // against the same drive — so `C:/content.js` would package what `content.js`

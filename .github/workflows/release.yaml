@@ -90,7 +90,11 @@ jobs:
         timeout-minutes: 5
         run: python3 gen_screenshots.py --check
 
+      # The tag and the manifest have to agree where a release is made from
+      # them, and nowhere else: a run from a branch has a branch name where the
+      # tag would be, and create-release below reads the same flag.
       - name: Verify manifest version matches tag 🔍
+        if: needs.check-event.outputs.validTag == 'true'
         run: bash tools/verify-version.sh
 
       - name: Pack Extension 📦
