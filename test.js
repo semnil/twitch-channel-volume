@@ -1475,6 +1475,27 @@ test('the store package refuses to leave out what it has to carry', () => {
     fs.rmSync(box, { recursive: true, force: true });
   }
 
+  // What a run says it packed. The refusals above assert that no line of this
+  // shape is printed; without one asserting that it is printed when a package
+  // is built, renaming the marker would leave every one of them passing over a
+  // run that named the whole tree.
+  {
+    const box = buildMinimal();
+    const built = runPack(box, []);
+    assert.equal(built.status, 0, built.stderr);
+    const named = built.stdout.split('\n')
+      .map((line) => line.match(/^\s*\+ (.+)$/)).filter(Boolean).map((match) => match[1]);
+    const listed = runPack(box, ['--list']);
+    assert.equal(listed.status, 0, listed.stderr);
+    const names = listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+    assert.deepEqual(named.slice().sort(), names.slice().sort(),
+      'a run names what it packed');
+    const held = heldInZip(box, 'twitch-channel-volume-0.0.0.zip').map(([name]) => name);
+    assert.deepEqual(named.slice().sort(), held.slice().sort(),
+      'what it names is what the archive holds');
+    fs.rmSync(box, { recursive: true, force: true });
+  }
+
   // An argument nobody recognised is not an instruction to rewrite the package.
   {
     const box = buildMinimal();
