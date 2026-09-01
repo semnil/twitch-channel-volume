@@ -48,6 +48,7 @@ CHROME_WEB_STORE_LOCALES = frozenset('''
     he hi hr hu id it ja kn ko lt lv ml mr ms nl no pl pt_BR pt_PT ro ru sk sl sr
     sv sw ta te th tr uk vi zh_CN zh_TW
 '''.split())
+STORE_LOCALE_SPELLING = {name.lower(): name for name in CHROME_WEB_STORE_LOCALES}
 # Where Chrome substitutes a message into the manifest. Everywhere else the
 # string reaches the browser as it stands — a content script named
 # __MSG_asset__.js is loaded under that name — so a reference outside these is
@@ -392,6 +393,22 @@ def _read(root, relative):
         return handle.read()
 
 
+def _store_locale(locale, what):
+    """Refuse a locale name the store does not carry under that spelling.
+
+    Chrome loads a wider set than the store publishes and reads a name the
+    store spells another way, so a locale it takes can still be one no listing
+    presents. The name is held to the store's own list, and where only the
+    spelling is wrong the list's spelling is named rather than left to be
+    guessed at.
+    """
+    spelled = STORE_LOCALE_SPELLING.get(locale.lower())
+    if spelled is None:
+        raise SystemExit(f'{what} is not a locale the store carries: {locale!r}')
+    if spelled != locale:
+        raise SystemExit(f'{what} is spelled {spelled!r} by the store: {locale!r}')
+
+
 def _entry(arcname, full):
     """The archive entry for a packaged file, and its bytes."""
     entry = zipfile.ZipInfo(arcname, ENTRY_TIME)
@@ -572,9 +589,8 @@ def selected_files(root):
                   or posixpath.normpath(default_locale) != default_locale):
         raise SystemExit(f'default_locale is not one name under {LOCALE_DIR}: '
                          f'{default_locale!r}')
-    if named and default_locale not in CHROME_WEB_STORE_LOCALES:
-        raise SystemExit(f'default_locale is not a locale the store carries: '
-                         f'{default_locale!r}')
+    if named:
+        _store_locale(default_locale, 'default_locale')
     locales = _host(root, LOCALE_DIR)
     if os.path.isdir(locales) and not named:
         raise SystemExit(f'{LOCALE_DIR} is here and the manifest names no default_locale')
@@ -590,6 +606,7 @@ def selected_files(root):
             relative = posixpath.join(LOCALE_DIR, locale, LOCALE_FILE)
             full = _packaged(root, relative)
             if os.path.isfile(full):
+                _store_locale(locale, f'{LOCALE_DIR}/{locale}')
                 catalogs[locale] = _catalog(relative, _read(root, relative))
                 seen_locales.add(relative)
                 entry = carry(full, relative)

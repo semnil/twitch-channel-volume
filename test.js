@@ -998,6 +998,24 @@ test('the store package refuses to leave out what it has to carry', () => {
         editManifest(box, m => { m.default_locale = 'nb'; });
       },
       /is not a locale the store carries: 'nb'/],
+    // Every locale under _locales reaches the package, not the default one
+    // alone, so each is held to the same list. Chrome loads _locales/nb and
+    // _locales/zz alike; no listing presents either.
+    ['a locale beside the default one that the store does not carry',
+      (box) => fs.cpSync(`${box}/_locales/ja`, `${box}/_locales/nb`, { recursive: true }),
+      /_locales\/nb is not a locale the store carries: 'nb'/],
+    // The store spells its regions in capitals and Chrome loads the name
+    // either way, so a package can carry a locale under a spelling no listing
+    // answers to. The spelling the store uses is the refusal.
+    ['a locale beside the default one spelled the way the store does not',
+      (box) => fs.cpSync(`${box}/_locales/ja`, `${box}/_locales/en_gb`, { recursive: true }),
+      /_locales\/en_gb is spelled 'en_GB' by the store/],
+    ['a default_locale spelled the way the store does not',
+      (box) => {
+        fs.renameSync(`${box}/_locales/ja`, `${box}/_locales/en_gb`);
+        editManifest(box, m => { m.default_locale = 'en_gb'; });
+      },
+      /default_locale is spelled 'en_GB' by the store/],
     // Chrome reads a JSON number as a double. NaN and the infinities are
     // Python's spelling of a number rather than JSON's, and a literal too
     // large for a double is one Chrome declines to read at all.
@@ -1270,6 +1288,15 @@ test('the store package refuses to leave out what it has to carry', () => {
     ['a locale the store carries under a name of its own', (box) => {
       fs.renameSync(`${box}/_locales/ja`, `${box}/_locales/no`);
       editManifest(box, m => { m.default_locale = 'no'; });
+    }],
+    // Without these two the rules above could refuse every locale that is not
+    // the default one, and every region the store spells in capitals, and stay
+    // green.
+    ['a second locale the store carries',
+      (box) => fs.cpSync(`${box}/_locales/ja`, `${box}/_locales/en`, { recursive: true })],
+    ['a locale the store spells with its region in capitals', (box) => {
+      fs.renameSync(`${box}/_locales/ja`, `${box}/_locales/en_GB`);
+      editManifest(box, m => { m.default_locale = 'en_GB'; });
     }],
     // Outside the fields Chrome localizes, a reference is not a reference:
     // the string reaches the browser as it stands, a file name included.
