@@ -103,6 +103,17 @@ BY_NAME = (('.html', 'page'), ('.js', 'script'), ('.css', 'style'))
 # for any run of characters and '/' among them: a file carried that nothing
 # asks for costs room, and one left out is a resource the page cannot load.
 PATTERN = re.compile(r'[*?]')
+# A package built twice from the same files is the same package. Beyond a
+# file's name and bytes a zip entry carries the time the host last wrote it and
+# the mode the host holds it under, and a checkout supplies both afresh, so an
+# archive taken from the tree differs on every run and no build can be checked
+# against another. The two are written as constants: the earliest a zip records
+# and the mode a file the browser only reads is held under.
+ENTRY_TIME = (1980, 1, 1, 0, 0, 0)
+ENTRY_MODE = 0o100644
+# The host a zip entry says it came from. Python fills this in from the host
+# that runs it, which is a second way one tree builds two archives.
+ENTRY_HOST = 3
 CSS_COMMENT = re.compile(r'/\*.*?\*/', re.S)
 CSS_IMPORT = re.compile(r'@import\s+(?:url\(\s*)?(["\']?)([^"\')\s;]+)\1')
 CSS_URL = re.compile(r'url\(\s*(["\']?)([^"\')]+?)\1\s*\)')
@@ -381,6 +392,16 @@ def _read(root, relative):
         return handle.read()
 
 
+def _entry(arcname, full):
+    """The archive entry for a packaged file, and its bytes."""
+    entry = zipfile.ZipInfo(arcname, ENTRY_TIME)
+    entry.create_system = ENTRY_HOST
+    entry.external_attr = ENTRY_MODE << 16
+    entry.compress_type = zipfile.ZIP_DEFLATED
+    with open(full, 'rb') as handle:
+        return entry, handle.read()
+
+
 def _shape(pattern):
     return ''.join('.*' if part == '*' else '.' if part == '?' else re.escape(part)
                    for part in re.split(r'([*?])', pattern))
@@ -614,7 +635,8 @@ def pack():
     try:
         with zipfile.ZipFile(staging, 'w', zipfile.ZIP_DEFLATED) as zf:
             for full, arcname in files:
-                zf.write(full, arcname)
+                entry, content = _entry(arcname, full)
+                zf.writestr(entry, content)
                 print(f'  + {arcname}')
         os.replace(staging, out_path)
     except BaseException:

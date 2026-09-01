@@ -1365,6 +1365,89 @@ test('the store package refuses to leave out what it has to carry', () => {
     fs.rmSync(box, { recursive: true, force: true });
   }
 
+  // A package built twice from the same files is the same package. Beyond a
+  // file's name and bytes a zip entry carries the time the host last wrote it
+  // and the mode the host holds it under, and a checkout supplies both afresh
+  // — so an archive taking either from the tree differs on every run, and the
+  // zip a release uploaded cannot be built again and compared.
+  {
+    const digestOf = (stamp, mode, edit) => {
+      const box = buildMinimal();
+      if (edit) { edit(box); }
+      for (const name of ['manifest.json', 'content.js', 'LICENSE',
+        '_locales/ja/messages.json']) {
+        fs.chmodSync(path.join(box, name), mode);
+        fs.utimesSync(path.join(box, name), stamp, stamp);
+      }
+      const built = runPack(box, []);
+      assert.equal(built.status, 0, built.stderr);
+      const digest = crypto.createHash('sha256')
+        .update(fs.readFileSync(path.join(box, 'twitch-channel-volume-0.0.0.zip')))
+        .digest('hex');
+      fs.rmSync(box, { recursive: true, force: true });
+      return digest;
+    };
+    const plain = digestOf(946684800, 0o644, null);
+    assert.equal(plain, digestOf(1700000000, 0o755, null),
+      'the same files build the same package, whatever time and mode the host holds them under');
+    // Without this the rule above would hold for a packer writing one archive
+    // whatever it was given.
+    assert.notEqual(plain, digestOf(946684800, 0o644, (box) =>
+      fs.writeFileSync(path.join(box, 'content.js'), '// a line the other build has not got\n')),
+    'the package still answers for what the files hold');
+  }
+
+  // Read back rather than inferred: the host an entry says it came from is
+  // filled in from the host that ran the packer where it is not written, and
+  // this suite runs on one host.
+  {
+    const box = buildMinimal();
+    const built = runPack(box, []);
+    assert.equal(built.status, 0, built.stderr);
+    const read = spawnSync('python3', ['-c',
+      'import sys, zipfile\n'
+      + 'for held in zipfile.ZipFile(sys.argv[1]).infolist():\n'
+      + '    print(held.filename, held.date_time, held.create_system,'
+      + ' oct(held.external_attr >> 16))',
+      'twitch-channel-volume-0.0.0.zip'], { cwd: box, encoding: 'utf8' });
+    assert.equal(read.status, 0, read.stderr);
+    const entries = read.stdout.trim().split('\n').filter(Boolean);
+    assert.ok(entries.length > 0, 'the package has entries to read');
+    for (const entry of entries) {
+      assert.match(entry, / \(1980, 1, 1, 0, 0, 0\) 3 0o100644$/,
+        `every entry is written under one time, one host and one mode — ${entry}`);
+    }
+    fs.rmSync(box, { recursive: true, force: true });
+  }
+
+  // zipfile fills an entry's create_system in from sys.platform where the
+  // entry has not got one, so the host that runs the packer decides it and the
+  // check above reads only this host's answer. Reading it on another host is
+  // out of reach here; the reading itself is flipped instead.
+  {
+    const box = buildMinimal();
+    const asWindows = spawnSync('python3', ['-B', '-c',
+      'import sys, importlib.util, zipfile\n'
+      + 'spec = importlib.util.spec_from_file_location("packmod", "pack.py")\n'
+      + 'mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)\n'
+      + 'sys.platform = "win32"\n'
+      // Without this the run below would prove nothing on a host where the
+      // default is 3 already.
+      + 'assert zipfile.ZipInfo("x").create_system == 0, "the reading did not flip"\n'
+      + 'mod.pack()\n'
+      + 'for held in zipfile.ZipFile("twitch-channel-volume-0.0.0.zip").infolist():\n'
+      + '    print("entry", held.filename, held.create_system)'],
+    { cwd: box, encoding: 'utf8' });
+    assert.equal(asWindows.status, 0, asWindows.stderr);
+    const hosts = asWindows.stdout.split('\n')
+      .map((line) => line.match(/^entry (.+) (\d+)$/)).filter(Boolean);
+    assert.ok(hosts.length > 0, 'the package has entries to read');
+    for (const [, name, host] of hosts) {
+      assert.equal(host, '3', `${name} names one host whatever host packed it`);
+    }
+    fs.rmSync(box, { recursive: true, force: true });
+  }
+
   // An argument nobody recognised is not an instruction to rewrite the package.
   {
     const box = buildMinimal();
