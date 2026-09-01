@@ -422,33 +422,33 @@ body.initializing *::after { transition: none !important; }
   <div class="info-section">
     <div class="channel-row">
       <div class="channel-identity">
-        <div id="channelName" class="channel-name empty" data-i18n="channelNotDetected">チャンネル未検出</div>
+        <div id="channelName" class="channel-name empty" data-i18n="channelNotDetected"></div>
         <span id="channelKind" class="type-badge hidden"></span>
-        <span id="adFlag" class="ad-badge hidden" data-i18n="adDetected">CM 検出中</span>
+        <span id="adFlag" class="ad-badge hidden" data-i18n="adDetected"></span>
       </div>
       <button id="resetMeasurementBtn" class="reset-measurement-btn" disabled>
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M4 4v6h6"></path>
           <path d="M5.6 16.5a8 8 0 1 0 .5-9.6L4 10"></path>
         </svg>
-        <span class="sr-only" data-i18n="resetMeasurement">測定値をリセット</span>
+        <span class="sr-only" data-i18n="resetMeasurement"></span>
       </button>
     </div>
-    <div id="resetMeasurementError" class="reset-measurement-error hidden" role="status" data-i18n="resetMeasurementFailed">測定値をリセットできませんでした。もう一度お試しください</div>
-    <div id="audioError" class="audio-error hidden" role="status" data-i18n="audioUnavailable">プレイヤーの音声を取得できないため、音量調整と計測ができません。同じ音声を使う他の拡張機能を無効にしてページを再読み込みしてください</div>
+    <div id="resetMeasurementError" class="reset-measurement-error hidden" role="status" data-i18n="resetMeasurementFailed"></div>
+    <div id="audioError" class="audio-error hidden" role="status" data-i18n="audioUnavailable"></div>
     <div class="loudness-grid">
       <div class="loudness-card">
-        <div class="label" data-i18n="labelIntegrated">Integrated</div>
+        <div class="label" data-i18n="labelIntegrated"></div>
         <div id="integrated" class="value unknown">---</div>
       </div>
       <div class="loudness-card">
-        <div class="label" data-i18n="labelSuggested">Suggested</div>
+        <div class="label" data-i18n="labelSuggested"></div>
         <div id="suggested" class="value suggested unknown">---</div>
       </div>
       <div class="loudness-card">
         <div class="label">
-          <span data-i18n="labelCurrent">Current</span>
-          <span id="fallbackBadge" class="fallback-badge hidden" data-i18n="labelFallback">Fallback</span>
+          <span data-i18n="labelCurrent"></span>
+          <span id="fallbackBadge" class="fallback-badge hidden" data-i18n="labelFallback"></span>
         </div>
         <div id="current" class="value current">100%</div>
       </div>
@@ -457,8 +457,8 @@ body.initializing *::after { transition: none !important; }
 
   <div class="auto-section">
     <div class="auto-copy">
-      <div id="autoApplyLabel" class="auto-label" data-i18n="autoApplyLoudness">LUFS 自動追従</div>
-      <div id="autoError" class="auto-error hidden" role="status" data-i18n="autoSaveFailed">自動追従の設定を保存できませんでした</div>
+      <div id="autoApplyLabel" class="auto-label" data-i18n="autoApplyLoudness"></div>
+      <div id="autoError" class="auto-error hidden" role="status" data-i18n="autoSaveFailed"></div>
     </div>
     <label class="toggle-switch">
       <input type="checkbox" id="autoApplyToggle" aria-labelledby="autoApplyLabel" disabled>
@@ -467,13 +467,13 @@ body.initializing *::after { transition: none !important; }
   </div>
 
   <div class="apply-section">
-    <button id="applyBtn" class="apply-btn" disabled data-i18n="applyToChannel">チャンネルに適用</button>
-    <span id="applyHint" class="apply-hint" data-i18n="hintNoLufs">ラウドネス計測中...</span>
+    <button id="applyBtn" class="apply-btn" disabled data-i18n="applyToChannel"></button>
+    <span id="applyHint" class="apply-hint" data-i18n="hintNoLufs"></span>
   </div>
 
   <div id="manualSection" class="manual-section">
     <div class="manual-header">
-      <span class="label" data-i18n="manualVolume">Manual Volume</span>
+      <span class="label" data-i18n="manualVolume"></span>
     </div>
     <div class="slider-row">
       <input type="range" id="manualSlider" min="0" max="600" value="100" step="5">
