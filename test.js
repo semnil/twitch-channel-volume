@@ -748,6 +748,39 @@ test('every action is named by a commit and the version beside it', () => {
   assert.ok(named > 0, 'the workflows run actions');
 });
 
+// The screenshots are what the store shows, and the wording in them is the
+// extension's. Written out in the generator it was a third copy beside the
+// pages and the catalog, and nothing compared the three: changing a message
+// left the store showing the old one with every check green.
+test('the screenshots take their wording from the catalog', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'gen_screenshots.py'), 'utf8');
+  const table = source.match(/^FROM_CATALOG = \{([\s\S]*?)^\}/m);
+  assert.ok(table, 'gen_screenshots.py names the messages it draws in FROM_CATALOG');
+  const keys = Array.from(table[1].matchAll(/'[\w_]+': '([\w]+)'/g), (m) => m[1]);
+  // The one the arrow points with is named where it is built, not in the
+  // table, so it is added here rather than left unheld.
+  keys.push('showGainOverlay');
+  assert.ok(keys.length > 12, `the generator draws messages — found ${keys.length}`);
+  const locales = fs.readdirSync(path.join(__dirname, '_locales'));
+  assert.ok(locales.length > 1, 'the extension is localized');
+  for (const locale of locales) {
+    const messages = JSON.parse(fs.readFileSync(
+      path.join(__dirname, `_locales/${locale}/messages.json`), 'utf8'));
+    for (const key of keys) {
+      assert.ok(messages[key]?.message,
+        `${locale} answers for ${key}, which the screenshots draw`);
+    }
+    // The other direction: a message spelled out in the generator is a copy
+    // that the catalog cannot correct, which is what this replaced.
+    for (const [key, entry] of Object.entries(messages)) {
+      const text = entry.message;
+      if (!text || text.includes('$')) { continue; }
+      assert.ok(!source.includes(`'${text}'`) && !source.includes(`"${text}"`),
+        `gen_screenshots.py spells out ${locale}'s ${key} instead of reading it`);
+    }
+  }
+});
+
 // A page's own text under data-i18n is replaced by the catalog's before the
 // page is ever shown — applyI18n runs before the body loses `initializing`,
 // which hides it — so text written into the markup is never read by anyone and
@@ -7651,8 +7684,10 @@ const INJECT_MOVE_FAILURE = [
   '    # replacement cannot be told from a finished one.',
   "    source = source.replace('WHITE = (255, 255, 255)', 'WHITE = (254, 254, 254)', 1)",
   "    open(script, 'w', encoding='utf-8').write(source)",
-  '    # The faces are resolved beside the script, so the copy needs them too.',
+  '    # The faces are resolved beside the script, so the copy needs them too,',
+  '    # and the wording it draws comes from the catalog beside it.',
   "    shutil.copytree(os.path.join(repo, 'tools'), os.path.join(sandbox, 'tools'))",
+  "    shutil.copytree(os.path.join(repo, '_locales'), os.path.join(sandbox, '_locales'))",
   "    out = os.path.join(sandbox, 'docs', 'screenshots')",
   '    os.makedirs(out)',
   "    tracked = os.path.join(repo, 'docs', 'screenshots')",
@@ -7820,6 +7855,9 @@ function screenshotSandbox() {
   fs.copyFileSync(path.join(__dirname, 'gen_screenshots.py'),
     path.join(sandbox, 'gen_screenshots.py'));
   fs.cpSync(path.join(__dirname, 'tools'), path.join(sandbox, 'tools'), { recursive: true });
+  // The wording it draws comes from the catalog, so a tree it can draw in has
+  // one, the same way it has a face to draw with.
+  fs.cpSync(path.join(__dirname, '_locales'), path.join(sandbox, '_locales'), { recursive: true });
   fs.mkdirSync(path.join(sandbox, 'docs/screenshots'), { recursive: true });
   for (const name of TRACKED_SHOTS) {
     fs.copyFileSync(path.join(__dirname, 'docs/screenshots', name),
@@ -8633,6 +8671,7 @@ const INJECT_RESTORE_FAILURE = [
   "    source = source.replace('WHITE = (255, 255, 255)', 'WHITE = (254, 254, 254)', 1)",
   "    open(script, 'w', encoding='utf-8').write(source)",
   "    shutil.copytree(os.path.join(repo, 'tools'), os.path.join(sandbox, 'tools'))",
+  "    shutil.copytree(os.path.join(repo, '_locales'), os.path.join(sandbox, '_locales'))",
   "    out = os.path.join(sandbox, 'docs', 'screenshots')",
   '    os.makedirs(out)',
   "    tracked = os.path.join(repo, 'docs', 'screenshots')",
@@ -8704,6 +8743,7 @@ const INJECT_DRAW_FAILURE = [
   "    script = os.path.join(sandbox, 'gen_screenshots.py')",
   "    shutil.copy2(os.path.join(repo, 'gen_screenshots.py'), script)",
   "    shutil.copytree(os.path.join(repo, 'tools'), os.path.join(sandbox, 'tools'))",
+  "    shutil.copytree(os.path.join(repo, '_locales'), os.path.join(sandbox, '_locales'))",
   "    out = os.path.join(sandbox, 'docs', 'screenshots')",
   '    os.makedirs(out)',
   "    tracked = os.path.join(repo, 'docs', 'screenshots')",
@@ -8752,6 +8792,7 @@ const INJECT_OVER_A_LINK = [
   "    source = source.replace('WHITE = (255, 255, 255)', 'WHITE = (254, 254, 254)', 1)",
   "    open(script, 'w', encoding='utf-8').write(source)",
   "    shutil.copytree(os.path.join(repo, 'tools'), os.path.join(sandbox, 'tools'))",
+  "    shutil.copytree(os.path.join(repo, '_locales'), os.path.join(sandbox, '_locales'))",
   "    out = os.path.join(sandbox, 'docs', 'screenshots')",
   '    os.makedirs(out)',
   "    tracked = os.path.join(repo, 'docs', 'screenshots')",
@@ -8921,6 +8962,7 @@ const INJECT_COPY_FAULT = [
   "    script = os.path.join(sandbox, 'gen_screenshots.py')",
   "    shutil.copy2(os.path.join(repo, 'gen_screenshots.py'), script)",
   "    shutil.copytree(os.path.join(repo, 'tools'), os.path.join(sandbox, 'tools'))",
+  "    shutil.copytree(os.path.join(repo, '_locales'), os.path.join(sandbox, '_locales'))",
   "    out = os.path.join(sandbox, 'docs', 'screenshots')",
   '    os.makedirs(out)',
   "    tracked = os.path.join(repo, 'docs', 'screenshots')",
@@ -9414,6 +9456,9 @@ test('an argument that is wrong is answered before the faces are needed', () => 
       path.join(bare, 'gen_screenshots.py'));
     fs.cpSync(path.join(__dirname, 'docs/screenshots'), path.join(bare, 'docs/screenshots'),
       { recursive: true });
+    // Everything but the faces: what is missing here has to be the faces.
+    fs.cpSync(path.join(__dirname, '_locales'), path.join(bare, '_locales'),
+      { recursive: true });
 
     const refused = spawnSync('python3', ['-B', 'gen_screenshots.py', '--chek'],
       { cwd: bare, encoding: 'utf8' });
@@ -9540,8 +9585,14 @@ test('store screenshot generator mirrors the stylesheet muted colors', () => {
 
 test('store popup screenshot generator matches the Auto-follow state', () => {
   const source = fs.readFileSync(path.join(__dirname, 'gen_screenshots.py'), 'utf8');
-  assert.match(source, /'apply':\s*'チャンネルに適用'/);
-  assert.match(source, /'apply':\s*'Apply to channel'/);
+  // The button's wording is the catalog's; what the mock fixes is which
+  // message it draws there.
+  assert.match(source, /'apply': 'applyToChannel',/);
+  for (const locale of ['ja', 'en']) {
+    const messages = JSON.parse(fs.readFileSync(
+      path.join(__dirname, `_locales/${locale}/messages.json`), 'utf8'));
+    assert.ok(messages.applyToChannel?.message, `${locale} answers for applyToChannel`);
+  }
   assert.match(source, /\('CURRENT', '63', '%', PINK\)/);
   assert.match(source, /draw\.text\(\(px \+ pw - 48, sy - 1\), '63%'/);
   assert.match(source, /RESET_BUTTON_HEIGHT\s*=\s*36/);
