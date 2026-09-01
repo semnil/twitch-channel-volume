@@ -764,6 +764,63 @@ test('a release is built from a commit that passed what CI runs', () => {
   }
 });
 
+// A tag push is an intent to release. A tag naming no release this workflow
+// makes used to pass through as a run that packed, uploaded and released
+// nothing — a green tick against a tag with no release behind it.
+test('a tag naming no release is refused before anything is built', () => {
+  const script = path.join(__dirname, 'tools/check-tag.sh');
+  assert.ok(fs.existsSync(script), 'the tag script is in the tree');
+  // A step that stopped calling it would leave every case below passing.
+  const release = fs.readFileSync(
+    path.join(__dirname, '.github/workflows/release.yaml'), 'utf8');
+  assert.ok(release.includes('tools/check-tag.sh'),
+    'the release workflow runs the tag script');
+
+  const box = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'tcv-tag-'));
+  const ask = (event, ref) => {
+    const out = path.join(box, 'out');
+    fs.writeFileSync(out, '');
+    const run = spawnSync('bash', [script], {
+      encoding: 'utf8',
+      env: { ...process.env, GITHUB_EVENT_NAME: event, GITHUB_REF_NAME: ref,
+        GITHUB_OUTPUT: out, RUNNER_DEBUG: '' }
+    });
+    return { run, wrote: fs.readFileSync(out, 'utf8').trim().split('\n').filter(Boolean) };
+  };
+  let released = 0;
+  for (const [event, ref, wanted] of [
+    ['push', 'v1.2.3', ['validTag=true', 'prerelease=false', 'version=v1.2.3']],
+    ['push', 'v1.2.3-rc1', ['validTag=true', 'prerelease=true', 'version=v1.2.3-rc1']],
+    ['push', 'v1.2.3-beta2', ['validTag=true', 'prerelease=true', 'version=v1.2.3-beta2']],
+    ['push', 'v1.2.3-alpha', ['validTag=true', 'prerelease=true', 'version=v1.2.3-alpha']],
+    // A run somebody started by hand carries a branch name here and makes no
+    // release, which is not a failure — it is what the flag is for.
+    ['workflow_dispatch', 'main', ['validTag=false']],
+    ['workflow_dispatch', 'v1.2.3', ['validTag=false']],
+    // Four parts, two parts, and a word the prerelease arm does not name.
+    ['push', 'v1.2.3.4', null],
+    ['push', 'v1.2', null],
+    ['push', 'v1.2.3-nightly', null]
+  ]) {
+    const { run, wrote } = ask(event, ref);
+    if (wanted === null) {
+      assert.notEqual(run.status, 0, `${event} of ${ref} is refused`);
+      assert.match(run.stdout + run.stderr, /::error::tag .* names no release/,
+        `${event} of ${ref} says why`);
+      assert.deepEqual(wrote, [],
+        `${event} of ${ref} leaves no flag for a later job to read`);
+    } else {
+      assert.equal(run.status, 0,
+        `${event} of ${ref} passes — ${(run.stdout + run.stderr).trim()}`);
+      assert.deepEqual(wrote, wanted, `${event} of ${ref} sets ${wanted.join(' ')}`);
+      if (wrote.includes('validTag=true')) { released += 1; }
+    }
+  }
+  // Without this a script that refused everything would pass the table above.
+  assert.equal(released, 4, `tags this workflow releases from — found ${released}`);
+  fs.rmSync(box, { recursive: true, force: true });
+});
+
 // A run that is not making a release has a branch name where the tag would be,
 // so the tag and the manifest are compared exactly where a release is made
 // from them — which is the flag create-release is already gated on.

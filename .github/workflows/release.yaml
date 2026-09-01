@@ -24,34 +24,11 @@ jobs:
       prerelease: ${{ steps.check.outputs.prerelease }}
       validTag: ${{ steps.check.outputs.validTag }}
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
       - name: Check Tag ☑️
         id: check
-        run: |
-          : Check Release Tag
-          if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
-          shopt -s extglob
-
-          if [[ "${GITHUB_EVENT_NAME}" != 'push' ]]; then
-            echo 'validTag=false' >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          tag="${GITHUB_REF_NAME#v}"
-          case "${tag}" in
-            +([0-9]).+([0-9]).+([0-9]) )
-              echo 'validTag=true' >> $GITHUB_OUTPUT
-              echo 'prerelease=false' >> $GITHUB_OUTPUT
-              echo "version=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
-              ;;
-            +([0-9]).+([0-9]).+([0-9])-@(beta|rc|alpha)*([0-9.]) )
-              echo 'validTag=true' >> $GITHUB_OUTPUT
-              echo 'prerelease=true' >> $GITHUB_OUTPUT
-              echo "version=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
-              ;;
-            *)
-              echo 'validTag=false' >> $GITHUB_OUTPUT
-              ;;
-          esac
+        run: bash tools/check-tag.sh
 
   build:
     name: Build Extension Zip 🧱
