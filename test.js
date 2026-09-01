@@ -733,6 +733,37 @@ test('every job names how long it may run', () => {
   assert.ok(jobs > 2, `the workflows carry jobs — found ${jobs}`);
 });
 
+// A release is built from whatever commit its tag names: a build that packs
+// without running what CI runs turns a commit CI never passed into a release
+// asset. The two are held together here
+// rather than by whoever remembers to copy a step across.
+test('a release is built from a commit that passed what CI runs', () => {
+  const jobIn = (file, name) => {
+    const text = fs.readFileSync(path.join(__dirname, '.github/workflows', file), 'utf8');
+    const at = text.indexOf(`\n  ${name}:`);
+    assert.ok(at > -1, `${file} carries a ${name} job`);
+    const rest = text.slice(at + 1);
+    const next = rest.slice(1).search(/\n {2}[\w-]+:/);
+    return next === -1 ? rest : rest.slice(0, next + 1);
+  };
+  // A step run only where something already failed is a way of looking at the
+  // failure, not a check the tree has to pass.
+  const checksOf = (job) => job.split(/\n {6}- /).slice(1)
+    .filter((step) => !/^\s*if: failure\(\)/m.test(step))
+    .map((step) => step.match(/^\s*run: (.+)$/m)).filter(Boolean)
+    .map((match) => match[1].trim());
+  const ci = checksOf(jobIn('ci.yaml', 'test'));
+  const build = jobIn('release.yaml', 'build');
+  const packs = build.indexOf('run: python pack.py');
+  assert.ok(packs > -1, 'the release build packs the extension');
+  assert.ok(ci.length > 3, `the CI job runs checks — found ${ci.join(', ')}`);
+  for (const check of ci) {
+    const at = build.indexOf(`run: ${check}`);
+    assert.ok(at > -1, `the release build runs what CI runs: ${check}`);
+    assert.ok(at < packs, `the release build runs ${check} before it packs`);
+  }
+});
+
 test('a reference naming a drive is refused under Windows path semantics', () => {
   // A drive letter reads as relative to posixpath, and on Windows it resolves
   // against the same drive — so `C:/content.js` would package what `content.js`
