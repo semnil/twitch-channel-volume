@@ -85,6 +85,10 @@ MANIFEST_REFERENCES = (
     (('side_panel', 'default_path'), 'page'),
     (('chrome_url_overrides', '*'), 'page'),
     (('sandbox', 'pages', '[]'), 'page'),
+    # An icon for the action is one path or a size for each of several, and
+    # Chrome takes both spellings. Every other key here refuses the bare
+    # string, so only this one is written twice.
+    (('action', 'default_icon'), 'asset'),
     (('action', 'default_icon', '*'), 'asset'),
     (('icons', '*'), 'asset'),
     (('storage', 'managed_schema'), 'asset'),
@@ -234,10 +238,31 @@ def _resolve(root, relative):
     return full
 
 
+def _spelled(root, relative):
+    """Whether the tree spells the path the way the reference does.
+
+    A host that opens a name without regard to case hands back a file the tree
+    carries under another spelling, and the package would hold two entries for
+    the one file. A name that is nowhere is the caller's to answer for.
+    """
+    at = root
+    for part in relative.split('/'):
+        try:
+            held = os.listdir(at)
+        except OSError:
+            return True
+        if part not in held:
+            return not any(name.lower() == part.lower() for name in held)
+        at = os.path.join(at, part)
+    return True
+
+
 def _packaged(root, relative):
     full = _resolve(root, relative)
     if full is None:
         raise SystemExit(f'reference leaves the package: {relative}')
+    if not _spelled(os.path.realpath(root), relative):
+        raise SystemExit(f'the tree spells this another way: {relative}')
     return full
 
 
@@ -356,12 +381,23 @@ def _read(root, relative):
         return handle.read()
 
 
+def _shape(pattern):
+    return ''.join('.*' if part == '*' else '.' if part == '?' else re.escape(part)
+                   for part in re.split(r'([*?])', pattern))
+
+
 def _matching(root, pattern):
-    """Every file under the package root that a resource pattern names."""
-    shape = re.compile(''.join(
-        '.*' if part == '*' else '.' if part == '?' else re.escape(part)
-        for part in re.split(r'([*?])', pattern)))
-    found = []
+    """Every file under the package root that a resource pattern names.
+
+    A pattern naming nothing is one Chrome takes as well, so it is no refusal
+    here. A pattern naming nothing until the spelling is folded is one the tree
+    carries another way, and a host that opens it regardless leaves the files
+    out of the package with nothing saying so. Where the pattern names files
+    exactly, those are the files it names, whatever else folds onto it.
+    """
+    exact = re.compile(_shape(pattern))
+    folded = re.compile(_shape(pattern), re.IGNORECASE)
+    found, only_folded = [], []
     for base, directories, files in os.walk(root):
         # A name beginning with a dot is one Chrome's own packer leaves out.
         directories[:] = sorted(name for name in directories
@@ -372,8 +408,12 @@ def _matching(root, pattern):
             if name.startswith('.'):
                 continue
             relative = prefix + name
-            if shape.fullmatch(relative):
+            if exact.fullmatch(relative):
                 found.append(relative)
+            elif folded.fullmatch(relative):
+                only_folded.append(relative)
+    if not found and only_folded:
+        raise SystemExit(f'the tree spells this another way: {pattern}')
     return found
 
 
