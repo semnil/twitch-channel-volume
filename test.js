@@ -1010,6 +1010,30 @@ test('the store package refuses to leave out what it has to carry', () => {
     ['a locale beside the default one spelled the way the store does not',
       (box) => fs.cpSync(`${box}/_locales/ja`, `${box}/_locales/en_gb`, { recursive: true }),
       /_locales\/en_gb is spelled 'en_GB' by the store/],
+    // A file the manifest reaches inside _locales lands in a locale directory
+    // whatever it was meant as, and Chrome reads it as one: measured against
+    // 151, a package carrying _locales/fr/icon.png with no fr catalog is
+    // refused at load — "Messages file is missing for locale". The sweep
+    // above cannot see these, because it looks only where a catalog is.
+    ['a referenced file under a locale the store does not carry', (box) => {
+      fs.mkdirSync(`${box}/_locales/nb`, { recursive: true });
+      fs.writeFileSync(`${box}/_locales/nb/icon.png`, 'png');
+      editManifest(box, m => { m.action = { default_icon: '_locales/nb/icon.png' }; });
+    }, /_locales\/nb is not a locale the store carries: 'nb'/],
+    ['a referenced file under a locale spelled the way the store does not', (box) => {
+      fs.mkdirSync(`${box}/_locales/en_gb`, { recursive: true });
+      fs.writeFileSync(`${box}/_locales/en_gb/icon.png`, 'png');
+      editManifest(box, m => { m.action = { default_icon: '_locales/en_gb/icon.png' }; });
+    }, /_locales\/en_gb is spelled 'en_GB' by the store/],
+    ['a referenced file in a locale directory with no catalog', (box) => {
+      fs.mkdirSync(`${box}/_locales/en`, { recursive: true });
+      fs.writeFileSync(`${box}/_locales/en/icon.png`, 'png');
+      editManifest(box, m => { m.action = { default_icon: '_locales/en/icon.png' }; });
+    }, /_locales\/en carries _locales\/en\/icon\.png and no messages\.json/],
+    ['a referenced file put straight into _locales', (box) => {
+      fs.writeFileSync(`${box}/_locales/icon.png`, 'png');
+      editManifest(box, m => { m.action = { default_icon: '_locales/icon.png' }; });
+    }, /_locales\/icon\.png is not a locale the store carries/],
     ['a default_locale spelled the way the store does not',
       (box) => {
         fs.renameSync(`${box}/_locales/ja`, `${box}/_locales/en_gb`);
@@ -1294,6 +1318,13 @@ test('the store package refuses to leave out what it has to carry', () => {
     // green.
     ['a second locale the store carries',
       (box) => fs.cpSync(`${box}/_locales/ja`, `${box}/_locales/en`, { recursive: true })],
+    // Beside the catalog the locale already carries. Without this the rule
+    // above could refuse every packaged name under _locales — the catalogs
+    // themselves among them — and stay green.
+    ['a referenced file beside the catalog of the locale it sits in', (box) => {
+      fs.writeFileSync(`${box}/_locales/ja/icon.png`, 'png');
+      editManifest(box, m => { m.action = { default_icon: '_locales/ja/icon.png' }; });
+    }],
     ['a locale the store spells with its region in capitals', (box) => {
       fs.renameSync(`${box}/_locales/ja`, `${box}/_locales/en_GB`);
       editManifest(box, m => { m.default_locale = 'en_GB'; });

@@ -635,6 +635,24 @@ def selected_files(root):
         if entry:
             yield entry
 
+    # Whatever the package carries under _locales sits in a locale directory,
+    # however it got there: the walk above reaches a file by name, and the sweep
+    # reaches a catalog, and both land here. Chrome reads a directory under
+    # _locales as a locale whether or not anything meant it as one, and one it
+    # recognises with no catalog beside it is an extension it declines to load.
+    # So the name is held to the store's list, as a catalog's is, and to having
+    # a catalog with it. A file put straight into _locales is held to the same
+    # rule and refused, which Chrome would take: what is under _locales is
+    # locales.
+    for relative in sorted(carried):
+        if not relative.startswith(LOCALE_DIR + '/'):
+            continue
+        locale = relative.split('/')[1]
+        _store_locale(locale, f'{LOCALE_DIR}/{locale}')
+        if posixpath.join(LOCALE_DIR, locale, LOCALE_FILE) not in seen_locales:
+            raise SystemExit(f'{LOCALE_DIR}/{locale} carries {relative} and no '
+                             f'{LOCALE_FILE}')
+
 
 def pack():
     root = os.path.dirname(os.path.abspath(__file__))
