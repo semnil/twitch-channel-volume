@@ -15,6 +15,7 @@ jobs:
   check-event:
     name: Check Release Tag ☑️
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     defaults:
       run:
         shell: bash
@@ -56,6 +57,7 @@ jobs:
     name: Build Extension Zip 🧱
     needs: check-event
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     defaults:
       run:
         shell: bash
@@ -85,6 +87,7 @@ jobs:
     needs: [check-event, build]
     if: needs.check-event.outputs.validTag == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     defaults:
       run:
         shell: bash

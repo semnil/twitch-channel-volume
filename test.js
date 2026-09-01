@@ -712,6 +712,27 @@ test('every action is named by a commit and the version beside it', () => {
   assert.ok(named > 0, 'the workflows run actions');
 });
 
+// A job with no timeout of its own runs to GitHub's six hours, so one that
+// hangs holds a runner for an afternoon and says nothing until it is looked at.
+test('every job names how long it may run', () => {
+  const workflows = path.join(__dirname, '.github', 'workflows');
+  let jobs = 0;
+  for (const name of fs.readdirSync(workflows).filter((file) => /\.ya?ml$/.test(file))) {
+    const text = fs.readFileSync(path.join(workflows, name), 'utf8');
+    // A job is a key at one indent under jobs:, and its block runs to the next.
+    const blocks = text.slice(text.indexOf('\njobs:')).split(/\n {2}(?=[\w-]+:)/).slice(1);
+    for (const block of blocks) {
+      jobs += 1;
+      // At the job's own indent: a step inside it naming one of its own
+      // answers for the step and leaves the job running to GitHub's six hours.
+      assert.match(block, /^ {4}timeout-minutes: \d+$/m,
+        `${name}'s ${block.split(':')[0]} names how long it may run`);
+    }
+  }
+  // Without this the loop above would pass over a repository with no jobs in it.
+  assert.ok(jobs > 2, `the workflows carry jobs — found ${jobs}`);
+});
+
 test('a reference naming a drive is refused under Windows path semantics', () => {
   // A drive letter reads as relative to posixpath, and on Windows it resolves
   // against the same drive — so `C:/content.js` would package what `content.js`
