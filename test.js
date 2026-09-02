@@ -998,6 +998,48 @@ test('the store package refuses to leave out what it has to carry', () => {
         editManifest(box, m => { m.default_locale = 'nb'; });
       },
       /is not a locale the store carries: 'nb'/],
+    // Every locale under _locales reaches the package, not the default one
+    // alone, so each is held to the same list. Chrome loads _locales/nb and
+    // _locales/zz alike; no listing presents either.
+    ['a locale beside the default one that the store does not carry',
+      (box) => fs.cpSync(`${box}/_locales/ja`, `${box}/_locales/nb`, { recursive: true }),
+      /_locales\/nb is not a locale the store carries: 'nb'/],
+    // The store spells its regions in capitals and Chrome loads the name
+    // either way, so a package can carry a locale under a spelling no listing
+    // answers to. The spelling the store uses is the refusal.
+    ['a locale beside the default one spelled the way the store does not',
+      (box) => fs.cpSync(`${box}/_locales/ja`, `${box}/_locales/en_gb`, { recursive: true }),
+      /_locales\/en_gb is spelled 'en_GB' by the store/],
+    // A file the manifest reaches inside _locales lands in a locale directory
+    // whatever it was meant as, and Chrome reads it as one: measured against
+    // 151, a package carrying _locales/fr/icon.png with no fr catalog is
+    // refused at load — "Messages file is missing for locale". The sweep
+    // above cannot see these, because it looks only where a catalog is.
+    ['a referenced file under a locale the store does not carry', (box) => {
+      fs.mkdirSync(`${box}/_locales/nb`, { recursive: true });
+      fs.writeFileSync(`${box}/_locales/nb/icon.png`, 'png');
+      editManifest(box, m => { m.action = { default_icon: '_locales/nb/icon.png' }; });
+    }, /_locales\/nb is not a locale the store carries: 'nb'/],
+    ['a referenced file under a locale spelled the way the store does not', (box) => {
+      fs.mkdirSync(`${box}/_locales/en_gb`, { recursive: true });
+      fs.writeFileSync(`${box}/_locales/en_gb/icon.png`, 'png');
+      editManifest(box, m => { m.action = { default_icon: '_locales/en_gb/icon.png' }; });
+    }, /_locales\/en_gb is spelled 'en_GB' by the store/],
+    ['a referenced file in a locale directory with no catalog', (box) => {
+      fs.mkdirSync(`${box}/_locales/en`, { recursive: true });
+      fs.writeFileSync(`${box}/_locales/en/icon.png`, 'png');
+      editManifest(box, m => { m.action = { default_icon: '_locales/en/icon.png' }; });
+    }, /_locales\/en carries _locales\/en\/icon\.png and no messages\.json/],
+    ['a referenced file put straight into _locales', (box) => {
+      fs.writeFileSync(`${box}/_locales/icon.png`, 'png');
+      editManifest(box, m => { m.action = { default_icon: '_locales/icon.png' }; });
+    }, /_locales\/icon\.png is not a locale the store carries/],
+    ['a default_locale spelled the way the store does not',
+      (box) => {
+        fs.renameSync(`${box}/_locales/ja`, `${box}/_locales/en_gb`);
+        editManifest(box, m => { m.default_locale = 'en_gb'; });
+      },
+      /default_locale is spelled 'en_GB' by the store/],
     // Chrome reads a JSON number as a double. NaN and the infinities are
     // Python's spelling of a number rather than JSON's, and a literal too
     // large for a double is one Chrome declines to read at all.
@@ -1271,6 +1313,22 @@ test('the store package refuses to leave out what it has to carry', () => {
       fs.renameSync(`${box}/_locales/ja`, `${box}/_locales/no`);
       editManifest(box, m => { m.default_locale = 'no'; });
     }],
+    // Without these two the rules above could refuse every locale that is not
+    // the default one, and every region the store spells in capitals, and stay
+    // green.
+    ['a second locale the store carries',
+      (box) => fs.cpSync(`${box}/_locales/ja`, `${box}/_locales/en`, { recursive: true })],
+    // Beside the catalog the locale already carries. Without this the rule
+    // above could refuse every packaged name under _locales — the catalogs
+    // themselves among them — and stay green.
+    ['a referenced file beside the catalog of the locale it sits in', (box) => {
+      fs.writeFileSync(`${box}/_locales/ja/icon.png`, 'png');
+      editManifest(box, m => { m.action = { default_icon: '_locales/ja/icon.png' }; });
+    }],
+    ['a locale the store spells with its region in capitals', (box) => {
+      fs.renameSync(`${box}/_locales/ja`, `${box}/_locales/en_GB`);
+      editManifest(box, m => { m.default_locale = 'en_GB'; });
+    }],
     // Outside the fields Chrome localizes, a reference is not a reference:
     // the string reaches the browser as it stands, a file name included.
     ['a content script named like a message', (box) => {
@@ -1362,6 +1420,110 @@ test('the store package refuses to leave out what it has to carry', () => {
     assert.equal(listed.status, 0, listed.stderr);
     const names = listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
     assert.equal(names.length, new Set(names).size, `each name enters the package once`);
+    fs.rmSync(box, { recursive: true, force: true });
+  }
+
+  // A package built twice from the same files is the same package. Beyond a
+  // file's name and bytes a zip entry carries the time the host last wrote it
+  // and the mode the host holds it under, and a checkout supplies both afresh
+  // — so an archive taking either from the tree differs on every run, and the
+  // zip a release uploaded cannot be built again and compared.
+  {
+    const digestOf = (stamp, mode, edit) => {
+      const box = buildMinimal();
+      if (edit) { edit(box); }
+      for (const name of ['manifest.json', 'content.js', 'LICENSE',
+        '_locales/ja/messages.json']) {
+        fs.chmodSync(path.join(box, name), mode);
+        fs.utimesSync(path.join(box, name), stamp, stamp);
+      }
+      const built = runPack(box, []);
+      assert.equal(built.status, 0, built.stderr);
+      const digest = crypto.createHash('sha256')
+        .update(fs.readFileSync(path.join(box, 'twitch-channel-volume-0.0.0.zip')))
+        .digest('hex');
+      fs.rmSync(box, { recursive: true, force: true });
+      return digest;
+    };
+    const plain = digestOf(946684800, 0o644, null);
+    assert.equal(plain, digestOf(1700000000, 0o755, null),
+      'the same files build the same package, whatever time and mode the host holds them under');
+    // Without this the rule above would hold for a packer writing one archive
+    // whatever it was given.
+    assert.notEqual(plain, digestOf(946684800, 0o644, (box) =>
+      fs.writeFileSync(path.join(box, 'content.js'), '// a line the other build has not got\n')),
+    'the package still answers for what the files hold');
+  }
+
+  // Read back rather than inferred: the host an entry says it came from is
+  // filled in from the host that ran the packer where it is not written, and
+  // this suite runs on one host.
+  {
+    const box = buildMinimal();
+    const built = runPack(box, []);
+    assert.equal(built.status, 0, built.stderr);
+    const read = spawnSync('python3', ['-c',
+      'import sys, zipfile\n'
+      + 'for held in zipfile.ZipFile(sys.argv[1]).infolist():\n'
+      + '    print(held.filename, held.date_time, held.create_system,'
+      + ' oct(held.external_attr >> 16))',
+      'twitch-channel-volume-0.0.0.zip'], { cwd: box, encoding: 'utf8' });
+    assert.equal(read.status, 0, read.stderr);
+    const entries = read.stdout.trim().split('\n').filter(Boolean);
+    assert.ok(entries.length > 0, 'the package has entries to read');
+    for (const entry of entries) {
+      assert.match(entry, / \(1980, 1, 1, 0, 0, 0\) 3 0o100644$/,
+        `every entry is written under one time, one host and one mode — ${entry}`);
+    }
+    fs.rmSync(box, { recursive: true, force: true });
+  }
+
+  // zipfile fills an entry's create_system in from sys.platform where the
+  // entry has not got one, so the host that runs the packer decides it and the
+  // check above reads only this host's answer. Reading it on another host is
+  // out of reach here; the reading itself is flipped instead.
+  {
+    const box = buildMinimal();
+    const asWindows = spawnSync('python3', ['-B', '-c',
+      'import sys, importlib.util, zipfile\n'
+      + 'spec = importlib.util.spec_from_file_location("packmod", "pack.py")\n'
+      + 'mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)\n'
+      + 'sys.platform = "win32"\n'
+      // Without this the run below would prove nothing on a host where the
+      // default is 3 already.
+      + 'assert zipfile.ZipInfo("x").create_system == 0, "the reading did not flip"\n'
+      + 'mod.pack()\n'
+      + 'for held in zipfile.ZipFile("twitch-channel-volume-0.0.0.zip").infolist():\n'
+      + '    print("entry", held.filename, held.create_system)'],
+    { cwd: box, encoding: 'utf8' });
+    assert.equal(asWindows.status, 0, asWindows.stderr);
+    const hosts = asWindows.stdout.split('\n')
+      .map((line) => line.match(/^entry (.+) (\d+)$/)).filter(Boolean);
+    assert.ok(hosts.length > 0, 'the package has entries to read');
+    for (const [, name, host] of hosts) {
+      assert.equal(host, '3', `${name} names one host whatever host packed it`);
+    }
+    fs.rmSync(box, { recursive: true, force: true });
+  }
+
+  // What a run says it packed. The refusals above assert that no line of this
+  // shape is printed; without one asserting that it is printed when a package
+  // is built, renaming the marker would leave every one of them passing over a
+  // run that named the whole tree.
+  {
+    const box = buildMinimal();
+    const built = runPack(box, []);
+    assert.equal(built.status, 0, built.stderr);
+    const named = built.stdout.split('\n')
+      .map((line) => line.match(/^\s*\+ (.+)$/)).filter(Boolean).map((match) => match[1]);
+    const listed = runPack(box, ['--list']);
+    assert.equal(listed.status, 0, listed.stderr);
+    const names = listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+    assert.deepEqual(named.slice().sort(), names.slice().sort(),
+      'a run names what it packed');
+    const held = heldInZip(box, 'twitch-channel-volume-0.0.0.zip').map(([name]) => name);
+    assert.deepEqual(named.slice().sort(), held.slice().sort(),
+      'what it names is what the archive holds');
     fs.rmSync(box, { recursive: true, force: true });
   }
 

@@ -48,6 +48,7 @@ CHROME_WEB_STORE_LOCALES = frozenset('''
     he hi hr hu id it ja kn ko lt lv ml mr ms nl no pl pt_BR pt_PT ro ru sk sl sr
     sv sw ta te th tr uk vi zh_CN zh_TW
 '''.split())
+STORE_LOCALE_SPELLING = {name.lower(): name for name in CHROME_WEB_STORE_LOCALES}
 # Where Chrome substitutes a message into the manifest. Everywhere else the
 # string reaches the browser as it stands — a content script named
 # __MSG_asset__.js is loaded under that name — so a reference outside these is
@@ -103,6 +104,17 @@ BY_NAME = (('.html', 'page'), ('.js', 'script'), ('.css', 'style'))
 # for any run of characters and '/' among them: a file carried that nothing
 # asks for costs room, and one left out is a resource the page cannot load.
 PATTERN = re.compile(r'[*?]')
+# A package built twice from the same files is the same package. Beyond a
+# file's name and bytes a zip entry carries the time the host last wrote it and
+# the mode the host holds it under, and a checkout supplies both afresh, so an
+# archive taken from the tree differs on every run and no build can be checked
+# against another. The two are written as constants: the earliest a zip records
+# and the mode a file the browser only reads is held under.
+ENTRY_TIME = (1980, 1, 1, 0, 0, 0)
+ENTRY_MODE = 0o100644
+# The host a zip entry says it came from. Python fills this in from the host
+# that runs it, which is a second way one tree builds two archives.
+ENTRY_HOST = 3
 CSS_COMMENT = re.compile(r'/\*.*?\*/', re.S)
 CSS_IMPORT = re.compile(r'@import\s+(?:url\(\s*)?(["\']?)([^"\')\s;]+)\1')
 CSS_URL = re.compile(r'url\(\s*(["\']?)([^"\')]+?)\1\s*\)')
@@ -381,6 +393,32 @@ def _read(root, relative):
         return handle.read()
 
 
+def _store_locale(locale, what):
+    """Refuse a locale name the store does not carry under that spelling.
+
+    Chrome loads a wider set than the store publishes and reads a name the
+    store spells another way, so a locale it takes can still be one no listing
+    presents. The name is held to the store's own list, and where only the
+    spelling is wrong the list's spelling is named rather than left to be
+    guessed at.
+    """
+    spelled = STORE_LOCALE_SPELLING.get(locale.lower())
+    if spelled is None:
+        raise SystemExit(f'{what} is not a locale the store carries: {locale!r}')
+    if spelled != locale:
+        raise SystemExit(f'{what} is spelled {spelled!r} by the store: {locale!r}')
+
+
+def _entry(arcname, full):
+    """The archive entry for a packaged file, and its bytes."""
+    entry = zipfile.ZipInfo(arcname, ENTRY_TIME)
+    entry.create_system = ENTRY_HOST
+    entry.external_attr = ENTRY_MODE << 16
+    entry.compress_type = zipfile.ZIP_DEFLATED
+    with open(full, 'rb') as handle:
+        return entry, handle.read()
+
+
 def _shape(pattern):
     return ''.join('.*' if part == '*' else '.' if part == '?' else re.escape(part)
                    for part in re.split(r'([*?])', pattern))
@@ -551,9 +589,8 @@ def selected_files(root):
                   or posixpath.normpath(default_locale) != default_locale):
         raise SystemExit(f'default_locale is not one name under {LOCALE_DIR}: '
                          f'{default_locale!r}')
-    if named and default_locale not in CHROME_WEB_STORE_LOCALES:
-        raise SystemExit(f'default_locale is not a locale the store carries: '
-                         f'{default_locale!r}')
+    if named:
+        _store_locale(default_locale, 'default_locale')
     locales = _host(root, LOCALE_DIR)
     if os.path.isdir(locales) and not named:
         raise SystemExit(f'{LOCALE_DIR} is here and the manifest names no default_locale')
@@ -569,6 +606,7 @@ def selected_files(root):
             relative = posixpath.join(LOCALE_DIR, locale, LOCALE_FILE)
             full = _packaged(root, relative)
             if os.path.isfile(full):
+                _store_locale(locale, f'{LOCALE_DIR}/{locale}')
                 catalogs[locale] = _catalog(relative, _read(root, relative))
                 seen_locales.add(relative)
                 entry = carry(full, relative)
@@ -597,6 +635,24 @@ def selected_files(root):
         if entry:
             yield entry
 
+    # Whatever the package carries under _locales sits in a locale directory,
+    # however it got there: the walk above reaches a file by name, and the sweep
+    # reaches a catalog, and both land here. Chrome reads a directory under
+    # _locales as a locale whether or not anything meant it as one, and one it
+    # recognises with no catalog beside it is an extension it declines to load.
+    # So the name is held to the store's list, as a catalog's is, and to having
+    # a catalog with it. A file put straight into _locales is held to the same
+    # rule and refused, which Chrome would take: what is under _locales is
+    # locales.
+    for relative in sorted(carried):
+        if not relative.startswith(LOCALE_DIR + '/'):
+            continue
+        locale = relative.split('/')[1]
+        _store_locale(locale, f'{LOCALE_DIR}/{locale}')
+        if posixpath.join(LOCALE_DIR, locale, LOCALE_FILE) not in seen_locales:
+            raise SystemExit(f'{LOCALE_DIR}/{locale} carries {relative} and no '
+                             f'{LOCALE_FILE}')
+
 
 def pack():
     root = os.path.dirname(os.path.abspath(__file__))
@@ -614,7 +670,8 @@ def pack():
     try:
         with zipfile.ZipFile(staging, 'w', zipfile.ZIP_DEFLATED) as zf:
             for full, arcname in files:
-                zf.write(full, arcname)
+                entry, content = _entry(arcname, full)
+                zf.writestr(entry, content)
                 print(f'  + {arcname}')
         os.replace(staging, out_path)
     except BaseException:
