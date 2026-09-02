@@ -35,6 +35,9 @@ jobs:
     needs: check-event
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    outputs:
+      archive: ${{ steps.pack.outputs.archive }}
+      digest: ${{ steps.pack.outputs.digest }}
     defaults:
       run:
         shell: bash
@@ -74,8 +77,23 @@ jobs:
         if: needs.check-event.outputs.validTag == 'true'
         run: bash tools/verify-version.sh
 
+      # What it packed, named and weighed here so the download can be held to
+      # it: an upload that loses or renames the archive is otherwise a green
+      # run with the wrong bytes behind it.
       - name: Pack Extension 📦
-        run: python pack.py
+        id: pack
+        run: |
+          : Pack Extension
+          if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
+          shopt -s nullglob
+          python pack.py
+          built=( twitch-channel-volume-*.zip )
+          if [[ ${#built[@]} -ne 1 ]]; then
+            echo "::error::packing left ${#built[@]} archives, not one: ${built[*]}"
+            exit 1
+          fi
+          echo "archive=${built[0]}" >> "$GITHUB_OUTPUT"
+          echo "digest=$(sha256sum "${built[0]}" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Upload Artifacts 📡
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -84,10 +102,9 @@ jobs:
           path: twitch-channel-volume-*.zip
           if-no-files-found: error
 
-  create-release:
-    name: Create Release 🛫
+  release:
+    name: Check The Archive And Release 🛫
     needs: [check-event, build]
-    if: needs.check-event.outputs.validTag == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     defaults:
@@ -100,7 +117,36 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      # The round trip, run whether or not a release is being made: what the
+      # build packed has to come back under the same name and the same bytes.
+      # Nothing else exercises the upload and the download at all.
+      - name: Check What Came Back 🔍
+        env:
+          PACKED_ARCHIVE: ${{ needs.build.outputs.archive }}
+          PACKED_DIGEST: ${{ needs.build.outputs.digest }}
+        run: |
+          : Check What Came Back
+          if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
+          shopt -s nullglob
+          came=( artifacts/*.zip )
+          if [[ ${#came[@]} -ne 1 ]]; then
+            echo "::error::the download holds ${#came[@]} archives, not one: ${came[*]}"
+            exit 1
+          fi
+          name="$(basename "${came[0]}")"
+          if [[ "${name}" != "${PACKED_ARCHIVE}" ]]; then
+            echo "::error::the archive came back as ${name}, packed as ${PACKED_ARCHIVE}"
+            exit 1
+          fi
+          got="$(sha256sum "${came[0]}" | cut -d' ' -f1)"
+          if [[ "${got}" != "${PACKED_DIGEST}" ]]; then
+            echo "::error::the archive came back as ${got}, packed as ${PACKED_DIGEST}"
+            exit 1
+          fi
+          echo "${name} came back as it went: ${got}"
+
       - name: Create Release 🛫
+        if: needs.check-event.outputs.validTag == 'true'
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           draft: true
