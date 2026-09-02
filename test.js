@@ -756,6 +756,48 @@ test('every action is named by a commit and the version beside it', () => {
   assert.ok(named > 0, 'the workflows run actions');
 });
 
+// The canvas is a fixed 640x400 and nothing clips to it, so a settings row too
+// many pushed the section below it off the bottom edge and the run saved the
+// clipped image at exit 0. Adding a row is the mutation this stands on.
+test('a settings row too many is refused, not drawn off the sheet', () => {
+  const box = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'tcv-crowded-'));
+  fs.copyFileSync(path.join(__dirname, 'gen_screenshots.py'), path.join(box, 'gen_screenshots.py'));
+  fs.cpSync(path.join(__dirname, 'tools'), path.join(box, 'tools'), { recursive: true });
+  fs.cpSync(path.join(__dirname, '_locales'), path.join(box, '_locales'), { recursive: true });
+  const source = fs.readFileSync(path.join(box, 'gen_screenshots.py'), 'utf8');
+  const last = source.match(/\n(    \('overlay_label'[\s\S]*?\}\),\n)\)/);
+  assert.ok(last, 'the declaration ends with a row this can repeat');
+  fs.writeFileSync(path.join(box, 'gen_screenshots.py'),
+    source.replace(last[1], last[1] + last[1]));
+
+  const out = path.join(box, 'drawn');
+  const crowded = spawnSync('python3', ['-B', 'gen_screenshots.py', '--out', out],
+    { cwd: box, encoding: 'utf8' });
+  assert.ok(crowded.status !== 0,
+    `one row too many is refused — exited ${crowded.status}`);
+  assert.ok(/settings rows, the last of them \w+, need \d+ px of the \d+/.test(crowded.stderr || ''),
+    `and it says how many rows and how much room they want — said ${(crowded.stderr || '').trim()}`);
+  assert.ok(!fs.existsSync(out) || fs.readdirSync(out).length === 0,
+    'and it draws nothing rather than saving a clipped sheet');
+
+  // Without this the refusal above could be the sandbox failing to draw at all.
+  const roomy = spawnSync('python3', ['-B', 'gen_screenshots.py', '--out', out],
+    { cwd: box, encoding: 'utf8', env: { ...process.env } });
+  fs.copyFileSync(path.join(__dirname, 'gen_screenshots.py'), path.join(box, 'gen_screenshots.py'));
+  const asShipped = spawnSync('python3', ['-B', 'gen_screenshots.py', '--out', out],
+    { cwd: box, encoding: 'utf8' });
+  if (asShipped.status === 3) {
+    console.log(`  (crowded-sheet check: this machine cannot draw — ${(asShipped.stderr || '').trim()})`);
+  } else {
+    assert.ok(asShipped.status === 0,
+      `the rows it has do fit — ${(asShipped.stderr || '').trim()}`);
+    assert.ok(fs.readdirSync(out).filter(name => name.endsWith('.png')).length > 0,
+      'and that run does write the sheets');
+  }
+  void roomy;
+  fs.rmSync(box, { recursive: true, force: true });
+});
+
 // The screenshots are a hand-drawn mock of the settings page, and `--check`
 // holds the drawing only to its own committed output — so a row added to
 // options.html, two reordered, or a control swapped leaves the store showing
