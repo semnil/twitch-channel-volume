@@ -191,6 +191,21 @@ FROM_CATALOG = {
     'auto': 'labelAuto',
 }
 
+# The rows options.html lays out, in its order: the message the label shows,
+# the message under it, and the control the page carries on that row with how
+# many of it. The
+# drawing walks this, so what is drawn cannot drift from it, and test.js
+# compares it with the page. Nothing else notices when the page grows a row,
+# reorders two, or swaps a control: these screenshots are a hand-drawn mock and
+# `--check` only holds the drawing to its own committed output.
+SETTING_ROWS = (
+    ('target_label', 'target_desc', 'range', 1),
+    ('auto_defaults_label', 'auto_defaults_desc', 'toggle', 2),
+    ('adgain_label', 'adgain_desc', 'range', 1),
+    ('unit_label', 'unit_desc', 'buttons', 2),
+    ('overlay_label', 'overlay_desc', 'toggle', 1),
+)
+
 # What the drawing invents: a stream nobody is watching, the channels nobody
 # saved, and the headings and badges this mock draws around them — Twitch's
 # own furniture as much as the extension's.
@@ -381,12 +396,6 @@ def screenshot_settings(lang, out_dir):
         draw.ellipse([tx - 8, y, tx + 8, y + 16], fill=thumb, outline=POPUP_BG, width=2)
         draw.text((sx + sw - 85, y), value, fill=TEAL, font=FONT_BOLD)
 
-    ry = sy + 31
-    # Target LUFS: -30..-6, value -18 -> frac (−18−(−30))/24 = 0.5
-    row(ry, s['target_label'], s['target_desc'], lambda y: slider(y, 0.5, '-18 LUFS'))
-    draw.line([(sx + 20, ry + 31), (sx + sw - 20, ry + 31)], fill=BORDER)
-    ry += 36
-
     # Auto-follow defaults for Live / VOD.
     def type_switches(y):
         gx = sx + sw - 167
@@ -400,14 +409,6 @@ def screenshot_settings(lang, out_dir):
             draw.ellipse([knob_x, y, knob_x + 14, y + 14],
                          fill=TEAL if enabled else GRAY)
             gx += 78
-    row(ry, s['auto_defaults_label'], s['auto_defaults_desc'], type_switches)
-    draw.line([(sx + 20, ry + 31), (sx + sw - 20, ry + 31)], fill=BORDER)
-    ry += 36
-
-    # CM Gain: -24..6, value -6 -> frac (−6−(−24))/30 = 0.6
-    row(ry, s['adgain_label'], s['adgain_desc'], lambda y: slider(y, 0.6, '-6 dB'))
-    draw.line([(sx + 20, ry + 31), (sx + sw - 20, ry + 31)], fill=BORDER)
-    ry += 36
 
     # Display unit toggle
     def unit_toggle(y):
@@ -416,16 +417,23 @@ def screenshot_settings(lang, out_dir):
         draw.text((gx + 13, y + 1), '%', fill=POPUP_BG, font=FONT_BOLD)
         rr(draw, [gx + 36, y - 2, gx + 72, y + 18], 6, INFO_BG)
         draw.text((gx + 47, y + 1), 'dB', fill=HINT, font=FONT_BOLD)
-    row(ry, s['unit_label'], s['unit_desc'], unit_toggle)
-    draw.line([(sx + 20, ry + 31), (sx + sw - 20, ry + 31)], fill=BORDER)
-    ry += 36
 
     # Gain overlay switch (ON)
     def switch_on(y):
         gx = sx + sw - 56
         rr(draw, [gx, y - 1, gx + 36, y + 19], 10, SWITCH_ON)
         draw.ellipse([gx + 19, y + 2, gx + 33, y + 16], fill=TEAL)
-    row(ry, s['overlay_label'], s['overlay_desc'], switch_on)
+
+    # Target LUFS: -30..-6, value -18 -> frac (-18-(-30))/24 = 0.5
+    # CM Gain: -24..6, value -6 -> frac (-6-(-24))/30 = 0.6
+    painters = (lambda y: slider(y, 0.5, '-18 LUFS'), type_switches,
+                lambda y: slider(y, 0.6, '-6 dB'), unit_toggle, switch_on)
+    ry = sy + 31
+    for index, ((label, desc, _control, _many), paint) in enumerate(zip(SETTING_ROWS, painters)):
+        row(ry, s[label], s[desc], paint)
+        if index < len(painters) - 1:
+            draw.line([(sx + 20, ry + 31), (sx + sw - 20, ry + 31)], fill=BORDER)
+            ry += 36
 
     # Saved Channels section
     cy = sy + sh + 9
