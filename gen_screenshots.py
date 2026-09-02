@@ -429,20 +429,23 @@ def screenshot_settings(lang, out_dir):
         draw.ellipse([tx - 8, y, tx + 8, y + 16], fill=thumb, outline=POPUP_BG, width=2)
         draw.text((sx + sw - 85, y), value, fill=TEAL, font=FONT_BOLD)
 
+    # One switch, wherever it is drawn: the knob is on the right only when the
+    # switch is on. Drawn twice, the unlabelled one kept its knob on the right
+    # whatever it was given, and only a row drawn off would have shown it.
+    def switch(x, top, on):
+        rr(draw, [x, top, x + 36, top + 20], 10, SWITCH_ON if on else BORDER)
+        knob_x = x + (19 if on else 3)
+        draw.ellipse([knob_x, top + 3, knob_x + 14, top + 17],
+                     fill=TEAL if on else GRAY)
+
     def paint_toggle(y, switches):
         for name, back, on in switches:
             gx = sx + sw - back
             if name is None:
-                rr(draw, [gx, y - 1, gx + 36, y + 19], 10, SWITCH_ON if on else BORDER)
-                draw.ellipse([gx + 19, y + 2, gx + 33, y + 16], fill=TEAL if on else GRAY)
+                switch(gx, y - 1, on)
                 continue
             draw.text((gx, y), s[name].upper(), fill=GRAY, font=FONT_XS)
-            track_x = gx + 30
-            rr(draw, [track_x, y - 3, track_x + 36, y + 17], 10,
-               SWITCH_ON if on else BORDER)
-            knob_x = track_x + (19 if on else 3)
-            draw.ellipse([knob_x, y, knob_x + 14, y + 14],
-                         fill=TEAL if on else GRAY)
+            switch(gx + 30, y - 3, on)
 
     def paint_buttons(y, at, names):
         gx = sx + sw - at

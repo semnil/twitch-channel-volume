@@ -756,6 +756,55 @@ test('every action is named by a commit and the version beside it', () => {
   assert.ok(named > 0, 'the workflows run actions');
 });
 
+// A switch has its knob on the left when it is off. The sheet ships the gain
+// overlay on, so the off side of that row is drawn by nothing here — and while
+// the two switches were drawn twice, the unlabelled one kept its knob on the
+// right whatever it was given. Read off the image rather than off the source.
+test('a switch drawn off puts its knob on the left', () => {
+  const box = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'tcv-knob-'));
+  fs.cpSync(path.join(__dirname, 'tools'), path.join(box, 'tools'), { recursive: true });
+  fs.cpSync(path.join(__dirname, '_locales'), path.join(box, '_locales'), { recursive: true });
+  const source = fs.readFileSync(path.join(__dirname, 'gen_screenshots.py'), 'utf8');
+  const shipped = "{'switches': ((None, 56, True),)}";
+  assert.ok(source.includes(shipped), 'the overlay row is the unlabelled switch, drawn on');
+
+  // The switch sits at sx + sw - 56, thirty-six across, on the last row's band.
+  // Inside it the knob is whatever is not the track, so the two are told apart
+  // without naming either colour here.
+  const knob = (on) => {
+    fs.writeFileSync(path.join(box, 'gen_screenshots.py'),
+      source.replace(shipped, `{'switches': ((None, 56, ${on ? 'True' : 'False'}),)}`));
+    const out = path.join(box, `drawn-${on}`);
+    const drew = spawnSync('python3', ['-B', 'gen_screenshots.py', '--out', out],
+      { cwd: box, encoding: 'utf8' });
+    if (drew.status === 3) { return null; }
+    assert.equal(drew.status, 0, drew.stderr);
+    const read = spawnSync('python3', ['-B', '-c',
+      'import sys\n'
+      + 'from PIL import Image\n'
+      + 'img = Image.open(sys.argv[1]).convert("RGB")\n'
+      + 'band = [(x, img.getpixel((x, 227))) for x in range(560, 597)]\n'
+      + 'track = img.getpixel((562, 227))\n'
+      + 'lit = [x for x, c in band if c != track]\n'
+      + 'print(min(lit), max(lit))',
+      path.join(out, 'settings_en.png')], { cwd: box, encoding: 'utf8' });
+    assert.equal(read.status, 0, read.stderr);
+    return read.stdout.trim().split(' ').map(Number);
+  };
+
+  const on = knob(true);
+  if (on === null) {
+    console.log('  (knob check skipped: this machine cannot draw)');
+  } else {
+    const off = knob(false);
+    assert.ok(on[0] > off[0] + 10 && on[1] > off[1] + 10,
+      `the knob is further right when the switch is on — on ${on}, off ${off}`);
+    assert.equal(on[1] - on[0], off[1] - off[0],
+      `and it is the same knob either way — on ${on}, off ${off}`);
+  }
+  fs.rmSync(box, { recursive: true, force: true });
+});
+
 // The canvas is a fixed 640x400 and nothing clips to it, so a settings row too
 // many pushed the section below it off the bottom edge and the run saved the
 // clipped image at exit 0. Adding a row is the mutation this stands on.
