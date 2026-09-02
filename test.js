@@ -57,6 +57,14 @@ const readJson = file => {
   return JSON.parse(out);
 };
 
+// The names under a _locales directory that are locales: a name is one when it
+// carries a catalog. Anything else there — a .DS_Store, a stray file — is not a
+// directory, and a reader that walks into it crashes rather than fails.
+function localesWithCatalog(dir) {
+  return fs.readdirSync(dir)
+    .filter(name => fs.existsSync(require('path').join(dir, name, 'messages.json')));
+}
+
 // What the archive holds, by name and by the digest of its bytes. Reading the
 // bytes is the point: namelist() alone answers for the names only.
 function heldInZip(dir, archive) {
@@ -748,6 +756,24 @@ test('every action is named by a commit and the version beside it', () => {
   assert.ok(named > 0, 'the workflows run actions');
 });
 
+// A name under _locales that is not a locale. macOS drops a .DS_Store there,
+// and every reader that walks straight into a listed name opens
+// `_locales/.DS_Store/messages.json` — not a failed assertion but an ENOTDIR.
+test('the locales are the names under _locales that carry a catalog', () => {
+  const box = fs.mkdtempSync(path.join(os.tmpdir(), 'tcv-locales-'));
+  fs.mkdirSync(path.join(box, 'ja'));
+  fs.writeFileSync(path.join(box, 'ja/messages.json'), '{}');
+  fs.mkdirSync(path.join(box, 'en'));
+  fs.writeFileSync(path.join(box, 'en/messages.json'), '{}');
+  // A file, and a directory carrying no catalog.
+  fs.writeFileSync(path.join(box, '.DS_Store'), '');
+  fs.mkdirSync(path.join(box, 'notes'));
+  assert.deepEqual(localesWithCatalog(box).sort(), ['en', 'ja']);
+  // Without this the filter could answer nothing at all and still pass above.
+  assert.equal(localesWithCatalog(box).length, 2, 'and it finds the ones that are there');
+  fs.rmSync(box, { recursive: true, force: true });
+});
+
 // The screenshots are what the store shows, and the wording in them is the
 // extension's. Written out in the generator it was a third copy beside the
 // pages and the catalog, and nothing compared the three: changing a message
@@ -761,7 +787,10 @@ test('the screenshots take their wording from the catalog', () => {
   // table, so it is added here rather than left unheld.
   keys.push('showGainOverlay');
   assert.ok(keys.length > 12, `the generator draws messages — found ${keys.length}`);
-  const locales = fs.readdirSync(path.join(__dirname, '_locales'));
+  // The catalogs, not whatever the directory holds: macOS drops a .DS_Store in
+  // there, and reading `_locales/.DS_Store/messages.json` is not a failed
+  // assertion but a crash that takes the rest of the file with it.
+  const locales = localesWithCatalog(path.join(__dirname, '_locales'));
   assert.ok(locales.length > 1, 'the extension is localized');
   for (const locale of locales) {
     const messages = JSON.parse(fs.readFileSync(
