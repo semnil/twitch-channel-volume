@@ -199,12 +199,31 @@ FROM_CATALOG = {
 # reorders two, or swaps a control: these screenshots are a hand-drawn mock and
 # `--check` only holds the drawing to its own committed output.
 SETTING_ROWS = (
-    ('target_label', 'target_desc', 'range', 1),
-    ('auto_defaults_label', 'auto_defaults_desc', 'toggle', 2),
-    ('adgain_label', 'adgain_desc', 'range', 1),
-    ('unit_label', 'unit_desc', 'buttons', 2),
-    ('overlay_label', 'overlay_desc', 'toggle', 1),
+    # Target LUFS: -30..-6, value -18 -> frac (-18-(-30))/24 = 0.5
+    ('target_label', 'target_desc', 'range', {'at': 0.5, 'value': '-18 LUFS'}),
+    ('auto_defaults_label', 'auto_defaults_desc', 'toggle',
+     {'switches': (('type_live', 167, True), ('type_vod', 89, False))}),
+    # CM Gain: -24..6, value -6 -> frac (-6-(-24))/30 = 0.6
+    ('adgain_label', 'adgain_desc', 'range', {'at': 0.6, 'value': '-6 dB'}),
+    ('unit_label', 'unit_desc', 'buttons',
+     {'at': 95, 'names': (('%', 13, True), ('dB', 11, False))}),
+    ('overlay_label', 'overlay_desc', 'toggle', {'switches': ((None, 56, True),)}),
 )
+# How many of that control a row carries, read off what its drawing is given
+# rather than declared a second time beside it.
+HOW_MANY = {'range': lambda p: 1,
+            'toggle': lambda p: len(p['switches']),
+            'buttons': lambda p: len(p['names'])}
+ROW_HEIGHT = 36
+FIRST_ROW = 31
+CARD_BELOW_LAST = 43
+CARD_TO_CHANNELS = 9
+
+
+def rows_drawn():
+    """Each row the settings sheet draws: the two messages, the control, the count."""
+    return [(FROM_CATALOG[label], FROM_CATALOG[desc], control, HOW_MANY[control](params))
+            for label, desc, control, params in SETTING_ROWS]
 
 # What the drawing invents: a stream nobody is watching, the channels nobody
 # saved, and the headings and badges this mock draws around them — Twitch's
@@ -380,63 +399,61 @@ def screenshot_settings(lang, out_dir):
     # Settings section
     sx, sw = 24, 592
     sy = 43
-    sh = 218
+    # As tall as the rows it holds, so declaring one more moves the section
+    # below rather than drawing over it.
+    sh = FIRST_ROW + (len(SETTING_ROWS) - 1) * ROW_HEIGHT + CARD_BELOW_LAST
     rr(draw, [sx, sy, sx + sw, sy + sh], 10, POPUP_BG)
     draw.text((sx + 20, sy + 14), s['settings'], fill=GRAY, font=FONT_SM)
 
-    def row(y, label, desc, draw_control):
-        draw.text((sx + 20, y), label, fill=CC, font=FONT)
-        draw.text((sx + 20, y + 18), desc, fill=HINT, font=FONT_SM)
-        draw_control(y)
-
-    def slider(y, frac, value, thumb=TEAL):
+    def paint_range(y, at, value, thumb=TEAL):
         tl, tr = sx + sw - 230, sx + sw - 95
         draw.rounded_rectangle([tl, y + 6, tr, y + 10], radius=2, fill=BORDER)
-        tx = int(tl + (tr - tl) * frac)
+        tx = int(tl + (tr - tl) * at)
         draw.ellipse([tx - 8, y, tx + 8, y + 16], fill=thumb, outline=POPUP_BG, width=2)
         draw.text((sx + sw - 85, y), value, fill=TEAL, font=FONT_BOLD)
 
-    # Auto-follow defaults for Live / VOD.
-    def type_switches(y):
-        gx = sx + sw - 167
-        states = ((s['type_live'].upper(), True), (s['type_vod'].upper(), False))
-        for label, enabled in states:
-            draw.text((gx, y), label, fill=GRAY, font=FONT_XS)
+    def paint_toggle(y, switches):
+        for name, back, on in switches:
+            gx = sx + sw - back
+            if name is None:
+                rr(draw, [gx, y - 1, gx + 36, y + 19], 10, SWITCH_ON if on else BORDER)
+                draw.ellipse([gx + 19, y + 2, gx + 33, y + 16], fill=TEAL if on else GRAY)
+                continue
+            draw.text((gx, y), s[name].upper(), fill=GRAY, font=FONT_XS)
             track_x = gx + 30
             rr(draw, [track_x, y - 3, track_x + 36, y + 17], 10,
-               SWITCH_ON if enabled else BORDER)
-            knob_x = track_x + (19 if enabled else 3)
+               SWITCH_ON if on else BORDER)
+            knob_x = track_x + (19 if on else 3)
             draw.ellipse([knob_x, y, knob_x + 14, y + 14],
-                         fill=TEAL if enabled else GRAY)
-            gx += 78
+                         fill=TEAL if on else GRAY)
 
-    # Display unit toggle
-    def unit_toggle(y):
-        gx = sx + sw - 95
-        rr(draw, [gx, y - 2, gx + 36, y + 18], 6, TEAL)
-        draw.text((gx + 13, y + 1), '%', fill=POPUP_BG, font=FONT_BOLD)
-        rr(draw, [gx + 36, y - 2, gx + 72, y + 18], 6, INFO_BG)
-        draw.text((gx + 47, y + 1), 'dB', fill=HINT, font=FONT_BOLD)
+    def paint_buttons(y, at, names):
+        gx = sx + sw - at
+        for index, (name, dx, picked) in enumerate(names):
+            left = gx + index * 36
+            rr(draw, [left, y - 2, left + 36, y + 18], 6, TEAL if picked else INFO_BG)
+            draw.text((left + dx, y + 1), name, fill=POPUP_BG if picked else HINT,
+                      font=FONT_BOLD)
 
-    # Gain overlay switch (ON)
-    def switch_on(y):
-        gx = sx + sw - 56
-        rr(draw, [gx, y - 1, gx + 36, y + 19], 10, SWITCH_ON)
-        draw.ellipse([gx + 19, y + 2, gx + 33, y + 16], fill=TEAL)
+    # The control a row declares is the control it draws: the name picks the
+    # painter, so a row declaring one the drawing has not got stops the run
+    # rather than leaving the old one under the new name.
+    painters = {'range': paint_range, 'toggle': paint_toggle, 'buttons': paint_buttons}
 
-    # Target LUFS: -30..-6, value -18 -> frac (-18-(-30))/24 = 0.5
-    # CM Gain: -24..6, value -6 -> frac (-6-(-24))/30 = 0.6
-    painters = (lambda y: slider(y, 0.5, '-18 LUFS'), type_switches,
-                lambda y: slider(y, 0.6, '-6 dB'), unit_toggle, switch_on)
-    ry = sy + 31
-    for index, ((label, desc, _control, _many), paint) in enumerate(zip(SETTING_ROWS, painters)):
-        row(ry, s[label], s[desc], paint)
-        if index < len(painters) - 1:
+    ry = sy + FIRST_ROW
+    for index, (label, desc, control, params) in enumerate(SETTING_ROWS):
+        draw.text((sx + 20, ry), s[label], fill=CC, font=FONT)
+        draw.text((sx + 20, ry + 18), s[desc], fill=HINT, font=FONT_SM)
+        paint = painters.get(control)
+        if paint is None:
+            raise SystemExit(f'no way to draw a {control} on the {label} row')
+        paint(ry, **params)
+        if index < len(SETTING_ROWS) - 1:
             draw.line([(sx + 20, ry + 31), (sx + sw - 20, ry + 31)], fill=BORDER)
-            ry += 36
+            ry += ROW_HEIGHT
 
     # Saved Channels section
-    cy = sy + sh + 9
+    cy = sy + sh + CARD_TO_CHANNELS
     ch = 126
     rr(draw, [sx, cy, sx + sw, cy + ch], 10, POPUP_BG)
     draw.text((sx + 20, cy + 14), s['saved'], fill=GRAY, font=FONT_SM)

@@ -764,19 +764,19 @@ test('every action is named by a commit and the version beside it', () => {
 // other. What it does not hold is the drawing to the control the row declares:
 // that column is a declaration, and a screenshot is what says it was drawn.
 test('the screenshots draw the rows the page lays out', () => {
-  const source = fs.readFileSync(path.join(__dirname, 'gen_screenshots.py'), 'utf8');
-  const catalogOf = (() => {
-    const table = source.match(/^FROM_CATALOG = \{([\s\S]*?)^\}/m);
-    assert.ok(table, 'gen_screenshots.py names the messages it draws in FROM_CATALOG');
-    return Object.fromEntries(
-      Array.from((table?.[1] || '').matchAll(/'([\w_]+)': '(\w+)'/g), m => [m[1], m[2]]));
-  })();
+  // Asked of the generator rather than read out of it: the count comes from
+  // what each row's painter is handed, so the declaration cannot claim two of
+  // a control it draws once.
   const declared = (() => {
-    const table = source.match(/^SETTING_ROWS = \(([\s\S]*?)^\)/m);
-    assert.ok(table, 'gen_screenshots.py declares the rows it draws in SETTING_ROWS');
-    return Array.from((table?.[1] || '')
-      .matchAll(/\('([\w_]+)', '([\w_]+)', '(\w+)', (\d+)\)/g),
-      m => ({ label: catalogOf[m[1]], desc: catalogOf[m[2]], control: m[3], many: Number(m[4]) }));
+    const read = spawnSync('python3', ['-B', '-c',
+      'import json, importlib.util\n'
+      + 'spec = importlib.util.spec_from_file_location("gen", "gen_screenshots.py")\n'
+      + 'mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)\n'
+      + 'print(json.dumps(mod.rows_drawn()))'], { cwd: __dirname, encoding: 'utf8' });
+    assert.ok(read.status === 0,
+      `gen_screenshots.py names the rows it draws — ${(read.stderr || '').trim()}`);
+    return JSON.parse(read.stdout || '[]')
+      .map(([label, desc, control, many]) => ({ label, desc, control, many }));
   })();
 
   // Each row of the page, by walking its divs to the matching close: a name
@@ -9732,12 +9732,13 @@ test('store screenshot generator mirrors the stylesheet muted colors', () => {
   // Every muted site the mock draws uses that colour.
   for (const call of [
     /s\['auto_hint'\], fill=HINT/,
-    /draw\.text\(\(sx \+ 20, y \+ 18\), desc, fill=HINT/,
+    /draw\.text\(\(sx \+ 20, ry \+ 18\), s\[desc\], fill=HINT/,
     /s\['col_channel'\], fill=HINT/,
     /draw\.text\(\(cxh, hy\), t, fill=HINT/,
     /v != '—' else HINT\)/,
     /'×', fill=HINT/,
-    /'dB', fill=HINT/
+    // The unit the display is not set to, drawn by the row's own painter now.
+    /fill=POPUP_BG if picked else HINT/
   ]) {
     assert.match(source, call);
   }
