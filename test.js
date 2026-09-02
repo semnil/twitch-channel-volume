@@ -756,6 +756,158 @@ test('every action is named by a commit and the version beside it', () => {
   assert.ok(named > 0, 'the workflows run actions');
 });
 
+// A switch has its knob on the left when it is off. The sheet ships the gain
+// overlay on, so the off side of that row is drawn by nothing here — and while
+// the two switches were drawn twice, the unlabelled one kept its knob on the
+// right whatever it was given. Read off the image rather than off the source.
+test('a switch drawn off puts its knob on the left', () => {
+  const box = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'tcv-knob-'));
+  fs.cpSync(path.join(__dirname, 'tools'), path.join(box, 'tools'), { recursive: true });
+  fs.cpSync(path.join(__dirname, '_locales'), path.join(box, '_locales'), { recursive: true });
+  const source = fs.readFileSync(path.join(__dirname, 'gen_screenshots.py'), 'utf8');
+  const shipped = "{'switches': ((None, 56, True),)}";
+  assert.ok(source.includes(shipped), 'the overlay row is the unlabelled switch, drawn on');
+
+  // The switch sits at sx + sw - 56, thirty-six across, on the last row's band.
+  // Inside it the knob is whatever is not the track, so the two are told apart
+  // without naming either colour here.
+  const knob = (on) => {
+    fs.writeFileSync(path.join(box, 'gen_screenshots.py'),
+      source.replace(shipped, `{'switches': ((None, 56, ${on ? 'True' : 'False'}),)}`));
+    const out = path.join(box, `drawn-${on}`);
+    const drew = spawnSync('python3', ['-B', 'gen_screenshots.py', '--out', out],
+      { cwd: box, encoding: 'utf8' });
+    if (drew.status === 3) { return null; }
+    assert.equal(drew.status, 0, drew.stderr);
+    const read = spawnSync('python3', ['-B', '-c',
+      'import sys\n'
+      + 'from PIL import Image\n'
+      + 'img = Image.open(sys.argv[1]).convert("RGB")\n'
+      + 'band = [(x, img.getpixel((x, 227))) for x in range(560, 597)]\n'
+      + 'track = img.getpixel((562, 227))\n'
+      + 'lit = [x for x, c in band if c != track]\n'
+      + 'print(min(lit), max(lit))',
+      path.join(out, 'settings_en.png')], { cwd: box, encoding: 'utf8' });
+    assert.equal(read.status, 0, read.stderr);
+    return read.stdout.trim().split(' ').map(Number);
+  };
+
+  const on = knob(true);
+  if (on === null) {
+    console.log('  (knob check skipped: this machine cannot draw)');
+  } else {
+    const off = knob(false);
+    assert.ok(on[0] > off[0] + 10 && on[1] > off[1] + 10,
+      `the knob is further right when the switch is on — on ${on}, off ${off}`);
+    assert.equal(on[1] - on[0], off[1] - off[0],
+      `and it is the same knob either way — on ${on}, off ${off}`);
+  }
+  fs.rmSync(box, { recursive: true, force: true });
+});
+
+// The canvas is a fixed 640x400 and nothing clips to it, so a settings row too
+// many pushed the section below it off the bottom edge and the run saved the
+// clipped image at exit 0. Adding a row is the mutation this stands on.
+test('a settings row too many is refused, not drawn off the sheet', () => {
+  const box = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'tcv-crowded-'));
+  fs.copyFileSync(path.join(__dirname, 'gen_screenshots.py'), path.join(box, 'gen_screenshots.py'));
+  fs.cpSync(path.join(__dirname, 'tools'), path.join(box, 'tools'), { recursive: true });
+  fs.cpSync(path.join(__dirname, '_locales'), path.join(box, '_locales'), { recursive: true });
+  const source = fs.readFileSync(path.join(box, 'gen_screenshots.py'), 'utf8');
+  const last = source.match(/\n(    \('overlay_label'[\s\S]*?\}\),\n)\)/);
+  assert.ok(last, 'the declaration ends with a row this can repeat');
+  fs.writeFileSync(path.join(box, 'gen_screenshots.py'),
+    source.replace(last[1], last[1] + last[1]));
+
+  const out = path.join(box, 'drawn');
+  const crowded = spawnSync('python3', ['-B', 'gen_screenshots.py', '--out', out],
+    { cwd: box, encoding: 'utf8' });
+  assert.ok(crowded.status !== 0,
+    `one row too many is refused — exited ${crowded.status}`);
+  assert.ok(/settings rows, the last of them \w+, need \d+ px of the \d+/.test(crowded.stderr || ''),
+    `and it says how many rows and how much room they want — said ${(crowded.stderr || '').trim()}`);
+  assert.ok(!fs.existsSync(out) || fs.readdirSync(out).length === 0,
+    'and it draws nothing rather than saving a clipped sheet');
+
+  // Without this the refusal above could be the sandbox failing to draw at all.
+  const roomy = spawnSync('python3', ['-B', 'gen_screenshots.py', '--out', out],
+    { cwd: box, encoding: 'utf8', env: { ...process.env } });
+  fs.copyFileSync(path.join(__dirname, 'gen_screenshots.py'), path.join(box, 'gen_screenshots.py'));
+  const asShipped = spawnSync('python3', ['-B', 'gen_screenshots.py', '--out', out],
+    { cwd: box, encoding: 'utf8' });
+  if (asShipped.status === 3) {
+    console.log(`  (crowded-sheet check: this machine cannot draw — ${(asShipped.stderr || '').trim()})`);
+  } else {
+    assert.ok(asShipped.status === 0,
+      `the rows it has do fit — ${(asShipped.stderr || '').trim()}`);
+    assert.ok(fs.readdirSync(out).filter(name => name.endsWith('.png')).length > 0,
+      'and that run does write the sheets');
+  }
+  void roomy;
+  fs.rmSync(box, { recursive: true, force: true });
+});
+
+// The screenshots are a hand-drawn mock of the settings page, and `--check`
+// holds the drawing only to its own committed output — so a row added to
+// options.html, two reordered, or a control swapped leaves the store showing
+// the old layout with every check green. The generator declares the rows it
+// draws; this reads that declaration and the page, and holds them to each
+// other. What it does not hold is the drawing to the control the row declares:
+// that column is a declaration, and a screenshot is what says it was drawn.
+test('the screenshots draw the rows the page lays out', () => {
+  // Asked of the generator rather than read out of it: the count comes from
+  // what each row's painter is handed, so the declaration cannot claim two of
+  // a control it draws once.
+  const declared = (() => {
+    const read = spawnSync('python3', ['-B', '-c',
+      'import json, importlib.util\n'
+      + 'spec = importlib.util.spec_from_file_location("gen", "gen_screenshots.py")\n'
+      + 'mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)\n'
+      + 'print(json.dumps(mod.rows_drawn()))'], { cwd: __dirname, encoding: 'utf8' });
+    assert.ok(read.status === 0,
+      `gen_screenshots.py names the rows it draws — ${(read.stderr || '').trim()}`);
+    return JSON.parse(read.stdout || '[]')
+      .map(([label, desc, control, many]) => ({ label, desc, control, many }));
+  })();
+
+  // Each row of the page, by walking its divs to the matching close: a name
+  // taken to the next `setting-row` instead would swallow whatever follows the
+  // last one, and read the buttons of the section below it as that row's.
+  const laidOut = (() => {
+    const html = fs.readFileSync(path.join(__dirname, 'options.html'), 'utf8');
+    const found = [];
+    for (const open of html.matchAll(/<div class="setting-row"[^>]*>/g)) {
+      let at = open.index + open[0].length, depth = 1;
+      while (depth) {
+        const next = /<div\b|<\/div>/.exec(html.slice(at));
+        if (!next) { break; }
+        at += next.index + next[0].length;
+        depth += next[0] === '</div>' ? -1 : 1;
+      }
+      const block = html.slice(open.index + open[0].length, at);
+      const control = {};
+      for (const one of block.matchAll(/<input\b[^>]*type="(\w+)"|<(button)\b|<(select)\b/g)) {
+        const kind = { range: 'range', checkbox: 'toggle', button: 'buttons', select: 'select' }[
+          one[1] || one[2] || one[3]] || (one[1] || one[2] || one[3]);
+        control[kind] = (control[kind] || 0) + 1;
+      }
+      const kinds = Object.keys(control);
+      found.push({
+        label: (block.match(/class="setting-label"[^>]*data-i18n="(\w+)"/) || [])[1],
+        desc: (block.match(/class="setting-desc"[^>]*data-i18n="(\w+)"/) || [])[1],
+        control: kinds.length === 1 ? kinds[0] : kinds.sort().join('+'),
+        many: kinds.length === 1 ? control[kinds[0]] : 0,
+      });
+    }
+    return found;
+  })();
+
+  assert.ok(laidOut.length > 3, `the page lays out settings rows — found ${laidOut.length}`);
+  assert.deepEqual(declared, laidOut,
+    `the screenshots draw the rows the page lays out, in its order`
+    + ` — drawn ${JSON.stringify(declared)}, laid out ${JSON.stringify(laidOut)}`);
+});
+
 // The screenshots are what the store shows, and the wording in them is the
 // extension's. Written out in the generator it was a third copy beside the
 // pages and the catalog, and nothing compared the three: changing a message
@@ -9671,12 +9823,13 @@ test('store screenshot generator mirrors the stylesheet muted colors', () => {
   // Every muted site the mock draws uses that colour.
   for (const call of [
     /s\['auto_hint'\], fill=HINT/,
-    /draw\.text\(\(sx \+ 20, y \+ 18\), desc, fill=HINT/,
+    /draw\.text\(\(sx \+ 20, ry \+ 18\), s\[desc\], fill=HINT/,
     /s\['col_channel'\], fill=HINT/,
     /draw\.text\(\(cxh, hy\), t, fill=HINT/,
     /v != '—' else HINT\)/,
     /'×', fill=HINT/,
-    /'dB', fill=HINT/
+    // The unit the display is not set to, drawn by the row's own painter now.
+    /fill=POPUP_BG if picked else HINT/
   ]) {
     assert.match(source, call);
   }
