@@ -549,6 +549,8 @@ test('the package follows every manifest key that names a file', () => {
       version: '1.0.0',
       // One path rather than a size for each: the other spelling Chrome takes.
       action: { default_popup: 'popup.htm', default_icon: 'brand.png' },
+      options_ui: { page: 'options.html' },
+      icons: { 16: 'icons/small.png', 48: 'icons/large.png' },
       devtools_page: 'devtools.html',
       side_panel: { default_path: 'panel.html' },
       chrome_url_overrides: { newtab: 'newtab.html' },
@@ -567,6 +569,9 @@ test('the package follows every manifest key that names a file', () => {
     // Chrome loads a page under whatever name the key gives it.
     write('popup.htm', '<script src="popup.js"></script>\n');
     write('popup.js');
+    write('options.html');
+    write('icons/small.png');
+    write('icons/large.png');
     write('devtools.html');
     write('panel.html');
     write('newtab.html');
@@ -622,11 +627,41 @@ test('the package follows every manifest key that names a file', () => {
       listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean).sort(),
       [
       'LICENSE', 'bg.png', 'brand.png', 'content.js', 'devtools.html', 'exposed.js',
-      'images/deep/inner.png', 'images/logo.png', 'lib/helper.js', 'lib/inner.js',
-      'loose.png', 'manifest.json', 'newtab.html', 'panel.html', 'popup.htm',
+      'icons/large.png', 'icons/small.png', 'images/deep/inner.png',
+      'images/logo.png', 'lib/helper.js', 'lib/inner.js', 'loose.png',
+      'manifest.json', 'newtab.html', 'options.html', 'panel.html', 'popup.htm',
       'popup.js', 'rules.json', 'sandboxed.html', 'schema.json', 'spare.js',
       'styles.css', 'theme.css'
     ]);
+
+    // The other spelling of an icon for the action: a size for each rather than
+    // one path. Chrome takes both — measured against 151, which packs a manifest
+    // carrying options_ui, icons and a per-size default_icon together — so the
+    // walk has a row for each and both are put to it.
+    {
+      const at = (name) => path.join(fixture, name);
+      const manifest = JSON.parse(fs.readFileSync(at('manifest.json'), 'utf8'));
+      manifest.action.default_icon = { 16: 'brand16.png', 48: 'brand48.png' };
+      fs.writeFileSync(at('manifest.json'), JSON.stringify(manifest));
+      write('brand16.png');
+      write('brand48.png');
+      const sized = spawnSync('python3', ['-B', 'pack.py', '--list'],
+        { cwd: fixture, encoding: 'utf8' });
+      assert.equal(sized.status, 0, sized.stderr);
+      const names = sized.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+      for (const name of ['brand16.png', 'brand48.png']) {
+        assert.ok(names.includes(name), `the package follows a per-size icon: ${name}`);
+      }
+      // The one path the manifest no longer names. Without this the check above
+      // would pass over a walk that packed the tree.
+      assert.ok(!names.includes('brand.png'),
+        'the icon the manifest stopped naming is left out');
+      // Put the tree back the way the checks below expect it.
+      fs.writeFileSync(at('manifest.json'), JSON.stringify(
+        { ...manifest, action: { ...manifest.action, default_icon: 'brand.png' } }));
+      fs.rmSync(at('brand16.png'));
+      fs.rmSync(at('brand48.png'));
+    }
 
     // Each of these says the key was walked rather than the file happening to
     // be carried some other way.
@@ -634,7 +669,8 @@ test('the package follows every manifest key that names a file', () => {
     // matched is that the file is in the list above and its neighbours are
     // not. These are the names that fail when the key stops being walked.
     for (const gone of ['panel.html', 'rules.json', 'schema.json', 'theme.css',
-      'bg.png', 'brand.png', 'exposed.js', 'popup.js', 'lib/inner.js']) {
+      'bg.png', 'brand.png', 'exposed.js', 'popup.js', 'lib/inner.js',
+      'options.html', 'icons/small.png']) {
       fs.rmSync(path.join(fixture, gone));
       const refused = spawnSync('python3', ['-B', 'pack.py', '--list'],
         { cwd: fixture, encoding: 'utf8' });
@@ -710,6 +746,186 @@ test('every action is named by a commit and the version beside it', () => {
   }
   // Without this the loop above would pass over a workflow that runs nothing.
   assert.ok(named > 0, 'the workflows run actions');
+});
+
+// The screenshots are what the store shows, and the wording in them is the
+// extension's. Written out in the generator it was a third copy beside the
+// pages and the catalog, and nothing compared the three: changing a message
+// left the store showing the old one with every check green.
+test('the screenshots take their wording from the catalog', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'gen_screenshots.py'), 'utf8');
+  const table = source.match(/^FROM_CATALOG = \{([\s\S]*?)^\}/m);
+  assert.ok(table, 'gen_screenshots.py names the messages it draws in FROM_CATALOG');
+  const keys = Array.from(table[1].matchAll(/'[\w_]+': '([\w]+)'/g), (m) => m[1]);
+  // The one the arrow points with is named where it is built, not in the
+  // table, so it is added here rather than left unheld.
+  keys.push('showGainOverlay');
+  assert.ok(keys.length > 12, `the generator draws messages — found ${keys.length}`);
+  const locales = fs.readdirSync(path.join(__dirname, '_locales'));
+  assert.ok(locales.length > 1, 'the extension is localized');
+  for (const locale of locales) {
+    const messages = JSON.parse(fs.readFileSync(
+      path.join(__dirname, `_locales/${locale}/messages.json`), 'utf8'));
+    for (const key of keys) {
+      assert.ok(messages[key]?.message,
+        `${locale} answers for ${key}, which the screenshots draw`);
+    }
+    // The other direction: a message spelled out in the generator is a copy
+    // that the catalog cannot correct, which is what this replaced.
+    for (const [key, entry] of Object.entries(messages)) {
+      const text = entry.message;
+      if (!text || text.includes('$')) { continue; }
+      assert.ok(!source.includes(`'${text}'`) && !source.includes(`"${text}"`),
+        `gen_screenshots.py spells out ${locale}'s ${key} instead of reading it`);
+    }
+  }
+});
+
+// A page's own text under data-i18n is replaced by the catalog's before the
+// page is ever shown — applyI18n runs before the body loses `initializing`,
+// which hides it — so text written into the markup is never read by anyone and
+// drifts from the wording that ships without a single check going red.
+test('a page leaves its wording to the catalog', () => {
+  const holder = /<([a-zA-Z][\w-]*)([^>]*\sdata-i18n\s*=\s*["\']([^"\']+)["\'][^>]*)>([\s\S]*?)<\/\1>/g;
+  let keys = 0;
+  for (const page of ['options.html', 'popup.html']) {
+    const text = fs.readFileSync(path.join(__dirname, page), 'utf8');
+    for (const [, , , key, inner] of text.matchAll(holder)) {
+      keys += 1;
+      assert.equal(inner.trim(), '',
+        `${page} leaves ${key} to the catalog`);
+    }
+    // Without this the loop above would pass over a page the pattern cannot read.
+    assert.equal((text.match(/data-i18n\s*=/g) || []).length,
+      (text.match(holder) || []).length,
+      `every data-i18n element in ${page} is read here`);
+  }
+  assert.ok(keys > 10, `the pages ask the catalog for their text — found ${keys}`);
+});
+
+// A job with no timeout of its own runs to GitHub's six hours, so one that
+// hangs holds a runner for an afternoon and says nothing until it is looked at.
+test('every job names how long it may run', () => {
+  const workflows = path.join(__dirname, '.github', 'workflows');
+  let jobs = 0;
+  for (const name of fs.readdirSync(workflows).filter((file) => /\.ya?ml$/.test(file))) {
+    const text = fs.readFileSync(path.join(workflows, name), 'utf8');
+    // A job is a key at one indent under jobs:, and its block runs to the next.
+    const blocks = text.slice(text.indexOf('\njobs:')).split(/\n {2}(?=[\w-]+:)/).slice(1);
+    for (const block of blocks) {
+      jobs += 1;
+      // At the job's own indent: a step inside it naming one of its own
+      // answers for the step and leaves the job running to GitHub's six hours.
+      assert.match(block, /^ {4}timeout-minutes: \d+$/m,
+        `${name}'s ${block.split(':')[0]} names how long it may run`);
+    }
+  }
+  // Without this the loop above would pass over a repository with no jobs in it.
+  assert.ok(jobs > 2, `the workflows carry jobs — found ${jobs}`);
+});
+
+// A release is built from whatever commit its tag names: a build that packs
+// without running what CI runs turns a commit CI never passed into a release
+// asset. The two are held together here
+// rather than by whoever remembers to copy a step across.
+test('a release is built from a commit that passed what CI runs', () => {
+  const jobIn = (file, name) => {
+    const text = fs.readFileSync(path.join(__dirname, '.github/workflows', file), 'utf8');
+    const at = text.indexOf(`\n  ${name}:`);
+    assert.ok(at > -1, `${file} carries a ${name} job`);
+    const rest = text.slice(at + 1);
+    const next = rest.slice(1).search(/\n {2}[\w-]+:/);
+    return next === -1 ? rest : rest.slice(0, next + 1);
+  };
+  // A step run only where something already failed is a way of looking at the
+  // failure, not a check the tree has to pass.
+  const checksOf = (job) => job.split(/\n {6}- /).slice(1)
+    .filter((step) => !/^\s*if: failure\(\)/m.test(step))
+    .map((step) => step.match(/^\s*run: (.+)$/m)).filter(Boolean)
+    .map((match) => match[1].trim());
+  const ci = checksOf(jobIn('ci.yaml', 'test'));
+  const build = jobIn('release.yaml', 'build');
+  const packs = build.indexOf('run: python pack.py');
+  assert.ok(packs > -1, 'the release build packs the extension');
+  assert.ok(ci.length > 3, `the CI job runs checks — found ${ci.join(', ')}`);
+  for (const check of ci) {
+    const at = build.indexOf(`run: ${check}`);
+    assert.ok(at > -1, `the release build runs what CI runs: ${check}`);
+    assert.ok(at < packs, `the release build runs ${check} before it packs`);
+  }
+});
+
+// A tag push is an intent to release. A tag naming no release this workflow
+// makes used to pass through as a run that packed, uploaded and released
+// nothing — a green tick against a tag with no release behind it.
+test('a tag naming no release is refused before anything is built', () => {
+  const script = path.join(__dirname, 'tools/check-tag.sh');
+  assert.ok(fs.existsSync(script), 'the tag script is in the tree');
+  // A step that stopped calling it would leave every case below passing.
+  const release = fs.readFileSync(
+    path.join(__dirname, '.github/workflows/release.yaml'), 'utf8');
+  assert.ok(release.includes('tools/check-tag.sh'),
+    'the release workflow runs the tag script');
+
+  const box = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'tcv-tag-'));
+  const ask = (event, ref) => {
+    const out = path.join(box, 'out');
+    fs.writeFileSync(out, '');
+    const run = spawnSync('bash', [script], {
+      encoding: 'utf8',
+      env: { ...process.env, GITHUB_EVENT_NAME: event, GITHUB_REF_NAME: ref,
+        GITHUB_OUTPUT: out, RUNNER_DEBUG: '' }
+    });
+    return { run, wrote: fs.readFileSync(out, 'utf8').trim().split('\n').filter(Boolean) };
+  };
+  let released = 0;
+  for (const [event, ref, wanted] of [
+    ['push', 'v1.2.3', ['validTag=true', 'prerelease=false', 'version=v1.2.3']],
+    ['push', 'v1.2.3-rc1', ['validTag=true', 'prerelease=true', 'version=v1.2.3-rc1']],
+    ['push', 'v1.2.3-beta2', ['validTag=true', 'prerelease=true', 'version=v1.2.3-beta2']],
+    ['push', 'v1.2.3-alpha', ['validTag=true', 'prerelease=true', 'version=v1.2.3-alpha']],
+    // A run somebody started by hand carries a branch name here and makes no
+    // release, which is not a failure — it is what the flag is for.
+    ['workflow_dispatch', 'main', ['validTag=false']],
+    ['workflow_dispatch', 'v1.2.3', ['validTag=false']],
+    // Four parts, two parts, and a word the prerelease arm does not name.
+    ['push', 'v1.2.3.4', null],
+    ['push', 'v1.2', null],
+    ['push', 'v1.2.3-nightly', null]
+  ]) {
+    const { run, wrote } = ask(event, ref);
+    if (wanted === null) {
+      assert.notEqual(run.status, 0, `${event} of ${ref} is refused`);
+      assert.match(run.stdout + run.stderr, /::error::tag .* names no release/,
+        `${event} of ${ref} says why`);
+      assert.deepEqual(wrote, [],
+        `${event} of ${ref} leaves no flag for a later job to read`);
+    } else {
+      assert.equal(run.status, 0,
+        `${event} of ${ref} passes — ${(run.stdout + run.stderr).trim()}`);
+      assert.deepEqual(wrote, wanted, `${event} of ${ref} sets ${wanted.join(' ')}`);
+      if (wrote.includes('validTag=true')) { released += 1; }
+    }
+  }
+  // Without this a script that refused everything would pass the table above.
+  assert.equal(released, 4, `tags this workflow releases from — found ${released}`);
+  fs.rmSync(box, { recursive: true, force: true });
+});
+
+// A run that is not making a release has a branch name where the tag would be,
+// so the tag and the manifest are compared exactly where a release is made
+// from them — which is the flag create-release is already gated on.
+test('the tag is compared with the manifest where a release is made', () => {
+  const release = fs.readFileSync(
+    path.join(__dirname, '.github/workflows/release.yaml'), 'utf8');
+  const gate = "if: needs.check-event.outputs.validTag == 'true'";
+  const gated = release.split('\n').filter((line) => line.trim() === gate).length;
+  assert.equal(gated, 2,
+    `the version check and the release read one flag — found ${gated} line(s) reading it`);
+  const verify = release.indexOf('run: bash tools/verify-version.sh');
+  assert.ok(verify > -1, 'the release workflow runs the version script');
+  assert.ok(release.lastIndexOf(gate, verify) > release.lastIndexOf('- name:', verify),
+    'the version check is the step that flag stands on');
 });
 
 test('a reference naming a drive is refused under Windows path semantics', () => {
@@ -6877,10 +7093,18 @@ test('popup exposes the selected channel-row measurement reset control', () => {
     html,
     /\.reset-measurement-btn\s*\{[^}]*width:\s*36px;[^}]*height:\s*36px;/s
   );
+  // The accessible name is the catalog's, put there by applyI18n; the element
+  // carries the key and no text of its own.
   assert.match(
     html,
-    /<span class="sr-only" data-i18n="resetMeasurement">[^<]+<\/span>/
+    /<span class="sr-only" data-i18n="resetMeasurement"><\/span>/
   );
+  for (const locale of ['ja', 'en']) {
+    const messages = JSON.parse(fs.readFileSync(
+      path.join(__dirname, `_locales/${locale}/messages.json`)));
+    assert.ok(messages.resetMeasurement?.message,
+      `${locale} names the control the label stands for`);
+  }
   assert.match(html, /\.reset-measurement-btn \.sr-only\s*\{[^}]*clip-path:\s*inset\(50%\);/s);
   assert.match(html, /\.reset-measurement-btn:focus-visible\s*\{/);
 
@@ -6913,9 +7137,10 @@ test('popup exposes the selected channel-row measurement reset control', () => {
 
 test('popup declares the player audio notice with its localized text', () => {
   const html = fs.readFileSync(path.join(__dirname, 'popup.html'), 'utf8');
+  // The notice takes its wording from the catalog below, not from the markup.
   assert.match(
     html,
-    /<div id="audioError" class="audio-error hidden" role="status" data-i18n="audioUnavailable">[^<]+<\/div>/
+    /<div id="audioError" class="audio-error hidden" role="status" data-i18n="audioUnavailable"><\/div>/
   );
   // WCAG 2.1 SC 1.4.3: the notice sits on the info panel.
   assertContrastFloor(html, [['.audio-error', '.info-section']], 4.5);
@@ -7459,8 +7684,10 @@ const INJECT_MOVE_FAILURE = [
   '    # replacement cannot be told from a finished one.',
   "    source = source.replace('WHITE = (255, 255, 255)', 'WHITE = (254, 254, 254)', 1)",
   "    open(script, 'w', encoding='utf-8').write(source)",
-  '    # The faces are resolved beside the script, so the copy needs them too.',
+  '    # The faces are resolved beside the script, so the copy needs them too,',
+  '    # and the wording it draws comes from the catalog beside it.',
   "    shutil.copytree(os.path.join(repo, 'tools'), os.path.join(sandbox, 'tools'))",
+  "    shutil.copytree(os.path.join(repo, '_locales'), os.path.join(sandbox, '_locales'))",
   "    out = os.path.join(sandbox, 'docs', 'screenshots')",
   '    os.makedirs(out)',
   "    tracked = os.path.join(repo, 'docs', 'screenshots')",
@@ -7628,6 +7855,9 @@ function screenshotSandbox() {
   fs.copyFileSync(path.join(__dirname, 'gen_screenshots.py'),
     path.join(sandbox, 'gen_screenshots.py'));
   fs.cpSync(path.join(__dirname, 'tools'), path.join(sandbox, 'tools'), { recursive: true });
+  // The wording it draws comes from the catalog, so a tree it can draw in has
+  // one, the same way it has a face to draw with.
+  fs.cpSync(path.join(__dirname, '_locales'), path.join(sandbox, '_locales'), { recursive: true });
   fs.mkdirSync(path.join(sandbox, 'docs/screenshots'), { recursive: true });
   for (const name of TRACKED_SHOTS) {
     fs.copyFileSync(path.join(__dirname, 'docs/screenshots', name),
@@ -8441,6 +8671,7 @@ const INJECT_RESTORE_FAILURE = [
   "    source = source.replace('WHITE = (255, 255, 255)', 'WHITE = (254, 254, 254)', 1)",
   "    open(script, 'w', encoding='utf-8').write(source)",
   "    shutil.copytree(os.path.join(repo, 'tools'), os.path.join(sandbox, 'tools'))",
+  "    shutil.copytree(os.path.join(repo, '_locales'), os.path.join(sandbox, '_locales'))",
   "    out = os.path.join(sandbox, 'docs', 'screenshots')",
   '    os.makedirs(out)',
   "    tracked = os.path.join(repo, 'docs', 'screenshots')",
@@ -8512,6 +8743,7 @@ const INJECT_DRAW_FAILURE = [
   "    script = os.path.join(sandbox, 'gen_screenshots.py')",
   "    shutil.copy2(os.path.join(repo, 'gen_screenshots.py'), script)",
   "    shutil.copytree(os.path.join(repo, 'tools'), os.path.join(sandbox, 'tools'))",
+  "    shutil.copytree(os.path.join(repo, '_locales'), os.path.join(sandbox, '_locales'))",
   "    out = os.path.join(sandbox, 'docs', 'screenshots')",
   '    os.makedirs(out)',
   "    tracked = os.path.join(repo, 'docs', 'screenshots')",
@@ -8560,6 +8792,7 @@ const INJECT_OVER_A_LINK = [
   "    source = source.replace('WHITE = (255, 255, 255)', 'WHITE = (254, 254, 254)', 1)",
   "    open(script, 'w', encoding='utf-8').write(source)",
   "    shutil.copytree(os.path.join(repo, 'tools'), os.path.join(sandbox, 'tools'))",
+  "    shutil.copytree(os.path.join(repo, '_locales'), os.path.join(sandbox, '_locales'))",
   "    out = os.path.join(sandbox, 'docs', 'screenshots')",
   '    os.makedirs(out)',
   "    tracked = os.path.join(repo, 'docs', 'screenshots')",
@@ -8729,6 +8962,7 @@ const INJECT_COPY_FAULT = [
   "    script = os.path.join(sandbox, 'gen_screenshots.py')",
   "    shutil.copy2(os.path.join(repo, 'gen_screenshots.py'), script)",
   "    shutil.copytree(os.path.join(repo, 'tools'), os.path.join(sandbox, 'tools'))",
+  "    shutil.copytree(os.path.join(repo, '_locales'), os.path.join(sandbox, '_locales'))",
   "    out = os.path.join(sandbox, 'docs', 'screenshots')",
   '    os.makedirs(out)',
   "    tracked = os.path.join(repo, 'docs', 'screenshots')",
@@ -9222,6 +9456,9 @@ test('an argument that is wrong is answered before the faces are needed', () => 
       path.join(bare, 'gen_screenshots.py'));
     fs.cpSync(path.join(__dirname, 'docs/screenshots'), path.join(bare, 'docs/screenshots'),
       { recursive: true });
+    // Everything but the faces: what is missing here has to be the faces.
+    fs.cpSync(path.join(__dirname, '_locales'), path.join(bare, '_locales'),
+      { recursive: true });
 
     const refused = spawnSync('python3', ['-B', 'gen_screenshots.py', '--chek'],
       { cwd: bare, encoding: 'utf8' });
@@ -9348,8 +9585,14 @@ test('store screenshot generator mirrors the stylesheet muted colors', () => {
 
 test('store popup screenshot generator matches the Auto-follow state', () => {
   const source = fs.readFileSync(path.join(__dirname, 'gen_screenshots.py'), 'utf8');
-  assert.match(source, /'apply':\s*'チャンネルに適用'/);
-  assert.match(source, /'apply':\s*'Apply to channel'/);
+  // The button's wording is the catalog's; what the mock fixes is which
+  // message it draws there.
+  assert.match(source, /'apply': 'applyToChannel',/);
+  for (const locale of ['ja', 'en']) {
+    const messages = JSON.parse(fs.readFileSync(
+      path.join(__dirname, `_locales/${locale}/messages.json`), 'utf8'));
+    assert.ok(messages.applyToChannel?.message, `${locale} answers for applyToChannel`);
+  }
   assert.match(source, /\('CURRENT', '63', '%', PINK\)/);
   assert.match(source, /draw\.text\(\(px \+ pw - 48, sy - 1\), '63%'/);
   assert.match(source, /RESET_BUTTON_HEIGHT\s*=\s*36/);

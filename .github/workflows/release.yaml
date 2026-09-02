@@ -15,6 +15,7 @@ jobs:
   check-event:
     name: Check Release Tag ☑️
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     defaults:
       run:
         shell: bash
@@ -23,51 +24,54 @@ jobs:
       prerelease: ${{ steps.check.outputs.prerelease }}
       validTag: ${{ steps.check.outputs.validTag }}
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
       - name: Check Tag ☑️
         id: check
-        run: |
-          : Check Release Tag
-          if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
-          shopt -s extglob
-
-          if [[ "${GITHUB_EVENT_NAME}" != 'push' ]]; then
-            echo 'validTag=false' >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          tag="${GITHUB_REF_NAME#v}"
-          case "${tag}" in
-            +([0-9]).+([0-9]).+([0-9]) )
-              echo 'validTag=true' >> $GITHUB_OUTPUT
-              echo 'prerelease=false' >> $GITHUB_OUTPUT
-              echo "version=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
-              ;;
-            +([0-9]).+([0-9]).+([0-9])-@(beta|rc|alpha)*([0-9.]) )
-              echo 'validTag=true' >> $GITHUB_OUTPUT
-              echo 'prerelease=true' >> $GITHUB_OUTPUT
-              echo "version=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
-              ;;
-            *)
-              echo 'validTag=false' >> $GITHUB_OUTPUT
-              ;;
-          esac
+        run: bash tools/check-tag.sh
 
   build:
     name: Build Extension Zip 🧱
     needs: check-event
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
+      - name: Set Up Node 🟢
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+
       - name: Set Up Python 🐍
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.12'
 
+      # Before the tests: the ones that hand the generator trees it has to turn
+      # down skip themselves where it cannot draw, and a skip proves nothing.
+      - name: Install Pillow 🖼️
+        run: pip install pillow==12.2.0
+        timeout-minutes: 5
+
+      - name: Check Python Syntax 🐍
+        run: python3 -B -c "import ast,pathlib; [ast.parse(p.read_text()) for p in pathlib.Path('.').glob('*.py')]"
+
+      - name: Run Unit Tests ✅
+        run: node test.js
+
+      - name: Check Screenshots 📸
+        timeout-minutes: 5
+        run: python3 gen_screenshots.py --check
+
+      # The tag and the manifest have to agree where a release is made from
+      # them, and nowhere else: a run from a branch has a branch name where the
+      # tag would be, and create-release below reads the same flag.
       - name: Verify manifest version matches tag 🔍
+        if: needs.check-event.outputs.validTag == 'true'
         run: bash tools/verify-version.sh
 
       - name: Pack Extension 📦
@@ -85,6 +89,7 @@ jobs:
     needs: [check-event, build]
     if: needs.check-event.outputs.validTag == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     defaults:
       run:
         shell: bash

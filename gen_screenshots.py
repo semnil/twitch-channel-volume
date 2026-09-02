@@ -13,6 +13,7 @@ draws anything. A destination that was named and cannot be written is exit 2 as
 well (the committed one, with no argument, is exit 1).
 """
 import hashlib
+import json
 import math
 import os
 import shutil
@@ -167,25 +168,39 @@ def draw_reset_icon(draw, left, top, size, color):
 
 # ── Localized strings ────────────────────────────────────────────────
 
+# What the extension shows is the catalog's, and this reads it there. Written
+# out again it was a third copy of every label, kept by hand beside the pages
+# and the catalog with nothing comparing the three, so a screenshot could go on
+# showing a string the extension had stopped using.
+FROM_CATALOG = {
+    'name': 'extName',
+    'apply': 'applyToChannel',
+    'auto_label': 'autoApplyLoudness',
+    'target_label': 'targetLufs',
+    'target_desc': 'targetLufsDesc',
+    'auto_defaults_label': 'allChannelsAutoApply',
+    'auto_defaults_desc': 'allChannelsAutoApplyDesc',
+    'adgain_label': 'adGain',
+    'adgain_desc': 'adGainDesc',
+    'unit_label': 'displayUnit',
+    'unit_desc': 'displayUnitDesc',
+    'overlay_label': 'showGainOverlay',
+    'overlay_desc': 'showGainOverlayDesc',
+    'type_live': 'typeLive',
+    'type_vod': 'typeVod',
+    'auto': 'labelAuto',
+}
+
+# What the drawing invents: a stream nobody is watching, the channels nobody
+# saved, and the headings and badges this mock draws around them — Twitch's
+# own furniture as much as the extension's.
 STRINGS = {
     'ja': {
         'channel': 'サンプル配信ch.',
         'live': 'LIVE',
-        'apply': 'チャンネルに適用',
-        'auto_label': 'LUFS 自動追従',
         'auto_hint': 'この種別は自動追従が\n有効です',
         'manual': 'MANUAL VOLUME',
         'settings': 'SETTINGS',
-        'target_label': 'Target LUFS',
-        'target_desc': '計測ラウドネスから算出するゲインの基準値',
-        'auto_defaults_label': '全チャンネルの LUFS 自動追従',
-        'auto_defaults_desc': '個別設定も手動ゲインもない種別の既定値',
-        'adgain_label': 'CM Gain',
-        'adgain_desc': 'CM 区間で適用する追加ゲイン (dB)',
-        'unit_label': '表示単位',
-        'unit_desc': 'ゲイン値の表示形式',
-        'overlay_label': 'ゲイン表示',
-        'overlay_desc': 'プレイヤーの音量バー横に適用中のゲインを表示',
         'saved': 'SAVED CHANNELS',
         'col_channel': 'CHANNEL',
         'channels': [
@@ -195,26 +210,13 @@ STRINGS = {
         ],
         'stream_title': '【雑談】ゲーム配信のあとに少しだけ',
         'viewers': '1,234 人が視聴中',
-        'overlay_note': '↓ ゲイン表示',
     },
     'en': {
         'channel': 'Sample Stream',
         'live': 'LIVE',
-        'apply': 'Apply to channel',
-        'auto_label': 'Auto-follow LUFS',
         'auto_hint': 'Auto-follow is enabled\nfor this type',
         'manual': 'MANUAL VOLUME',
         'settings': 'SETTINGS',
-        'target_label': 'Target LUFS',
-        'target_desc': 'Reference loudness used to compute gain from measurement',
-        'auto_defaults_label': 'Auto-follow LUFS for all channels',
-        'auto_defaults_desc': 'Default for types without an individual setting or manual gain',
-        'adgain_label': 'Ad gain',
-        'adgain_desc': 'Extra gain applied during ad breaks (dB)',
-        'unit_label': 'Display unit',
-        'unit_desc': 'Gain display format',
-        'overlay_label': 'Show gain overlay',
-        'overlay_desc': 'Display current gain next to the player volume bar',
         'saved': 'SAVED CHANNELS',
         'col_channel': 'CHANNEL',
         'channels': [
@@ -224,9 +226,31 @@ STRINGS = {
         ],
         'stream_title': 'Just chatting after the game',
         'viewers': '1,234 watching',
-        'overlay_note': '↓ Gain overlay',
     },
 }
+
+
+def _messages(lang):
+    """The catalog the extension reads for a language."""
+    path = os.path.join(ROOT, '_locales', lang, 'messages.json')
+    try:
+        with open(path, encoding='utf-8') as handle:
+            return {key: entry['message'] for key, entry in json.load(handle).items()}
+    except OSError as err:
+        raise SystemExit(f'no wording here to draw the screenshots with: {err}')
+
+
+for _lang, _drawn in STRINGS.items():
+    _catalog = _messages(_lang)
+    for _key in FROM_CATALOG.values():
+        if _key not in _catalog:
+            raise SystemExit(f'{_lang} has no message named {_key}, which the '
+                             f'screenshots draw')
+    for _name, _key in FROM_CATALOG.items():
+        _drawn[_name] = _catalog[_key]
+    # The arrow the mock points at the overlay with, and the name of the thing
+    # it points at.
+    _drawn['overlay_note'] = f'↓ {_catalog["showGainOverlay"]}'
 
 
 def screenshot_popup(lang, out_dir):
@@ -239,7 +263,7 @@ def screenshot_popup(lang, out_dir):
     rr(draw, [px, py, px + pw, py + ph], 10, POPUP_BG)
 
     # Header
-    draw.text((px + 16, py + 12), 'Twitch Channel Volume', fill=TEAL, font=FONT_TITLE)
+    draw.text((px + 16, py + 12), s['name'], fill=TEAL, font=FONT_TITLE)
     draw_gear(draw, (px + pw - 19, py + 20), HINT)
     draw.line([(px, py + 39), (px + pw, py + 39)], fill=BORDER)
 
@@ -336,7 +360,7 @@ def screenshot_settings(lang, out_dir):
     img = Image.new('RGB', (W, H), PAGE_BG)
     draw = ImageDraw.Draw(img)
 
-    draw.text((30, 22), 'Twitch Channel Volume', fill=TEAL, font=FONT_XL)
+    draw.text((30, 22), s['name'], fill=TEAL, font=FONT_XL)
 
     # Settings section
     sx, sw = 24, 592
@@ -366,7 +390,7 @@ def screenshot_settings(lang, out_dir):
     # Auto-follow defaults for Live / VOD.
     def type_switches(y):
         gx = sx + sw - 167
-        states = (('LIVE', True), ('VOD', False))
+        states = ((s['type_live'].upper(), True), (s['type_vod'].upper(), False))
         for label, enabled in states:
             draw.text((gx, y), label, fill=GRAY, font=FONT_XS)
             track_x = gx + 30
@@ -413,7 +437,7 @@ def screenshot_settings(lang, out_dir):
     hy = cy + 31
     col_live, col_vod = sx + 370, sx + 465
     draw.text((sx + 20, hy), s['col_channel'], fill=HINT, font=FONT_SM)
-    for cxh, t in ((col_live, 'LIVE'), (col_vod, 'VOD')):
+    for cxh, t in ((col_live, s['type_live'].upper()), (col_vod, s['type_vod'].upper())):
         draw.text((cxh, hy), t, fill=HINT, font=FONT_SM)
     draw.line([(sx + 20, hy + 18), (sx + sw - 20, hy + 18)], fill=BORDER)
 
@@ -422,7 +446,7 @@ def screenshot_settings(lang, out_dir):
     for name, live, vod in s['channels']:
         draw.text((sx + 20, ry), name, fill=TEAL, font=FONT)
         for cxh, v in ((col_live, live), (col_vod, vod)):
-            color = TEAL if v.startswith('Auto') else (PINK if v != '—' else HINT)
+            color = TEAL if v.startswith(s['auto']) else (PINK if v != '—' else HINT)
             draw.text((cxh, ry), v, fill=color, font=FONT_BOLD)
             end = cxh + draw.textlength(v, font=FONT_BOLD)
             limit = delete_x if cxh == col_vod else col_vod

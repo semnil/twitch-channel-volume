@@ -321,13 +321,13 @@ h1 {
   <h1>Twitch Channel Volume</h1>
 
   <div class="section">
-    <h2 data-i18n="settings">Settings</h2>
-    <div id="settingsError" class="settings-error hidden" role="status" data-i18n="settingsSaveFailed">設定を保存できませんでした。保存済みの値へ戻しました</div>
+    <h2 data-i18n="settings"></h2>
+    <div id="settingsError" class="settings-error hidden" role="status" data-i18n="settingsSaveFailed"></div>
 
     <div class="setting-row">
       <div>
-        <div class="setting-label" data-i18n="targetLufs">Target LUFS</div>
-        <div class="setting-desc" data-i18n="targetLufsDesc">計測ラウドネスから算出するゲインの基準値</div>
+        <div class="setting-label" data-i18n="targetLufs"></div>
+        <div class="setting-desc" data-i18n="targetLufsDesc"></div>
       </div>
       <div style="display:flex; align-items:center;">
         <input type="range" id="targetLufs" min="-30" max="-6" value="-18" step="1" disabled>
@@ -337,19 +337,19 @@ h1 {
 
     <div class="setting-row">
       <div>
-        <div id="allChannelsAutoLabel" class="setting-label" data-i18n="allChannelsAutoApply">全チャンネルの LUFS 自動追従</div>
-        <div class="setting-desc" data-i18n="allChannelsAutoApplyDesc">個別設定がないチャンネルの既定値</div>
+        <div id="allChannelsAutoLabel" class="setting-label" data-i18n="allChannelsAutoApply"></div>
+        <div class="setting-desc" data-i18n="allChannelsAutoApplyDesc"></div>
       </div>
       <div class="type-switches">
         <div class="type-switch">
-          <span id="defaultAutoLiveLabel" class="type-switch-label" data-i18n="typeLive">Live</span>
+          <span id="defaultAutoLiveLabel" class="type-switch-label" data-i18n="typeLive"></span>
           <label class="toggle-switch">
             <input type="checkbox" id="defaultAutoLiveToggle" aria-labelledby="allChannelsAutoLabel defaultAutoLiveLabel" disabled>
             <span class="switch-slider"></span>
           </label>
         </div>
         <div class="type-switch">
-          <span id="defaultAutoVodLabel" class="type-switch-label" data-i18n="typeVod">VOD</span>
+          <span id="defaultAutoVodLabel" class="type-switch-label" data-i18n="typeVod"></span>
           <label class="toggle-switch">
             <input type="checkbox" id="defaultAutoVodToggle" aria-labelledby="allChannelsAutoLabel defaultAutoVodLabel" disabled>
             <span class="switch-slider"></span>
@@ -360,8 +360,8 @@ h1 {
 
     <div class="setting-row">
       <div>
-        <div class="setting-label" data-i18n="adGain">CM Gain</div>
-        <div class="setting-desc" data-i18n="adGainDesc">CM 区間で適用する追加ゲイン (dB)</div>
+        <div class="setting-label" data-i18n="adGain"></div>
+        <div class="setting-desc" data-i18n="adGainDesc"></div>
       </div>
       <div style="display:flex; align-items:center;">
         <input type="range" id="adGainDb" min="-24" max="6" value="-6" step="1" disabled>
@@ -371,8 +371,8 @@ h1 {
 
     <div class="setting-row">
       <div>
-        <div class="setting-label" data-i18n="displayUnit">表示単位</div>
-        <div class="setting-desc" data-i18n="displayUnitDesc">ゲイン値の表示形式</div>
+        <div class="setting-label" data-i18n="displayUnit"></div>
+        <div class="setting-desc" data-i18n="displayUnitDesc"></div>
       </div>
       <div class="toggle-group" id="unitToggle">
         <button data-unit="%" class="active" disabled>%</button>
@@ -382,8 +382,8 @@ h1 {
 
     <div class="setting-row">
       <div>
-        <div class="setting-label" data-i18n="showGainOverlay">ゲインオーバーレイ</div>
-        <div class="setting-desc" data-i18n="showGainOverlayDesc">プレイヤーのボリューム横に現在のゲインを表示</div>
+        <div class="setting-label" data-i18n="showGainOverlay"></div>
+        <div class="setting-desc" data-i18n="showGainOverlayDesc"></div>
       </div>
       <label class="toggle-switch">
         <input type="checkbox" id="overlayToggle" checked disabled>
@@ -394,21 +394,21 @@ h1 {
 
   <div class="section">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
-      <h2 data-i18n="savedChannels" style="margin-bottom:0">Saved Channels</h2>
-      <button id="clearAllBtn" class="clear-all-btn" data-i18n="clearAll" disabled>全削除</button>
+      <h2 data-i18n="savedChannels" style="margin-bottom:0"></h2>
+      <button id="clearAllBtn" class="clear-all-btn" data-i18n="clearAll" disabled></button>
     </div>
     <table class="channel-table" style="display:none">
       <thead>
         <tr>
-          <th data-i18n="colChannel">Channel</th>
-          <th class="right" data-i18n="typeLive">Live</th>
-          <th class="right" data-i18n="typeVod">VOD</th>
+          <th data-i18n="colChannel"></th>
+          <th class="right" data-i18n="typeLive"></th>
+          <th class="right" data-i18n="typeVod"></th>
           <th class="action"></th>
         </tr>
       </thead>
       <tbody id="channelsBody"></tbody>
     </table>
-    <div id="emptyMsg" class="empty-msg" style="display:none" data-i18n="noSavedChannels">保存済みチャンネルなし</div>
+    <div id="emptyMsg" class="empty-msg" style="display:none" data-i18n="noSavedChannels"></div>
   </div>
 </div>
 
