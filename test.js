@@ -57,6 +57,14 @@ const readJson = file => {
   return JSON.parse(out);
 };
 
+// The names under a _locales directory that are locales: a name is one when it
+// carries a catalog. Anything else there — a .DS_Store, a stray file — is not a
+// directory, and a reader that walks into it crashes rather than fails.
+function localesWithCatalog(dir) {
+  return fs.readdirSync(dir)
+    .filter(name => fs.existsSync(require('path').join(dir, name, 'messages.json')));
+}
+
 // What the archive holds, by name and by the digest of its bytes. Reading the
 // bytes is the point: namelist() alone answers for the names only.
 function heldInZip(dir, archive) {
@@ -761,24 +769,71 @@ test('the screenshots take their wording from the catalog', () => {
   // table, so it is added here rather than left unheld.
   keys.push('showGainOverlay');
   assert.ok(keys.length > 12, `the generator draws messages — found ${keys.length}`);
-  const locales = fs.readdirSync(path.join(__dirname, '_locales'));
-  assert.ok(locales.length > 1, 'the extension is localized');
-  for (const locale of locales) {
-    const messages = JSON.parse(fs.readFileSync(
-      path.join(__dirname, `_locales/${locale}/messages.json`), 'utf8'));
-    for (const key of keys) {
-      assert.ok(messages[key]?.message,
-        `${locale} answers for ${key}, which the screenshots draw`);
+  // The check as a function of where the catalogs are, and answering with what
+  // it found wrong rather than asserting: that is what lets the fixture below
+  // put a locale tree to the whole of it, this repository's own included.
+  const heldToTheCatalog = (root) => {
+    const wrong = [];
+    let locales;
+    try {
+      // The catalogs, not whatever the directory holds: macOS drops a
+      // .DS_Store in there, and a reader that walks into every listed name
+      // opens `_locales/.DS_Store/messages.json` and ends the run.
+      locales = localesWithCatalog(root);
+    } catch (err) {
+      return [`reading ${root}: ${err.message}`];
     }
-    // The other direction: a message spelled out in the generator is a copy
-    // that the catalog cannot correct, which is what this replaced.
-    for (const [key, entry] of Object.entries(messages)) {
-      const text = entry.message;
-      if (!text || text.includes('$')) { continue; }
-      assert.ok(!source.includes(`'${text}'`) && !source.includes(`"${text}"`),
-        `gen_screenshots.py spells out ${locale}'s ${key} instead of reading it`);
+    if (locales.length < 2) { wrong.push(`${root} carries one locale or none`); }
+    for (const locale of locales) {
+      let messages;
+      try {
+        messages = JSON.parse(fs.readFileSync(path.join(root, locale, 'messages.json'), 'utf8'));
+      } catch (err) {
+        wrong.push(`reading ${root}/${locale}: ${err.message}`);
+        continue;
+      }
+      for (const key of keys) {
+        if (!messages[key]?.message) {
+          wrong.push(`${locale} answers for none of ${key}, which the screenshots draw`);
+        }
+      }
+      // The other direction: a message spelled out in the generator is a copy
+      // that the catalog cannot correct, which is what this replaced.
+      for (const [key, entry] of Object.entries(messages)) {
+        const text = entry.message;
+        if (!text || text.includes('$')) { continue; }
+        if (source.includes(`'${text}'`) || source.includes(`"${text}"`)) {
+          wrong.push(`gen_screenshots.py spells out ${locale}'s ${key} instead of reading it`);
+        }
+      }
     }
+    return wrong;
+  };
+  assert.deepEqual(heldToTheCatalog(path.join(__dirname, '_locales')), [],
+    'the screenshots take their wording from the catalog');
+
+  // The same check, over a tree carrying what a working checkout grows beside
+  // its catalogs: the .DS_Store macOS drops, and a directory with no catalog.
+  // A unit test of the listing alone leaves the call site free to go back to an
+  // unfiltered one, and it did — reverting that line passes every assertion
+  // here whenever the file happens not to be there, which on CI is always.
+  const box = fs.mkdtempSync(path.join(os.tmpdir(), 'tcv-locales-'));
+  const answering = Object.fromEntries(keys.map((key) => [key, { message: `x${key}` }]));
+  for (const locale of ['ja', 'en']) {
+    fs.mkdirSync(path.join(box, locale));
+    fs.writeFileSync(path.join(box, locale, 'messages.json'), JSON.stringify(answering));
   }
+  fs.writeFileSync(path.join(box, '.DS_Store'), '');
+  fs.mkdirSync(path.join(box, 'notes'));
+  assert.deepEqual(heldToTheCatalog(box), [],
+    'the check reads a locale tree with a stray name in it');
+  // Without this the call above would pass over a check that found nothing
+  // because it looked at nothing.
+  delete answering[keys[0]];
+  fs.writeFileSync(path.join(box, 'ja/messages.json'), JSON.stringify(answering));
+  assert.ok(heldToTheCatalog(box).some((said) => said.includes(keys[0])),
+    `and it is a check that fails when ${keys[0]} goes missing`);
+  fs.rmSync(box, { recursive: true, force: true });
 });
 
 // A page's own text under data-i18n is replaced by the catalog's before the
