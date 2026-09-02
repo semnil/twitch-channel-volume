@@ -900,14 +900,64 @@ test('a release is built from a commit that passed what CI runs', () => {
     .map((match) => match[1].trim());
   const ci = checksOf(jobIn('ci.yaml', 'test'));
   const build = jobIn('release.yaml', 'build');
-  const packs = build.indexOf('run: python pack.py');
-  assert.ok(packs > -1, 'the release build packs the extension');
+  // The step, not the line inside it: the pack runs in a script now, so a
+  // reader looking for one `run:` line stops finding it.
+  const packs = build.indexOf('- name: Pack Extension');
+  assert.ok(packs > -1, 'the release build has a step that packs the extension');
+  assert.ok(build.includes('python pack.py'), 'and that step runs the packer');
   assert.ok(ci.length > 3, `the CI job runs checks — found ${ci.join(', ')}`);
   for (const check of ci) {
     const at = build.indexOf(`run: ${check}`);
     assert.ok(at > -1, `the release build runs what CI runs: ${check}`);
     assert.ok(at < packs, `the release build runs ${check} before it packs`);
   }
+});
+
+// The archive the build packed has to come back from the download under the
+// same name and the same bytes. The upload and the download are reached by no
+// other run — a pull request skips the one in CI, which only draws on failure
+// — so without this round trip nothing exercises them until a release.
+test('the archive comes back from the download as it went', () => {
+  const release = fs.readFileSync(
+    path.join(__dirname, '.github/workflows/release.yaml'), 'utf8');
+  const build = release.slice(release.indexOf('\n  build:'), release.indexOf('\n  release:'));
+  for (const [what, where, text] of [
+    ['names what it packed', 'the build job', build.includes('archive=${built[0]}')],
+    ['weighs what it packed', 'the build job', build.includes('sha256sum')],
+    ['refuses to pack more than one archive', 'the build job',
+      /packing left \$\{#built\[@\]\} archives/.test(build)],
+    ['hands both on', 'the build job', /outputs:[\s\S]*?archive:[\s\S]*?digest:/.test(build)]
+  ]) {
+    assert.ok(text, `${where} ${what}`);
+  }
+  const round = release.slice(release.indexOf('\n  release:'));
+  assert.ok(round.includes('needs.build.outputs.archive') && round.includes('needs.build.outputs.digest'),
+    'the release job reads the name and the digest the build recorded');
+  // Found, then ordered: indexOf gives -1 for a name that is not there, and
+  // -1 is less than anything, so the ordering alone passes over a check that
+  // has been deleted.
+  const compares = round.indexOf('PACKED_DIGEST}" ]]; then');
+  const releases = round.indexOf('- name: Create Release');
+  assert.ok(compares > -1, 'the release job compares the digest it was handed');
+  assert.ok(releases > -1, 'the release job has a step that makes the release');
+  assert.ok(compares < releases, 'and it compares before it makes one');
+  // The flag belongs to the step that makes the release, not to the job. On
+  // the job it takes the download and the comparison with it, so a
+  // hand-started run checks nothing and still reports success — and the
+  // earlier reading of this compared two positions in a way that passed
+  // exactly then, because a job-level `if:` sits before the first step.
+  const header = round.slice(0, round.indexOf('\n    steps:'));
+  assert.ok(!header.includes('validTag'),
+    'the release job runs whether or not a release is being made');
+  const steps = round.slice(round.indexOf('\n    steps:')).split(/\n      - (?=name:|uses:)/).slice(1);
+  const makesRelease = steps.filter(step => step.includes('action-gh-release'));
+  assert.ok(makesRelease.length === 1,
+    `one step makes the release — found ${makesRelease.length}`);
+  assert.ok(makesRelease[0]?.includes("needs.check-event.outputs.validTag == 'true'"),
+    'and it is the step standing on the flag');
+  const standing = steps.filter(step => step.includes('validTag'));
+  assert.ok(standing.length === 1,
+    `nothing else in the job stands on it — ${standing.length} step(s) do`);
 });
 
 // A tag push is an intent to release. A tag naming no release this workflow
