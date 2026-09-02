@@ -886,12 +886,23 @@ test('the archive comes back from the download as it went', () => {
   assert.ok(compares > -1, 'the release job compares the digest it was handed');
   assert.ok(releases > -1, 'the release job has a step that makes the release');
   assert.ok(compares < releases, 'and it compares before it makes one');
-  // The download runs whether or not a release is made; only the release step
-  // stands on the flag. Without this the round trip could be gated away with it.
-  const gate = "if: needs.check-event.outputs.validTag == 'true'";
-  const downloadAt = round.indexOf('download-artifact');
-  assert.ok(round.lastIndexOf(gate, downloadAt) < round.indexOf('- name: Download'),
-    'the download is not behind the flag');
+  // The flag belongs to the step that makes the release, not to the job. On
+  // the job it takes the download and the comparison with it, so a
+  // hand-started run checks nothing and still reports success — and the
+  // earlier reading of this compared two positions in a way that passed
+  // exactly then, because a job-level `if:` sits before the first step.
+  const header = round.slice(0, round.indexOf('\n    steps:'));
+  assert.ok(!header.includes('validTag'),
+    'the release job runs whether or not a release is being made');
+  const steps = round.slice(round.indexOf('\n    steps:')).split(/\n      - (?=name:|uses:)/).slice(1);
+  const makesRelease = steps.filter(step => step.includes('action-gh-release'));
+  assert.ok(makesRelease.length === 1,
+    `one step makes the release — found ${makesRelease.length}`);
+  assert.ok(makesRelease[0]?.includes("needs.check-event.outputs.validTag == 'true'"),
+    'and it is the step standing on the flag');
+  const standing = steps.filter(step => step.includes('validTag'));
+  assert.ok(standing.length === 1,
+    `nothing else in the job stands on it — ${standing.length} step(s) do`);
 });
 
 // A tag push is an intent to release. A tag naming no release this workflow
