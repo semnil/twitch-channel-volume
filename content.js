@@ -287,7 +287,6 @@
     // because the badge lives inside the controls subtree.
     const sliderContainer = document.querySelector('.volume-slider__slider-container');
     if (!sliderContainer || !sliderContainer.parentElement) return;
-    if (_overlayEl && !document.contains(_overlayEl)) _overlayEl = null;
     if (!_overlayEl) {
       _overlayEl = document.createElement('span');
       _overlayEl.style.cssText =
@@ -296,6 +295,8 @@
         'line-height:1;display:inline-flex;align-items:center;align-self:center;';
     }
     _overlayEl.textContent = Math.round(currentGain * 100) + '%';
+    // A rebuilt player is a different slider container, and inserting moves the
+    // badge already made into it rather than leaving a copy in the old one.
     if (_overlayEl.previousElementSibling !== sliderContainer) {
       sliderContainer.insertAdjacentElement('afterend', _overlayEl);
     }
