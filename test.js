@@ -2266,29 +2266,37 @@ function createContentHarness({
   const makeAdNode = () => ({ isConnected: true });
   const observerCallbacks = [];
   // The player's volume row: the gain badge is inserted next to the slider.
-  const volumeRow = {
-    children: new Set(),
-    removeChild(node) {
-      volumeRow.children.delete(node);
-      node.parentNode = null;
-      node.previousElementSibling = null;
-    }
+  // A route change rebuilds the player, which is a new row and a new slider
+  // container — the badge in the old one is then outside the document.
+  const makeVolumeRow = () => {
+    const row = {
+      children: new Set(),
+      removeChild(node) {
+        row.children.delete(node);
+        node.parentNode = null;
+        node.previousElementSibling = null;
+      }
+    };
+    row.sliderContainer = {
+      parentElement: row,
+      insertAdjacentElement(position, node) {
+        assert.equal(position, 'afterend');
+        if (node.parentNode && node.parentNode !== row) node.parentNode.removeChild(node);
+        row.children.add(node);
+        node.parentNode = row;
+        node.previousElementSibling = row.sliderContainer;
+      }
+    };
+    return row;
   };
-  const sliderContainer = {
-    parentElement: volumeRow,
-    insertAdjacentElement(position, node) {
-      assert.equal(position, 'afterend');
-      volumeRow.children.add(node);
-      node.parentNode = volumeRow;
-      node.previousElementSibling = sliderContainer;
-    }
-  };
+  let volumeRow = makeVolumeRow();
+  let replacedVolumeRow = null;
   const document = {
     documentElement: {},
     querySelector(selector) {
       const text = String(selector);
       if (text.includes('video-ad-countdown')) return adNodes[0] || null;
-      if (text.includes('volume-slider__slider-container')) return sliderContainer;
+      if (text.includes('volume-slider__slider-container')) return volumeRow.sliderContainer;
       return null;
     },
     querySelectorAll(selector) {
@@ -2435,6 +2443,16 @@ function createContentHarness({
       return badge ? badge.textContent : null;
     },
     gainBadgeCount() { return volumeRow.children.size; },
+    // The player is rebuilt: a new volume row, and the old one left behind
+    // with whatever it still holds.
+    rebuildPlayer() {
+      replacedVolumeRow = volumeRow;
+      volumeRow = makeVolumeRow();
+    },
+    replacedRowBadgeCount() {
+      assert.ok(replacedVolumeRow, 'no player has been rebuilt');
+      return replacedVolumeRow.children.size;
+    },
     mutate() { for (const callback of observerCallbacks) callback([]); },
     commands,
     stored,
@@ -9915,6 +9933,22 @@ test('Auto switches expose hit targets, keyboard focus, and reduced-motion behav
       `${filename} reduced-motion style`
     );
   }
+});
+
+test('content moves the gain badge into the player a route change rebuilds', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  assert.equal(harness.gainBadgeText(), '50%');
+
+  // The route change replaces the volume row, so the badge that is up sits in
+  // a row the document no longer holds. What has to be true afterwards is that
+  // one badge exists and it is in the row the viewer is looking at — a second
+  // one abandoned in the row that was replaced is as wrong as none in the new.
+  harness.rebuildPlayer();
+  await harness.dispatchMessage({ type: '__twitch_channel_volume__', event: 'attached' });
+  assert.equal(harness.gainBadgeCount(), 1);
+  assert.equal(harness.gainBadgeText(), '50%');
+  assert.equal(harness.replacedRowBadgeCount(), 0);
 });
 
 test('content withdraws the gain badge while the player audio is unavailable', async () => {
