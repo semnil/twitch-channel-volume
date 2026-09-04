@@ -2527,6 +2527,12 @@ function createContentHarness({
       resolveChannelMutation();
       resolveChannelMutation = null;
     },
+    // A gesture as the popup makes one: it carries the state the popup was
+    // drawn from, which content.js hands out with every answer.
+    async dispatchGesture(request) {
+      const state = await this.dispatchRuntime({ cmd: 'getState' });
+      return this.dispatchRuntime({ appliesTo: state?.appliesTo, ...request });
+    },
     dispatchRuntime(request) {
       return new Promise((resolve) => {
         let responded = false;
@@ -4153,7 +4159,7 @@ test('content names the storage failure behind a rejected gain save', async () =
   const harness = createContentHarness({ failChannelMutationOperation: 'saveGain' });
   await flushTasks();
 
-  const response = await harness.dispatchRuntime({ cmd: 'setGain', gain: 2 });
+  const response = await harness.dispatchGesture({ cmd: 'setGain', gain: 2 });
   await flushTasks();
 
   assert.equal(response.ok, false);
@@ -4174,7 +4180,7 @@ test('content names the channel a failed gain save was for', async () => {
   });
   await flushTasks();
 
-  const pending = harness.dispatchRuntime({ cmd: 'setGain', gain: 2 });
+  const pending = harness.dispatchGesture({ cmd: 'setGain', gain: 2 });
   await flushTasks();
   await harness.navigate('https://www.twitch.tv/videos/200');
   harness.releaseChannelMutation();
@@ -4426,16 +4432,79 @@ test('content refuses a request for a kind it does not have', async () => {
   await flushTasks();
   const before = structuredClone(harness.stored[u.CHANNEL_VOLUMES_KEY]);
 
-  // Clip was a kind of its own until this version. A page still running the
-  // old content script asks for it by name.
+  // A popup still running the old script asks by channel and kind, carrying no
+  // state at all, and a state the page has left names a kind this channel does
+  // not have. Both are the same refusal now: the gesture was made against
+  // something other than what is here.
   for (const cmd of ['setAutoApplyLoudness', 'resetMeasurement']) {
-    const res = await harness.dispatchRuntime({
+    const named = await harness.dispatchRuntime({
       cmd, channelId: 'login:somechannel', kind: 'clip', enabled: true
     });
-    assert.equal(res.ok, false, cmd);
-    assert.equal(res.reason, 'channel mismatch', cmd);
+    assert.equal(named.ok, false, cmd);
+    assert.equal(named.reason, 'state moved', cmd);
+    const stale = await harness.dispatchRuntime({
+      cmd, appliesTo: 'login:somechannel|clip|', enabled: true
+    });
+    assert.equal(stale.ok, false, cmd);
+    assert.equal(stale.reason, 'state moved', cmd);
   }
   assert.deepEqual(harness.stored[u.CHANNEL_VOLUMES_KEY], before);
+});
+
+test('content applies a gesture to the state it was made against, or to nothing', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  const drawnFrom = (await harness.dispatchRuntime({ cmd: 'getState' }))?.appliesTo;
+  const before = structuredClone(harness.stored[u.CHANNEL_VOLUMES_KEY]);
+
+  // The tab moves to another channel before the slider is released.
+  await harness.navigate('https://www.twitch.tv/another_streamer');
+  const moved = await harness.dispatchRuntime({ cmd: 'setGain', appliesTo: drawnFrom, gain: 0.25 });
+  assert.equal(moved.ok, false);
+  assert.equal(moved.reason, 'state moved');
+  assert.deepEqual(harness.stored[u.CHANNEL_VOLUMES_KEY], before,
+    'neither channel is written for a gesture made against a state the tab has left');
+
+  // Made against the state in hand, it goes through and saves under the
+  // channel being watched.
+  const now = await harness.dispatchGesture({ cmd: 'setGain', gain: 0.25 });
+  assert.equal(now.ok, true);
+  assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['login:another_streamer'].gainLive, 0.25);
+
+  // Two VODs of one owner: the bridge names the owner, so the channel and the
+  // kind are the same for both and only the video is not. The measurement the
+  // popup was showing belongs to the one that was playing.
+  await harness.navigate('https://www.twitch.tv/videos/300');
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '55',
+    login: 'vod_owner',
+    displayName: 'VOD Owner',
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '300'
+  });
+  const onFirstVod = (await harness.dispatchRuntime({ cmd: 'getState' }))?.appliesTo;
+  await harness.navigate('https://www.twitch.tv/videos/400');
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '55',
+    login: 'vod_owner',
+    displayName: 'VOD Owner',
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '400'
+  });
+  const onSecondVod = (await harness.dispatchRuntime({ cmd: 'getState' }))?.appliesTo;
+  assert.notEqual(onFirstVod, onSecondVod,
+    'two videos of one owner are two states, not one');
+  const otherVideo = await harness.dispatchRuntime({
+    cmd: 'setGain', appliesTo: onFirstVod, gain: 0.4
+  });
+  assert.equal(otherVideo.ok, false);
+  assert.equal(otherVideo.reason, 'state moved');
 });
 
 test('content refuses a gain with no channel to save it to', async () => {
@@ -4443,9 +4512,9 @@ test('content refuses a gain with no channel to save it to', async () => {
   await flushTasks();
   const before = structuredClone(harness.stored[u.CHANNEL_VOLUMES_KEY]);
 
-  const res = await harness.dispatchRuntime({ cmd: 'setGain', gain: 2 });
+  const res = await harness.dispatchGesture({ cmd: 'setGain', gain: 2 });
   assert.equal(res.ok, false);
-  assert.equal(res.reason, 'channel mismatch');
+  assert.equal(res.reason, 'state moved');
   assert.deepEqual(harness.stored[u.CHANNEL_VOLUMES_KEY], before);
 });
 
@@ -4769,7 +4838,7 @@ test('content refuses a measurement reset while the player audio is unavailable'
   const { channel } = await harness.dispatchRuntime({ cmd: 'getState' });
   await harness.dispatchMessage(ATTACH_FAILED);
 
-  const response = await harness.dispatchRuntime({
+  const response = await harness.dispatchGesture({
     cmd: 'resetMeasurement',
     channelId: channel.id,
     kind: channel.kind
@@ -4819,10 +4888,10 @@ test('content refuses gain and Auto writes while the player audio is unavailable
   const { channel } = await harness.dispatchRuntime({ cmd: 'getState' });
   await harness.dispatchMessage(ATTACH_FAILED);
 
-  const gainResponse = await harness.dispatchRuntime({ cmd: 'setGain', gain: 4 });
+  const gainResponse = await harness.dispatchGesture({ cmd: 'setGain', gain: 4 });
   assert.equal(gainResponse.ok, false);
   assert.equal(gainResponse.reason, 'audio unavailable');
-  const autoResponse = await harness.dispatchRuntime({
+  const autoResponse = await harness.dispatchGesture({
     cmd: 'setAutoApplyLoudness',
     channelId: channel.id,
     kind: channel.kind,
@@ -4955,7 +5024,7 @@ test('content drops the window count with the measurement it described', async (
   await flushTasks();
   harness.commands.length = 0;
 
-  const response = await harness.dispatchRuntime({
+  const response = await harness.dispatchGesture({
     cmd: 'resetMeasurement',
     channelId: 'vod-owner:100',
     kind: 'vod'
@@ -5469,7 +5538,7 @@ test('content clears the saved and active measurement for the current media kind
     harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].autoGainVod;
   harness.commands.length = 0;
 
-  const response = await harness.dispatchRuntime({
+  const response = await harness.dispatchGesture({
     cmd: 'resetMeasurement',
     channelId: 'vod-owner:100',
     kind: 'vod'
@@ -5512,7 +5581,7 @@ test('content ignores measurements while the reset storage mutation is pending',
   });
   await flushTasks();
 
-  const resetPromise = harness.dispatchRuntime({
+  const resetPromise = harness.dispatchGesture({
     cmd: 'resetMeasurement',
     channelId: 'vod-owner:100',
     kind: 'vod'
@@ -5555,7 +5624,7 @@ test('content keeps the active measurement when resetting storage fails', async 
   });
   harness.commands.length = 0;
 
-  const response = await harness.dispatchRuntime({
+  const response = await harness.dispatchGesture({
     cmd: 'resetMeasurement',
     channelId: 'vod-owner:100',
     kind: 'vod'
@@ -5582,19 +5651,17 @@ test('content rejects a measurement reset for a different channel or media kind'
 
   const wrongChannel = await harness.dispatchRuntime({
     cmd: 'resetMeasurement',
-    channelId: 'vod-owner:200',
-    kind: 'vod'
+    appliesTo: 'vod-owner:200|vod|200'
   });
   const wrongKind = await harness.dispatchRuntime({
     cmd: 'resetMeasurement',
-    channelId: 'vod-owner:100',
-    kind: 'live'
+    appliesTo: 'vod-owner:100|live|100'
   });
 
   assert.equal(wrongChannel.ok, false);
-  assert.equal(wrongChannel.reason, 'channel mismatch');
+  assert.equal(wrongChannel.reason, 'state moved');
   assert.equal(wrongKind.ok, false);
-  assert.equal(wrongKind.reason, 'channel mismatch');
+  assert.equal(wrongKind.reason, 'state moved');
   assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].lastLufs.vod, -21);
   assert.equal(
     harness.commands.some((command) => command.cmd === 'resetMeasurement'),
@@ -5610,7 +5677,7 @@ test('content drops a measurement produced before the reset it requested', async
   });
   await flushTasks();
 
-  const response = await harness.dispatchRuntime({
+  const response = await harness.dispatchGesture({
     cmd: 'resetMeasurement',
     channelId: 'vod-owner:100',
     kind: 'vod'
@@ -5649,7 +5716,7 @@ test('content accepts a measurement stamped with the current reset epoch', async
   });
   await flushTasks();
 
-  await harness.dispatchRuntime({
+  await harness.dispatchGesture({
     cmd: 'resetMeasurement',
     channelId: 'vod-owner:100',
     kind: 'vod'
@@ -5762,7 +5829,7 @@ test('Auto save remains successful when only the follow-up storage read fails', 
   harness.commands.length = 0;
   harness.failNextStorageGet();
 
-  const response = await harness.dispatchRuntime({
+  const response = await harness.dispatchGesture({
     cmd: 'setAutoApplyLoudness',
     channelId: 'vod-owner:100',
     kind: 'vod',
@@ -5789,7 +5856,7 @@ test('content rejects Manual gain changes while an Auto mutation is pending', as
   });
   await flushTasks();
 
-  const autoResponsePromise = harness.dispatchRuntime({
+  const autoResponsePromise = harness.dispatchGesture({
     cmd: 'setAutoApplyLoudness',
     channelId: 'vod-owner:100',
     kind: 'vod',
@@ -5797,7 +5864,7 @@ test('content rejects Manual gain changes while an Auto mutation is pending', as
   });
   await flushTasks();
 
-  const manualResponse = await harness.dispatchRuntime({ cmd: 'setGain', gain: 1.2 });
+  const manualResponse = await harness.dispatchGesture({ cmd: 'setGain', gain: 1.2 });
   assert.equal(manualResponse.ok, false);
   assert.equal(manualResponse.reason, 'auto update pending');
   assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].gainVod, 0.5);
@@ -7399,7 +7466,9 @@ test('popup exposes the selected channel-row measurement reset control', () => {
   assert.match(source, /\$\('resetMeasurementBtn'\)\.title = msg\('resetMeasurement'\);/);
   assert.match(source, /nameEl\.title = nameEl\.textContent;/);
   assert.match(source, /cmd:\s*'resetMeasurement'/);
-  assert.match(source, /channelId:\s*currentChannel\.id/);
+  // The reset is a gesture like the others: it carries the state the popup was
+  // drawn from, not a channel id of its own.
+  assert.match(source, /appliesTo:\s*currentAppliesTo/);
   assert.match(source, /kind:\s*currentChannel\.kind/);
   assert.match(source, /hasIntegrated \|\| !!state\.hasSavedMeasurement/);
   assert.match(source, /measurementResetPending = true;\s*syncInteractionDisabledState\(\);/s);

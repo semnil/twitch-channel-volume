@@ -9,6 +9,10 @@
   let lastSuggestedGain = null;
   let sliderSynced = false;
   let currentChannel = { id: '', kind: 'none' };
+  // What the state on screen was when it was drawn. It goes back with every
+  // gesture, so one made against a state the tab has left is refused rather
+  // than applied to the state that replaced it.
+  let currentAppliesTo = '';
   let currentAutoApplyLoudness = false;
   let audioUnavailable = false;
   let audioUnavailableCause = '';
@@ -172,6 +176,7 @@
       $('resetMeasurementError').classList.add('hidden');
     }
     currentChannel = ch;
+    currentAppliesTo = state?.appliesTo || '';
     currentAutoApplyLoudness = !!state.autoApplyLoudness;
     audioUnavailable = !!state.audioUnavailable;
     audioUnavailableCause = state.audioUnavailableCause || '';
@@ -288,7 +293,7 @@
       await chrome.tabs.sendMessage(tab.id, { cmd: 'resume' });
       const res = await chrome.tabs.sendMessage(
         tab.id,
-        { cmd: 'setGain', gain: lastSuggestedGain }
+        { cmd: 'setGain', appliesTo: currentAppliesTo, gain: lastSuggestedGain }
       );
       if (!res?.ok) throw new Error(res?.reason || 'Gain update failed');
       gainSaveError = false;
@@ -307,7 +312,7 @@
       const tab = await getActiveTab();
       if (!tab) throw new Error('No active tab');
       const gain = percentToGain(percent);
-      const res = await chrome.tabs.sendMessage(tab.id, { cmd: 'setGain', gain });
+      const res = await chrome.tabs.sendMessage(tab.id, { cmd: 'setGain', appliesTo: currentAppliesTo, gain });
       if (!res?.ok) throw new Error(res?.reason || 'Gain update failed');
       gainSaveError = false;
     } catch (error) {
@@ -335,7 +340,7 @@
       if (!tab) throw new Error('No active tab');
       const res = await chrome.tabs.sendMessage(tab.id, {
         cmd: 'setAutoApplyLoudness',
-        channelId: currentChannel.id,
+        appliesTo: currentAppliesTo,
         kind: currentChannel.kind,
         enabled
       });
@@ -374,7 +379,7 @@
       if (!tab) throw new Error('No active tab');
       const res = await chrome.tabs.sendMessage(tab.id, {
         cmd: 'resetMeasurement',
-        channelId: currentChannel.id,
+        appliesTo: currentAppliesTo,
         kind: currentChannel.kind
       });
       if (!res?.ok) throw new Error(res?.reason || 'Measurement reset failed');
