@@ -341,7 +341,6 @@
       const res = await chrome.tabs.sendMessage(tab.id, {
         cmd: 'setAutoApplyLoudness',
         appliesTo: currentAppliesTo,
-        kind: currentChannel.kind,
         enabled
       });
       if (!res?.ok) throw new Error(res?.reason || 'Auto update failed');
@@ -379,8 +378,7 @@
       if (!tab) throw new Error('No active tab');
       const res = await chrome.tabs.sendMessage(tab.id, {
         cmd: 'resetMeasurement',
-        appliesTo: currentAppliesTo,
-        kind: currentChannel.kind
+        appliesTo: currentAppliesTo
       });
       if (!res?.ok) throw new Error(res?.reason || 'Measurement reset failed');
       hasResettableMeasurement = false;

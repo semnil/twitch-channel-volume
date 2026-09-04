@@ -4438,7 +4438,7 @@ test('content refuses a request for a kind it does not have', async () => {
   // something other than what is here.
   for (const cmd of ['setAutoApplyLoudness', 'resetMeasurement']) {
     const named = await harness.dispatchRuntime({
-      cmd, channelId: 'login:somechannel', kind: 'clip', enabled: true
+      cmd, enabled: true
     });
     assert.equal(named.ok, false, cmd);
     assert.equal(named.reason, 'state moved', cmd);
@@ -4840,8 +4840,6 @@ test('content refuses a measurement reset while the player audio is unavailable'
 
   const response = await harness.dispatchGesture({
     cmd: 'resetMeasurement',
-    channelId: channel.id,
-    kind: channel.kind
   });
   assert.equal(response.ok, false);
   assert.equal(response.reason, 'audio unavailable');
@@ -4893,8 +4891,6 @@ test('content refuses gain and Auto writes while the player audio is unavailable
   assert.equal(gainResponse.reason, 'audio unavailable');
   const autoResponse = await harness.dispatchGesture({
     cmd: 'setAutoApplyLoudness',
-    channelId: channel.id,
-    kind: channel.kind,
     enabled: true
   });
   assert.equal(autoResponse.ok, false);
@@ -5026,8 +5022,6 @@ test('content drops the window count with the measurement it described', async (
 
   const response = await harness.dispatchGesture({
     cmd: 'resetMeasurement',
-    channelId: 'vod-owner:100',
-    kind: 'vod'
   });
 
   assert.equal(response.ok, true);
@@ -5540,8 +5534,6 @@ test('content clears the saved and active measurement for the current media kind
 
   const response = await harness.dispatchGesture({
     cmd: 'resetMeasurement',
-    channelId: 'vod-owner:100',
-    kind: 'vod'
   });
 
   assert.equal(response.ok, true);
@@ -5583,8 +5575,6 @@ test('content ignores measurements while the reset storage mutation is pending',
 
   const resetPromise = harness.dispatchGesture({
     cmd: 'resetMeasurement',
-    channelId: 'vod-owner:100',
-    kind: 'vod'
   });
   await flushTasks();
   await harness.dispatchMessage({
@@ -5626,8 +5616,6 @@ test('content keeps the active measurement when resetting storage fails', async 
 
   const response = await harness.dispatchGesture({
     cmd: 'resetMeasurement',
-    channelId: 'vod-owner:100',
-    kind: 'vod'
   });
 
   assert.equal(response.ok, false);
@@ -5679,8 +5667,6 @@ test('content drops a measurement produced before the reset it requested', async
 
   const response = await harness.dispatchGesture({
     cmd: 'resetMeasurement',
-    channelId: 'vod-owner:100',
-    kind: 'vod'
   });
   await flushTasks();
   assert.equal(response.ok, true);
@@ -5718,8 +5704,6 @@ test('content accepts a measurement stamped with the current reset epoch', async
 
   await harness.dispatchGesture({
     cmd: 'resetMeasurement',
-    channelId: 'vod-owner:100',
-    kind: 'vod'
   });
   await flushTasks();
   const resetCommand = harness.commands
@@ -5831,8 +5815,6 @@ test('Auto save remains successful when only the follow-up storage read fails', 
 
   const response = await harness.dispatchGesture({
     cmd: 'setAutoApplyLoudness',
-    channelId: 'vod-owner:100',
-    kind: 'vod',
     enabled: true
   });
 
@@ -5858,8 +5840,6 @@ test('content rejects Manual gain changes while an Auto mutation is pending', as
 
   const autoResponsePromise = harness.dispatchGesture({
     cmd: 'setAutoApplyLoudness',
-    channelId: 'vod-owner:100',
-    kind: 'vod',
     enabled: true
   });
   await flushTasks();
@@ -7469,7 +7449,8 @@ test('popup exposes the selected channel-row measurement reset control', () => {
   // The reset is a gesture like the others: it carries the state the popup was
   // drawn from, not a channel id of its own.
   assert.match(source, /appliesTo:\s*currentAppliesTo/);
-  assert.match(source, /kind:\s*currentChannel\.kind/);
+  assert.doesNotMatch(source, /channelId:\s*currentChannel\.id/);
+  assert.doesNotMatch(source, /kind:\s*currentChannel\.kind/);
   assert.match(source, /hasIntegrated \|\| !!state\.hasSavedMeasurement/);
   assert.match(source, /measurementResetPending = true;\s*syncInteractionDisabledState\(\);/s);
 

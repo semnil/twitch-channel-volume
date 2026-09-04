@@ -788,7 +788,7 @@
           } catch (error) {
             // The mutation is already durable. Keep this tab consistent with
             // the saved Auto choice even if the follow-up read fails.
-            if (currentChannel.id === req.channelId && currentChannel.kind === kind) {
+            if (req.appliesTo === currentGestureState()) {
               currentChannelEntry = {
                 ...(currentChannelEntry || {}),
                 [autoApplyFieldForKind(kind)]: !!req.enabled,
