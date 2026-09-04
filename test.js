@@ -5800,6 +5800,88 @@ test('content reseeds on a kind change when SPA navigation lost the reapply race
   assert.equal(afterOwner[0].initialIntegratedLufs, -23);
 });
 
+test('Auto save whose follow-up read fails keeps the rest of the entry', async () => {
+  const harness = createContentHarness({
+    autoApply: false,
+    channelVolumes: {
+      'vod-owner:100': {
+        name: '100',
+        gainVod: 0.5,
+        autoApplyLoudnessVod: false,
+        autoApplyLoudnessLive: true,
+        lastLufs: { vod: -21 },
+        lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 },
+        lastLufsWindows: { vod: 600 }
+      }
+    }
+  });
+  await flushTasks();
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    momentary: -23,
+    shortTerm: -23,
+    integrated: -23
+  });
+  harness.failNextStorageGet();
+
+  const response = await harness.dispatchGesture({
+    cmd: 'setAutoApplyLoudness',
+    enabled: true
+  });
+  assert.equal(response.ok, true);
+
+  // The patch stands in for the read that failed, and stands in for it alone:
+  // what the entry held for the other kind and for the measurement is still
+  // what the popup is answered with.
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.autoApplyLoudnessVod, true);
+  assert.equal(state.autoApplyLoudnessLive, true);
+  assert.equal(state.hasSavedMeasurement, true);
+});
+
+test('Auto save whose follow-up read fails leaves a tab that has moved on alone', async () => {
+  const harness = createContentHarness({
+    autoApply: false,
+    deferChannelMutationOperation: 'saveAuto'
+  });
+  await flushTasks();
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    momentary: -23,
+    shortTerm: -23,
+    integrated: -23
+  });
+
+  const pending = harness.dispatchGesture({
+    cmd: 'setAutoApplyLoudness',
+    enabled: true
+  });
+  await flushTasks();
+  // The viewer moves to another VOD while the save is in flight, and the read
+  // that would bring the new one's settings in fails.
+  await harness.navigate('https://www.twitch.tv/videos/200');
+  harness.failNextStorageGet();
+  harness.releaseChannelMutation();
+  const response = await pending;
+  await flushTasks();
+
+  // The mutation is durable, and it belongs to the VOD it was made on.
+  assert.equal(response.ok, true);
+  assert.equal(
+    harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].autoApplyLoudnessVod,
+    true
+  );
+  // The tab is showing another VOD: the Auto choice made for the one it left
+  // is not written onto it, and neither is that one's gain.
+  assert.equal(response.autoApplyLoudness, false);
+  assert.equal(
+    harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:200'],
+    undefined
+  );
+});
+
 test('Auto save remains successful when only the follow-up storage read fails', async () => {
   const harness = createContentHarness({ autoApply: false });
   await flushTasks();
