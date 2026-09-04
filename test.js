@@ -5800,6 +5800,70 @@ test('content reseeds on a kind change when SPA navigation lost the reapply race
   assert.equal(afterOwner[0].initialIntegratedLufs, -23);
 });
 
+test('turning Auto off stores no Auto gain for it to come back with', async () => {
+  // Auto is already off, so the reading below is not followed into a saved
+  // gain by anything else: what the mutation writes is the whole difference.
+  const harness = createContentHarness({ autoApply: false, autoGain: 1.5 });
+  await flushTasks();
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    momentary: -23,
+    shortTerm: -23,
+    integrated: -23
+  });
+
+  const response = await harness.dispatchGesture({
+    cmd: 'setAutoApplyLoudness',
+    enabled: false
+  });
+
+  assert.equal(response.ok, true);
+  const entry = harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'];
+  assert.equal(entry.autoApplyLoudnessVod, false);
+  // A reading in hand is not turned into an Auto gain by a mutation that
+  // turns Auto off: the stored one is left where it was.
+  assert.equal(entry.autoGainVod, 1.5);
+});
+
+test('a measurement reset landing after the tab moved on leaves the new media alone', async () => {
+  const harness = createContentHarness({
+    deferChannelMutationOperation: 'clearMeasurement',
+    channelVolumes: {
+      'vod-owner:100': {
+        name: '100',
+        gainVod: 0.5,
+        lastLufs: { vod: -21 },
+        lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 },
+        lastLufsWindows: { vod: 600 }
+      }
+    }
+  });
+  await flushTasks();
+
+  const pending = harness.dispatchGesture({ cmd: 'resetMeasurement' });
+  await flushTasks();
+  // The viewer moves to another VOD while the deletion is in flight.
+  await harness.navigate('https://www.twitch.tv/videos/200');
+  harness.commands.length = 0;
+  harness.releaseChannelMutation();
+  const response = await pending;
+  await flushTasks();
+
+  assert.equal(response.ok, true);
+  // The stored level of the VOD it was made on is gone.
+  assert.equal(
+    harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].lastLufs,
+    undefined
+  );
+  // The measurement now running belongs to the VOD on screen and is not
+  // restarted by a gesture made against the one before it.
+  assert.equal(
+    harness.commands.some((command) => command.cmd === 'resetMeasurement'),
+    false
+  );
+});
+
 test('Auto save whose follow-up read fails keeps the rest of the entry', async () => {
   const harness = createContentHarness({
     autoApply: false,
