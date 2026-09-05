@@ -2780,6 +2780,7 @@ function createPopupHarness({
   let thrownByTabQuery = '';
   let heldTabQuery = null;
   let releaseHeldTabQuery = null;
+  let tabQueryWasHeld = false;
   let activeTabUrl = tabUrl;
   const messages = JSON.parse(
     fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json'), 'utf8')
@@ -2845,6 +2846,7 @@ function createPopupHarness({
         if (heldTabQuery) {
           const holding = heldTabQuery;
           heldTabQuery = null;
+          tabQueryWasHeld = true;
           await holding;
         }
         return [activeTabUrl ? { id: 1, url: activeTabUrl } : { id: 1 }];
@@ -2921,8 +2923,13 @@ function createPopupHarness({
     breakSendMessage(spec) { thrownBySendMessage = spec; },
     breakTabQuery(message) { thrownByTabQuery = message; },
     holdTabQuery() {
+      tabQueryWasHeld = false;
       heldTabQuery = new Promise((resolve) => { releaseHeldTabQuery = resolve; });
     },
+    // Whether the gesture reached the lookup the case is holding. Everything
+    // else the popup does looks the tab up too, so a case that polls while the
+    // hold is still armed hands the hold to the poll and waits for ever.
+    reachedTabQuery() { return tabQueryWasHeld; },
     async releaseTabQuery() {
       assert.ok(releaseHeldTabQuery, 'the tab query is not held');
       releaseHeldTabQuery();
@@ -5943,6 +5950,7 @@ for (const gesture of [
     harness.holdTabQuery();
     const running = gesture.start(harness);
     await flushTasks(8);
+    assert.ok(harness.reachedTabQuery(), `${gesture.name} looked the active tab up`);
 
     harness.setState({
       channel: { id: 'B', name: 'streamer_b', kind: 'live', url: '' },
