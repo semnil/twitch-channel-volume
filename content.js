@@ -21,6 +21,15 @@
   let defaultAutoApplyLoudnessLive = DEFAULT_AUTO_APPLY_LOUDNESS;
   let defaultAutoApplyLoudnessVod = DEFAULT_AUTO_APPLY_LOUDNESS;
   let currentChannelEntry = null;
+
+  // What a gesture from the popup was made against. The popup echoes it back
+  // with the gesture, and one whose state has moved on is not applied to the
+  // state that replaced it. Derived from the state itself, so there is no
+  // counter to advance and none to forget. The video is part of it because a
+  // route change within one channel changes the measurement the popup shows.
+  function currentGestureState() {
+    return currentChannel.id + '|' + currentChannel.kind + '|' + (currentChannel.videoId || '');
+  }
   let currentAutoApplyLoudness = false;
   let lastLufs;
   // How many gating windows lastLufs.integrated stands on. Saved with it so the
@@ -687,6 +696,7 @@
     switch (req.cmd) {
       case 'getState':
         sendResponse({
+          appliesTo: currentGestureState(),
           channel: currentChannel,
           lufs: lastLufs,
           hasSavedMeasurement: Number.isFinite(
@@ -705,8 +715,8 @@
         });
         return;
       case 'setGain':
-        if (!currentChannel.id) {
-          sendResponse({ ok: false, reason: 'channel mismatch' });
+        if (!currentChannel.id || req.appliesTo !== currentGestureState()) {
+          sendResponse({ ok: false, reason: 'state moved' });
           return;
         }
         if (autoMutationPending || currentAutoApplyLoudness || audioUnavailable) {
@@ -749,11 +759,11 @@
         });
         return true;
       case 'setAutoApplyLoudness': {
-        const kind = ['live', 'vod'].includes(req.kind) ? req.kind : '';
-        if (!currentChannel.id || req.channelId !== currentChannel.id || kind !== currentChannel.kind) {
-          sendResponse({ ok: false, reason: 'channel mismatch' });
+        if (!currentChannel.id || req.appliesTo !== currentGestureState()) {
+          sendResponse({ ok: false, reason: 'state moved' });
           return;
         }
+        const kind = currentChannel.kind;
         if (autoMutationPending || audioUnavailable) {
           sendResponse({
             ok: false,
@@ -778,7 +788,7 @@
           } catch (error) {
             // The mutation is already durable. Keep this tab consistent with
             // the saved Auto choice even if the follow-up read fails.
-            if (currentChannel.id === req.channelId && currentChannel.kind === kind) {
+            if (req.appliesTo === currentGestureState()) {
               currentChannelEntry = {
                 ...(currentChannelEntry || {}),
                 [autoApplyFieldForKind(kind)]: !!req.enabled,
@@ -818,11 +828,11 @@
         return true;
       }
       case 'resetMeasurement': {
-        const kind = ['live', 'vod'].includes(req.kind) ? req.kind : '';
-        if (!currentChannel.id || req.channelId !== currentChannel.id || kind !== currentChannel.kind) {
-          sendResponse({ ok: false, reason: 'channel mismatch' });
+        if (!currentChannel.id || req.appliesTo !== currentGestureState()) {
+          sendResponse({ ok: false, reason: 'state moved' });
           return;
         }
+        const kind = currentChannel.kind;
         if (audioUnavailable) {
           // Deleting the saved level here leaves nothing able to rebuild it.
           sendResponse({ ok: false, reason: 'audio unavailable' });

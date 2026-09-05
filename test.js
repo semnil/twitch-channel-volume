@@ -2527,6 +2527,12 @@ function createContentHarness({
       resolveChannelMutation();
       resolveChannelMutation = null;
     },
+    // A gesture as the popup makes one: it carries the state the popup was
+    // drawn from, which content.js hands out with every answer.
+    async dispatchGesture(request) {
+      const state = await this.dispatchRuntime({ cmd: 'getState' });
+      return this.dispatchRuntime({ appliesTo: state?.appliesTo, ...request });
+    },
     dispatchRuntime(request) {
       return new Promise((resolve) => {
         let responded = false;
@@ -2763,12 +2769,17 @@ function createPopupHarness({
   deferAutoSave = false,
   failCommand = '',
   tabUrl = 'https://www.twitch.tv/somechannel',
-  sendMessageError = ''
+  sendMessageError = '',
+  // A content harness to answer for real, instead of the stubbed replies. What
+  // the popup sends then has to get past the same check production applies.
+  connectTo = null
 } = {}) {
   // A string fails every command, the way a content script that is gone does.
   // An object fails the commands it names, for the round trip that dies partway.
   let thrownBySendMessage = sendMessageError;
   let thrownByTabQuery = '';
+  let heldTabQuery = null;
+  let releaseHeldTabQuery = null;
   let activeTabUrl = tabUrl;
   const messages = JSON.parse(
     fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json'), 'utf8')
@@ -2828,6 +2839,14 @@ function createPopupHarness({
     tabs: {
       async query() {
         if (thrownByTabQuery) throw new Error(thrownByTabQuery);
+        // Held, a case can let the display's own tick land inside the gesture,
+        // between the tab being looked up and the message being sent. Only the
+        // next lookup is held, so the tick the case then drives is not.
+        if (heldTabQuery) {
+          const holding = heldTabQuery;
+          heldTabQuery = null;
+          await holding;
+        }
         return [activeTabUrl ? { id: 1, url: activeTabUrl } : { id: 1 }];
       },
       async sendMessage(_tabId, request) {
@@ -2837,6 +2856,7 @@ function createPopupHarness({
           ? thrownBySendMessage
           : thrownBySendMessage?.[request.cmd];
         if (thrown) throw new Error(thrown);
+        if (connectTo) return connectTo.dispatchRuntime(structuredClone(request));
         if (request.cmd === 'getState') return structuredClone(currentState);
         if (request.cmd === failCommand) {
           return { ok: false, reason: 'storage update failed' };
@@ -2900,6 +2920,15 @@ function createPopupHarness({
     setState(next) { currentState = { ...currentState, ...next }; },
     breakSendMessage(spec) { thrownBySendMessage = spec; },
     breakTabQuery(message) { thrownByTabQuery = message; },
+    holdTabQuery() {
+      heldTabQuery = new Promise((resolve) => { releaseHeldTabQuery = resolve; });
+    },
+    async releaseTabQuery() {
+      assert.ok(releaseHeldTabQuery, 'the tab query is not held');
+      releaseHeldTabQuery();
+      releaseHeldTabQuery = null;
+      await flushTasks(8);
+    },
     setTabUrl(url) { activeTabUrl = url; },
     async poll() {
       for (const callback of intervals) await callback();
@@ -2912,6 +2941,17 @@ function createPopupHarness({
     async firePreset(index, type) {
       for (const listener of presetButtons[index].listeners[type] || []) await listener({ target: presetButtons[index] });
       await flushTasks(8);
+    },
+    // Starts a gesture without waiting for it, so a case can put the display's
+    // own tick between its first await and the message it sends.
+    start(id, type) {
+      const running = (element(id).listeners[type] || [])
+        .map((listener) => listener({ target: element(id) }));
+      return Promise.all(running);
+    },
+    startPreset(index, type) {
+      const button = presetButtons[index];
+      return Promise.all((button.listeners[type] || []).map((listener) => listener({ target: button })));
     },
     async releaseAutoSave() {
       assert.ok(resolveAutoSave, 'auto save is not pending');
@@ -4153,7 +4193,7 @@ test('content names the storage failure behind a rejected gain save', async () =
   const harness = createContentHarness({ failChannelMutationOperation: 'saveGain' });
   await flushTasks();
 
-  const response = await harness.dispatchRuntime({ cmd: 'setGain', gain: 2 });
+  const response = await harness.dispatchGesture({ cmd: 'setGain', gain: 2 });
   await flushTasks();
 
   assert.equal(response.ok, false);
@@ -4174,7 +4214,7 @@ test('content names the channel a failed gain save was for', async () => {
   });
   await flushTasks();
 
-  const pending = harness.dispatchRuntime({ cmd: 'setGain', gain: 2 });
+  const pending = harness.dispatchGesture({ cmd: 'setGain', gain: 2 });
   await flushTasks();
   await harness.navigate('https://www.twitch.tv/videos/200');
   harness.releaseChannelMutation();
@@ -4426,16 +4466,79 @@ test('content refuses a request for a kind it does not have', async () => {
   await flushTasks();
   const before = structuredClone(harness.stored[u.CHANNEL_VOLUMES_KEY]);
 
-  // Clip was a kind of its own until this version. A page still running the
-  // old content script asks for it by name.
+  // A popup still running the old script asks by channel and kind, carrying no
+  // state at all, and a state the page has left names a kind this channel does
+  // not have. Both are the same refusal now: the gesture was made against
+  // something other than what is here.
   for (const cmd of ['setAutoApplyLoudness', 'resetMeasurement']) {
-    const res = await harness.dispatchRuntime({
-      cmd, channelId: 'login:somechannel', kind: 'clip', enabled: true
+    const named = await harness.dispatchRuntime({
+      cmd, enabled: true
     });
-    assert.equal(res.ok, false, cmd);
-    assert.equal(res.reason, 'channel mismatch', cmd);
+    assert.equal(named.ok, false, cmd);
+    assert.equal(named.reason, 'state moved', cmd);
+    const stale = await harness.dispatchRuntime({
+      cmd, appliesTo: 'login:somechannel|clip|', enabled: true
+    });
+    assert.equal(stale.ok, false, cmd);
+    assert.equal(stale.reason, 'state moved', cmd);
   }
   assert.deepEqual(harness.stored[u.CHANNEL_VOLUMES_KEY], before);
+});
+
+test('content applies a gesture to the state it was made against, or to nothing', async () => {
+  const harness = createContentHarness();
+  await flushTasks();
+  const drawnFrom = (await harness.dispatchRuntime({ cmd: 'getState' }))?.appliesTo;
+  const before = structuredClone(harness.stored[u.CHANNEL_VOLUMES_KEY]);
+
+  // The tab moves to another channel before the slider is released.
+  await harness.navigate('https://www.twitch.tv/another_streamer');
+  const moved = await harness.dispatchRuntime({ cmd: 'setGain', appliesTo: drawnFrom, gain: 0.25 });
+  assert.equal(moved.ok, false);
+  assert.equal(moved.reason, 'state moved');
+  assert.deepEqual(harness.stored[u.CHANNEL_VOLUMES_KEY], before,
+    'neither channel is written for a gesture made against a state the tab has left');
+
+  // Made against the state in hand, it goes through and saves under the
+  // channel being watched.
+  const now = await harness.dispatchGesture({ cmd: 'setGain', gain: 0.25 });
+  assert.equal(now.ok, true);
+  assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['login:another_streamer'].gainLive, 0.25);
+
+  // Two VODs of one owner: the bridge names the owner, so the channel and the
+  // kind are the same for both and only the video is not. The measurement the
+  // popup was showing belongs to the one that was playing.
+  await harness.navigate('https://www.twitch.tv/videos/300');
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '55',
+    login: 'vod_owner',
+    displayName: 'VOD Owner',
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '300'
+  });
+  const onFirstVod = (await harness.dispatchRuntime({ cmd: 'getState' }))?.appliesTo;
+  await harness.navigate('https://www.twitch.tv/videos/400');
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '55',
+    login: 'vod_owner',
+    displayName: 'VOD Owner',
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '400'
+  });
+  const onSecondVod = (await harness.dispatchRuntime({ cmd: 'getState' }))?.appliesTo;
+  assert.notEqual(onFirstVod, onSecondVod,
+    'two videos of one owner are two states, not one');
+  const otherVideo = await harness.dispatchRuntime({
+    cmd: 'setGain', appliesTo: onFirstVod, gain: 0.4
+  });
+  assert.equal(otherVideo.ok, false);
+  assert.equal(otherVideo.reason, 'state moved');
 });
 
 test('content refuses a gain with no channel to save it to', async () => {
@@ -4443,9 +4546,9 @@ test('content refuses a gain with no channel to save it to', async () => {
   await flushTasks();
   const before = structuredClone(harness.stored[u.CHANNEL_VOLUMES_KEY]);
 
-  const res = await harness.dispatchRuntime({ cmd: 'setGain', gain: 2 });
+  const res = await harness.dispatchGesture({ cmd: 'setGain', gain: 2 });
   assert.equal(res.ok, false);
-  assert.equal(res.reason, 'channel mismatch');
+  assert.equal(res.reason, 'state moved');
   assert.deepEqual(harness.stored[u.CHANNEL_VOLUMES_KEY], before);
 });
 
@@ -4769,10 +4872,8 @@ test('content refuses a measurement reset while the player audio is unavailable'
   const { channel } = await harness.dispatchRuntime({ cmd: 'getState' });
   await harness.dispatchMessage(ATTACH_FAILED);
 
-  const response = await harness.dispatchRuntime({
+  const response = await harness.dispatchGesture({
     cmd: 'resetMeasurement',
-    channelId: channel.id,
-    kind: channel.kind
   });
   assert.equal(response.ok, false);
   assert.equal(response.reason, 'audio unavailable');
@@ -4819,13 +4920,11 @@ test('content refuses gain and Auto writes while the player audio is unavailable
   const { channel } = await harness.dispatchRuntime({ cmd: 'getState' });
   await harness.dispatchMessage(ATTACH_FAILED);
 
-  const gainResponse = await harness.dispatchRuntime({ cmd: 'setGain', gain: 4 });
+  const gainResponse = await harness.dispatchGesture({ cmd: 'setGain', gain: 4 });
   assert.equal(gainResponse.ok, false);
   assert.equal(gainResponse.reason, 'audio unavailable');
-  const autoResponse = await harness.dispatchRuntime({
+  const autoResponse = await harness.dispatchGesture({
     cmd: 'setAutoApplyLoudness',
-    channelId: channel.id,
-    kind: channel.kind,
     enabled: true
   });
   assert.equal(autoResponse.ok, false);
@@ -4955,10 +5054,8 @@ test('content drops the window count with the measurement it described', async (
   await flushTasks();
   harness.commands.length = 0;
 
-  const response = await harness.dispatchRuntime({
+  const response = await harness.dispatchGesture({
     cmd: 'resetMeasurement',
-    channelId: 'vod-owner:100',
-    kind: 'vod'
   });
 
   assert.equal(response.ok, true);
@@ -5469,10 +5566,8 @@ test('content clears the saved and active measurement for the current media kind
     harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].autoGainVod;
   harness.commands.length = 0;
 
-  const response = await harness.dispatchRuntime({
+  const response = await harness.dispatchGesture({
     cmd: 'resetMeasurement',
-    channelId: 'vod-owner:100',
-    kind: 'vod'
   });
 
   assert.equal(response.ok, true);
@@ -5512,10 +5607,8 @@ test('content ignores measurements while the reset storage mutation is pending',
   });
   await flushTasks();
 
-  const resetPromise = harness.dispatchRuntime({
+  const resetPromise = harness.dispatchGesture({
     cmd: 'resetMeasurement',
-    channelId: 'vod-owner:100',
-    kind: 'vod'
   });
   await flushTasks();
   await harness.dispatchMessage({
@@ -5555,10 +5648,8 @@ test('content keeps the active measurement when resetting storage fails', async 
   });
   harness.commands.length = 0;
 
-  const response = await harness.dispatchRuntime({
+  const response = await harness.dispatchGesture({
     cmd: 'resetMeasurement',
-    channelId: 'vod-owner:100',
-    kind: 'vod'
   });
 
   assert.equal(response.ok, false);
@@ -5582,19 +5673,17 @@ test('content rejects a measurement reset for a different channel or media kind'
 
   const wrongChannel = await harness.dispatchRuntime({
     cmd: 'resetMeasurement',
-    channelId: 'vod-owner:200',
-    kind: 'vod'
+    appliesTo: 'vod-owner:200|vod|200'
   });
   const wrongKind = await harness.dispatchRuntime({
     cmd: 'resetMeasurement',
-    channelId: 'vod-owner:100',
-    kind: 'live'
+    appliesTo: 'vod-owner:100|live|100'
   });
 
   assert.equal(wrongChannel.ok, false);
-  assert.equal(wrongChannel.reason, 'channel mismatch');
+  assert.equal(wrongChannel.reason, 'state moved');
   assert.equal(wrongKind.ok, false);
-  assert.equal(wrongKind.reason, 'channel mismatch');
+  assert.equal(wrongKind.reason, 'state moved');
   assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].lastLufs.vod, -21);
   assert.equal(
     harness.commands.some((command) => command.cmd === 'resetMeasurement'),
@@ -5610,10 +5699,8 @@ test('content drops a measurement produced before the reset it requested', async
   });
   await flushTasks();
 
-  const response = await harness.dispatchRuntime({
+  const response = await harness.dispatchGesture({
     cmd: 'resetMeasurement',
-    channelId: 'vod-owner:100',
-    kind: 'vod'
   });
   await flushTasks();
   assert.equal(response.ok, true);
@@ -5649,10 +5736,8 @@ test('content accepts a measurement stamped with the current reset epoch', async
   });
   await flushTasks();
 
-  await harness.dispatchRuntime({
+  await harness.dispatchGesture({
     cmd: 'resetMeasurement',
-    channelId: 'vod-owner:100',
-    kind: 'vod'
   });
   await flushTasks();
   const resetCommand = harness.commands
@@ -5749,6 +5834,357 @@ test('content reseeds on a kind change when SPA navigation lost the reapply race
   assert.equal(afterOwner[0].initialIntegratedLufs, -23);
 });
 
+// The popup and the content script joined up, so what one sends is what the
+// other checks. The refusal has to come from the pair, not from a token typed
+// into a request by hand.
+test('a slider released after the tab moved to another channel saves nothing there', async () => {
+  const content = createContentHarness({ href: 'https://www.twitch.tv/streamer_a' });
+  await flushTasks();
+  const popup = createPopupHarness({ connectTo: content, tabUrl: 'https://www.twitch.tv/streamer_a' });
+  await flushTasks(8);
+
+  // The viewer takes hold of the slider on streamer_a.
+  popup.el('manualSlider').value = '25';
+  await popup.fire('manualSlider', 'input');
+
+  // The tab moves to another channel and the display's tick redraws the popup.
+  await content.navigate('https://www.twitch.tv/streamer_b');
+  await popup.poll();
+
+  await popup.fire('manualSlider', 'change');
+
+  const sent = popup.sent.filter((request) => request.cmd === 'setGain');
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].appliesTo, 'login:streamer_a|live|');
+  const stored = content.stored[u.CHANNEL_VOLUMES_KEY];
+  assert.equal(stored['login:streamer_b'], undefined);
+  assert.equal(stored['login:streamer_a']?.gainLive, undefined);
+});
+
+test('a slider released after the tab moved to another video of one owner saves nothing there', async () => {
+  const content = createContentHarness({ href: 'https://www.twitch.tv/videos/300' });
+  await flushTasks();
+  await content.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '55',
+    login: 'vod_owner',
+    displayName: 'VOD Owner',
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '300'
+  });
+  const popup = createPopupHarness({ connectTo: content, tabUrl: 'https://www.twitch.tv/videos/300' });
+  await flushTasks(8);
+
+  popup.el('manualSlider').value = '25';
+  await popup.fire('manualSlider', 'input');
+
+  // Another video of the same owner: the channel and the kind are the same and
+  // only the video is not.
+  await content.navigate('https://www.twitch.tv/videos/400');
+  await content.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '55',
+    login: 'vod_owner',
+    displayName: 'VOD Owner',
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '400'
+  });
+  await popup.poll();
+
+  await popup.fire('manualSlider', 'change');
+
+  const sent = popup.sent.filter((request) => request.cmd === 'setGain');
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].appliesTo, '55|vod|300');
+  assert.equal(content.stored[u.CHANNEL_VOLUMES_KEY]['55']?.gainVod, undefined);
+});
+
+test('a slider released with the tab where it was saves the gain', async () => {
+  const content = createContentHarness({ href: 'https://www.twitch.tv/streamer_a' });
+  await flushTasks();
+  const popup = createPopupHarness({ connectTo: content, tabUrl: 'https://www.twitch.tv/streamer_a' });
+  await flushTasks(8);
+
+  popup.el('manualSlider').value = '25';
+  await popup.fire('manualSlider', 'input');
+  await popup.poll();
+  await popup.fire('manualSlider', 'change');
+
+  const sent = popup.sent.filter((request) => request.cmd === 'setGain');
+  assert.equal(sent.length, 1);
+  assert.ok(Math.abs(content.stored[u.CHANNEL_VOLUMES_KEY]['login:streamer_a'].gainLive - 0.25) < 1e-9);
+});
+
+// Every gesture looks the active tab up before it sends, and the display's own
+// tick redraws the popup while that lookup is out. What is sent has to be the
+// state the viewer acted on, not the one the tick brought in.
+for (const gesture of [
+  { name: 'a preset', start: (h) => h.startPreset(2, 'click'), cmd: 'setGain' },
+  { name: 'the suggested gain', start: (h) => h.start('applyBtn', 'click'), cmd: 'setGain' },
+  { name: 'the Auto toggle', start: (h) => h.start('autoApplyToggle', 'change'), cmd: 'setAutoApplyLoudness' },
+  { name: 'a measurement reset', start: (h) => h.start('resetMeasurementBtn', 'click'), cmd: 'resetMeasurement' }
+]) {
+  test(`${gesture.name} sent across a route change carries the state it was made on`, async () => {
+    const harness = createPopupHarness({
+      state: {
+        channel: { id: 'A', name: 'streamer_a', kind: 'live', url: '' },
+        appliesTo: 'A|live|',
+        hasSavedMeasurement: true,
+        lufs: { momentary: -20, shortTerm: -20, integrated: -20 }
+      }
+    });
+    await flushTasks(8);
+    harness.sent.length = 0;
+
+    harness.holdTabQuery();
+    const running = gesture.start(harness);
+    await flushTasks(8);
+
+    harness.setState({
+      channel: { id: 'B', name: 'streamer_b', kind: 'live', url: '' },
+      appliesTo: 'B|live|'
+    });
+    await harness.poll();
+
+    await harness.releaseTabQuery();
+    await running;
+
+    const sent = harness.sent.filter((request) => request.cmd === gesture.cmd);
+    assert.equal(sent.length, 1, `${gesture.cmd} was sent once`);
+    assert.equal(sent[0].appliesTo, 'A|live|');
+  });
+}
+
+test('a slider released after a route change saves against the state it was moved on', async () => {
+  const harness = createPopupHarness({
+    state: {
+      channel: { id: 'A', name: 'streamer_a', kind: 'live', url: '' },
+      appliesTo: 'A|live|'
+    }
+  });
+  await flushTasks(8);
+
+  // The viewer takes hold of the slider on channel A.
+  harness.el('manualSlider').value = '25';
+  await harness.fire('manualSlider', 'input');
+
+  // The tab moves to another channel, and the display's own second tick
+  // redraws the popup from the state that replaced it.
+  harness.setState({
+    channel: { id: 'B', name: 'streamer_b', kind: 'live', url: '' },
+    appliesTo: 'B|live|'
+  });
+  await harness.poll();
+
+  // The viewer lets go. The gesture was made on A and belongs to A.
+  await harness.fire('manualSlider', 'change');
+
+  const saved = harness.sent.filter((request) => request.cmd === 'setGain');
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].appliesTo, 'A|live|');
+});
+
+test('a gain the store refuses is put back before the refusal is answered', async () => {
+  const harness = createContentHarness({ failChannelMutationOperation: 'saveGain' });
+  await flushTasks();
+  harness.commands.length = 0;
+
+  // The popup redraws from the answer, so the level it is told about has to be
+  // the level in force by then — not one the restore is still on its way to.
+  let answered = null;
+  let gainsWhenAnswered = null;
+  const pending = harness.dispatchGesture({ cmd: 'setGain', gain: 2 }).then((response) => {
+    answered = response;
+    gainsWhenAnswered = harness.commands
+      .filter((command) => command.cmd === 'setGain')
+      .map((command) => command.value);
+  });
+  await flushTasks();
+  await pending;
+
+  assert.equal(answered.ok, false);
+  assert.equal(answered.reason, 'storage update failed');
+  assert.deepEqual(gainsWhenAnswered, [2, 0.5]);
+});
+
+test('a second measurement reset while one is in flight is refused', async () => {
+  const harness = createContentHarness({
+    deferChannelMutationOperation: 'clearMeasurement',
+    channelVolumes: {
+      'vod-owner:100': {
+        name: '100',
+        gainVod: 0.5,
+        lastLufs: { vod: -21 },
+        lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 },
+        lastLufsWindows: { vod: 600 }
+      }
+    }
+  });
+  await flushTasks();
+
+  const first = harness.dispatchGesture({ cmd: 'resetMeasurement' });
+  await flushTasks();
+
+  let second = null;
+  harness.dispatchGesture({ cmd: 'resetMeasurement' }).then((response) => { second = response; });
+  await flushTasks();
+  assert.equal(second?.ok, false);
+  assert.equal(second?.reason, 'measurement reset pending');
+
+  harness.releaseChannelMutation();
+  assert.equal((await first).ok, true);
+});
+
+test('turning Auto off stores no Auto gain for it to come back with', async () => {
+  // Auto is already off, so the reading below is not followed into a saved
+  // gain by anything else: what the mutation writes is the whole difference.
+  const harness = createContentHarness({ autoApply: false, autoGain: 1.5 });
+  await flushTasks();
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    momentary: -23,
+    shortTerm: -23,
+    integrated: -23
+  });
+
+  const response = await harness.dispatchGesture({
+    cmd: 'setAutoApplyLoudness',
+    enabled: false
+  });
+
+  assert.equal(response.ok, true);
+  const entry = harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'];
+  assert.equal(entry.autoApplyLoudnessVod, false);
+  // A reading in hand is not turned into an Auto gain by a mutation that
+  // turns Auto off: the stored one is left where it was.
+  assert.equal(entry.autoGainVod, 1.5);
+});
+
+test('a measurement reset landing after the tab moved on leaves the new media alone', async () => {
+  const harness = createContentHarness({
+    deferChannelMutationOperation: 'clearMeasurement',
+    channelVolumes: {
+      'vod-owner:100': {
+        name: '100',
+        gainVod: 0.5,
+        lastLufs: { vod: -21 },
+        lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 },
+        lastLufsWindows: { vod: 600 }
+      }
+    }
+  });
+  await flushTasks();
+
+  const pending = harness.dispatchGesture({ cmd: 'resetMeasurement' });
+  await flushTasks();
+  // The viewer moves to another VOD while the deletion is in flight.
+  await harness.navigate('https://www.twitch.tv/videos/200');
+  harness.commands.length = 0;
+  harness.releaseChannelMutation();
+  const response = await pending;
+  await flushTasks();
+
+  assert.equal(response.ok, true);
+  // The stored level of the VOD it was made on is gone.
+  assert.equal(
+    harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].lastLufs,
+    undefined
+  );
+  // The measurement now running belongs to the VOD on screen and is not
+  // restarted by a gesture made against the one before it.
+  assert.equal(
+    harness.commands.some((command) => command.cmd === 'resetMeasurement'),
+    false
+  );
+});
+
+test('Auto save whose follow-up read fails keeps the rest of the entry', async () => {
+  const harness = createContentHarness({
+    autoApply: false,
+    channelVolumes: {
+      'vod-owner:100': {
+        name: '100',
+        gainVod: 0.5,
+        autoApplyLoudnessVod: false,
+        autoApplyLoudnessLive: true,
+        lastLufs: { vod: -21 },
+        lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 },
+        lastLufsWindows: { vod: 600 }
+      }
+    }
+  });
+  await flushTasks();
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    momentary: -23,
+    shortTerm: -23,
+    integrated: -23
+  });
+  harness.failNextStorageGet();
+
+  const response = await harness.dispatchGesture({
+    cmd: 'setAutoApplyLoudness',
+    enabled: true
+  });
+  assert.equal(response.ok, true);
+
+  // The patch stands in for the read that failed, and stands in for it alone:
+  // what the entry held for the other kind and for the measurement is still
+  // what the popup is answered with.
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.autoApplyLoudnessVod, true);
+  assert.equal(state.autoApplyLoudnessLive, true);
+  assert.equal(state.hasSavedMeasurement, true);
+});
+
+test('Auto save whose follow-up read fails leaves a tab that has moved on alone', async () => {
+  const harness = createContentHarness({
+    autoApply: false,
+    deferChannelMutationOperation: 'saveAuto'
+  });
+  await flushTasks();
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    momentary: -23,
+    shortTerm: -23,
+    integrated: -23
+  });
+
+  const pending = harness.dispatchGesture({
+    cmd: 'setAutoApplyLoudness',
+    enabled: true
+  });
+  await flushTasks();
+  // The viewer moves to another VOD while the save is in flight, and the read
+  // that would bring the new one's settings in fails.
+  await harness.navigate('https://www.twitch.tv/videos/200');
+  harness.failNextStorageGet();
+  harness.releaseChannelMutation();
+  const response = await pending;
+  await flushTasks();
+
+  // The mutation is durable, and it belongs to the VOD it was made on.
+  assert.equal(response.ok, true);
+  assert.equal(
+    harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].autoApplyLoudnessVod,
+    true
+  );
+  // The tab is showing another VOD: the Auto choice made for the one it left
+  // is not written onto it, and neither is that one's gain.
+  assert.equal(response.autoApplyLoudness, false);
+  assert.equal(
+    harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:200'],
+    undefined
+  );
+});
+
 test('Auto save remains successful when only the follow-up storage read fails', async () => {
   const harness = createContentHarness({ autoApply: false });
   await flushTasks();
@@ -5762,10 +6198,8 @@ test('Auto save remains successful when only the follow-up storage read fails', 
   harness.commands.length = 0;
   harness.failNextStorageGet();
 
-  const response = await harness.dispatchRuntime({
+  const response = await harness.dispatchGesture({
     cmd: 'setAutoApplyLoudness',
-    channelId: 'vod-owner:100',
-    kind: 'vod',
     enabled: true
   });
 
@@ -5789,17 +6223,21 @@ test('content rejects Manual gain changes while an Auto mutation is pending', as
   });
   await flushTasks();
 
-  const autoResponsePromise = harness.dispatchRuntime({
+  const autoResponsePromise = harness.dispatchGesture({
     cmd: 'setAutoApplyLoudness',
-    channelId: 'vod-owner:100',
-    kind: 'vod',
     enabled: true
   });
   await flushTasks();
 
-  const manualResponse = await harness.dispatchRuntime({ cmd: 'setGain', gain: 1.2 });
-  assert.equal(manualResponse.ok, false);
-  assert.equal(manualResponse.reason, 'auto update pending');
+  // A refusal is answered where it stands. Awaiting the gesture instead would
+  // hang the whole run if the refusal were ever dropped, since a gain that
+  // goes through waits on the mutation this test is holding.
+  let manualResponse = null;
+  harness.dispatchGesture({ cmd: 'setGain', gain: 1.2 })
+    .then((response) => { manualResponse = response; });
+  await flushTasks();
+  assert.equal(manualResponse?.ok, false);
+  assert.equal(manualResponse?.reason, 'auto update pending');
   assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].gainVod, 0.5);
 
   harness.releaseChannelMutation();
@@ -7261,7 +7699,7 @@ test('popup disables Manual and Apply controls while an Auto update is pending',
   );
   assert.match(
     source,
-    /async function setGain\(percent\) \{\s*if \(autoUpdatePending[^)]*\) return;/s
+    /async function setGain\(percent[^)]*\) \{\s*if \(autoUpdatePending[^)]*\) return;/s
   );
   assert.match(
     source,
@@ -7399,8 +7837,12 @@ test('popup exposes the selected channel-row measurement reset control', () => {
   assert.match(source, /\$\('resetMeasurementBtn'\)\.title = msg\('resetMeasurement'\);/);
   assert.match(source, /nameEl\.title = nameEl\.textContent;/);
   assert.match(source, /cmd:\s*'resetMeasurement'/);
-  assert.match(source, /channelId:\s*currentChannel\.id/);
-  assert.match(source, /kind:\s*currentChannel\.kind/);
+  // The reset is a gesture like the others: it carries the state the popup was
+  // drawn from, copied before it looks the tab up so the display's own tick
+  // cannot move it, and no channel id of its own.
+  assert.match(source, /const appliesTo = currentAppliesTo;\s*\$\('resetMeasurementError'\)/s);
+  assert.doesNotMatch(source, /channelId:\s*currentChannel\.id/);
+  assert.doesNotMatch(source, /kind:\s*currentChannel\.kind/);
   assert.match(source, /hasIntegrated \|\| !!state\.hasSavedMeasurement/);
   assert.match(source, /measurementResetPending = true;\s*syncInteractionDisabledState\(\);/s);
 
