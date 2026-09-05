@@ -419,8 +419,17 @@
   $('applyBtn').addEventListener('click', applyMeasured);
   $('resetMeasurementBtn').addEventListener('click', resetMeasurement);
   $('autoApplyToggle').addEventListener('change', setAutoApplyLoudness);
+  // A drag begins where the pointer goes down or a key is pressed on the
+  // slider. Chrome fires no change when the value ends where it began, so a
+  // release can pass unseen: the start of the next gesture is what says the
+  // one before it is over. Taking the copy here rather than on every movement
+  // keeps a drag on the state it began on.
+  const beginSliderGesture = () => { sliderAppliesTo = currentAppliesTo; };
+  $('manualSlider').addEventListener('pointerdown', beginSliderGesture);
+  $('manualSlider').addEventListener('keydown', beginSliderGesture);
+
   $('manualSlider').addEventListener('input', (e) => {
-    // The first movement is where the gesture begins.
+    // An input that arrived without either of those begins one too.
     if (sliderAppliesTo === null) sliderAppliesTo = currentAppliesTo;
     if (autoUpdatePending) return;
     const g = percentToGain(Number(e.target.value));

@@ -6339,6 +6339,80 @@ test('popup says the Auto gain is a fallback while no level has been measured', 
     'nor does a channel that is not following one');
 });
 
+test('a drag that ended without a change does not hold the next one', async () => {
+  // Chrome fires change only when the value differs from where the gesture
+  // began. A redraw that puts the slider back where it started makes the
+  // release fire nothing, so nothing tells the popup the drag is over.
+  const harness = createPopupHarness({
+    state: {
+      channel: { id: 'A', name: 'streamer_a', kind: 'live', url: '' },
+      appliesTo: 'A|live|'
+    }
+  });
+  await flushTasks(8);
+
+  harness.el('manualSlider').value = '25';
+  await harness.fire('manualSlider', 'pointerdown');
+  await harness.fire('manualSlider', 'input');
+
+  harness.setState({
+    channel: { id: 'B', name: 'streamer_b', kind: 'live', url: '' },
+    appliesTo: 'B|live|'
+  });
+  await harness.poll();
+  // The release fires nothing: the redraw put the slider back.
+  await harness.fire('manualSlider', 'pointerup');
+
+  // A new drag, on the channel now being watched.
+  harness.sent.length = 0;
+  harness.el('manualSlider').value = '75';
+  await harness.fire('manualSlider', 'pointerdown');
+  await harness.fire('manualSlider', 'input');
+  await harness.fire('manualSlider', 'change');
+  const saves = harness.sent.filter((request) => request.cmd === 'setGain');
+  assert.equal(saves.length, 1);
+  assert.equal(saves[0].appliesTo, 'B|live|');
+
+  // The keyboard begins one the same way.
+  harness.sent.length = 0;
+  harness.el('manualSlider').value = '50';
+  await harness.fire('manualSlider', 'keydown');
+  await harness.fire('manualSlider', 'input');
+  await harness.fire('manualSlider', 'change');
+  const byKey = harness.sent.filter((request) => request.cmd === 'setGain');
+  assert.equal(byKey.length, 1);
+  assert.equal(byKey[0].appliesTo, 'B|live|');
+});
+
+test('a drag under way keeps the state it began on', async () => {
+  const harness = createPopupHarness({
+    state: {
+      channel: { id: 'A', name: 'streamer_a', kind: 'live', url: '' },
+      appliesTo: 'A|live|'
+    }
+  });
+  await flushTasks(8);
+
+  harness.sent.length = 0;
+  harness.el('manualSlider').value = '25';
+  await harness.fire('manualSlider', 'pointerdown');
+  await harness.fire('manualSlider', 'input');
+
+  harness.setState({
+    channel: { id: 'B', name: 'streamer_b', kind: 'live', url: '' },
+    appliesTo: 'B|live|'
+  });
+  await harness.poll();
+
+  // Still the same drag: it belongs to the channel it began on.
+  harness.el('manualSlider').value = '35';
+  await harness.fire('manualSlider', 'input');
+  await harness.fire('manualSlider', 'change');
+  const saves = harness.sent.filter((request) => request.cmd === 'setGain');
+  assert.equal(saves.length, 1);
+  assert.equal(saves[0].appliesTo, 'A|live|');
+});
+
 test('a slider released after a route change saves against the state it was moved on', async () => {
   const harness = createPopupHarness({
     state: {
