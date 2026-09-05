@@ -13,6 +13,13 @@
   // gesture, so one made against a state the tab has left is refused rather
   // than applied to the state that replaced it.
   let currentAppliesTo = '';
+  // The display redraws on its own tick, and a gesture takes time: the viewer
+  // takes hold of the slider, a tick lands, the viewer lets go. A gesture is
+  // made against the state that was on screen when it began, so it takes a
+  // copy then and carries that one to the message it sends. Read at send time
+  // instead, it would carry whatever the last tick brought in, and the check on
+  // the other side would pass on the state the gesture was never about.
+  let sliderAppliesTo = null;
   let currentAutoApplyLoudness = false;
   let audioUnavailable = false;
   let audioUnavailableCause = '';
@@ -287,17 +294,19 @@
   async function applyMeasured() {
     if (autoUpdatePending || measurementResetPending || audioUnavailable ||
         !Number.isFinite(lastSuggestedGain)) return;
+    const appliesTo = currentAppliesTo;
+    const gain = lastSuggestedGain;
     try {
       const tab = await getActiveTab();
       if (!tab) throw new Error('No active tab');
       await chrome.tabs.sendMessage(tab.id, { cmd: 'resume' });
       const res = await chrome.tabs.sendMessage(
         tab.id,
-        { cmd: 'setGain', appliesTo: currentAppliesTo, gain: lastSuggestedGain }
+        { cmd: 'setGain', appliesTo, gain }
       );
       if (!res?.ok) throw new Error(res?.reason || 'Gain update failed');
       gainSaveError = false;
-      syncSlider(lastSuggestedGain);
+      syncSlider(gain);
     } catch (error) {
       console.warn('[TCV] suggested gain request failed', error);
       gainSaveError = true;
@@ -306,13 +315,13 @@
     await refresh();
   }
 
-  async function setGain(percent) {
+  async function setGain(percent, appliesTo = currentAppliesTo) {
     if (autoUpdatePending || audioUnavailable) return;
     try {
       const tab = await getActiveTab();
       if (!tab) throw new Error('No active tab');
       const gain = percentToGain(percent);
-      const res = await chrome.tabs.sendMessage(tab.id, { cmd: 'setGain', appliesTo: currentAppliesTo, gain });
+      const res = await chrome.tabs.sendMessage(tab.id, { cmd: 'setGain', appliesTo, gain });
       if (!res?.ok) throw new Error(res?.reason || 'Gain update failed');
       gainSaveError = false;
     } catch (error) {
@@ -332,6 +341,7 @@
     if (autoUpdatePending || measurementResetPending ||
         !currentChannel.id || currentChannel.kind === 'none') return;
     const enabled = toggle.checked;
+    const appliesTo = currentAppliesTo;
     $('autoError').classList.add('hidden');
     autoUpdatePending = true;
     syncInteractionDisabledState();
@@ -340,7 +350,7 @@
       if (!tab) throw new Error('No active tab');
       const res = await chrome.tabs.sendMessage(tab.id, {
         cmd: 'setAutoApplyLoudness',
-        appliesTo: currentAppliesTo,
+        appliesTo,
         enabled
       });
       if (!res?.ok) throw new Error(res?.reason || 'Auto update failed');
@@ -370,6 +380,7 @@
   async function resetMeasurement() {
     if (measurementResetPending || audioUnavailable || !hasResettableMeasurement ||
         !currentChannel.id || currentChannel.kind === 'none') return;
+    const appliesTo = currentAppliesTo;
     $('resetMeasurementError').classList.add('hidden');
     measurementResetPending = true;
     syncInteractionDisabledState();
@@ -378,7 +389,7 @@
       if (!tab) throw new Error('No active tab');
       const res = await chrome.tabs.sendMessage(tab.id, {
         cmd: 'resetMeasurement',
-        appliesTo: currentAppliesTo
+        appliesTo
       });
       if (!res?.ok) throw new Error(res?.reason || 'Measurement reset failed');
       hasResettableMeasurement = false;
@@ -406,13 +417,19 @@
   $('resetMeasurementBtn').addEventListener('click', resetMeasurement);
   $('autoApplyToggle').addEventListener('change', setAutoApplyLoudness);
   $('manualSlider').addEventListener('input', (e) => {
+    // The first movement is where the gesture begins.
+    if (sliderAppliesTo === null) sliderAppliesTo = currentAppliesTo;
     if (autoUpdatePending) return;
     const g = percentToGain(Number(e.target.value));
     const f = formatGain(g, displayUnit);
     setCardValue($('current'), f.text, f.unit, 'current');
     $('manualValue').textContent = f.text + f.unit;
   });
-  $('manualSlider').addEventListener('change', (e) => setGain(Number(e.target.value)));
+  $('manualSlider').addEventListener('change', (e) => {
+    const appliesTo = sliderAppliesTo ?? currentAppliesTo;
+    sliderAppliesTo = null;
+    setGain(Number(e.target.value), appliesTo);
+  });
   document.querySelectorAll('.presets button').forEach((btn) => {
     btn.addEventListener('click', () => {
       if (autoUpdatePending) return;

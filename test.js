@@ -2769,12 +2769,17 @@ function createPopupHarness({
   deferAutoSave = false,
   failCommand = '',
   tabUrl = 'https://www.twitch.tv/somechannel',
-  sendMessageError = ''
+  sendMessageError = '',
+  // A content harness to answer for real, instead of the stubbed replies. What
+  // the popup sends then has to get past the same check production applies.
+  connectTo = null
 } = {}) {
   // A string fails every command, the way a content script that is gone does.
   // An object fails the commands it names, for the round trip that dies partway.
   let thrownBySendMessage = sendMessageError;
   let thrownByTabQuery = '';
+  let heldTabQuery = null;
+  let releaseHeldTabQuery = null;
   let activeTabUrl = tabUrl;
   const messages = JSON.parse(
     fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json'), 'utf8')
@@ -2834,6 +2839,14 @@ function createPopupHarness({
     tabs: {
       async query() {
         if (thrownByTabQuery) throw new Error(thrownByTabQuery);
+        // Held, a case can let the display's own tick land inside the gesture,
+        // between the tab being looked up and the message being sent. Only the
+        // next lookup is held, so the tick the case then drives is not.
+        if (heldTabQuery) {
+          const holding = heldTabQuery;
+          heldTabQuery = null;
+          await holding;
+        }
         return [activeTabUrl ? { id: 1, url: activeTabUrl } : { id: 1 }];
       },
       async sendMessage(_tabId, request) {
@@ -2843,6 +2856,7 @@ function createPopupHarness({
           ? thrownBySendMessage
           : thrownBySendMessage?.[request.cmd];
         if (thrown) throw new Error(thrown);
+        if (connectTo) return connectTo.dispatchRuntime(structuredClone(request));
         if (request.cmd === 'getState') return structuredClone(currentState);
         if (request.cmd === failCommand) {
           return { ok: false, reason: 'storage update failed' };
@@ -2906,6 +2920,15 @@ function createPopupHarness({
     setState(next) { currentState = { ...currentState, ...next }; },
     breakSendMessage(spec) { thrownBySendMessage = spec; },
     breakTabQuery(message) { thrownByTabQuery = message; },
+    holdTabQuery() {
+      heldTabQuery = new Promise((resolve) => { releaseHeldTabQuery = resolve; });
+    },
+    async releaseTabQuery() {
+      assert.ok(releaseHeldTabQuery, 'the tab query is not held');
+      releaseHeldTabQuery();
+      releaseHeldTabQuery = null;
+      await flushTasks(8);
+    },
     setTabUrl(url) { activeTabUrl = url; },
     async poll() {
       for (const callback of intervals) await callback();
@@ -2918,6 +2941,17 @@ function createPopupHarness({
     async firePreset(index, type) {
       for (const listener of presetButtons[index].listeners[type] || []) await listener({ target: presetButtons[index] });
       await flushTasks(8);
+    },
+    // Starts a gesture without waiting for it, so a case can put the display's
+    // own tick between its first await and the message it sends.
+    start(id, type) {
+      const running = (element(id).listeners[type] || [])
+        .map((listener) => listener({ target: element(id) }));
+      return Promise.all(running);
+    },
+    startPreset(index, type) {
+      const button = presetButtons[index];
+      return Promise.all((button.listeners[type] || []).map((listener) => listener({ target: button })));
     },
     async releaseAutoSave() {
       assert.ok(resolveAutoSave, 'auto save is not pending');
@@ -5800,6 +5834,160 @@ test('content reseeds on a kind change when SPA navigation lost the reapply race
   assert.equal(afterOwner[0].initialIntegratedLufs, -23);
 });
 
+// The popup and the content script joined up, so what one sends is what the
+// other checks. The refusal has to come from the pair, not from a token typed
+// into a request by hand.
+test('a slider released after the tab moved to another channel saves nothing there', async () => {
+  const content = createContentHarness({ href: 'https://www.twitch.tv/streamer_a' });
+  await flushTasks();
+  const popup = createPopupHarness({ connectTo: content, tabUrl: 'https://www.twitch.tv/streamer_a' });
+  await flushTasks(8);
+
+  // The viewer takes hold of the slider on streamer_a.
+  popup.el('manualSlider').value = '25';
+  await popup.fire('manualSlider', 'input');
+
+  // The tab moves to another channel and the display's tick redraws the popup.
+  await content.navigate('https://www.twitch.tv/streamer_b');
+  await popup.poll();
+
+  await popup.fire('manualSlider', 'change');
+
+  const sent = popup.sent.filter((request) => request.cmd === 'setGain');
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].appliesTo, 'login:streamer_a|live|');
+  const stored = content.stored[u.CHANNEL_VOLUMES_KEY];
+  assert.equal(stored['login:streamer_b'], undefined);
+  assert.equal(stored['login:streamer_a']?.gainLive, undefined);
+});
+
+test('a slider released after the tab moved to another video of one owner saves nothing there', async () => {
+  const content = createContentHarness({ href: 'https://www.twitch.tv/videos/300' });
+  await flushTasks();
+  await content.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '55',
+    login: 'vod_owner',
+    displayName: 'VOD Owner',
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '300'
+  });
+  const popup = createPopupHarness({ connectTo: content, tabUrl: 'https://www.twitch.tv/videos/300' });
+  await flushTasks(8);
+
+  popup.el('manualSlider').value = '25';
+  await popup.fire('manualSlider', 'input');
+
+  // Another video of the same owner: the channel and the kind are the same and
+  // only the video is not.
+  await content.navigate('https://www.twitch.tv/videos/400');
+  await content.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '55',
+    login: 'vod_owner',
+    displayName: 'VOD Owner',
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '400'
+  });
+  await popup.poll();
+
+  await popup.fire('manualSlider', 'change');
+
+  const sent = popup.sent.filter((request) => request.cmd === 'setGain');
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].appliesTo, '55|vod|300');
+  assert.equal(content.stored[u.CHANNEL_VOLUMES_KEY]['55']?.gainVod, undefined);
+});
+
+test('a slider released with the tab where it was saves the gain', async () => {
+  const content = createContentHarness({ href: 'https://www.twitch.tv/streamer_a' });
+  await flushTasks();
+  const popup = createPopupHarness({ connectTo: content, tabUrl: 'https://www.twitch.tv/streamer_a' });
+  await flushTasks(8);
+
+  popup.el('manualSlider').value = '25';
+  await popup.fire('manualSlider', 'input');
+  await popup.poll();
+  await popup.fire('manualSlider', 'change');
+
+  const sent = popup.sent.filter((request) => request.cmd === 'setGain');
+  assert.equal(sent.length, 1);
+  assert.ok(Math.abs(content.stored[u.CHANNEL_VOLUMES_KEY]['login:streamer_a'].gainLive - 0.25) < 1e-9);
+});
+
+// Every gesture looks the active tab up before it sends, and the display's own
+// tick redraws the popup while that lookup is out. What is sent has to be the
+// state the viewer acted on, not the one the tick brought in.
+for (const gesture of [
+  { name: 'a preset', start: (h) => h.startPreset(2, 'click'), cmd: 'setGain' },
+  { name: 'the suggested gain', start: (h) => h.start('applyBtn', 'click'), cmd: 'setGain' },
+  { name: 'the Auto toggle', start: (h) => h.start('autoApplyToggle', 'change'), cmd: 'setAutoApplyLoudness' },
+  { name: 'a measurement reset', start: (h) => h.start('resetMeasurementBtn', 'click'), cmd: 'resetMeasurement' }
+]) {
+  test(`${gesture.name} sent across a route change carries the state it was made on`, async () => {
+    const harness = createPopupHarness({
+      state: {
+        channel: { id: 'A', name: 'streamer_a', kind: 'live', url: '' },
+        appliesTo: 'A|live|',
+        hasSavedMeasurement: true,
+        lufs: { momentary: -20, shortTerm: -20, integrated: -20 }
+      }
+    });
+    await flushTasks(8);
+    harness.sent.length = 0;
+
+    harness.holdTabQuery();
+    const running = gesture.start(harness);
+    await flushTasks(8);
+
+    harness.setState({
+      channel: { id: 'B', name: 'streamer_b', kind: 'live', url: '' },
+      appliesTo: 'B|live|'
+    });
+    await harness.poll();
+
+    await harness.releaseTabQuery();
+    await running;
+
+    const sent = harness.sent.filter((request) => request.cmd === gesture.cmd);
+    assert.equal(sent.length, 1, `${gesture.cmd} was sent once`);
+    assert.equal(sent[0].appliesTo, 'A|live|');
+  });
+}
+
+test('a slider released after a route change saves against the state it was moved on', async () => {
+  const harness = createPopupHarness({
+    state: {
+      channel: { id: 'A', name: 'streamer_a', kind: 'live', url: '' },
+      appliesTo: 'A|live|'
+    }
+  });
+  await flushTasks(8);
+
+  // The viewer takes hold of the slider on channel A.
+  harness.el('manualSlider').value = '25';
+  await harness.fire('manualSlider', 'input');
+
+  // The tab moves to another channel, and the display's own second tick
+  // redraws the popup from the state that replaced it.
+  harness.setState({
+    channel: { id: 'B', name: 'streamer_b', kind: 'live', url: '' },
+    appliesTo: 'B|live|'
+  });
+  await harness.poll();
+
+  // The viewer lets go. The gesture was made on A and belongs to A.
+  await harness.fire('manualSlider', 'change');
+
+  const saved = harness.sent.filter((request) => request.cmd === 'setGain');
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].appliesTo, 'A|live|');
+});
+
 test('a gain the store refuses is put back before the refusal is answered', async () => {
   const harness = createContentHarness({ failChannelMutationOperation: 'saveGain' });
   await flushTasks();
@@ -7511,7 +7699,7 @@ test('popup disables Manual and Apply controls while an Auto update is pending',
   );
   assert.match(
     source,
-    /async function setGain\(percent\) \{\s*if \(autoUpdatePending[^)]*\) return;/s
+    /async function setGain\(percent[^)]*\) \{\s*if \(autoUpdatePending[^)]*\) return;/s
   );
   assert.match(
     source,
@@ -7650,8 +7838,9 @@ test('popup exposes the selected channel-row measurement reset control', () => {
   assert.match(source, /nameEl\.title = nameEl\.textContent;/);
   assert.match(source, /cmd:\s*'resetMeasurement'/);
   // The reset is a gesture like the others: it carries the state the popup was
-  // drawn from, not a channel id of its own.
-  assert.match(source, /appliesTo:\s*currentAppliesTo/);
+  // drawn from, copied before it looks the tab up so the display's own tick
+  // cannot move it, and no channel id of its own.
+  assert.match(source, /const appliesTo = currentAppliesTo;\s*\$\('resetMeasurementError'\)/s);
   assert.doesNotMatch(source, /channelId:\s*currentChannel\.id/);
   assert.doesNotMatch(source, /kind:\s*currentChannel\.kind/);
   assert.match(source, /hasIntegrated \|\| !!state\.hasSavedMeasurement/);
