@@ -293,6 +293,7 @@
 
   async function applyMeasured() {
     if (autoUpdatePending || measurementResetPending || audioUnavailable ||
+        !currentChannel.id || currentChannel.kind === 'none' ||
         !Number.isFinite(lastSuggestedGain)) return;
     const appliesTo = currentAppliesTo;
     const gain = lastSuggestedGain;
@@ -316,7 +317,8 @@
   }
 
   async function setGain(percent, appliesTo = currentAppliesTo) {
-    if (autoUpdatePending || audioUnavailable) return;
+    if (autoUpdatePending || audioUnavailable ||
+        !currentChannel.id || currentChannel.kind === 'none') return;
     try {
       const tab = await getActiveTab();
       if (!tab) throw new Error('No active tab');
@@ -378,7 +380,8 @@
   }
 
   async function resetMeasurement() {
-    if (measurementResetPending || audioUnavailable || !hasResettableMeasurement ||
+    if (autoUpdatePending || measurementResetPending || audioUnavailable ||
+        !hasResettableMeasurement ||
         !currentChannel.id || currentChannel.kind === 'none') return;
     const appliesTo = currentAppliesTo;
     $('resetMeasurementError').classList.add('hidden');

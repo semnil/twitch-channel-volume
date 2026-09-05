@@ -2854,7 +2854,10 @@ function createPopupHarness({
         }
         return [activeTabUrl ? { id: 1, url: activeTabUrl } : { id: 1 }];
       },
-      async sendMessage(_tabId, request) {
+      async sendMessage(tabId, request) {
+        // Chrome refuses a tab id that is not one: an id read from a promise
+        // that was never awaited arrives as undefined.
+        if (typeof tabId !== 'number') throw new Error(`No tab with id: ${tabId}`);
         sent.push(structuredClone(request));
         // What Chrome rejects with when nothing is listening in that tab.
         const thrown = typeof thrownBySendMessage === 'string'
@@ -2953,6 +2956,18 @@ function createPopupHarness({
     // A gesture already on its way when the control was disabled: the browser
     // dispatched it before the state moved, and the handler is what turns it
     // down.
+    async dispatch(id, type = 'change') {
+      for (const listener of element(id).listeners[type] || []) {
+        await listener({ target: element(id) });
+      }
+      await flushTasks(8);
+    },
+    async dispatchPreset(index) {
+      for (const listener of presetButtons[index].listeners.click || []) {
+        await listener({ target: presetButtons[index] });
+      }
+      await flushTasks(8);
+    },
     async dispatchAutoToggle() {
       for (const listener of element('autoApplyToggle').listeners.change || []) {
         await listener({ target: element('autoApplyToggle') });
@@ -5988,6 +6003,70 @@ for (const gesture of [
     assert.equal(sent[0].appliesTo, 'A|live|');
   });
 }
+
+test('popup turns down a gesture that was already on its way', async () => {
+  // The screen is redrawn every second, and a click dispatched before the
+  // redraw still reaches its handler. Each gesture is turned down there as
+  // well as by the control being disabled.
+  const harness = createPopupHarness({
+    deferAutoSave: true,
+    state: {
+      channel: { id: '55', name: 'A Streamer', kind: 'live', url: '' },
+      lufs: { momentary: -23, shortTerm: -23, integrated: -23 },
+      hasSavedMeasurement: true
+    }
+  });
+  await flushTasks(8);
+  harness.el('autoApplyToggle').checked = true;
+  const saving = harness.fire('autoApplyToggle', 'change');
+  await flushTasks(8);
+  harness.sent.length = 0;
+
+  await harness.dispatch('manualSlider');
+  await harness.dispatchPreset(1);
+  await harness.dispatch('applyBtn', 'click');
+  await harness.dispatch('resetMeasurementBtn', 'click');
+  assert.deepEqual(harness.sent.map((request) => request.cmd), [],
+    'nothing goes out while the Auto save is still out');
+
+  await harness.releaseAutoSave();
+  await saving;
+});
+
+test('popup turns down a reset that was already on its way', async () => {
+  const harness = createPopupHarness({
+    state: {
+      channel: { id: '', name: '', kind: 'none' },
+      lufs: { momentary: -23, shortTerm: -23, integrated: -23 },
+      hasSavedMeasurement: true
+    }
+  });
+  await flushTasks(8);
+  harness.sent.length = 0;
+  await harness.dispatch('resetMeasurementBtn', 'click');
+  await harness.dispatch('applyBtn', 'click');
+  await harness.dispatchPreset(1);
+  assert.deepEqual(harness.sent.map((request) => request.cmd), [],
+    'a page with no channel sends nothing, however the gesture arrives');
+});
+
+test('popup reads the page again when a gesture is done', async () => {
+  const harness = createPopupHarness({
+    state: {
+      channel: { id: '55', name: 'A Streamer', kind: 'live', url: '' },
+      lufs: { momentary: -23, shortTerm: -23, integrated: -23 }
+    }
+  });
+  await flushTasks(8);
+  assert.equal(harness.el('integrated').textContent, '-23.0 LUFS');
+
+  // The measurement moves on while the gesture is out. The screen has it by
+  // the time the gesture is done, without waiting for the next tick.
+  harness.setState({ lufs: { momentary: -19, shortTerm: -19, integrated: -19 } });
+  await harness.firePreset(3, 'click');
+  assert.equal(harness.el('integrated').textContent, '-19.0 LUFS',
+    'the screen is read again when the gesture is done');
+});
 
 test('popup takes the controls while an Auto save is in flight, and gives them back', async () => {
   const harness = createPopupHarness({
