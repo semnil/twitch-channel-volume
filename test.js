@@ -2879,7 +2879,12 @@ function createPopupHarness({
         if (request.cmd === 'setAutoApplyLoudness') {
           if (deferAutoSave) await new Promise((resolve) => { resolveAutoSave = resolve; });
           currentState = { ...currentState, autoApplyLoudness: !!request.enabled };
-          return { ok: true, autoApplyLoudness: !!request.enabled, gain: currentState.gain };
+          // The page works a gain out only when Auto goes on over a level it
+          // has measured. Switching it off saves none and answers without one.
+          const gain = request.enabled && Number.isFinite(currentState.lufs?.integrated)
+            ? currentState.gain
+            : undefined;
+          return { ok: true, autoApplyLoudness: !!request.enabled, gain };
         }
         return { ok: true };
       }
