@@ -207,7 +207,7 @@ options.html / options.js
 | `tools/check-tag.sh` | What a Release run is for. A tag push has to name a release this workflow makes (`vN.N.N`, or that with `-beta` / `-rc` / `-alpha`); anything else is refused here rather than passed on as a run that packs, uploads and releases nothing. A run started by hand carries a branch name and makes no release |
 | `tools/verify-version.sh` | Holds a release tag to the manifest: `version_name` where the manifest has one (which has to begin with `version`), `version` otherwise. Run only where a release is being made |
 | `tools/fonts/` | The M PLUS 1p faces used for drawing (Regular / Bold) and OFL.txt. Taken from `ofl/mplus1p` in google/fonts (commit `66a36c8`). Kept in the repository so that CI and each machine produce the same pixels |
-| `test.js` | Unit tests (`node test.js`) — utils and the stores, plus content.js / page-bridge.js / popup.js / options.js / background.js run in a VM harness |
+| `test.js` | Unit tests (`node test.js`) — utils and the stores, plus content.js / page-bridge.js / audio-worklet.js / popup.js / options.js / background.js run in a VM harness |
 
 ## Key design decisions
 

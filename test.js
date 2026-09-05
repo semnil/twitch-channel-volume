@@ -3395,6 +3395,154 @@ function createPageBridgeHarness({
   };
 }
 
+// audio-worklet.js runs in the page's AudioContext, where the base class, the
+// sample rate and the registration function are globals the browser provides.
+// The bridge harness above stubs AudioWorkletNode, so nothing there loads this
+// module; this runs the module itself and drives process() by hand.
+function createWorkletHarness({ sampleRate = 48000, processorOptions } = {}) {
+  const posted = [];
+  class AudioWorkletProcessor {
+    constructor() {
+      this.port = { postMessage(message) { posted.push(message); } };
+    }
+  }
+  let registered = null;
+  const context = vm.createContext({
+    AudioWorkletProcessor,
+    sampleRate,
+    registerProcessor(name, ctor) { registered = { name, ctor }; }
+  });
+  vm.runInContext(
+    fs.readFileSync(path.join(__dirname, 'audio-worklet.js'), 'utf8'),
+    context,
+    { filename: 'audio-worklet.js' }
+  );
+  assert.ok(registered, 'the module registered a processor');
+  return {
+    name: registered.name,
+    posted,
+    processor: new registered.ctor(
+      processorOptions === undefined ? undefined : { processorOptions }
+    ),
+    // One render quantum of the channels given, as the browser hands them over.
+    feed(processor, channels) { return processor.process([channels]); }
+  };
+}
+
+// A run of one value, which makes the mean square of the block the value the
+// case can work out by hand.
+function samples(count, value) {
+  return Float32Array.from({ length: count }, () => value);
+}
+
+test('the worklet registers under the name the bridge asks for', () => {
+  const harness = createWorkletHarness();
+  const bridge = fs.readFileSync(path.join(__dirname, 'page-bridge.js'), 'utf8');
+  const asked = bridge.match(/new AudioWorkletNode\(\s*[^,]+,\s*'([^']+)'/);
+  assert.ok(asked, 'page-bridge.js constructs an AudioWorkletNode by name');
+  // Renaming one side alone leaves the extension with no measurement path and
+  // nothing that reads either file on its own would say so.
+  assert.equal(harness.name, asked[1]);
+});
+
+test('the worklet posts one mean square per block of the sample rate', () => {
+  const harness = createWorkletHarness({ sampleRate: 48000 });
+  // 0.1 second at 48000 is 4800 samples.
+  assert.equal(harness.feed(harness.processor, [samples(4799, 0.5)]), true);
+  assert.deepEqual(harness.posted, [], 'nothing until the block is full');
+
+  harness.feed(harness.processor, [samples(1, 0.5)]);
+
+  // Mono counts the one channel on both sides, so each sample carries 2 x 0.25.
+  assert.equal(harness.posted.length, 1);
+  assert.equal(harness.posted[0].samples, 4800);
+  assert.ok(Math.abs(harness.posted[0].ms - 0.5) < 1e-6);
+});
+
+test('the worklet counts the second channel where there is one', () => {
+  const harness = createWorkletHarness({ sampleRate: 48000 });
+  harness.feed(harness.processor, [samples(4800, 0.5), samples(4800, 0)]);
+
+  assert.equal(harness.posted.length, 1);
+  assert.ok(Math.abs(harness.posted[0].ms - 0.25) < 1e-6);
+});
+
+test('the worklet starts the next block empty', () => {
+  const harness = createWorkletHarness({ sampleRate: 48000 });
+  harness.feed(harness.processor, [samples(4800, 0.5)]);
+  harness.feed(harness.processor, [samples(4800, 0)]);
+
+  assert.equal(harness.posted.length, 2);
+  assert.ok(Math.abs(harness.posted[0].ms - 0.5) < 1e-6);
+  assert.equal(harness.posted[1].ms, 0, 'the loud block is not carried into it');
+});
+
+test('the worklet takes the block length from the sample rate it runs at', () => {
+  const harness = createWorkletHarness({ sampleRate: 44100 });
+  harness.feed(harness.processor, [samples(4410, 0.5)]);
+
+  assert.equal(harness.posted.length, 1);
+  assert.equal(harness.posted[0].samples, 4410);
+});
+
+test('the worklet takes the block length the bridge asks for', () => {
+  const harness = createWorkletHarness({ sampleRate: 48000, processorOptions: { blockSec: 0.05 } });
+  harness.feed(harness.processor, [samples(2400, 0.5)]);
+
+  assert.equal(harness.posted.length, 1);
+  assert.equal(harness.posted[0].samples, 2400);
+});
+
+test('the worklet holds a floor under the block length', () => {
+  // 0.0001 second at 48000 is under 5 samples. A block that short would post
+  // ten thousand times a second.
+  const harness = createWorkletHarness({ sampleRate: 48000, processorOptions: { blockSec: 0.0001 } });
+  harness.feed(harness.processor, [samples(64, 0.5)]);
+
+  assert.equal(harness.posted.length, 1);
+  assert.equal(harness.posted[0].samples, 64);
+});
+
+for (const [what, processorOptions] of [
+  ['no options at all', undefined],
+  ['options carrying nothing', {}],
+  ['a block length of zero', { blockSec: 0 }],
+  ['a block length that is not a number', { blockSec: 'a while' }]
+]) {
+  test(`the worklet falls back to a tenth of a second given ${what}`, () => {
+    const harness = createWorkletHarness({ sampleRate: 48000, processorOptions });
+    harness.feed(harness.processor, [samples(4800, 0.5)]);
+
+    assert.equal(harness.posted.length, 1);
+    assert.equal(harness.posted[0].samples, 4800);
+  });
+}
+
+for (const [what, quantum] of [
+  ['no inputs', []],
+  ['an input with no channels', [[]]],
+  ['a channel that is not there', [[undefined]]]
+]) {
+  test(`the worklet stays alive and posts nothing given ${what}`, () => {
+    const harness = createWorkletHarness({ sampleRate: 48000 });
+    assert.equal(harness.processor.process(quantum), true);
+    assert.deepEqual(harness.posted, []);
+  });
+}
+
+test('the worklet keeps what it has when a quantum brings no audio', () => {
+  const harness = createWorkletHarness({ sampleRate: 48000 });
+  harness.feed(harness.processor, [samples(4000, 0.5)]);
+  harness.processor.process([]);
+  harness.feed(harness.processor, [samples(800, 0.5)]);
+
+  // The 4000 samples are still counted: a quantum with nothing in it is not a
+  // reason to throw away the part of the block already measured.
+  assert.equal(harness.posted.length, 1);
+  assert.equal(harness.posted[0].samples, 4800);
+  assert.ok(Math.abs(harness.posted[0].ms - 0.5) < 1e-6);
+});
+
 test('calcGain: target equals measured → unity gain', () => {
   assert.equal(u.calcGain(-18, -18).toFixed(6), '1.000000');
 });
