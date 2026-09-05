@@ -2772,6 +2772,13 @@ function createPopupHarness({
   failCommand = '',
   tabUrl = 'https://www.twitch.tv/somechannel',
   sendMessageError = '',
+  // A command whose answer is held until the case lets it go, so the state a
+  // gesture leaves behind while it is out can be driven.
+  holdCommand = '',
+  // The settings read the load makes, held until the case lets it go.
+  holdSettingsRead = false,
+  // Keys the page carries that the locale does not declare.
+  unknownI18nKeys = [],
   // A content harness to answer for real, instead of the stubbed replies. What
   // the popup sends then has to get past the same check production applies.
   connectTo = null
@@ -2784,6 +2791,11 @@ function createPopupHarness({
   let heldTabQuery = null;
   let releaseHeldTabQuery = null;
   let tabQueryWasHeld = false;
+  let releaseHeldCommand = null;
+  let releaseHeldSettingsRead = null;
+  let heldSettingsRead = holdSettingsRead
+    ? new Promise((resolve) => { releaseHeldSettingsRead = resolve; })
+    : null;
   let activeTabUrl = tabUrl;
   const messages = JSON.parse(
     fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json'), 'utf8')
@@ -2827,8 +2839,21 @@ function createPopupHarness({
     return node;
   });
 
+  // A key the locale does not declare. msg hands the key itself back, and what
+  // popup.html ships is what the viewer is left with.
+  for (const key of unknownI18nKeys) {
+    const node = stubElement('');
+    node.setAttribute('data-i18n', key);
+    node.textContent = 'what the page ships';
+    i18nNodes.push(node);
+  }
+
+  const body = stubElement('body');
+  // What popup.html carries: the page stays hidden until the load has drawn.
+  body.className = 'initializing';
+
   const document = {
-    body: stubElement('body'),
+    body,
     getElementById: element,
     createElement: () => stubElement(''),
     createTextNode: (text) => ({ textContent: text }),
@@ -2864,6 +2889,9 @@ function createPopupHarness({
           ? thrownBySendMessage
           : thrownBySendMessage?.[request.cmd];
         if (thrown) throw new Error(thrown);
+        if (holdCommand && request.cmd === holdCommand && !releaseHeldCommand) {
+          await new Promise((resolve) => { releaseHeldCommand = resolve; });
+        }
         if (connectTo) return connectTo.dispatchRuntime(structuredClone(request));
         if (request.cmd === 'getState') return structuredClone(currentState);
         if (request.cmd === failCommand) {
@@ -2878,7 +2906,16 @@ function createPopupHarness({
       }
     },
     storage: {
-      local: { async get() { return { [u.SETTINGS_KEY]: { displayUnit } }; } },
+      local: {
+        async get() {
+          if (heldSettingsRead) {
+            const holding = heldSettingsRead;
+            heldSettingsRead = null;
+            await holding;
+          }
+          return { [u.SETTINGS_KEY]: { displayUnit } };
+        }
+      },
       onChanged: { addListener(listener) { settingsListeners.push(listener); } }
     },
     runtime: { openOptionsPage() {} }
@@ -2889,7 +2926,8 @@ function createPopupHarness({
     msg: (key, substitutions) => {
       // A key the locale does not declare reaches the viewer as its own name.
       // Refusing it here covers every path these tests run, including the ones
-      // no static scan can name.
+      // no static scan can name. Only the keys a case names take that path.
+      if (unknownI18nKeys.includes(key)) return key;
       assert.ok(messages[key], `msg('${key}') has no message`);
       const text = messages[key].message;
       return substitutions && substitutions.length
@@ -2915,6 +2953,7 @@ function createPopupHarness({
 
   return {
     el: element,
+    body,
     presets: presetButtons,
     i18nNodes,
     sent,
@@ -2932,6 +2971,22 @@ function createPopupHarness({
     async changeSettings(next) {
       displayUnit = next.displayUnit ?? displayUnit;
       for (const listener of settingsListeners) listener({ [u.SETTINGS_KEY]: { newValue: next } });
+      await flushTasks(8);
+    },
+    // A storage change for something the popup does not keep.
+    async changeOther(key) {
+      for (const listener of settingsListeners) listener({ [key]: { newValue: {} } });
+      await flushTasks(8);
+    },
+    async releaseSettingsRead() {
+      assert.ok(releaseHeldSettingsRead, 'the settings read is not held');
+      releaseHeldSettingsRead();
+      releaseHeldSettingsRead = null;
+      await flushTasks(8);
+    },
+    async releaseCommand() {
+      assert.ok(releaseHeldCommand, `${holdCommand} is not held`);
+      releaseHeldCommand();
       await flushTasks(8);
     },
     holdTabQuery() {
@@ -5963,6 +6018,69 @@ test('a slider released with the tab where it was saves the gain', async () => {
   assert.ok(Math.abs(content.stored[u.CHANNEL_VOLUMES_KEY]['login:streamer_a'].gainLive - 0.25) < 1e-9);
 });
 
+// An Auto switch answers with the gain the page settled on, which is not the
+// gain it saved: switching off saves nothing and puts the manual gain back.
+// The slider carries that answer, and with Auto off the poll that follows will
+// not put it right, so the answer is the only thing that moves it.
+const SAVED_HALF = {
+  'login:streamer_a': {
+    name: 'streamer_a',
+    gainLive: 0.5,
+    url: 'https://www.twitch.tv/streamer_a'
+  }
+};
+
+test('the slider follows the gain the page returns to when Auto goes off', async () => {
+  const content = createContentHarness({
+    href: 'https://www.twitch.tv/streamer_a',
+    channelVolumes: SAVED_HALF
+  });
+  await flushTasks();
+  await content.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    momentary: -30,
+    shortTerm: -30,
+    integrated: -30
+  });
+  await flushTasks();
+  const popup = createPopupHarness({ connectTo: content, tabUrl: 'https://www.twitch.tv/streamer_a' });
+  await flushTasks(8);
+  assert.equal(popup.el('manualSlider').value, '50', 'the saved manual gain to begin with');
+
+  // -30 LUFS against the -18 target is 10^(12/20) = 3.981, which is 398%.
+  assert.equal(popup.el('autoApplyToggle').disabled, false);
+  popup.el('autoApplyToggle').checked = true;
+  await popup.fire('autoApplyToggle', 'change');
+  assert.equal(popup.el('manualSlider').value, '398');
+
+  assert.equal(popup.el('autoApplyToggle').disabled, false);
+  popup.el('autoApplyToggle').checked = false;
+  await popup.fire('autoApplyToggle', 'change');
+  assert.equal(popup.el('manualSlider').value, '50');
+  assert.ok(
+    Math.abs(content.stored[u.CHANNEL_VOLUMES_KEY]['login:streamer_a'].gainLive - 0.5) < 1e-9,
+    'the gain the slider shows is the gain the page is running'
+  );
+});
+
+test('the slider follows the gain the page keeps when Auto goes on with nothing measured', async () => {
+  const content = createContentHarness({
+    href: 'https://www.twitch.tv/streamer_a',
+    channelVolumes: SAVED_HALF
+  });
+  await flushTasks();
+  const popup = createPopupHarness({ connectTo: content, tabUrl: 'https://www.twitch.tv/streamer_a' });
+  await flushTasks(8);
+
+  assert.equal(popup.el('autoApplyToggle').disabled, false);
+  popup.el('autoApplyToggle').checked = true;
+  await popup.fire('autoApplyToggle', 'change');
+
+  // No level measured and no Auto gain stored, so the manual gain stands.
+  assert.equal(popup.el('manualSlider').value, '50');
+});
+
 // Every gesture looks the active tab up before it sends, and the display's own
 // tick redraws the popup while that lookup is out. What is sent has to be the
 // state the viewer acted on, not the one the tick brought in.
@@ -6337,6 +6455,303 @@ test('popup says the Auto gain is a fallback while no level has been measured', 
   await flushTasks(8);
   assert.ok(off.el('fallbackBadge').className.includes('hidden'),
     'nor does a channel that is not following one');
+});
+
+// Each gesture checks again what the disabling already refused, and the checks
+// are one disjunction written four times. A case that leaves two conditions
+// true says nothing about either, so each of these makes exactly one true and
+// dispatches past the disabling — the path a click already on its way takes.
+const WATCHING = {
+  channel: { id: '55', name: 'A Streamer', kind: 'live', url: '' },
+  lufs: { momentary: -23, shortTerm: -23, integrated: -23 },
+  hasSavedMeasurement: true,
+  audioUnavailable: false,
+  autoApplyLoudness: false
+};
+
+const ONE_CONDITION = [
+  {
+    what: 'the player audio is unavailable',
+    state: { audioUnavailable: true },
+    refuses: ['applyBtn', 'manualSlider', 'resetMeasurementBtn', 'autoApplyToggle']
+  },
+  {
+    what: 'no channel was resolved',
+    state: { channel: { id: '', name: '', kind: 'live', url: '' } },
+    refuses: ['applyBtn', 'manualSlider', 'resetMeasurementBtn', 'autoApplyToggle']
+  },
+  {
+    what: 'the page is neither a stream nor a VOD',
+    state: { channel: { id: '55', name: 'A Streamer', kind: 'none', url: '' } },
+    refuses: ['applyBtn', 'manualSlider', 'resetMeasurementBtn', 'autoApplyToggle']
+  },
+  {
+    what: 'there is no measurement to reset',
+    state: {
+      lufs: { momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity },
+      hasSavedMeasurement: false
+    },
+    refuses: ['resetMeasurementBtn']
+  }
+];
+
+const CONTROL_COMMAND = {
+  applyBtn: 'setGain',
+  manualSlider: 'setGain',
+  resetMeasurementBtn: 'resetMeasurement',
+  autoApplyToggle: 'setAutoApplyLoudness'
+};
+
+for (const condition of ONE_CONDITION) {
+  for (const control of condition.refuses) {
+    test(`popup sends no ${CONTROL_COMMAND[control]} while ${condition.what}`, async () => {
+      const harness = createPopupHarness({ state: { ...WATCHING, ...condition.state } });
+      await flushTasks(8);
+      harness.sent.length = 0;
+      if (control === 'manualSlider') {
+        harness.el('manualSlider').value = '75';
+        await harness.dispatch('manualSlider');
+      } else if (control === 'autoApplyToggle') {
+        harness.el('autoApplyToggle').checked = true;
+        await harness.dispatch('autoApplyToggle');
+      } else {
+        await harness.dispatch(control, 'click');
+      }
+      assert.deepEqual(
+        harness.sent.filter((request) => request.cmd === CONTROL_COMMAND[control]),
+        []
+      );
+    });
+  }
+}
+
+test('popup sends nothing else while a measurement reset is in flight', async () => {
+  const harness = createPopupHarness({ holdCommand: 'resetMeasurement', state: WATCHING });
+  await flushTasks(8);
+  // Started, not awaited: its answer is held, so awaiting it would wait for
+  // the release this case has not made yet.
+  const resetting = harness.fire('resetMeasurementBtn', 'click');
+  await flushTasks(8);
+  harness.sent.length = 0;
+
+  await harness.dispatch('applyBtn', 'click');
+  await harness.dispatch('resetMeasurementBtn', 'click');
+  harness.el('autoApplyToggle').checked = true;
+  await harness.dispatch('autoApplyToggle');
+  assert.deepEqual(harness.sent.map((request) => request.cmd), [],
+    'the apply, a second reset and the Auto toggle all wait for it');
+
+  // The manual gain is not one of them: a reset deletes the measurement, the
+  // slider writes the gain, and the two are different fields.
+  harness.el('manualSlider').value = '75';
+  await harness.dispatch('manualSlider');
+  assert.deepEqual(
+    harness.sent.filter((request) => request.cmd === 'setGain').map((request) => request.gain),
+    [u.percentToGain(75)],
+    'while the slider still saves'
+  );
+
+  await harness.releaseCommand();
+  await resetting;
+});
+
+test('popup applies no suggested gain before it has one', async () => {
+  // The first read is held, so nothing has been drawn and no suggested gain
+  // worked out: a click that arrives then has no value to apply.
+  const harness = createPopupHarness({ holdCommand: 'getState', state: WATCHING });
+  await flushTasks(8);
+  harness.sent.length = 0;
+  await harness.dispatch('applyBtn', 'click');
+  assert.deepEqual(harness.sent.filter((request) => request.cmd === 'setGain'), []);
+  await harness.releaseCommand();
+});
+
+test('popup asks nothing of a tab whose address is not Twitch', async () => {
+  // The other half of the check the empty address covers: a URL the popup can
+  // read that belongs to a page the extension does not run in.
+  const harness = createPopupHarness({ tabUrl: 'https://example.com/watch' });
+  await flushTasks(8);
+
+  assert.equal(harness.el('errBox').textContent, harness.message('openOnTwitch'));
+  assert.deepEqual(harness.sent, []);
+});
+
+test('popup keeps the text the page ships when the locale has no message', async () => {
+  // msg hands back the key itself for a message the locale does not declare.
+  // The viewer keeps what popup.html carries rather than reading a key name.
+  const harness = createPopupHarness({ unknownI18nKeys: ['noSuchKey'] });
+  await flushTasks(8);
+
+  const node = harness.i18nNodes
+    .find((element) => element.getAttribute('data-i18n') === 'noSuchKey');
+  assert.equal(node.textContent, 'what the page ships');
+});
+
+test('popup clears the reset failure when the same channel changes kind', async () => {
+  // A stream and its VOD share an id and hold separate gains, so the move from
+  // one to the other leaves the failure the viewer saw on the one before it.
+  const harness = createPopupHarness({ failCommand: 'resetMeasurement', state: WATCHING });
+  await flushTasks(8);
+  await harness.fire('resetMeasurementBtn', 'click');
+  assert.equal(harness.el('resetMeasurementError').classList.contains('hidden'), false,
+    'the failure is on screen to begin with');
+
+  harness.setState({ channel: { id: '55', name: 'A Streamer', kind: 'vod', url: '' } });
+  await harness.poll();
+
+  assert.equal(harness.el('resetMeasurementError').classList.contains('hidden'), true);
+});
+
+test('popup keeps Apply out while a save failed and there is no level to apply', async () => {
+  const harness = createPopupHarness({
+    failCommand: 'setGain',
+    state: {
+      ...WATCHING,
+      lufs: { momentary: -23, shortTerm: -23, integrated: -Infinity }
+    }
+  });
+  await flushTasks(8);
+  harness.el('manualSlider').value = '75';
+  await harness.dispatch('manualSlider');
+
+  assert.equal(harness.el('applyHint').textContent, harness.message('gainSaveFailed'));
+  assert.equal(harness.el('applyBtn').disabled, true);
+});
+
+test('popup keeps Apply out while a save failed and Auto owns the gain', async () => {
+  const harness = createPopupHarness({ failCommand: 'setGain', state: WATCHING });
+  await flushTasks(8);
+  harness.el('manualSlider').value = '75';
+  await harness.dispatch('manualSlider');
+  assert.equal(harness.el('applyHint').textContent, harness.message('gainSaveFailed'));
+
+  // Auto goes on elsewhere — the options page, or the popup of another window.
+  harness.setState({ autoApplyLoudness: true });
+  await harness.poll();
+
+  assert.equal(harness.el('applyBtn').disabled, true);
+});
+
+test('popup waits for the page to resume before it saves the suggested gain', async () => {
+  // The player is resumed first so the gain lands on a running graph. The save
+  // is what the resume is for, so it goes out after the resume has answered.
+  const harness = createPopupHarness({ holdCommand: 'resume', state: WATCHING });
+  await flushTasks(8);
+  harness.sent.length = 0;
+  const applying = harness.fire('applyBtn', 'click');
+  await flushTasks(8);
+
+  assert.deepEqual(harness.sent.map((request) => request.cmd), ['resume']);
+
+  await harness.releaseCommand();
+  await applying;
+  assert.deepEqual(harness.sent.map((request) => request.cmd).slice(0, 2), ['resume', 'setGain']);
+});
+
+test('popup shows the gain the Auto answer carries when the read back fails', async () => {
+  // Switching Auto on saves a gain and answers with it. The read that follows
+  // normally redraws from the page; when it cannot, the answer is all there is.
+  const harness = createPopupHarness({ deferAutoSave: true, state: WATCHING });
+  await flushTasks(8);
+  harness.el('autoApplyToggle').checked = true;
+  const toggling = harness.start('autoApplyToggle', 'change');
+  await flushTasks(8);
+
+  harness.setState({ gain: 4 });
+  harness.breakSendMessage({ getState: 'Could not establish connection.' });
+  await harness.releaseAutoSave();
+  await toggling;
+
+  assert.equal(harness.el('manualSlider').value, String(u.gainToPercent(4)));
+});
+
+test('popup draws the state it reads back after an Auto save fails', async () => {
+  const harness = createPopupHarness({ failCommand: 'setAutoApplyLoudness', state: WATCHING });
+  await flushTasks(8);
+  harness.setState({ channel: { id: '99', name: 'Another Streamer', kind: 'live', url: '' } });
+
+  harness.el('autoApplyToggle').checked = true;
+  await harness.dispatchAutoToggle();
+
+  assert.equal(harness.el('autoError').classList.contains('hidden'), false);
+  assert.equal(harness.el('channelName').textContent, 'Another Streamer');
+});
+
+test('popup does not redraw the card from the slider while the Auto save is out', async () => {
+  const harness = createPopupHarness({ deferAutoSave: true, state: WATCHING });
+  await flushTasks(8);
+  harness.el('autoApplyToggle').checked = true;
+  const toggling = harness.start('autoApplyToggle', 'change');
+  await flushTasks(8);
+  const before = harness.el('manualValue').textContent;
+
+  harness.el('manualSlider').value = '75';
+  await harness.dispatch('manualSlider', 'input');
+
+  assert.equal(harness.el('manualValue').textContent, before);
+
+  await harness.releaseAutoSave();
+  await toggling;
+});
+
+test('popup does not redraw the card from a preset while the Auto save is out', async () => {
+  const harness = createPopupHarness({ deferAutoSave: true, state: WATCHING });
+  await flushTasks(8);
+  harness.el('autoApplyToggle').checked = true;
+  const toggling = harness.start('autoApplyToggle', 'change');
+  await flushTasks(8);
+  const before = harness.el('manualValue').textContent;
+  const slider = harness.el('manualSlider').value;
+
+  // The 200% preset, which is not where the slider stands.
+  await harness.dispatchPreset(3);
+
+  assert.equal(harness.el('manualValue').textContent, before);
+  assert.equal(harness.el('manualSlider').value, slider);
+
+  await harness.releaseAutoSave();
+  await toggling;
+});
+
+test('popup ignores a storage change that is not the settings', async () => {
+  const harness = createPopupHarness({ displayUnit: 'dB', state: WATCHING });
+  await flushTasks(8);
+  const drawn = harness.el('manualValue').textContent;
+  harness.sent.length = 0;
+
+  await harness.changeOther('channels');
+
+  assert.deepEqual(harness.sent, [], 'the page is not asked again');
+  assert.equal(harness.el('manualValue').textContent, drawn);
+});
+
+test('popup asks the page nothing until it has read the display unit', async () => {
+  // The unit the settings name is what the first draw is written in, so the
+  // read that fetches it comes before the read that fills the cards.
+  const harness = createPopupHarness({
+    holdSettingsRead: true,
+    displayUnit: 'dB',
+    state: WATCHING
+  });
+  await flushTasks(8);
+
+  assert.deepEqual(harness.sent, []);
+
+  await harness.releaseSettingsRead();
+  assert.deepEqual(harness.sent.map((request) => request.cmd), ['getState']);
+  assert.match(harness.el('manualValue').textContent, / dB$/);
+});
+
+test('popup stays hidden until the first state is drawn', async () => {
+  const harness = createPopupHarness({ holdCommand: 'getState', state: WATCHING });
+  await flushTasks(8);
+
+  assert.ok(harness.body.classList.contains('initializing'),
+    'hidden while the first read is out');
+
+  await harness.releaseCommand();
+  assert.equal(harness.body.classList.contains('initializing'), false);
+  assert.equal(harness.el('channelName').textContent, 'A Streamer');
 });
 
 test('a drag that ended without a change does not hold the next one', async () => {
