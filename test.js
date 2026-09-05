@@ -5800,6 +5800,57 @@ test('content reseeds on a kind change when SPA navigation lost the reapply race
   assert.equal(afterOwner[0].initialIntegratedLufs, -23);
 });
 
+test('a gain the store refuses is put back before the refusal is answered', async () => {
+  const harness = createContentHarness({ failChannelMutationOperation: 'saveGain' });
+  await flushTasks();
+  harness.commands.length = 0;
+
+  // The popup redraws from the answer, so the level it is told about has to be
+  // the level in force by then — not one the restore is still on its way to.
+  let answered = null;
+  let gainsWhenAnswered = null;
+  const pending = harness.dispatchGesture({ cmd: 'setGain', gain: 2 }).then((response) => {
+    answered = response;
+    gainsWhenAnswered = harness.commands
+      .filter((command) => command.cmd === 'setGain')
+      .map((command) => command.value);
+  });
+  await flushTasks();
+  await pending;
+
+  assert.equal(answered.ok, false);
+  assert.equal(answered.reason, 'storage update failed');
+  assert.deepEqual(gainsWhenAnswered, [2, 0.5]);
+});
+
+test('a second measurement reset while one is in flight is refused', async () => {
+  const harness = createContentHarness({
+    deferChannelMutationOperation: 'clearMeasurement',
+    channelVolumes: {
+      'vod-owner:100': {
+        name: '100',
+        gainVod: 0.5,
+        lastLufs: { vod: -21 },
+        lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 },
+        lastLufsWindows: { vod: 600 }
+      }
+    }
+  });
+  await flushTasks();
+
+  const first = harness.dispatchGesture({ cmd: 'resetMeasurement' });
+  await flushTasks();
+
+  let second = null;
+  harness.dispatchGesture({ cmd: 'resetMeasurement' }).then((response) => { second = response; });
+  await flushTasks();
+  assert.equal(second?.ok, false);
+  assert.equal(second?.reason, 'measurement reset pending');
+
+  harness.releaseChannelMutation();
+  assert.equal((await first).ok, true);
+});
+
 test('turning Auto off stores no Auto gain for it to come back with', async () => {
   // Auto is already off, so the reading below is not followed into a saved
   // gain by anything else: what the mutation writes is the whole difference.
