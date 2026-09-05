@@ -2772,6 +2772,9 @@ function createPopupHarness({
   failCommand = '',
   tabUrl = 'https://www.twitch.tv/somechannel',
   sendMessageError = '',
+  // A command whose answer is held until the case lets it go, so the state a
+  // gesture leaves behind while it is out can be driven.
+  holdCommand = '',
   // A content harness to answer for real, instead of the stubbed replies. What
   // the popup sends then has to get past the same check production applies.
   connectTo = null
@@ -2784,6 +2787,7 @@ function createPopupHarness({
   let heldTabQuery = null;
   let releaseHeldTabQuery = null;
   let tabQueryWasHeld = false;
+  let releaseHeldCommand = null;
   let activeTabUrl = tabUrl;
   const messages = JSON.parse(
     fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json'), 'utf8')
@@ -2864,6 +2868,9 @@ function createPopupHarness({
           ? thrownBySendMessage
           : thrownBySendMessage?.[request.cmd];
         if (thrown) throw new Error(thrown);
+        if (holdCommand && request.cmd === holdCommand && !releaseHeldCommand) {
+          await new Promise((resolve) => { releaseHeldCommand = resolve; });
+        }
         if (connectTo) return connectTo.dispatchRuntime(structuredClone(request));
         if (request.cmd === 'getState') return structuredClone(currentState);
         if (request.cmd === failCommand) {
@@ -2932,6 +2939,11 @@ function createPopupHarness({
     async changeSettings(next) {
       displayUnit = next.displayUnit ?? displayUnit;
       for (const listener of settingsListeners) listener({ [u.SETTINGS_KEY]: { newValue: next } });
+      await flushTasks(8);
+    },
+    async releaseCommand() {
+      assert.ok(releaseHeldCommand, `${holdCommand} is not held`);
+      releaseHeldCommand();
       await flushTasks(8);
     },
     holdTabQuery() {
@@ -6337,6 +6349,115 @@ test('popup says the Auto gain is a fallback while no level has been measured', 
   await flushTasks(8);
   assert.ok(off.el('fallbackBadge').className.includes('hidden'),
     'nor does a channel that is not following one');
+});
+
+// Each gesture checks again what the disabling already refused, and the checks
+// are one disjunction written four times. A case that leaves two conditions
+// true says nothing about either, so each of these makes exactly one true and
+// dispatches past the disabling — the path a click already on its way takes.
+const WATCHING = {
+  channel: { id: '55', name: 'A Streamer', kind: 'live', url: '' },
+  lufs: { momentary: -23, shortTerm: -23, integrated: -23 },
+  hasSavedMeasurement: true,
+  audioUnavailable: false,
+  autoApplyLoudness: false
+};
+
+const ONE_CONDITION = [
+  {
+    what: 'the player audio is unavailable',
+    state: { audioUnavailable: true },
+    refuses: ['applyBtn', 'manualSlider', 'resetMeasurementBtn', 'autoApplyToggle']
+  },
+  {
+    what: 'no channel was resolved',
+    state: { channel: { id: '', name: '', kind: 'live', url: '' } },
+    refuses: ['applyBtn', 'manualSlider', 'resetMeasurementBtn', 'autoApplyToggle']
+  },
+  {
+    what: 'the page is neither a stream nor a VOD',
+    state: { channel: { id: '55', name: 'A Streamer', kind: 'none', url: '' } },
+    refuses: ['applyBtn', 'manualSlider', 'resetMeasurementBtn', 'autoApplyToggle']
+  },
+  {
+    what: 'there is no measurement to reset',
+    state: {
+      lufs: { momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity },
+      hasSavedMeasurement: false
+    },
+    refuses: ['resetMeasurementBtn']
+  }
+];
+
+const CONTROL_COMMAND = {
+  applyBtn: 'setGain',
+  manualSlider: 'setGain',
+  resetMeasurementBtn: 'resetMeasurement',
+  autoApplyToggle: 'setAutoApplyLoudness'
+};
+
+for (const condition of ONE_CONDITION) {
+  for (const control of condition.refuses) {
+    test(`popup sends no ${CONTROL_COMMAND[control]} while ${condition.what}`, async () => {
+      const harness = createPopupHarness({ state: { ...WATCHING, ...condition.state } });
+      await flushTasks(8);
+      harness.sent.length = 0;
+      if (control === 'manualSlider') {
+        harness.el('manualSlider').value = '75';
+        await harness.dispatch('manualSlider');
+      } else if (control === 'autoApplyToggle') {
+        harness.el('autoApplyToggle').checked = true;
+        await harness.dispatch('autoApplyToggle');
+      } else {
+        await harness.dispatch(control, 'click');
+      }
+      assert.deepEqual(
+        harness.sent.filter((request) => request.cmd === CONTROL_COMMAND[control]),
+        []
+      );
+    });
+  }
+}
+
+test('popup sends nothing else while a measurement reset is in flight', async () => {
+  const harness = createPopupHarness({ holdCommand: 'resetMeasurement', state: WATCHING });
+  await flushTasks(8);
+  // Started, not awaited: its answer is held, so awaiting it would wait for
+  // the release this case has not made yet.
+  const resetting = harness.fire('resetMeasurementBtn', 'click');
+  await flushTasks(8);
+  harness.sent.length = 0;
+
+  await harness.dispatch('applyBtn', 'click');
+  await harness.dispatch('resetMeasurementBtn', 'click');
+  harness.el('autoApplyToggle').checked = true;
+  await harness.dispatch('autoApplyToggle');
+  assert.deepEqual(harness.sent.map((request) => request.cmd), [],
+    'the apply, a second reset and the Auto toggle all wait for it');
+
+  // The manual gain is not one of them: a reset deletes the measurement, the
+  // slider writes the gain, and the two are different fields.
+  harness.el('manualSlider').value = '75';
+  await harness.dispatch('manualSlider');
+  assert.deepEqual(
+    harness.sent.filter((request) => request.cmd === 'setGain').map((request) => request.gain),
+    [u.percentToGain(75)],
+    'while the slider still saves'
+  );
+
+  await harness.releaseCommand();
+  await resetting;
+});
+
+test('popup applies no suggested gain before it has one', async () => {
+  // The first read is held, so nothing has been drawn and no suggested gain
+  // worked out: a click that arrives then has no value to apply.
+  const harness = createPopupHarness({ holdCommand: 'getState', state: WATCHING });
+  await flushTasks(8);
+  harness.sent.length = 0;
+  await harness.dispatch('applyBtn', 'click');
+  assert.deepEqual(harness.sent.filter((request) => request.cmd === 'setGain'), []);
+  await harness.releaseCommand();
 });
 
 test('a drag that ended without a change does not hold the next one', async () => {
