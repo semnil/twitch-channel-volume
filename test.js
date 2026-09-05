@@ -2552,6 +2552,7 @@ function stubElement(id) {
   const element = {
     id,
     listeners,
+    children: [],
     disabled: false,
     checked: false,
     value: '',
@@ -2576,9 +2577,10 @@ function stubElement(id) {
       String(value).split(/\s+/).filter(Boolean).forEach((name) => classes.add(name));
     },
     get innerHTML() { return element.textContent; },
-    set innerHTML(value) { element.textContent = String(value); },
+    set innerHTML(value) { element.textContent = String(value); element.children.length = 0; },
     appendChild(node) {
       element.textContent += node.textContent || '';
+      element.children.push(node);
       return node;
     },
     // The stub holds text, never child nodes, so a lookup inside it finds none.
@@ -2778,6 +2780,7 @@ function createPopupHarness({
   // An object fails the commands it names, for the round trip that dies partway.
   let thrownBySendMessage = sendMessageError;
   let thrownByTabQuery = '';
+  const settingsListeners = [];
   let heldTabQuery = null;
   let releaseHeldTabQuery = null;
   let tabQueryWasHeld = false;
@@ -2873,7 +2876,7 @@ function createPopupHarness({
     },
     storage: {
       local: { async get() { return { [u.SETTINGS_KEY]: { displayUnit } }; } },
-      onChanged: { addListener() {} }
+      onChanged: { addListener(listener) { settingsListeners.push(listener); } }
     },
     runtime: { openOptionsPage() {} }
   };
@@ -2922,6 +2925,12 @@ function createPopupHarness({
     setState(next) { currentState = { ...currentState, ...next }; },
     breakSendMessage(spec) { thrownBySendMessage = spec; },
     breakTabQuery(message) { thrownByTabQuery = message; },
+    // A settings change as the options page makes one.
+    async changeSettings(next) {
+      displayUnit = next.displayUnit ?? displayUnit;
+      for (const listener of settingsListeners) listener({ [u.SETTINGS_KEY]: { newValue: next } });
+      await flushTasks(8);
+    },
     holdTabQuery() {
       tabQueryWasHeld = false;
       heldTabQuery = new Promise((resolve) => { releaseHeldTabQuery = resolve; });
@@ -5966,6 +5975,152 @@ for (const gesture of [
     assert.equal(sent[0].appliesTo, 'A|live|');
   });
 }
+
+test('popup draws in the unit the settings name, and follows a change to it', async () => {
+  const harness = createPopupHarness({ displayUnit: 'dB', state: { gain: 2 } });
+  await flushTasks(8);
+
+  const inDb = u.formatGain(2, 'dB');
+  assert.equal(harness.el('manualValue').textContent, inDb.text + inDb.unit);
+  assert.equal(Number(harness.el('manualSlider').value), 200,
+    'the slider itself still stands in percent');
+
+  // The settings page changes the unit while the popup is open.
+  await harness.changeSettings({ displayUnit: '%' });
+  assert.equal(harness.el('manualValue').textContent, '200%');
+
+  // And back, without the popup being reopened.
+  await harness.changeSettings({ displayUnit: 'dB' });
+  assert.equal(harness.el('manualValue').textContent, inDb.text + inDb.unit);
+});
+
+test('popup ignores a storage change that is not the settings', async () => {
+  const harness = createPopupHarness({ displayUnit: 'dB', state: { gain: 2 } });
+  await flushTasks(8);
+  const drawn = harness.el('manualValue').textContent;
+  await harness.changeSettings({});
+  assert.equal(harness.el('manualValue').textContent, '200%',
+    'settings that name no unit draw percent');
+});
+
+test('popup badges the channel with the kind being watched', async () => {
+  const live = createPopupHarness({
+    state: { channel: { id: '55', name: 'A Streamer', kind: 'live', url: '' } }
+  });
+  await flushTasks(8);
+  assert.equal(live.el('channelName').textContent, 'A Streamer');
+  assert.equal(live.el('channelName').title, 'A Streamer',
+    'the full name is kept for the hover, the row truncating it');
+  assert.equal(live.el('channelKind').textContent, live.message('typeLive'));
+  assert.ok(!live.el('channelKind').className.includes('hidden'));
+
+  const vod = createPopupHarness({
+    state: { channel: { id: '55', name: 'A Streamer', kind: 'vod', url: '' } }
+  });
+  await flushTasks(8);
+  assert.equal(vod.el('channelKind').textContent, vod.message('typeVod'));
+
+  const none = createPopupHarness({
+    state: { channel: { id: '', name: '', kind: 'none' } }
+  });
+  await flushTasks(8);
+  assert.equal(none.el('channelName').textContent, none.message('channelNotDetected'));
+  assert.ok(none.el('channelName').className.includes('empty'));
+  assert.ok(none.el('channelKind').className.includes('hidden'),
+    'a page with no kind carries no badge');
+  assert.equal(none.el('channelKind').textContent, '');
+});
+
+test('popup shows an unmeasured level as unknown rather than as a number', async () => {
+  const harness = createPopupHarness({
+    state: { lufs: { momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity } }
+  });
+  await flushTasks(8);
+  const cell = harness.el('integrated');
+  assert.equal(cell.textContent, '---');
+  assert.equal(cell.children.length, 1, 'the unknown cell carries no unit beside it');
+  assert.ok(cell.className.includes('unknown'));
+
+  const measured = createPopupHarness({
+    state: { lufs: { momentary: -23, shortTerm: -23, integrated: -23 } }
+  });
+  await flushTasks(8);
+  const withValue = measured.el('integrated');
+  assert.equal(withValue.textContent, '-23.0 LUFS');
+  assert.equal(withValue.children.length, 2, 'the value and the unit beside it');
+  assert.equal(withValue.children[1].textContent, ' LUFS');
+  assert.ok(!withValue.className.includes('unknown'));
+});
+
+test('popup disables what a page without a channel cannot do', async () => {
+  const none = createPopupHarness({
+    state: {
+      channel: { id: '', name: '', kind: 'none' },
+      lufs: { momentary: -23, shortTerm: -23, integrated: -23 },
+      hasSavedMeasurement: true
+    }
+  });
+  await flushTasks(8);
+  assert.equal(none.el('autoApplyToggle').disabled, true);
+  assert.equal(none.el('resetMeasurementBtn').disabled, true);
+  assert.equal(none.el('manualSlider').disabled, true);
+
+  const watching = createPopupHarness({
+    state: {
+      channel: { id: '55', name: 'A Streamer', kind: 'live', url: '' },
+      lufs: { momentary: -23, shortTerm: -23, integrated: -23 },
+      hasSavedMeasurement: true
+    }
+  });
+  await flushTasks(8);
+  assert.equal(watching.el('autoApplyToggle').disabled, false);
+  assert.equal(watching.el('resetMeasurementBtn').disabled, false);
+  assert.equal(watching.el('manualSlider').disabled, false);
+
+  // Nothing measured and nothing saved: there is no measurement to reset.
+  const nothingToReset = createPopupHarness({
+    state: {
+      channel: { id: '55', name: 'A Streamer', kind: 'live', url: '' },
+      lufs: { momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity },
+      hasSavedMeasurement: false
+    }
+  });
+  await flushTasks(8);
+  assert.equal(nothingToReset.el('resetMeasurementBtn').disabled, true);
+  assert.equal(nothingToReset.el('autoApplyToggle').disabled, false,
+    'while the Auto toggle is still the viewer\'s to move');
+});
+
+test('popup says the Auto gain is a fallback while no level has been measured', async () => {
+  const fallback = createPopupHarness({
+    state: {
+      autoApplyLoudness: true,
+      lufs: { momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity }
+    }
+  });
+  await flushTasks(8);
+  assert.ok(!fallback.el('fallbackBadge').className.includes('hidden'));
+
+  const measured = createPopupHarness({
+    state: {
+      autoApplyLoudness: true,
+      lufs: { momentary: -23, shortTerm: -23, integrated: -23 }
+    }
+  });
+  await flushTasks(8);
+  assert.ok(measured.el('fallbackBadge').className.includes('hidden'),
+    'a level in hand needs no fallback badge');
+
+  const off = createPopupHarness({
+    state: {
+      autoApplyLoudness: false,
+      lufs: { momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity }
+    }
+  });
+  await flushTasks(8);
+  assert.ok(off.el('fallbackBadge').className.includes('hidden'),
+    'nor does a channel that is not following one');
+});
 
 test('a slider released after a route change saves against the state it was moved on', async () => {
   const harness = createPopupHarness({
