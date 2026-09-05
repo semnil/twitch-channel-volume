@@ -2900,12 +2900,7 @@ function createPopupHarness({
         if (request.cmd === 'setAutoApplyLoudness') {
           if (deferAutoSave) await new Promise((resolve) => { resolveAutoSave = resolve; });
           currentState = { ...currentState, autoApplyLoudness: !!request.enabled };
-          // The page works a gain out only when Auto goes on over a level it
-          // has measured. Switching it off saves none and answers without one.
-          const gain = request.enabled && Number.isFinite(currentState.lufs?.integrated)
-            ? currentState.gain
-            : undefined;
-          return { ok: true, autoApplyLoudness: !!request.enabled, gain };
+          return { ok: true, autoApplyLoudness: !!request.enabled, gain: currentState.gain };
         }
         return { ok: true };
       }
@@ -6023,6 +6018,69 @@ test('a slider released with the tab where it was saves the gain', async () => {
   assert.ok(Math.abs(content.stored[u.CHANNEL_VOLUMES_KEY]['login:streamer_a'].gainLive - 0.25) < 1e-9);
 });
 
+// An Auto switch answers with the gain the page settled on, which is not the
+// gain it saved: switching off saves nothing and puts the manual gain back.
+// The slider carries that answer, and with Auto off the poll that follows will
+// not put it right, so the answer is the only thing that moves it.
+const SAVED_HALF = {
+  'login:streamer_a': {
+    name: 'streamer_a',
+    gainLive: 0.5,
+    url: 'https://www.twitch.tv/streamer_a'
+  }
+};
+
+test('the slider follows the gain the page returns to when Auto goes off', async () => {
+  const content = createContentHarness({
+    href: 'https://www.twitch.tv/streamer_a',
+    channelVolumes: SAVED_HALF
+  });
+  await flushTasks();
+  await content.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    momentary: -30,
+    shortTerm: -30,
+    integrated: -30
+  });
+  await flushTasks();
+  const popup = createPopupHarness({ connectTo: content, tabUrl: 'https://www.twitch.tv/streamer_a' });
+  await flushTasks(8);
+  assert.equal(popup.el('manualSlider').value, '50', 'the saved manual gain to begin with');
+
+  // -30 LUFS against the -18 target is 10^(12/20) = 3.981, which is 398%.
+  assert.equal(popup.el('autoApplyToggle').disabled, false);
+  popup.el('autoApplyToggle').checked = true;
+  await popup.fire('autoApplyToggle', 'change');
+  assert.equal(popup.el('manualSlider').value, '398');
+
+  assert.equal(popup.el('autoApplyToggle').disabled, false);
+  popup.el('autoApplyToggle').checked = false;
+  await popup.fire('autoApplyToggle', 'change');
+  assert.equal(popup.el('manualSlider').value, '50');
+  assert.ok(
+    Math.abs(content.stored[u.CHANNEL_VOLUMES_KEY]['login:streamer_a'].gainLive - 0.5) < 1e-9,
+    'the gain the slider shows is the gain the page is running'
+  );
+});
+
+test('the slider follows the gain the page keeps when Auto goes on with nothing measured', async () => {
+  const content = createContentHarness({
+    href: 'https://www.twitch.tv/streamer_a',
+    channelVolumes: SAVED_HALF
+  });
+  await flushTasks();
+  const popup = createPopupHarness({ connectTo: content, tabUrl: 'https://www.twitch.tv/streamer_a' });
+  await flushTasks(8);
+
+  assert.equal(popup.el('autoApplyToggle').disabled, false);
+  popup.el('autoApplyToggle').checked = true;
+  await popup.fire('autoApplyToggle', 'change');
+
+  // No level measured and no Auto gain stored, so the manual gain stands.
+  assert.equal(popup.el('manualSlider').value, '50');
+});
+
 // Every gesture looks the active tab up before it sends, and the display's own
 // tick redraws the popup while that lookup is out. What is sent has to be the
 // state the viewer acted on, not the one the tick brought in.
@@ -6605,26 +6663,6 @@ test('popup shows the gain the Auto answer carries when the read back fails', as
   await toggling;
 
   assert.equal(harness.el('manualSlider').value, String(u.gainToPercent(4)));
-});
-
-test('popup leaves the slider alone when the Auto answer carries no gain', async () => {
-  // Switching Auto off saves no gain and answers without one, and so does
-  // switching it on with no level measured. The slider stays where it was.
-  const harness = createPopupHarness({
-    deferAutoSave: true,
-    state: { ...WATCHING, autoApplyLoudness: true }
-  });
-  await flushTasks(8);
-  const before = harness.el('manualSlider').value;
-  harness.el('autoApplyToggle').checked = false;
-  const toggling = harness.start('autoApplyToggle', 'change');
-  await flushTasks(8);
-
-  harness.breakSendMessage({ getState: 'Could not establish connection.' });
-  await harness.releaseAutoSave();
-  await toggling;
-
-  assert.equal(harness.el('manualSlider').value, before);
 });
 
 test('popup draws the state it reads back after an Auto save fails', async () => {
