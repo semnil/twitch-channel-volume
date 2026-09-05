@@ -6041,9 +6041,15 @@ test('content rejects Manual gain changes while an Auto mutation is pending', as
   });
   await flushTasks();
 
-  const manualResponse = await harness.dispatchGesture({ cmd: 'setGain', gain: 1.2 });
-  assert.equal(manualResponse.ok, false);
-  assert.equal(manualResponse.reason, 'auto update pending');
+  // A refusal is answered where it stands. Awaiting the gesture instead would
+  // hang the whole run if the refusal were ever dropped, since a gain that
+  // goes through waits on the mutation this test is holding.
+  let manualResponse = null;
+  harness.dispatchGesture({ cmd: 'setGain', gain: 1.2 })
+    .then((response) => { manualResponse = response; });
+  await flushTasks();
+  assert.equal(manualResponse?.ok, false);
+  assert.equal(manualResponse?.reason, 'auto update pending');
   assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].gainVod, 0.5);
 
   harness.releaseChannelMutation();
