@@ -8881,6 +8881,612 @@ test('the service worker scripts do not share a top-level name', () => {
   }
 });
 
+function createStoreWriter(stored = {}) {
+  const state = structuredClone(stored);
+  const storage = {
+    async get(keys) { return readStoredKeys(state, keys); },
+    async set(update) { Object.assign(state, structuredClone(update)); }
+  };
+  return {
+    state,
+    write: channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 1000)
+  };
+}
+
+test('the writer writes no alias from an id to itself', async () => {
+  const writer = createStoreWriter({
+    channelVolumes: { 55: { name: 'somechannel', login: 'somechannel', gainLive: 1 } }
+  });
+
+  await writer.write({ operation: 'mergeChannelIds', fromId: '55', toId: '55', kind: 'live' });
+
+  assert.equal(writer.state.channelVolumeAliases['55'], undefined,
+    `an id is not made to point at itself (${JSON.stringify(writer.state.channelVolumeAliases)})`);
+});
+
+test('the writer reads an alias map as a map, or not at all', async () => {
+  const writer = createStoreWriter({
+    channelVolumes: { 55: { name: 'somechannel', login: 'somechannel' } },
+    channelVolumeAliases: 'login:somechannel'
+  });
+
+  await writer.write({ operation: 'saveGain', channelId: '55', kind: 'live', gain: 2 });
+
+  assert.deepEqual(
+    Object.keys(writer.state.channelVolumeAliases),
+    ['login:somechannel'],
+    `nothing of a map that is not one is carried into the one written back (${JSON.stringify(writer.state.channelVolumeAliases)})`
+  );
+});
+
+test('a merge from an id already canonicalised moves nothing and repoints nothing', async () => {
+  // A later owner answer can name a different channel for a provisional id
+  // that has already been settled. Following it would merge one confirmed
+  // owner into another, and would send everything filed under that
+  // provisional id to the wrong channel from then on.
+  const writer = createStoreWriter({
+    channelVolumes: {
+      55: { name: 'first', login: 'somechannel', gainLive: 0.5 },
+      66: { name: 'second', login: 'other', gainLive: 2 }
+    },
+    channelVolumeAliases: { 'login:somechannel': '55' }
+  });
+
+  await writer.write({
+    operation: 'mergeChannelIds', fromId: 'login:somechannel', toId: '66', kind: 'live'
+  });
+
+  assert.equal(writer.state.channelVolumes['55'].gainLive, 0.5, 'the settled row stays where it is');
+  assert.equal(writer.state.channelVolumes['66'].gainLive, 2, 'and nothing of it reaches the other');
+  assert.equal(writer.state.channelVolumeAliases['login:somechannel'], '55',
+    `and the provisional id still points where it was settled (${JSON.stringify(writer.state.channelVolumeAliases)})`);
+});
+
+test('the writer follows an alias before it applies a mutation', async () => {
+  // The sender knew only the provisional id. The value belongs to the channel
+  // that id was canonicalised to, and the name it captured then does not.
+  const writer = createStoreWriter({
+    channelVolumes: { 55: { name: 'confirmed', login: 'somechannel' } },
+    channelVolumeAliases: { 'login:somechannel': '55' }
+  });
+
+  await writer.write({
+    operation: 'saveGain', channelId: 'login:somechannel', kind: 'live', gain: 2,
+    channel: { name: 'stale name' }
+  });
+
+  assert.equal(writer.state.channelVolumes['55'].gainLive, 2, 'the gain lands on the channel');
+  assert.equal(writer.state.channelVolumes['login:somechannel'], undefined, 'not on the id it was sent to');
+  assert.equal(writer.state.channelVolumes['55'].name, 'confirmed',
+    `and the name captured before the id was known is not written (${writer.state.channelVolumes['55'].name})`);
+});
+
+test('the writer follows an alias on both ends of a merge', async () => {
+  const writer = createStoreWriter({
+    channelVolumes: { 55: { name: 'confirmed', login: 'somechannel', gainLive: 1 } },
+    channelVolumeAliases: { 'login:somechannel': '55' }
+  });
+
+  await writer.write({
+    operation: 'mergeChannelIds', fromId: 'login:somechannel', toId: '55', kind: 'live'
+  });
+
+  assert.deepEqual(Object.keys(writer.state.channelVolumes), ['55'],
+    'a merge onto the id an alias already points at makes no second row');
+  assert.equal(writer.state.channelVolumes['55'].gainLive, 1);
+});
+
+test('the writer records where a merge sent a provisional id', async () => {
+  const writer = createStoreWriter({
+    channelVolumes: { 'login:somechannel': { name: 'provisional', login: 'somechannel', gainLive: 2 } }
+  });
+
+  await writer.write({
+    operation: 'mergeChannelIds', fromId: 'login:somechannel', toId: '55', kind: 'live'
+  });
+
+  assert.equal(writer.state.channelVolumeAliases['login:somechannel'], '55',
+    `the provisional id points at the channel (${JSON.stringify(writer.state.channelVolumeAliases)})`);
+  assert.equal(writer.state.channelVolumes['55'].gainLive, 2);
+});
+
+test('the writer forgets every alias when the channels are cleared', async () => {
+  const writer = createStoreWriter({
+    channelVolumes: { 55: { name: 'somechannel', login: 'somechannel', gainLive: 2 } },
+    channelVolumeAliases: { 'login:somechannel': '55' }
+  });
+
+  await writer.write({ operation: 'clearChannels' });
+
+  assert.deepEqual(writer.state.channelVolumes, {}, 'the rows go');
+  assert.deepEqual(writer.state.channelVolumeAliases, {},
+    `and nothing is left pointing at them (${JSON.stringify(writer.state.channelVolumeAliases)})`);
+});
+
+test('the writer reads an alias map only where there is one to read', async () => {
+  for (const aliases of ['not a map', 42, null, undefined, true]) {
+    const writer = createStoreWriter({
+      channelVolumes: { 55: { name: 'somechannel', login: 'somechannel' } },
+      channelVolumeAliases: aliases
+    });
+
+    await writer.write({ operation: 'saveGain', channelId: '55', kind: 'live', gain: 2 });
+
+    assert.equal(writer.state.channelVolumes['55'].gainLive, 2, `aliases ${JSON.stringify(aliases) ?? 'undefined'}`);
+    assert.equal(typeof writer.state.channelVolumeAliases, 'object', 'and a map is written back');
+    assert.equal(writer.state.channelVolumeAliases['login:somechannel'], '55',
+      'carrying what the rows themselves say');
+  }
+});
+
+test('the writer refuses an alias map that points in a circle', async () => {
+  const writer = createStoreWriter({
+    channelVolumes: {},
+    channelVolumeAliases: { 'login:a': 'login:b', 'login:b': 'login:a' }
+  });
+
+  await assert.rejects(
+    () => writer.write({ operation: 'saveGain', channelId: 'login:a', kind: 'live', gain: 2 }),
+    { reason: 'stored-state-invalid', message: 'channel alias cycle detected' }
+  );
+});
+
+test('the writer stops following an alias that points at nothing', async () => {
+  for (const target of ['', 42, null, 'login:a']) {
+    const writer = createStoreWriter({
+      channelVolumes: {},
+      channelVolumeAliases: { 'login:a': target }
+    });
+
+    await writer.write({ operation: 'saveGain', channelId: 'login:a', kind: 'live', gain: 2 });
+
+    assert.equal(writer.state.channelVolumes['login:a']?.gainLive, 2,
+      `the save stays where it was sent (${JSON.stringify(target)})`);
+  }
+});
+
+test('an update number is a counter, and nothing else is one', () => {
+  // The number decides which of two tabs' saves wins. A value that cannot be
+  // ordered would settle that by accident.
+  for (const sequence of [0, -1, 1.5, '1', NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, null]) {
+    assert.throws(
+      () => channelStore.applyChannelVolumesMutation(
+        {}, { operation: 'saveGain', channelId: '55', kind: 'live', gain: 1, sequence }, 1
+      ),
+      { reason: 'invalid-mutation', message: 'sequence must be a positive safe integer' },
+      `sequence ${String(sequence)}`
+    );
+  }
+
+  const numbered = channelStore.applyChannelVolumesMutation(
+    {}, { operation: 'saveGain', channelId: '55', kind: 'live', gain: 1, sequence: 1 }, 1
+  );
+  assert.equal(numbered['55'].__fieldVersions.gainLive, 1, 'and one is taken');
+
+  // A save that carries no number at all is one from before the writer gave
+  // them out; it is applied and left unnumbered.
+  const unnumbered = channelStore.applyChannelVolumesMutation(
+    {}, { operation: 'saveGain', channelId: '55', kind: 'live', gain: 1 }, 1
+  );
+  assert.equal(unnumbered['55'].gainLive, 1);
+  assert.equal(unnumbered['55'].__fieldVersions, undefined);
+});
+
+test('the channel store leaves what it was handed alone', () => {
+  // The map comes from storage and goes back to the single writer. A mutation
+  // that wrote through into it would carry a half-applied change into whatever
+  // else is holding that object.
+  const stored = {
+    55: {
+      name: 'somechannel', gainLive: 0.5,
+      lastLufs: { live: -23 },
+      __fieldVersions: { gainLive: 1, 'lastLufs.live': 1 }
+    }
+  };
+  const before = JSON.stringify(stored);
+
+  channelStore.applyChannelVolumesMutation(
+    stored,
+    { operation: 'saveGain', channelId: '55', kind: 'live', gain: 2, sequence: 5 },
+    1
+  );
+
+  assert.equal(JSON.stringify(stored), before, 'the map it was handed is unchanged');
+});
+
+test('a measurement save checks the Auto gain riding with it', () => {
+  for (const autoGain of [-0.1, 6.1, NaN, Infinity, '1', null]) {
+    assert.throws(
+      () => channelStore.applyChannelVolumesMutation(
+        {},
+        { operation: 'saveMeasurement', channelId: '55', kind: 'live', lufs: -23, autoGain, sequence: 1 },
+        1
+      ),
+      { reason: 'invalid-mutation', message: 'autoGain must be finite and within [0, 6]' },
+      `autoGain ${String(autoGain)}`
+    );
+  }
+  const applied = channelStore.applyChannelVolumesMutation(
+    {},
+    { operation: 'saveMeasurement', channelId: '55', kind: 'live', lufs: -23, autoGain: 2, sequence: 1 },
+    1
+  );
+  assert.equal(applied['55'].autoGainLive, 2);
+  assert.equal(applied['55'].lastLufs.live, -23);
+});
+
+test('a save carrying no channel of its own leaves the row named as it was', () => {
+  for (const channel of [null, undefined, 'somechannel', 42, true, []]) {
+    const applied = channelStore.applyChannelVolumesMutation(
+      { 55: { name: 'kept', login: 'kept' } },
+      { operation: 'saveGain', channelId: '55', kind: 'live', gain: 1, sequence: 1, channel },
+      1
+    );
+    assert.equal(applied['55'].name, 'kept', `channel ${JSON.stringify(channel) ?? 'undefined'}`);
+    assert.equal(applied['55'].gainLive, 1, 'while the save itself lands');
+  }
+});
+
+test('a row put through the clip sweep keeps what is not a clip', () => {
+  // Rows written before clips were dropped carry per-kind maps with a clip in
+  // them, and maps that are not maps at all.
+  const swept = channelStore.applyChannelVolumesMutation(
+    {
+      55: {
+        name: 'somechannel', login: 'somechannel', gainLive: 1, gainClip: 2,
+        lastLufs: { live: -23, clip: -10 },
+        lastLufsRef: null,
+        lastLufsWindows: { live: 600, clip: 300 },
+        autoGainRef: { live: 'volume-1', clip: 'volume-1' },
+        __fieldVersions: { gainLive: 1, gainClip: 1 }
+      }
+    },
+    { operation: 'normalizeChannels' },
+    1
+  )['55'];
+
+  assert.equal(swept.gainClip, undefined, 'the clip gain goes');
+  assert.equal(swept.gainLive, 1, 'the live gain stays');
+  assert.deepEqual(swept.lastLufs, { live: -23 }, 'and the clip is taken out of the maps');
+  assert.deepEqual(swept.autoGainRef, { live: 'volume-1' });
+  assert.equal(swept.lastLufsRef, null, 'a map that is not one is stepped over, not read into');
+  assert.deepEqual(swept.lastLufsWindows, { live: 600 }, 'and the clip goes from the maps that are');
+  assert.deepEqual(swept.__fieldVersions, { gainLive: 1 }, 'and the numbers go with the fields');
+});
+
+test('the clip sweep keeps a row it had nothing to take from', () => {
+  // A row is deleted only when the sweep is what emptied it. One that was
+  // already holding nothing was not this pass's doing.
+  const kept = channelStore.applyChannelVolumesMutation(
+    {
+      55: { name: 'somechannel', login: 'somechannel', __fieldVersions: { gainLive: 1 } },
+      66: { name: 'clip only', login: 'cliponly', gainClip: 2 }
+    },
+    { operation: 'normalizeChannels' },
+    1
+  );
+
+  assert.notEqual(kept['55'], undefined,
+    `a row holding no gain is left where it is (${JSON.stringify(kept['55'])})`);
+  assert.equal(kept['66'], undefined, 'while a row the sweep emptied is deleted with the clip');
+});
+
+test('a normalize names a row from the row that has a name', () => {
+  const named = channelStore.applyChannelVolumesMutation(
+    {
+      'login:somechannel': { name: 'Some Channel', login: 'somechannel', gainLive: 0.5 },
+      55: { name: '55', login: 'somechannel', gainVod: 2 }
+    },
+    { operation: 'normalizeChannels' },
+    1
+  );
+
+  assert.equal(named['55'].name, 'Some Channel',
+    `the name that is a name is the one kept (${named['55'].name})`);
+  assert.equal(named['55'].url, 'https://www.twitch.tv/somechannel');
+  assert.equal(named['login:somechannel'], undefined, 'and the provisional row is folded in');
+});
+
+test('a merge decides each field on its own update number', () => {
+  // The provisional id and the confirmed one were written by different tabs.
+  // Each field is settled by the number the single writer gave it, so a newer
+  // save wins whichever row it landed on.
+  const all = {
+    'login:a': {
+      name: 'provisional', login: 'a',
+      gainLive: 0.5, gainVod: 0.25,
+      autoApplyLoudnessLive: true,
+      autoGainLive: 2, autoGainRef: { live: 'volume-1' },
+      lastLufs: { live: -23, vod: -18 },
+      lastLufsRef: { live: 'volume-1', vod: 'volume-1' },
+      lastLufsWindows: { live: 600, vod: 300 },
+      lastMeasuredAt: 100,
+      __fieldVersions: {
+        gainLive: 9, gainVod: 1,
+        autoApplyLoudnessLive: 9,
+        autoGainLive: 9,
+        'lastLufs.live': 9, 'lastLufs.vod': 1
+      }
+    },
+    55: {
+      name: 'confirmed', login: 'a',
+      gainLive: 1.5, gainVod: 3,
+      autoApplyLoudnessLive: false,
+      autoGainLive: 4, autoGainRef: { live: 'volume-1' },
+      lastLufs: { live: -30, vod: -14 },
+      lastLufsRef: { live: 'volume-1', vod: 'volume-1' },
+      lastLufsWindows: { live: 900, vod: 1800 },
+      lastMeasuredAt: 200,
+      __fieldVersions: {
+        gainLive: 2, gainVod: 8,
+        autoApplyLoudnessLive: 2,
+        autoGainLive: 2,
+        'lastLufs.live': 2, 'lastLufs.vod': 8
+      }
+    }
+  };
+
+  const merged = channelStore.applyChannelVolumesMutation(
+    all,
+    { operation: 'mergeChannelIds', fromId: 'login:a', toId: '55', kind: 'live' },
+    1
+  )['55'];
+
+  assert.equal(merged.gainLive, 0.5, 'the newer save on the provisional row wins');
+  assert.equal(merged.gainVod, 3, 'and the newer one on the confirmed row wins too');
+  assert.equal(merged.autoApplyLoudnessLive, true, 'the Auto choice goes with its own number');
+  assert.equal(merged.autoGainLive, 2, 'and so does the gain Auto worked out');
+  assert.equal(merged.lastLufs.live, -23, 'the newer measurement is kept');
+  assert.equal(merged.lastLufs.vod, -14, 'each kind on its own');
+  assert.equal(merged.lastLufsWindows.live, 600,
+    `a companion goes where its measurement went (${JSON.stringify(merged.lastLufsWindows)})`);
+  assert.equal(merged.lastLufsWindows.vod, 1800);
+  assert.equal(merged.lastMeasuredAt, 200, 'and the later of the two times is kept');
+  assert.equal(merged.name, 'confirmed', 'the confirmed row keeps its name');
+  assert.equal(merged.__fieldVersions.gainLive, 9, 'and the number that won is the number kept');
+  assert.equal(merged.__fieldVersions['lastLufs.vod'], 8);
+  assert.equal(all['login:a'] !== undefined && merged !== undefined, true);
+});
+
+test('a merge carries what only one row holds', () => {
+  const all = {
+    'login:b': {
+      name: 'provisional', login: 'b',
+      autoGainVod: 1.25, autoGainRef: { vod: 'volume-1' },
+      lastLufs: { vod: -20 },
+      lastLufsRef: { vod: 'volume-1' },
+      lastLufsWindows: { vod: 450 },
+      lastMeasuredAt: 50,
+      __fieldVersions: { autoGainVod: 3, 'lastLufs.vod': 3 }
+    },
+    66: { name: 'confirmed', login: 'b', gainLive: 2 }
+  };
+
+  const merged = channelStore.applyChannelVolumesMutation(
+    all,
+    { operation: 'mergeChannelIds', fromId: 'login:b', toId: '66', kind: 'vod' },
+    1
+  )['66'];
+
+  assert.equal(merged.gainLive, 2, 'what only the confirmed row held stays');
+  assert.equal(merged.autoGainVod, 1.25, 'what only the provisional row held comes across');
+  assert.deepEqual(merged.autoGainRef, { vod: 'volume-1' }, 'with the reference that describes it');
+  assert.equal(merged.lastLufs.vod, -20);
+  assert.deepEqual(merged.lastLufsRef, { vod: 'volume-1' });
+  assert.deepEqual(merged.lastLufsWindows, { vod: 450 });
+  assert.equal(merged.lastMeasuredAt, 50, 'and the time it was measured at');
+  assert.equal(merged.__fieldVersions['lastLufs.vod'], 3, 'along with the number it carried');
+  assert.equal(merged.name, 'confirmed');
+});
+
+test('a merge leaves a companion the measurement it describes never had', () => {
+  // The merge settles the fields it was asked about. A companion with no
+  // measurement beside it was already on file that way, and is neither
+  // invented nor tidied away here.
+  const all = {
+    'login:c': {
+      name: 'provisional', login: 'c',
+      lastLufsRef: { live: 'volume-1' },
+      lastLufsWindows: { live: 600 }
+    },
+    77: { name: 'confirmed', login: 'c', gainLive: 1 }
+  };
+
+  const merged = channelStore.applyChannelVolumesMutation(
+    all,
+    { operation: 'mergeChannelIds', fromId: 'login:c', toId: '77', kind: 'live' },
+    1
+  )['77'];
+
+  assert.deepEqual(merged.lastLufsRef, { live: 'volume-1' },
+    `the companion is left as it was found (${JSON.stringify(merged.lastLufsRef)})`);
+  assert.deepEqual(merged.lastLufsWindows, { live: 600 });
+  assert.equal(merged.lastLufs, undefined, 'while no measurement is invented for it');
+});
+
+test('a merge names the row it makes after what the caller gave it', () => {
+  const all = { 'login:d': { name: 'provisional', login: 'd', gainLive: 0.5 } };
+
+  const merged = channelStore.applyChannelVolumesMutation(
+    all,
+    {
+      operation: 'mergeChannelIds', fromId: 'login:d', toId: '88', kind: 'live',
+      channel: { name: 'Given Name' }
+    },
+    1
+  )['88'];
+
+  assert.equal(merged.name, 'Given Name',
+    `the name the caller gave is the row's (${merged.name})`);
+
+  // With no name given, the row the merge makes is named by its id, and the
+  // pass that follows reads that as no name at all and puts the login there.
+  const unnamed = channelStore.applyChannelVolumesMutation(
+    { 'login:e': { name: 'provisional', login: 'e', gainLive: 0.5 } },
+    { operation: 'mergeChannelIds', fromId: 'login:e', toId: '99', kind: 'live' },
+    1
+  )['99'];
+  assert.equal(unnamed.name, 'e', `the login stands in for it (${unnamed.name})`);
+  assert.equal(unnamed.url, 'https://www.twitch.tv/e', 'and the link is the channel it names');
+  assert.equal(unnamed.gainLive, 0.5, 'while what came across is kept');
+});
+
+test('the channel store refuses what it cannot apply, by name', () => {
+  // background.js sorts a failure by the reason on the error. A throw from
+  // reading a property of nothing carries none, and would be reported to the
+  // viewer as storage failing rather than as a request that made no sense.
+  const refuses = (mutation, message) => assert.throws(
+    () => channelStore.applyChannelVolumesMutation({}, mutation, 1),
+    { reason: 'invalid-mutation', message },
+    JSON.stringify(mutation) ?? String(mutation)
+  );
+
+  for (const mutation of [null, undefined, 'saveGain', 42, true]) {
+    refuses(mutation, 'mutation must be an object');
+  }
+  refuses({ operation: 'noSuchOperation' }, 'unknown channelVolumes mutation');
+  refuses({}, 'unknown channelVolumes mutation');
+
+  for (const channelId of ['', 42, null, undefined, {}]) {
+    refuses({ operation: 'saveGain', channelId, kind: 'live', gain: 1 },
+      'channelId must be a non-empty string');
+    refuses({ operation: 'deleteChannel', channelId }, 'channelId must be a non-empty string');
+  }
+
+  for (const kind of ['clip', '', 'LIVE', undefined, 42]) {
+    refuses({ operation: 'saveGain', channelId: '55', kind, gain: 1 }, 'kind must be live or vod');
+  }
+
+  for (const gain of [-0.1, 6.1, NaN, Infinity, '1', null, undefined]) {
+    refuses({ operation: 'saveGain', channelId: '55', kind: 'live', gain },
+      'gain must be finite and within [0, 6]');
+  }
+
+  for (const enabled of ['true', 1, null, undefined]) {
+    refuses({ operation: 'saveAuto', channelId: '55', kind: 'live', enabled },
+      'enabled must be a boolean');
+  }
+
+  for (const lufs of [NaN, Infinity, '-23', null, undefined]) {
+    refuses({ operation: 'saveMeasurement', channelId: '55', kind: 'live', lufs },
+      'lufs must be finite');
+  }
+
+  for (const autoGain of [-0.1, 6.1, NaN, Infinity, '1', null]) {
+    refuses({ operation: 'saveAuto', channelId: '55', kind: 'live', enabled: true, autoGain },
+      'autoGain must be finite and within [0, 6]');
+    refuses({ operation: 'saveAutoGain', channelId: '55', kind: 'live', autoGain },
+      'autoGain must be finite and within [0, 6]');
+  }
+
+  for (const fromId of ['', 42, null]) {
+    refuses({ operation: 'mergeChannelIds', fromId, toId: '55', kind: 'live' },
+      'fromId must be a non-empty string');
+  }
+  for (const toId of ['', 42, null]) {
+    refuses({ operation: 'mergeChannelIds', fromId: 'login:a', toId, kind: 'live' },
+      'toId must be a non-empty string');
+  }
+
+  // The gain at either end of the range is one it can apply.
+  for (const gain of [0, 6]) {
+    const applied = channelStore.applyChannelVolumesMutation(
+      {}, { operation: 'saveGain', channelId: '55', kind: 'live', gain, sequence: 1 }, 1
+    );
+    assert.equal(applied['55'].gainLive, gain);
+  }
+});
+
+test('the channel store copies a name only where the page gave one', () => {
+  // The metadata rides along with a save. What is not a string with something
+  // in it is not a name, and writing it would put undefined on the row.
+  const withNothing = channelStore.applyChannelVolumesMutation(
+    { 55: { name: 'kept', login: 'kept', url: 'https://www.twitch.tv/kept' } },
+    {
+      operation: 'saveGain', channelId: '55', kind: 'live', gain: 1, sequence: 1,
+      channel: { name: '', login: 42, url: null }
+    },
+    1
+  );
+  assert.deepEqual(
+    { name: withNothing['55'].name, login: withNothing['55'].login, url: withNothing['55'].url },
+    { name: 'kept', login: 'kept', url: 'https://www.twitch.tv/kept' },
+    'nothing usable leaves what was there'
+  );
+
+  for (const channel of ['somechannel', 42, true]) {
+    const notAnObject = channelStore.applyChannelVolumesMutation(
+      { 55: { name: 'kept' } },
+      { operation: 'saveGain', channelId: '55', kind: 'live', gain: 1, sequence: 1, channel },
+      1
+    );
+    assert.equal(notAnObject['55'].name, 'kept', `channel ${JSON.stringify(channel)}`);
+  }
+
+  const withOne = channelStore.applyChannelVolumesMutation(
+    { 55: { name: 'old' } },
+    {
+      operation: 'saveGain', channelId: '55', kind: 'live', gain: 1, sequence: 1,
+      channel: { name: 'new', login: '', url: 'https://www.twitch.tv/new' }
+    },
+    1
+  );
+  assert.equal(withOne['55'].name, 'new', 'and a name that is one is taken');
+  assert.equal(withOne['55'].url, 'https://www.twitch.tv/new');
+  assert.equal(withOne['55'].login, undefined, 'while the empty one is not');
+});
+
+test('the channel store spreads a legacy gain into the kinds that have none', () => {
+  const both = channelStore.applyChannelVolumesMutation(
+    { 55: { name: 'legacy', gain: 0.5 } },
+    { operation: 'saveGain', channelId: '55', kind: 'live', gain: 2, sequence: 1 },
+    1
+  );
+  assert.equal(both['55'].gainVod, 0.5, 'the kind that had none takes the single gain');
+  assert.equal(both['55'].gainLive, 2, 'while the one being saved takes its new value');
+  assert.equal('gain' in both['55'], false, 'and the single gain is gone');
+
+  const alreadyPerKind = channelStore.applyChannelVolumesMutation(
+    { 55: { name: 'legacy', gain: 0.5, gainVod: 3 } },
+    { operation: 'saveGain', channelId: '55', kind: 'live', gain: 2, sequence: 1 },
+    1
+  );
+  assert.equal(alreadyPerKind['55'].gainVod, 3, 'a kind that already holds one keeps it');
+
+  const notAGain = channelStore.applyChannelVolumesMutation(
+    { 55: { name: 'legacy', gain: 'loud' } },
+    { operation: 'saveGain', channelId: '55', kind: 'live', gain: 2, sequence: 1 },
+    1
+  );
+  assert.equal(notAGain['55'].gainVod, undefined, 'a single gain that is not a number spreads nowhere');
+  assert.equal('gain' in notAGain['55'], false, 'and is still dropped');
+});
+
+test('the channel store saves onto a row that holds nothing usable', () => {
+  // A row the store never wrote — nothing, or something that is not a row at
+  // all. The save still lands, and a row with no name of its own is named by
+  // the id it is filed under.
+  for (const stored of [undefined, null, false, 0]) {
+    const applied = channelStore.applyChannelVolumesMutation(
+      { 55: stored },
+      { operation: 'saveGain', channelId: '55', kind: 'live', gain: 2, sequence: 1 },
+      1
+    );
+    assert.equal(applied['55'].gainLive, 2, `stored ${JSON.stringify(stored) ?? 'undefined'}`);
+    assert.equal(applied['55'].name, '55', 'and it is named by its id');
+  }
+
+  const named = channelStore.applyChannelVolumesMutation(
+    {},
+    {
+      operation: 'saveGain', channelId: '55', kind: 'live', gain: 2, sequence: 1,
+      channel: { name: 'somechannel' }
+    },
+    1
+  );
+  assert.equal(named['55'].name, 'somechannel', 'unless the save carried a name');
+});
+
 test('channel store names the rejections it raises', () => {
   assert.throws(
     () => channelStore.applyChannelVolumesMutation(
