@@ -2474,6 +2474,11 @@ function createContentHarness({
     async dispatchMessage(data) {
       await Promise.all((listeners.message || []).map((listener) => listener({ source: window, data })));
     },
+    // A message that reached this window from somewhere else — another frame,
+    // or an extension posting into the page.
+    async dispatchMessageFrom(source, data) {
+      await Promise.all((listeners.message || []).map((listener) => listener({ source, data })));
+    },
     async dispatchDocument(type) {
       for (const entry of (documentListeners[type] || []).slice()) {
         // A listener registered with `once` is gone the moment it is called.
@@ -2553,7 +2558,11 @@ function createContentHarness({
           responded = true;
           resolve(response);
         });
-        if (keepOpen !== true && !responded) resolve(undefined);
+        if (keepOpen !== true && !responded) { resolve(undefined); return; }
+        // A handler that holds the channel open and answers nothing leaves its
+        // caller waiting. That is an answer that never came, which a case
+        // reads and fails on; waiting for it here would never end.
+        flushTasks(16).then(() => { if (!responded) resolve(undefined); });
       });
     }
   };
@@ -4720,6 +4729,155 @@ test('active content script reports an owner migration storage failure', async (
     ),
     true
   );
+});
+
+test('a save files the channel under its own name, not its id', async () => {
+  // The row is what the settings page lists. A name that is the id is what a
+  // row looks like when nobody told it one, and the viewer reads that list.
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/somechannel' });
+  await flushTasks();
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner', userId: '123456789', login: 'somechannel',
+    displayName: 'Some Channel', source: 'user', contentKind: 'live', contentId: 'somechannel'
+  });
+  await flushTasks();
+
+  await harness.dispatchGesture({ cmd: 'setGain', gain: 2 });
+  await flushTasks();
+
+  const saved = harness.stored[u.CHANNEL_VOLUMES_KEY]['123456789'];
+  assert.equal(saved?.gainLive, 2, 'the gain is filed');
+  assert.equal(saved?.name, 'Some Channel',
+    `under the name the page gave (${saved?.name})`);
+  assert.equal(saved?.url, 'https://www.twitch.tv/somechannel',
+    `with the link to it (${saved?.url})`);
+
+  // A measurement saves the same way, and takes the channel it is measuring
+  // rather than whatever the tab holds by the time the save goes out.
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs', momentary: -21, shortTerm: -21, integrated: -21
+  });
+  await flushTasks();
+
+  const measured = harness.stored[u.CHANNEL_VOLUMES_KEY]['123456789'];
+  assert.equal(measured?.lastLufs?.live, -21, 'the measurement is filed');
+  assert.equal(measured?.name, 'Some Channel', 'under the same name');
+  assert.equal(measured?.login, 'somechannel', 'and the login it was measured on');
+});
+
+test('an Auto choice is filed under the channel it was made on', async () => {
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/somechannel' });
+  await flushTasks();
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner', userId: '123456789', login: 'somechannel',
+    displayName: 'Some Channel', source: 'user', contentKind: 'live', contentId: 'somechannel'
+  });
+  await flushTasks();
+
+  await harness.dispatchGesture({ cmd: 'setAutoApplyLoudness', enabled: true });
+  await flushTasks();
+
+  const saved = harness.stored[u.CHANNEL_VOLUMES_KEY]['123456789'];
+  assert.equal(saved?.autoApplyLoudnessLive, true, 'the choice is filed');
+  assert.equal(saved?.name, 'Some Channel', `under the channel's name (${saved?.name})`);
+  assert.equal(saved?.url, 'https://www.twitch.tv/somechannel', `with its link (${saved?.url})`);
+
+  // The gain Auto then works out is filed against the same channel.
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs', momentary: -21, shortTerm: -21, integrated: -21
+  });
+  await flushTasks();
+
+  const followed = harness.stored[u.CHANNEL_VOLUMES_KEY]['123456789'];
+  assert.ok(Number.isFinite(followed?.autoGainLive),
+    `the gain Auto worked out is filed (${followed?.autoGainLive})`);
+  assert.equal(followed?.name, 'Some Channel', 'under the same name');
+  assert.equal(followed?.login, 'somechannel', 'and the login it was measured on');
+});
+
+test('content writes nothing once the runtime it had is gone', async () => {
+  // Reloading the extension leaves this script running with a runtime it can
+  // no longer reach. The audio graph and the badge do not depend on chrome.*,
+  // so it goes on playing — but every save has to stop, or it throws where
+  // nobody is listening.
+  const harness = createContentHarness({
+    href: 'https://www.twitch.tv/somechannel',
+    channelVolumes: { 'login:somechannel': { name: 'somechannel', gainLive: 0.5 } }
+  });
+  await flushTasks();
+  const before = JSON.stringify(harness.stored);
+
+  harness.invalidateRuntime();
+
+  await harness.dispatchGesture({ cmd: 'setGain', gain: 2 });
+  await harness.dispatchGesture({ cmd: 'setAutoApplyLoudness', enabled: true });
+  await harness.dispatchGesture({ cmd: 'resetMeasurement' });
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs', momentary: -21, shortTerm: -21, integrated: -21
+  });
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner', userId: '123456789', login: 'somechannel',
+    displayName: 'Some Channel', source: 'user', contentKind: 'live', contentId: 'somechannel'
+  });
+  await flushTasks();
+
+  assert.equal(JSON.stringify(harness.stored), before,
+    `nothing reaches storage (${JSON.stringify(harness.stored[u.CHANNEL_VOLUMES_KEY])})`);
+  // Nothing was attempted, so there is no failure to name — and the console it
+  // would be named in belongs to a page whose extension is gone.
+  assert.deepEqual(
+    harness.warnings.map(([message]) => message).filter((message) => String(message).startsWith('[TCV]')),
+    [],
+    `nothing is reported as having failed (${JSON.stringify(harness.warnings.map(([m]) => m))})`
+  );
+});
+
+test('content writes nothing for a page that resolves to no channel', async () => {
+  // A clip carries no channel, so there is nothing to file a gain or a
+  // measurement under. Saving one would put it under an id made up here.
+  const harness = createContentHarness({ href: 'https://clips.twitch.tv/SomeSlug' });
+  await flushTasks();
+  const before = JSON.stringify(harness.stored);
+
+  await harness.dispatchGesture({ cmd: 'setGain', gain: 2 });
+  await harness.dispatchGesture({ cmd: 'setAutoApplyLoudness', enabled: true });
+  await harness.dispatchGesture({ cmd: 'resetMeasurement' });
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs', momentary: -21, shortTerm: -21, integrated: -21
+  });
+  await flushTasks();
+
+  assert.equal(JSON.stringify(harness.stored), before,
+    `nothing is filed for a page with no channel (${JSON.stringify(harness.stored[u.CHANNEL_VOLUMES_KEY])})`);
+});
+
+test('content reads a bridge message only from the page it shares', async () => {
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/somechannel' });
+  await flushTasks();
+  const commandsBefore = harness.commands.length;
+
+  // A frame of its own, posting the same shape.
+  await harness.dispatchMessageFrom({ name: 'another frame' }, {
+    type: '__twitch_channel_volume__',
+    event: 'lufs', momentary: -21, shortTerm: -21, integrated: -21
+  });
+  // The page's own scripts, posting something else entirely.
+  await harness.dispatchMessage({ type: 'something else', event: 'lufs', integrated: -21 });
+  await harness.dispatchMessage(null);
+  await harness.dispatchMessage({ event: 'lufs', integrated: -21 });
+  await flushTasks();
+
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.lufs.integrated, -Infinity,
+    `none of it is read as a measurement (${state.lufs.integrated})`);
+  assert.equal(harness.commands.length, commandsBefore, 'and none of it is acted on');
 });
 
 test('content names the storage failure behind a rejected gain save', async () => {
