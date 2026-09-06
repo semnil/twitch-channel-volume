@@ -3206,7 +3206,9 @@ function createPageBridgeHarness({
   deferWorkletLoad = false,
   frozenWorker = false,
   // The page the bridge is on. What it names is stamped on the owner answer.
-  href = 'https://www.twitch.tv/videos/100'
+  href = 'https://www.twitch.tv/videos/100',
+  // The rate the page's audio runs at, which the K-weighting is designed for.
+  contextSampleRate = 48000
 } = {}) {
   const messages = [];
   // Real ids: a loop that was cancelled has to stop running here too, or a
@@ -3216,6 +3218,7 @@ function createPageBridgeHarness({
   let contextThrows = audioContextThrows;
   const logs = [];
   const workletModules = [];
+  const iirFilters = [];
   const listeners = {};
   const pageHref = href;
   const location = { href: pageHref, origin: new URL(pageHref).origin };
@@ -3290,7 +3293,7 @@ function createPageBridgeHarness({
     constructor() {
       if (contextThrows) throw new DOMException('too many contexts', 'NotSupportedError');
       contextsBuilt += 1;
-      this.sampleRate = 48000;
+      this.sampleRate = contextSampleRate;
       this.currentTime = 0;
       // Chrome starts a context suspended until the page has been interacted
       // with.
@@ -3323,7 +3326,7 @@ function createPageBridgeHarness({
       gainNodes.push(node);
       return node;
     }
-    createIIRFilter() { return audioNode(); }
+    createIIRFilter(feedforward, feedback) { iirFilters.push({ feedforward, feedback }); return audioNode(); }
     createMediaElementSource(element) {
       mediaSourceCalls += 1;
       // What Chrome throws once another AudioContext holds the element.
@@ -3407,6 +3410,7 @@ function createPageBridgeHarness({
       fire(builtContext, 'statechange');
     },
     workletModules,
+    iirFilters,
     fetch: (...args) => window.fetch(...args),
     fetchCalls,
     resolveFetch(response) {
@@ -3419,6 +3423,21 @@ function createPageBridgeHarness({
       assert.equal(typeof measurementPort?.onmessage, 'function');
     },
     dispatchCommand,
+    // A command that reached this window from somewhere else, or in a shape
+    // that is not one.
+    async dispatchCommandFrom(source, cmd) {
+      const pending = (listeners.message || []).map((listener) => listener({
+        source,
+        data: { type: '__twitch_channel_volume_cmd__', cmd }
+      }));
+      await Promise.all(pending);
+      await flushTasks(8);
+    },
+    async dispatchCommandAs(data) {
+      const pending = (listeners.message || []).map((listener) => listener({ source: window, data }));
+      await Promise.all(pending);
+      await flushTasks(8);
+    },
     async runTimers() {
       for (const callback of [...timers.values()]) await callback();
       await flushTasks();
@@ -12988,6 +13007,147 @@ test('page bridge loads no module when it cannot name its own origin', async () 
   });
   await harness.dispatchCommand('attach');
   assert.deepEqual(harness.workletModules, []);
+});
+
+test('page bridge waits for a player with one loop, and stops when it has one', async () => {
+  // The element does not exist at document_start, so the loop retries. Two
+  // loops would ask twice a second and take the element twice.
+  const harness = createPageBridgeHarness();
+  const video = harness.currentVideo();
+  harness.removeVideo(video);
+
+  await harness.dispatchCommand('attach');
+  await harness.dispatchCommand('attach');
+  await harness.runTimers();
+
+  const waiting = harness.logs.filter(([message]) => String(message).includes('waiting for <video>'));
+  assert.equal(waiting.length, 1, `it says so once, not once per loop (${waiting.length})`);
+
+  harness.addVideo({ src: '', srcObject: {}, crossOrigin: null });
+  await harness.runTimers();
+  assert.equal(harness.mediaSourceCalls(), 1, 'the element is taken once');
+
+  const before = harness.mediaSourceCalls();
+  await harness.runTimers();
+  await harness.runTimers();
+  assert.equal(harness.mediaSourceCalls(), before,
+    'and the loop that was waiting for it has stopped');
+});
+
+test('page bridge says it is waiting on the first try and every tenth', async () => {
+  // The loop runs every second for as long as the page has no player. Saying
+  // so each time would fill the console; saying it once would leave a viewer
+  // reading a log from minutes ago.
+  const harness = createPageBridgeHarness();
+  harness.removeVideo(harness.currentVideo());
+  await harness.dispatchCommand('attach');
+
+  for (let tick = 0; tick < 20; tick++) await harness.runTimers();
+
+  const said = harness.logs.filter(([message]) => String(message).includes('waiting for <video>'));
+  assert.equal(said.length, 3, `once on the first try and every tenth after (${said.length})`);
+});
+
+test('page bridge says which kind of nothing it found', async () => {
+  // An element that is there but held by another extension is a different
+  // thing to report than no element at all, and only one of them is worth a
+  // viewer reloading the page for.
+  const harness = createPageBridgeHarness({ mediaElementSourceTaken: true });
+  await harness.dispatchCommand('attach');
+  await harness.runTimers();
+
+  const held = harness.logs.filter(([message]) => String(message).includes('held elsewhere'));
+  const absent = harness.logs.filter(([message]) => String(message).includes('waiting for <video>'));
+  assert.ok(held.length > 0, `an element held elsewhere is named as that (${JSON.stringify(harness.logs.map((l) => l[0]))})`);
+  assert.equal(absent.length, 0, 'and not as one that is not there');
+});
+
+test('page bridge reports a media it cannot reach once per element', async () => {
+  // The loop asks again every second. Reporting each refusal would fill the
+  // console with the same line for as long as the clip plays.
+  const harness = createPageBridgeHarness();
+  const video = harness.currentVideo();
+  video.srcObject = null;
+  video.src = 'https://clips.example/clip.mp4';
+  video.currentSrc = video.src;
+  video.crossOrigin = null;
+
+  await harness.dispatchCommand('attach');
+  for (let tick = 0; tick < 5; tick++) await harness.runTimers();
+
+  const reported = harness.logs.filter(([message]) => String(message).includes('another origin'));
+  assert.equal(reported.length, 1, `said once for that element (${reported.length})`);
+});
+
+test('page bridge weights for the rate the page runs at', async () => {
+  // BS.1770 writes the filters down at 48 kHz. At that rate they are used as
+  // they stand; at another they are designed again for it, or the weighting
+  // measures the wrong frequencies.
+  const at48k = createPageBridgeHarness();
+  await at48k.startMeasurement();
+  assert.equal(at48k.iirFilters.length, 2, 'the two K-weighting filters are built');
+  const asNumbers = (list) => [...list];
+  assert.deepEqual(asNumbers(at48k.iirFilters[0].feedforward), [...u.K_PRE_48K.b],
+    'the pre-filter is the one written down');
+  assert.deepEqual(asNumbers(at48k.iirFilters[1].feedforward), [...u.K_RLB_48K.b],
+    'and so is the high-pass');
+
+  const at44k1 = createPageBridgeHarness({ contextSampleRate: 44100 });
+  await at44k1.startMeasurement();
+  assert.notDeepEqual(asNumbers(at44k1.iirFilters[0].feedforward), [...u.K_PRE_48K.b],
+    `another rate is designed for that rate (${JSON.stringify([...at44k1.iirFilters[0].feedforward])})`);
+  assert.notDeepEqual(asNumbers(at44k1.iirFilters[1].feedforward), [...u.K_RLB_48K.b], 'both of them');
+});
+
+test('page bridge reads a block of no power as no level', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.messages.length = 0;
+
+  for (const ms of [0, -1]) harness.emitMeasurementBlock(ms);
+  const reading = harness.messages.at(-1);
+
+  assert.equal(reading.momentary, -Infinity, `no power is no level (${reading.momentary})`);
+  assert.equal(reading.shortTerm, -Infinity);
+  assert.equal(reading.integrated, -Infinity, 'and nothing is integrated from it');
+});
+
+test('page bridge reports no integrated level until something passes the gate', async () => {
+  // Below the absolute gate there is nothing a programme level could be read
+  // from, and a seed weighted on nothing is worth no windows.
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.messages.length = 0;
+
+  const belowTheGate = Math.pow(10, (-70 + 0.691) / 10) / 100;
+  for (let block = 0; block < 8; block++) harness.emitMeasurementBlock(belowTheGate);
+  const quiet = harness.messages.at(-1);
+
+  assert.equal(quiet.integrated, -Infinity,
+    `nothing passes the gate, so there is no integrated level (${quiet.integrated})`);
+  assert.equal(quiet.integratedWindows, 0, `and no windows to weigh one (${quiet.integratedWindows})`);
+
+  for (let block = 0; block < 8; block++) harness.emitMeasurementBlock(0.05);
+  const heard = harness.messages.at(-1);
+  assert.ok(Number.isFinite(heard.integrated), `once something does, there is (${heard.integrated})`);
+  assert.ok(heard.integratedWindows > 0, 'weighed on the windows that passed');
+});
+
+test('page bridge takes a command only from the page it shares', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.messages.length = 0;
+
+  await harness.dispatchCommandFrom({ name: 'another frame' }, 'resume');
+  await harness.dispatchCommandAs({ type: 'something else', cmd: 'resume' });
+  await harness.dispatchCommandAs(null);
+  await harness.dispatchCommandAs({ cmd: 'resume' });
+
+  assert.deepEqual(harness.messages, [],
+    `none of it is answered (${JSON.stringify(harness.messages.map((m) => m.event))})`);
+
+  await harness.dispatchCommand('resume');
+  assert.ok(harness.messages.length > 0, 'while a command from the page it shares is');
 });
 
 test('page bridge reads a cue only where it is one', async () => {
