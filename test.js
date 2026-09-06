@@ -13009,6 +13009,88 @@ test('page bridge loads no module when it cannot name its own origin', async () 
   assert.deepEqual(harness.workletModules, []);
 });
 
+test('page bridge says the first block arrived once, and only once', async () => {
+  // The line is what a viewer diagnosing a silent measurement looks for, and
+  // ten a second is not a line anyone reads.
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  for (let block = 0; block < 5; block++) harness.emitMeasurementBlock(0.05);
+
+  const said = harness.logs.filter(([message]) => String(message).includes('first measurement block'));
+  assert.equal(said.length, 1, `said once (${said.length})`);
+});
+
+test('page bridge reads a block only where it is a number', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.messages.length = 0;
+
+  harness.emitMeasurementBlock(undefined);
+  harness.emitMeasurementBlock(NaN);
+  harness.emitMeasurementBlock('0.05');
+
+  assert.deepEqual(harness.messages, [],
+    `nothing is reported for what is not a measurement (${harness.messages.length})`);
+  assert.equal(
+    harness.logs.filter(([message]) => String(message).includes('first measurement block')).length,
+    0,
+    'and none of it counts as the first block'
+  );
+});
+
+test('page bridge keeps the recent blocks, not every block', async () => {
+  // The momentary and short-term readings are the last blocks; a run holds no
+  // more than it reads from, or a long stream grows without end.
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.messages.length = 0;
+
+  for (let block = 0; block < 400; block++) harness.emitMeasurementBlock(0.05);
+  const steady = harness.messages.at(-1);
+  assert.ok(Number.isFinite(steady.momentary), `the reading holds up (${steady.momentary})`);
+
+  // Loud blocks now: the momentary reading follows them, so what is kept is
+  // recent rather than everything since the start.
+  for (let block = 0; block < 4; block++) harness.emitMeasurementBlock(1.0);
+  const loud = harness.messages.at(-1);
+  assert.ok(loud.momentary > steady.momentary + 10,
+    `and follows what is playing now (${steady.momentary} to ${loud.momentary})`);
+});
+
+test('page bridge says the ad state moved, not that it was set again', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  const video = harness.currentVideo();
+  video.currentTime = 10;
+  harness.messages.length = 0;
+
+  await harness.dispatchCommand('setAdActive', { active: true });
+  await harness.dispatchCommand('setAdActive', { active: true });
+
+  const opened = harness.messages.filter((message) => message.event === 'ad' && message.active);
+  assert.equal(opened.length, 1, `the break is reported once (${opened.length})`);
+
+  await harness.dispatchCommand('setAdActive', { active: false });
+  await harness.dispatchCommand('setAdActive', { active: false });
+
+  const closed = harness.messages.filter((message) => message.event === 'ad' && !message.active);
+  assert.equal(closed.length, 1, `and its end once (${closed.length})`);
+});
+
+test('page bridge measures nothing where the page has no Web Audio', async () => {
+  const harness = createPageBridgeHarness({ audioContextThrows: true });
+
+  await harness.dispatchCommand('init');
+  await harness.dispatchCommand('attach');
+
+  assert.equal(harness.mediaSourceCalls(), 0, 'no element is taken');
+  assert.equal(
+    harness.messages.some((message) => message.event === 'attach-failed' && message.cause === 'audio-context'),
+    true,
+    `and the page is told why (${JSON.stringify(harness.messages.map((m) => m.event))})`
+  );
+});
+
 test('page bridge waits for a player with one loop, and stops when it has one', async () => {
   // The element does not exist at document_start, so the loop retries. Two
   // loops would ask twice a second and take the element twice.
