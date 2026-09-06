@@ -4820,6 +4820,140 @@ test('an Auto choice is filed under the channel it was made on', async () => {
   assert.equal(followed?.login, 'somechannel', 'and the login it was measured on');
 });
 
+test('content tells the bridge an ad gain that moved, not one that was set again', async () => {
+  // The settings listener runs on every settings write, including ones that
+  // did not touch the ad gain. Sending it each time restarts a ramp the bridge
+  // is already running.
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/somechannel' });
+  await flushTasks();
+  harness.commands.length = 0;
+
+  await harness.dispatchStorage({
+    [u.SETTINGS_KEY]: { newValue: { adGainDb: -12, displayUnit: '%' } }
+  });
+  await flushTasks();
+  assert.equal(harness.commands.filter((command) => command.cmd === 'setAdGain').length, 1,
+    'a gain that moved is sent');
+
+  await harness.dispatchStorage({
+    [u.SETTINGS_KEY]: { newValue: { adGainDb: -12, displayUnit: 'dB' } }
+  });
+  await flushTasks();
+  assert.equal(harness.commands.filter((command) => command.cmd === 'setAdGain').length, 1,
+    'and a write that left it where it was is not');
+
+  await harness.dispatchStorage({
+    [u.SETTINGS_KEY]: { newValue: { adGainDb: -6, displayUnit: 'dB' } }
+  });
+  await flushTasks();
+  assert.equal(harness.commands.filter((command) => command.cmd === 'setAdGain').length, 2,
+    'while the next move is');
+});
+
+test('content answers the popup only when the popup asked something', async () => {
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/somechannel' });
+  await flushTasks();
+
+  for (const request of [null, undefined, 'getState', 42, true]) {
+    const answer = await harness.dispatchRuntime(request);
+    assert.equal(answer, undefined, `${JSON.stringify(request) ?? 'undefined'} is not a request`);
+  }
+
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(typeof state?.appliesTo, 'string', 'while one that is gets an answer');
+});
+
+test('content saves a measurement no oftener than the storage can bear', async () => {
+  // A block arrives ten times a second. Saving each one would write to storage
+  // ten times a second for as long as the tab is open.
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/somechannel' });
+  await flushTasks();
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner', userId: '123456789', login: 'somechannel',
+    displayName: 'Some Channel', source: 'user', contentKind: 'live', contentId: 'somechannel'
+  });
+  await flushTasks();
+
+  const lufs = async (integrated) => {
+    await harness.dispatchMessage({
+      type: '__twitch_channel_volume__',
+      event: 'lufs', momentary: integrated, shortTerm: integrated, integrated
+    });
+    await flushTasks();
+  };
+
+  await lufs(-21);
+  assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['123456789']?.lastLufs?.live, -21,
+    'the first measurement is saved');
+
+  await lufs(-30);
+  assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['123456789']?.lastLufs?.live, -21,
+    'the one right behind it is not');
+
+  harness.advanceTime(5001);
+  await lufs(-30);
+  assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['123456789']?.lastLufs?.live, -30,
+    'and one far enough behind is');
+});
+
+test('content saves nothing from a reading that is no reading', async () => {
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/somechannel' });
+  await flushTasks();
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner', userId: '123456789', login: 'somechannel',
+    displayName: 'Some Channel', source: 'user', contentKind: 'live', contentId: 'somechannel'
+  });
+  await flushTasks();
+  const before = JSON.stringify(harness.stored[u.CHANNEL_VOLUMES_KEY]);
+
+  // Before anything has passed the gate the bridge reports no integrated value
+  // at all, and there is nothing to file or to follow.
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs', momentary: -21, shortTerm: -21, integrated: -Infinity
+  });
+  await flushTasks();
+
+  assert.equal(JSON.stringify(harness.stored[u.CHANNEL_VOLUMES_KEY]), before,
+    `nothing is filed from it (${JSON.stringify(harness.stored[u.CHANNEL_VOLUMES_KEY])})`);
+});
+
+test('content takes an owner answer only for the content it is on', async () => {
+  // The answer names the content it was asked about. One for another page is
+  // one the tab has left, and taking it would file this page under that
+  // channel.
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/somechannel' });
+  await flushTasks();
+
+  for (const owner of [
+    { userId: '999', login: 'other', displayName: 'Other', source: 'user', contentKind: 'live', contentId: 'other' },
+    { userId: '999', login: 'somechannel', displayName: 'Other', source: 'video', contentKind: 'live', contentId: 'somechannel' },
+    { userId: '999', login: 'somechannel', displayName: 'Other', source: 'user', contentKind: 'vod', contentId: 'somechannel' },
+    { login: 'somechannel', displayName: 'Other', source: 'user', contentKind: 'live', contentId: 'somechannel' }
+  ]) {
+    await harness.dispatchMessage({ type: '__twitch_channel_volume__', event: 'owner', ...owner });
+    await flushTasks();
+  }
+
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.channel.id, 'login:somechannel',
+    `the channel stays the one the URL names (${state.channel.id})`);
+  assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['999'], undefined,
+    'and nothing is filed under the other');
+
+  // The answer for this page is taken.
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner', userId: '123456789', login: 'somechannel',
+    displayName: 'Some Channel', source: 'user', contentKind: 'live', contentId: 'somechannel'
+  });
+  await flushTasks();
+  const settled = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(settled.channel.id, '123456789', 'while the one for this page is');
+});
+
 test('content writes nothing once the runtime it had is gone', async () => {
   // Reloading the extension leaves this script running with a runtime it can
   // no longer reach. The audio graph and the badge do not depend on chrome.*,
