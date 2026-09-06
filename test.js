@@ -3204,7 +3204,9 @@ function createPageBridgeHarness({
   audioContextThrows = false,
   workletLoadFails = false,
   deferWorkletLoad = false,
-  frozenWorker = false
+  frozenWorker = false,
+  // The page the bridge is on. What it names is stamped on the owner answer.
+  href = 'https://www.twitch.tv/videos/100'
 } = {}) {
   const messages = [];
   // Real ids: a loop that was cancelled has to stop running here too, or a
@@ -3215,7 +3217,7 @@ function createPageBridgeHarness({
   const logs = [];
   const workletModules = [];
   const listeners = {};
-  const pageHref = 'https://www.twitch.tv/videos/100';
+  const pageHref = href;
   const location = { href: pageHref, origin: new URL(pageHref).origin };
   const videos = [];
   const makeVideo = (props = {}) => {
@@ -12986,6 +12988,122 @@ test('page bridge loads no module when it cannot name its own origin', async () 
   });
   await harness.dispatchCommand('attach');
   assert.deepEqual(harness.workletModules, []);
+});
+
+test('page bridge reads a cue only where it is one', async () => {
+  // The wrapper listens to every message the player's worker posts. Anything
+  // that is not a cue for the ad on this element must not open a break.
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  const video = harness.currentVideo();
+  video.currentTime = 10;
+  harness.messages.length = 0;
+
+  for (const cue of [
+    undefined,
+    null,
+    'midroll',
+    42,
+    { startTime: 5, endTime: 20 },
+    { rollType: 'midroll', startTime: NaN, endTime: 20 },
+    { rollType: 'midroll', startTime: 5, endTime: Infinity },
+    { rollType: 'midroll', startTime: 20, endTime: 5 },
+    { rollType: 'midroll', startTime: 20, endTime: 20 },
+    { rollType: 'midroll', startTime: 30, endTime: 40 },
+    { rollType: 'midroll', startTime: 1, endTime: 5 }
+  ]) {
+    harness.emitPlayerCue(cue);
+  }
+
+  assert.equal(
+    harness.messages.filter((message) => message.event === 'ad' && message.active).length,
+    0,
+    `no break is opened by any of them (${JSON.stringify(harness.messages.map((m) => m.event))})`
+  );
+
+  // A cue holding the playhead is one, and opens it.
+  harness.emitPlayerCue({ rollType: 'midroll', startTime: 5, endTime: 20 });
+  assert.equal(
+    harness.messages.some((message) => message.event === 'ad' && message.active),
+    true,
+    'while the cue for the ad on this element does'
+  );
+});
+
+test('page bridge reads a cue with no playhead to hold as no cue', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  const video = harness.currentVideo();
+  video.currentTime = NaN;
+  harness.messages.length = 0;
+
+  harness.emitPlayerCue({ rollType: 'midroll', startTime: 5, endTime: 20 });
+
+  assert.equal(
+    harness.messages.filter((message) => message.event === 'ad' && message.active).length,
+    0,
+    'an element whose position cannot be read holds no cue'
+  );
+});
+
+test('page bridge names a video the answer left unnamed from the URL it is on', async () => {
+  // The answer for a VOD carries the owner but not always the video. The URL
+  // is what the request was made on, so it is what names the video then — and
+  // only where the URL is a video, since nothing else is one.
+  const answerWithoutVideoId = () => ({
+    clone: () => ({
+      json: async () => ({
+        data: { video: { owner: { id: '55', login: 'somechannel', displayName: 'Some Channel' } } }
+      })
+    })
+  });
+
+  const onVod = createPageBridgeHarness({ href: 'https://www.twitch.tv/videos/300' });
+  await onVod.startMeasurement();
+  onVod.messages.length = 0;
+  const vodAnswered = onVod.fetch('https://gql.twitch.tv/gql');
+  onVod.resolveFetch(answerWithoutVideoId());
+  await vodAnswered;
+  await flushTasks(8);
+  const vodOwner = onVod.messages.find((message) => message.event === 'owner');
+  assert.equal(vodOwner?.contentKind, 'vod');
+  assert.equal(vodOwner?.contentId, '300',
+    `the video the URL names (${vodOwner?.contentId})`);
+
+  for (const href of [
+    'https://www.twitch.tv/somechannel',
+    'https://www.twitch.tv/somechannel/clip/SomeSlug',
+    'https://clips.twitch.tv/SomeSlug',
+    'https://www.twitch.tv/somechannel/about'
+  ]) {
+    const harness = createPageBridgeHarness({ href });
+    await harness.startMeasurement();
+    harness.messages.length = 0;
+    const answered = harness.fetch('https://gql.twitch.tv/gql');
+    harness.resolveFetch(answerWithoutVideoId());
+    await answered;
+    await flushTasks(8);
+    const owner = harness.messages.find((message) => message.event === 'owner');
+    assert.equal(owner?.contentId, '',
+      `a page that is not a video names none (${href}: ${owner?.contentId})`);
+  }
+
+  // Where the answer does name the video, that is the name used.
+  const named = createPageBridgeHarness({ href: 'https://www.twitch.tv/videos/300' });
+  await named.startMeasurement();
+  named.messages.length = 0;
+  const namedAnswered = named.fetch('https://gql.twitch.tv/gql');
+  named.resolveFetch({
+    clone: () => ({
+      json: async () => ({
+        data: { video: { id: '400', owner: { id: '55', login: 'somechannel', displayName: 'Some Channel' } } }
+      })
+    })
+  });
+  await namedAnswered;
+  await flushTasks(8);
+  assert.equal(named.messages.find((m) => m.event === 'owner')?.contentId, '400',
+    'the answer outranks the URL');
 });
 
 test('page bridge Integrated LUFS is invariant to gating window order', async () => {
