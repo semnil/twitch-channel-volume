@@ -2217,6 +2217,8 @@ function loggedWarning(harness, label) {
 }
 
 function createContentHarness({
+  // The timers the script arms are held until a case runs them.
+  deferTimers = false,
   autoApply = false,
   autoGain,
   href = 'https://www.twitch.tv/videos/100',
@@ -2234,6 +2236,7 @@ function createContentHarness({
   const infos = [];
   let runtimeMessageListener;
   let runtimeId = 'test-extension';
+  const deferredTimers = [];
   let failNextStorageGet = failInitialStorageGet;
   let initialStorageGetDeferred = deferInitialStorageGet;
   let channelMutationDeferred = !!deferChannelMutationOperation;
@@ -2419,7 +2422,13 @@ function createContentHarness({
     MutationObserver,
     queueMicrotask,
     setInterval() { return 1; },
-    setTimeout(callback) { queueMicrotask(callback); return 1; },
+    setTimeout(callback) {
+      // Held, a case can ask what the script does while a fallback it armed is
+      // still out — the wait for the bridge above all.
+      if (deferTimers) { deferredTimers.push(callback); return 1; }
+      queueMicrotask(callback);
+      return 1;
+    },
     URL,
     window
   });
@@ -2531,6 +2540,10 @@ function createContentHarness({
     },
     invalidateRuntime() {
       runtimeId = '';
+    },
+    async runDeferredTimers() {
+      for (const callback of deferredTimers.splice(0)) callback();
+      await flushTasks(8);
     },
     advanceTime(ms) {
       currentTimeMs += ms;
@@ -4861,6 +4874,90 @@ test('content answers the popup only when the popup asked something', async () =
 
   const state = await harness.dispatchRuntime({ cmd: 'getState' });
   assert.equal(typeof state?.appliesTo, 'string', 'while one that is gets an answer');
+});
+
+test('content waits for the bridge to be ready before it asks for the element', async () => {
+  // The measurement chain is wired on the first attach, so attaching before
+  // the worklet has loaded leaves the gain working and the measurement not.
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/somechannel', deferTimers: true });
+  await flushTasks();
+
+  assert.equal(harness.commands.some((command) => command.cmd === 'attach'), false,
+    `nothing is asked for until the bridge says it is ready (${JSON.stringify(harness.commands.map((c) => c.cmd))})`);
+
+  await harness.dispatchMessage({ type: '__twitch_channel_volume__', event: 'init-done' });
+  await flushTasks();
+
+  assert.equal(harness.commands.some((command) => command.cmd === 'attach'), true,
+    'and once it says so, the element is asked for');
+
+  // The wait is not open-ended: a bridge that never answers is given three
+  // seconds, and then the element is asked for anyway.
+  const stalled = createContentHarness({ href: 'https://www.twitch.tv/somechannel', deferTimers: true });
+  await flushTasks();
+  assert.equal(stalled.commands.some((command) => command.cmd === 'attach'), false,
+    'a bridge that has not answered holds it');
+  await stalled.runDeferredTimers();
+  assert.equal(stalled.commands.some((command) => command.cmd === 'attach'), true,
+    'until the wait runs out');
+});
+
+test('content keeps the other kind\'s measurement when one is reset', async () => {
+  // A reset is for the kind on screen. The other kind's level was measured on
+  // other audio and is still what a later session would seed from.
+  const harness = createContentHarness({
+    href: 'https://www.twitch.tv/somechannel',
+    channelVolumes: {
+      'login:somechannel': {
+        name: 'somechannel',
+        gainLive: 2,
+        lastLufs: { live: -23, vod: -18 },
+        lastMeasuredAt: 100
+      }
+    }
+  });
+  await flushTasks();
+
+  await harness.dispatchGesture({ cmd: 'resetMeasurement' });
+  await flushTasks();
+
+  const row = harness.stored[u.CHANNEL_VOLUMES_KEY]['login:somechannel'];
+  assert.equal(row?.lastLufs?.live, undefined, 'the kind on screen is cleared');
+  assert.equal(row?.lastLufs?.vod, -18,
+    `while the other kind is kept (${JSON.stringify(row?.lastLufs)})`);
+
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.hasSavedMeasurement, false,
+    'and the popup is told there is nothing left to reset here');
+});
+
+test('content keeps the other kind\'s Auto reference when this kind gets one', async () => {
+  // Only a gain measured against volume 1 carries a reference, and each kind
+  // carries its own. Writing this kind's must not drop the other's.
+  const harness = createContentHarness({
+    href: 'https://www.twitch.tv/somechannel',
+    channelVolumes: {
+      'login:somechannel': {
+        name: 'somechannel',
+        autoGainVod: 1.5,
+        autoGainRef: { vod: 'volume-1' }
+      }
+    }
+  });
+  await flushTasks();
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs', momentary: -21, shortTerm: -21, integrated: -21
+  });
+  await flushTasks();
+
+  await harness.dispatchGesture({ cmd: 'setAutoApplyLoudness', enabled: true });
+  await flushTasks();
+
+  const row = harness.stored[u.CHANNEL_VOLUMES_KEY]['login:somechannel'];
+  assert.equal(row?.autoGainRef?.vod, 'volume-1',
+    `the other kind's reference is kept (${JSON.stringify(row?.autoGainRef)})`);
+  assert.ok(Number.isFinite(row?.autoGainLive), 'while this kind gets a gain');
 });
 
 test('content names a VOD by whoever the answer named, and by the video otherwise', async () => {
