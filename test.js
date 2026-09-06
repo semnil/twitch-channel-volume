@@ -3630,6 +3630,168 @@ test('the worklet keeps what it has when a quantum brings no audio', () => {
   assert.ok(Math.abs(harness.posted[0].ms - 0.5) < 1e-6);
 });
 
+test('gainToDb answers for a gain that is not a level at all', () => {
+  // log10 of nothing is not a number a screen can show.
+  assert.equal(u.gainToDb(0), '-Inf');
+  assert.equal(u.gainToDb(-1), '-Inf');
+  assert.equal(u.gainToDb(1), '0.0');
+  assert.equal(u.gainToDb(2), '6.0');
+});
+
+test('msg answers with the key wherever the catalog cannot', () => {
+  const outer = globalThis.chrome;
+  try {
+    delete globalThis.chrome;
+    assert.equal(u.msg('someKey'), 'someKey', 'a page with no runtime at all');
+    globalThis.chrome = {};
+    assert.equal(u.msg('someKey'), 'someKey', 'a runtime with no i18n');
+    globalThis.chrome = { i18n: { getMessage: () => '' } };
+    assert.equal(u.msg('someKey'), 'someKey', 'a catalog that declares nothing for it');
+    globalThis.chrome = { i18n: { getMessage: (key) => (key === 'known' ? 'Known message' : '') } };
+    assert.equal(u.msg('known'), 'Known message', 'and the message where it does');
+  } finally {
+    if (outer === undefined) delete globalThis.chrome; else globalThis.chrome = outer;
+  }
+});
+
+test('the shared helpers answer for an entry that is not there', () => {
+  assert.equal(u.extractAutoGainForKind(null, 'live'), null);
+  assert.equal(u.extractAutoGainForKind(undefined, 'vod'), null);
+  assert.equal(u.extractAutoGainForKind({ autoGainLive: 'loud' }, 'live'), null,
+    'nor for one whose gain is not a number');
+  assert.equal(u.extractAutoGainForKind({ autoGainLive: 1.5 }, 'live'), 1.5);
+});
+
+test('an Auto choice made for every kind at once is still a choice', () => {
+  // An early shape wrote one flag for both kinds. It is read as the choice it
+  // was, rather than passed over so that a saved gain decides instead.
+  const entry = { autoApplyLoudness: true, gainLive: 0.5 };
+  assert.equal(u.resolveAutoApplySetting(entry, 'live', false), true);
+  assert.equal(u.resolveAutoApplySetting({ autoApplyLoudness: false, gainLive: 0.5 }, 'live', true), false);
+  // The per-kind flag outranks it.
+  assert.equal(
+    u.resolveAutoApplySetting({ autoApplyLoudness: true, autoApplyLoudnessLive: false }, 'live', true),
+    false
+  );
+});
+
+test('a gain is worked out only from numbers, and only where one comes out', () => {
+  assert.equal(u.calcGain(NaN, -18), 1.0, 'a level that is not a number');
+  assert.equal(u.calcGain(-Infinity, -18), 1.0, 'nor one that is no level');
+  assert.equal(u.calcGain(-18, Infinity), 1.0, 'a target that runs the gain off the end');
+  assert.ok(Math.abs(u.calcGain(-23, -18) - Math.pow(10, 5 / 20)) < 1e-9, 'and the gain where one comes out');
+
+  assert.equal(u.suggestedGain(NaN, -18), 1.0);
+  assert.equal(u.suggestedGain(-18, NaN), 1.0);
+  // calcGain would answer 0 here, which is silence rather than no suggestion.
+  assert.equal(u.suggestedGain(-18, -Infinity), 1.0, 'a target that is no target suggests nothing');
+});
+
+test('a URL is classified by the site it is on', () => {
+  assert.deepEqual(u.classifyTwitchUrl('https://example.com/videos/123'), { kind: 'none' },
+    'a video path somewhere else is no VOD of ours');
+  assert.deepEqual(u.classifyTwitchUrl('https://example.com/somechannel'), { kind: 'none' });
+  assert.deepEqual(u.classifyTwitchUrl('https://www.twitch.tv/videos/123'), { kind: 'vod', videoId: '123' });
+  // A clip lives three segments deep; two of them is not one.
+  assert.deepEqual(u.classifyTwitchUrl('https://www.twitch.tv/somechannel/clip'), { kind: 'none' });
+  assert.deepEqual(
+    u.classifyTwitchUrl('https://www.twitch.tv/SomeChannel/clip/Slug'),
+    { kind: 'clip', slug: 'Slug', login: 'somechannel' }
+  );
+});
+
+test('an owner answer is matched against the content it names', () => {
+  const live = { kind: 'live', login: 'somechannel' };
+  assert.equal(
+    u.ownerMatchesTwitchContent({ userId: '1', contentId: 'SomeChannel', contentKind: 'live', source: 'user' }, live),
+    true
+  );
+  for (const owner of [
+    undefined,
+    { contentId: 'somechannel', contentKind: 'live', source: 'user' },
+    { userId: '1', contentKind: 'live', source: 'user' },
+    { userId: '1', contentId: 'somechannel', contentKind: 'vod', source: 'user' },
+    { userId: '1', contentId: 'somechannel', contentKind: 'live', source: 'video' },
+    { userId: '1', contentId: 'another', contentKind: 'live', source: 'user' }
+  ]) {
+    assert.equal(u.ownerMatchesTwitchContent(owner, live), false, JSON.stringify(owner));
+  }
+  // A clip is matched by nobody: it carries no owner of its own.
+  assert.equal(
+    u.ownerMatchesTwitchContent(
+      { userId: '1', contentId: 'undefined', contentKind: 'clip', source: 'video' },
+      { kind: 'clip', slug: 'x' }
+    ),
+    false
+  );
+});
+
+test('a provisional id is made from the kind, and from what that kind carries', () => {
+  assert.equal(u.provisionalChannelIdForContent({ kind: 'live', login: 'somechannel' }), 'login:somechannel');
+  assert.equal(u.provisionalChannelIdForContent({ kind: 'live' }), '', 'a live page with no login names nothing');
+  assert.equal(u.provisionalChannelIdForContent({ kind: 'vod', videoId: '300' }), 'vod-owner:300');
+  // A login riding on a VOD is not what a VOD is filed under.
+  assert.equal(u.provisionalChannelIdForContent({ kind: 'vod', videoId: '300', login: 'somechannel' }), 'vod-owner:300');
+  assert.equal(u.provisionalChannelIdForContent({ kind: 'clip', slug: 'x' }), '');
+  assert.equal(u.provisionalChannelIdForContent(undefined), '');
+});
+
+test('an alias is followed only where there is a map to follow it through', () => {
+  assert.equal(u.resolveChannelIdAlias('login:a', null), 'login:a');
+  assert.equal(u.resolveChannelIdAlias('login:a', undefined), 'login:a');
+  assert.equal(u.resolveChannelIdAlias('login:a', 'not a map'), 'login:a');
+  assert.equal(u.resolveChannelIdAlias(42, { 42: '55' }), 42, 'an id that is not a string is not looked up');
+  assert.equal(u.resolveChannelIdAlias('login:a', { 'login:a': '55' }), '55');
+  assert.equal(u.resolveChannelIdAlias('login:a', { 'login:a': '' }), 'login:a',
+    'an entry pointing at nothing is not followed');
+  assert.equal(u.resolveChannelIdAlias('login:a', { 'login:a': 55 }), 'login:a',
+    'nor one pointing at something that is not an id');
+  assert.equal(u.resolveChannelIdAlias('login:a', { 'login:a': 'login:a' }), 'login:a',
+    'nor one pointing at itself');
+});
+
+test('the K-weighting at 48 kHz is the one written down, not one derived again', () => {
+  const at48k = u.kWeightingForSampleRate(48000);
+  assert.equal(at48k.pre, u.K_PRE_48K, 'the coefficients are used as they stand');
+  assert.equal(at48k.rlb, u.K_RLB_48K);
+
+  const at44k1 = u.kWeightingForSampleRate(44100);
+  assert.notEqual(at44k1.pre.b[0], u.K_PRE_48K.b[0],
+    `another rate is designed for that rate (${at44k1.pre.b[0]})`);
+  assert.notEqual(at44k1.rlb.a[1], u.K_RLB_48K.a[1], 'both filters with it');
+
+  // A rate that is not a number is not a rate to design for.
+  assert.equal(u.kWeightingForSampleRate(undefined).pre, u.K_PRE_48K);
+  assert.equal(u.kWeightingForSampleRate('nonsense').pre, u.K_PRE_48K);
+});
+
+test('the gate counts only blocks that are levels', () => {
+  const quiet = Math.pow(10, (u.ABSOLUTE_GATE_LUFS + 0.691) / 10) * 2;
+  assert.equal(u.gatedIntegratedLufs([]), -Infinity, 'nothing measured is no level');
+  assert.equal(u.gatedIntegratedLufs([NaN, 0, -1]), -Infinity, 'nor is nothing usable');
+
+  // A block of infinite power is not a measurement, and counting it would put
+  // the whole reading there.
+  const withInfinity = u.gatedIntegratedLufs([Infinity, quiet, quiet]);
+  const withoutIt = u.gatedIntegratedLufs([quiet, quiet]);
+  assert.ok(Number.isFinite(withInfinity), `the reading stays a number (${withInfinity})`);
+  assert.ok(Math.abs(withInfinity - withoutIt) < 1e-9, 'and is the one the real blocks give');
+});
+
+test('utils loads where there is no module to export to', () => {
+  // The popup, the options page and the content script load it as a plain
+  // script; only the tests and the worker have a module around it.
+  const sandbox = { console: { warn() {}, error() {} } };
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  assert.doesNotThrow(() => vm.runInContext(
+    fs.readFileSync(path.join(__dirname, 'utils.js'), 'utf8'),
+    sandbox,
+    { filename: 'utils.js' }
+  ));
+  assert.equal(typeof sandbox.calcGain, 'function', 'and its helpers are there to be used');
+});
+
 test('esc closes the attribute it is written into', () => {
   // The result is put inside a double-quoted attribute as well as between
   // tags, and a quote that survives adds attributes to that tag.
