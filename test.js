@@ -9171,6 +9171,88 @@ test('the clip sweep keeps a row it had nothing to take from', () => {
   assert.equal(kept['66'], undefined, 'while a row the sweep emptied is deleted with the clip');
 });
 
+test('a merge takes a cleared measurement companion with it', () => {
+  // A reset leaves the number behind and takes the value: the row says a
+  // measurement was there and is not now. The companions describe a value that
+  // is gone, so they go with it rather than staying to describe nothing.
+  const merged = channelStore.applyChannelVolumesMutation(
+    {
+      'login:h': {
+        name: 'provisional', login: 'h',
+        lastLufsRef: { live: 'volume-1' },
+        lastLufsWindows: { live: 600 },
+        __fieldVersions: { 'lastLufs.live': 5 }
+      },
+      333: { name: 'confirmed', login: 'h', gainLive: 1 }
+    },
+    { operation: 'mergeChannelIds', fromId: 'login:h', toId: '333', kind: 'live' },
+    1
+  )['333'];
+
+  assert.equal(merged.lastLufs, undefined, 'no measurement comes across');
+  assert.equal(merged.lastLufsRef, undefined,
+    `nor the reference that described it (${JSON.stringify(merged.lastLufsRef)})`);
+  assert.equal(merged.lastLufsWindows, undefined,
+    `nor the windows (${JSON.stringify(merged.lastLufsWindows)})`);
+  assert.equal(merged.__fieldVersions['lastLufs.live'], 5,
+    'while the number that says it was reset is kept');
+  assert.equal(merged.gainLive, 1, 'and what the confirmed row held stays');
+});
+
+test('the clip sweep leaves a row it took nothing from', () => {
+  // A row is deleted only where the sweep is what emptied it. One that came in
+  // holding no value, and that the sweep had nothing to take from, was not
+  // this pass's doing.
+  const kept = channelStore.applyChannelVolumesMutation(
+    { 'orphan-id': { name: 'orphan', __fieldVersions: { gainLive: 1 } } },
+    { operation: 'normalizeChannels' },
+    1
+  );
+
+  assert.notEqual(kept['orphan-id'], undefined,
+    `the row is left where it is (${JSON.stringify(kept)})`);
+  assert.deepEqual(kept['orphan-id'].__fieldVersions, { gainLive: 1 },
+    'with the numbers it came in with');
+});
+
+test('a merge leaves a companion alone on both sides of the value it describes', () => {
+  // The companion belongs to a measurement. Where neither row has that
+  // measurement there is nothing to decide, and the merge neither carries the
+  // companion across nor takes it away.
+  const orphanOnSource = channelStore.applyChannelVolumesMutation(
+    {
+      'login:f': { name: 'provisional', login: 'f', lastLufsWindows: { live: 600 } },
+      111: { name: 'confirmed', login: 'f', gainLive: 1 }
+    },
+    { operation: 'mergeChannelIds', fromId: 'login:f', toId: '111', kind: 'live' },
+    1
+  )['111'];
+  assert.deepEqual(orphanOnSource.lastLufsWindows, { live: 600 },
+    `a companion only the provisional row held is carried (${JSON.stringify(orphanOnSource.lastLufsWindows)})`);
+  assert.equal(orphanOnSource.lastLufs, undefined, 'with no measurement invented beside it');
+
+  // The same, with a measurement on one side and a companion for the other
+  // kind on neither: the kind that has a measurement is decided, the kind that
+  // has none is left as found.
+  const mixed = channelStore.applyChannelVolumesMutation(
+    {
+      'login:g': {
+        name: 'provisional', login: 'g',
+        lastLufs: { live: -23 },
+        lastLufsWindows: { live: 600, vod: 900 },
+        __fieldVersions: { 'lastLufs.live': 5 }
+      },
+      222: { name: 'confirmed', login: 'g', gainLive: 1 }
+    },
+    { operation: 'mergeChannelIds', fromId: 'login:g', toId: '222', kind: 'live' },
+    1
+  )['222'];
+  assert.equal(mixed.lastLufs.live, -23, 'the kind with a measurement comes across');
+  assert.equal(mixed.lastLufsWindows.live, 600, 'with the companion that describes it');
+  assert.equal(mixed.lastLufsWindows.vod, 900,
+    `and the companion for the kind with none is left as found (${JSON.stringify(mixed.lastLufsWindows)})`);
+});
+
 test('a normalize names a row from the row that has a name', () => {
   const named = channelStore.applyChannelVolumesMutation(
     {
