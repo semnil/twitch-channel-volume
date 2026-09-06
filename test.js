@@ -9,6 +9,19 @@ const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const u = require('./utils.js');
+// utils' esc writes text into an element and reads the markup back. This realm
+// has no DOM, so it gets the one thing esc reaches for, serialising the way a
+// browser does.
+globalThis.document = {
+  createElement: () => ({
+    _text: '',
+    set textContent(value) { this._text = String(value); },
+    get textContent() { return this._text; },
+    get innerHTML() {
+      return this._text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+  })
+};
 const channelStore = require('./channel-store.js');
 const settingsStore = require('./settings-store.js');
 
@@ -2593,6 +2606,14 @@ function stubElement(id) {
 }
 
 
+// A mirror of utils' esc, for the harness contexts whose stub element cannot
+// serialise. Held to the real one by `esc agrees with the harness's mirror of it`.
+function harnessEsc(value) {
+  return String(value)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 function createOptionsHarness({
   settings = {},
   channelVolumes = {},
@@ -2707,11 +2728,10 @@ function createOptionsHarness({
     },
     chrome,
     document,
-    // utils.js escapes by writing the text into an element and reading its
-    // markup back; the stub has no serializer, so the harness escapes the
-    // characters that one would.
-    esc: (value) => String(value)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
+    // A mirror of utils' esc: the stub element has no serializer, so the
+    // harness escapes what one would. `esc agrees with the harness's mirror of
+    // it` holds the two together.
+    esc: harnessEsc,
     console: {
       warn(...args) { warnings.push(args); },
       error() {},
@@ -3541,6 +3561,43 @@ test('the worklet keeps what it has when a quantum brings no audio', () => {
   assert.equal(harness.posted.length, 1);
   assert.equal(harness.posted[0].samples, 4800);
   assert.ok(Math.abs(harness.posted[0].ms - 0.5) < 1e-6);
+});
+
+test('esc closes the attribute it is written into', () => {
+  // The result is put inside a double-quoted attribute as well as between
+  // tags, and a quote that survives adds attributes to that tag.
+  const escaped = u.esc('UC1" onclick="steal()');
+  assert.ok(!escaped.includes('"'), `no quote survives (${escaped})`);
+  assert.equal(escaped, 'UC1&quot; onclick=&quot;steal()');
+});
+
+test('esc escapes what would open markup, an entity or a quoted value', () => {
+  assert.equal(u.esc('<b>&</b>'), '&lt;b&gt;&amp;&lt;/b&gt;');
+  assert.equal(u.esc("it's"), 'it&#39;s');
+  assert.equal(u.esc('plain'), 'plain');
+});
+
+test('esc agrees with the harness mirror of it', () => {
+  for (const value of [
+    'plain', '<b>x</b>', 'a&b', 'q" onclick="x', "it's", 'UC1" data-id="other'
+  ]) {
+    assert.equal(u.esc(value), harnessEsc(value), `esc(${JSON.stringify(value)})`);
+  }
+});
+
+test('the settings table keeps a channel id inside the attribute it is written into', async () => {
+  // The id comes from the page. Every value the table writes goes inside a
+  // quoted attribute, so a quote that survived would close that attribute and
+  // put whatever follows on the tag as one of its own.
+  const hostile = '123" onclick="steal()';
+  const harness = createOptionsHarness({
+    channelVolumes: { [hostile]: { name: 'somechannel', login: 'somechannel', gainLive: 1.5 } }
+  });
+  await flushTasks(8);
+  const markup = harness.el('channelsBody').textContent;
+
+  assert.match(markup, /data-id="123&quot; onclick=&quot;steal\(\)" title=/,
+    `the whole id stays in the attribute (${markup.replace(/\s+/g, ' ').slice(0, 240)})`);
 });
 
 test('calcGain: target equals measured → unity gain', () => {

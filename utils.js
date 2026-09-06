@@ -129,7 +129,9 @@ function suggestedGain(integratedLufs, targetLufs) {
 function esc(s) {
   const d = document.createElement('div');
   d.textContent = s;
-  return d.innerHTML;
+  // Serialising a text node leaves both quotes alone, and every caller puts the
+  // result inside a quoted attribute as well as between tags.
+  return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 // URL classification ----------------------------------------------------
@@ -313,6 +315,7 @@ if (typeof module !== 'undefined' && module.exports) {
     resolveChannelIdAlias, twitchChannelUrlForEntry,
     kWeightingForSampleRate, redesignBiquad,
     K_PRE_48K, K_RLB_48K,
-    meanSquareToLufs, gatedIntegratedLufs
+    meanSquareToLufs, gatedIntegratedLufs,
+    esc
   };
 }
