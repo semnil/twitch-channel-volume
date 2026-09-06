@@ -3192,7 +3192,8 @@ function createPageBridgeHarness({
   let measurementPort;
   const fetchCalls = [];
   const pendingFetches = [];
-  let resolveWorkletLoad;
+  const workletLoadWaiters = [];
+  let contextsBuilt = 0;
   let mediaSourceCalls = 0;
   let gainNode;
   const audioNode = () => ({
@@ -3215,6 +3216,7 @@ function createPageBridgeHarness({
   class AudioContext {
     constructor() {
       if (contextThrows) throw new DOMException('too many contexts', 'NotSupportedError');
+      contextsBuilt += 1;
       this.sampleRate = 48000;
       this.currentTime = 0;
       // Chrome starts a context suspended until the page has been interacted
@@ -3225,7 +3227,7 @@ function createPageBridgeHarness({
       this.destination = {};
       this.audioWorklet = {
         addModule: async (url) => {
-          if (deferWorkletLoad) await new Promise((resolve) => { resolveWorkletLoad = resolve; });
+          if (deferWorkletLoad) await new Promise((resolve) => { workletLoadWaiters.push(resolve); });
           if (workletLoadFails) throw new Error('worklet module blocked');
           workletModules.push(url);
         }
@@ -3352,12 +3354,15 @@ function createPageBridgeHarness({
     allowAudioContext() { contextThrows = false; },
     mediaSourceCalls() { return mediaSourceCalls; },
     gainValue() { return gainNode ? gainNode.gain.value : null; },
+    // Every load being held, not the last one to arrive: a second context
+    // being built is what a case asks about, and one that stays parked is a
+    // run that never ends rather than a case that fails.
     async releaseWorkletLoad() {
-      assert.ok(resolveWorkletLoad, 'the worklet load is not pending');
-      resolveWorkletLoad();
-      resolveWorkletLoad = null;
+      assert.ok(workletLoadWaiters.length, 'no worklet load is pending');
+      for (const resolve of workletLoadWaiters.splice(0)) resolve();
       await flushTasks(8);
     },
+    contextsBuilt() { return contextsBuilt; },
     emitMeasurementBlock(ms) {
       measurementPort.onmessage({ data: { ms } });
     },
@@ -8162,6 +8167,62 @@ test('settings mutations reject unknown fields and invalid values', () => {
   }), /must not be empty/);
 });
 
+test('settings mutations refuse what is not a mutation, and say so by name', () => {
+  // The reason is what background.js sorts the failures by: input the caller
+  // sent, state on file, or storage. A throw from reading a property of
+  // nothing carries no reason, and would be reported as storage failing.
+  for (const mutation of [null, undefined, 'patchSettings', 42, true]) {
+    assert.throws(
+      () => settingsStore.applySettingsMutation({}, mutation),
+      { reason: 'invalid-mutation', message: 'settings mutation must be an object' },
+      `mutation ${JSON.stringify(mutation) ?? 'undefined'}`
+    );
+  }
+
+  for (const patch of [null, undefined, 'displayUnit', 42, [], ['displayUnit']]) {
+    assert.throws(
+      () => settingsStore.applySettingsMutation({}, { operation: 'patchSettings', patch }),
+      { reason: 'invalid-mutation', message: 'settings patch must be an object' },
+      `patch ${JSON.stringify(patch) ?? 'undefined'}`
+    );
+  }
+
+  assert.throws(
+    () => settingsStore.applySettingsMutation({ targetLufs: -18 }, { operation: 'noSuchThing' }),
+    { reason: 'invalid-mutation', message: 'unknown settings mutation' }
+  );
+});
+
+test('settings stored as something other than settings are started over', () => {
+  // What is on file is spread into the result, so anything that is not an
+  // object has to be passed over rather than spread a character at a time.
+  // An array is an object, and one on file would be spread like any other; the
+  // store writes none, so what is passed over is what is not an object at all.
+  for (const stored of ['not settings', 42, true, null, undefined]) {
+    const result = settingsStore.applySettingsMutation(stored, {
+      operation: 'patchSettings', patch: { displayUnit: 'dB' }
+    });
+    assert.deepEqual(result, { displayUnit: 'dB' }, `stored ${JSON.stringify(stored)}`);
+  }
+});
+
+test('the ad gain is a number inside the range the slider offers', () => {
+  const accepts = (value) => settingsStore.applySettingsMutation({}, {
+    operation: 'patchSettings', patch: { adGainDb: value }
+  });
+  assert.deepEqual(accepts(-24), { adGainDb: -24 }, 'the bottom of the range');
+  assert.deepEqual(accepts(6), { adGainDb: 6 }, 'and the top');
+  assert.deepEqual(accepts(0), { adGainDb: 0 }, 'and inside it');
+
+  for (const value of [-25, -30, 7, 24, NaN, Infinity, -Infinity, '0', '-6', null, true]) {
+    assert.throws(
+      () => accepts(value),
+      { reason: 'invalid-mutation', message: 'invalid settings value: adGainDb' },
+      `adGainDb ${String(value)}`
+    );
+  }
+});
+
 test('settings initialization preserves existing Auto defaults', () => {
   const existing = {
     targetLufs: -16,
@@ -8252,7 +8313,14 @@ function createBackgroundHarness({ aliases, sequence } = {}) {
           responded = true;
           resolve({ keepOpen, response });
         });
-        if (keepOpen !== true && !responded) resolve({ keepOpen, response: undefined });
+        if (keepOpen !== true && !responded) { resolve({ keepOpen, response: undefined }); return; }
+        // A listener that holds the channel open and then answers nothing
+        // leaves its caller waiting. That is an answer that never came, which
+        // a case reads and fails on; waiting for it here would instead be a
+        // run that never ends.
+        flushTasks(16).then(() => {
+          if (!responded) resolve({ keepOpen, response: undefined });
+        });
       });
     },
     async send(mutation, type = channelStore.CHANNEL_MUTATION_MESSAGE) {
@@ -8407,6 +8475,32 @@ test('background separates stored state it cannot use from what the caller sent'
   const [exhaustedLog, exhaustedError] = exhausted.errors.at(-1);
   assert.equal(exhaustedLog, '[TCV] channelVolumes mutation blocked by the stored state');
   assert.equal(String(exhaustedError?.message), 'channel mutation sequence exhausted');
+});
+
+test('background names where a settings mutation failed', async () => {
+  // The three wordings say where the fault is — what the caller sent, the state
+  // on file, or storage itself. A report from a viewer's console is worth
+  // something only if they are told apart.
+  const invalid = createBackgroundHarness();
+  const invalidAnswer = await invalid.dispatch({
+    type: settingsStore.SETTINGS_MUTATION_MESSAGE,
+    mutation: { operation: 'patchSettings', patch: { displayUnit: 'furlongs' } }
+  });
+
+  assert.equal(invalidAnswer.response?.ok, false);
+  assert.equal(invalidAnswer.response?.reason, 'invalid-mutation');
+  assert.equal(invalid.errors.at(-1)?.[0], '[TCV] settings mutation rejected as invalid');
+
+  const broken = createBackgroundHarness();
+  broken.failNextSet();
+  const brokenAnswer = await broken.dispatch({
+    type: settingsStore.SETTINGS_MUTATION_MESSAGE,
+    mutation: { operation: 'patchSettings', patch: { displayUnit: 'dB' } }
+  });
+
+  assert.equal(brokenAnswer.response?.ok, false);
+  assert.equal(brokenAnswer.response?.reason, 'settings-update-failed');
+  assert.equal(broken.errors.at(-1)?.[0], '[TCV] settings mutation failed');
 });
 
 test('background names a message type it does not handle', async () => {
@@ -12466,6 +12560,24 @@ test('page bridge builds no audio context for an element it will not take', asyn
 
   assert.deepEqual(harness.messages.filter((message) => message.event === 'audio-context'), []);
   assert.equal(harness.mediaSourceCalls(), 0);
+});
+
+test('page bridge builds one context however many ask for one', async () => {
+  // init and attach both need the context, and the second is answered from the
+  // build the first started. Building a second takes the page's audio through
+  // two graphs, and the module load each one waits on doubles with it.
+  const harness = createPageBridgeHarness({ deferWorkletLoad: true });
+  const init = harness.dispatchCommand('init');
+  const attach = harness.dispatchCommand('attach');
+  await flushTasks(4);
+
+  assert.equal(harness.contextsBuilt(), 1);
+
+  await harness.releaseWorkletLoad();
+  await Promise.all([init, attach]);
+
+  assert.equal(harness.contextsBuilt(), 1, 'and the one built is the one kept');
+  assert.equal(harness.mediaSourceCalls(), 1);
 });
 
 test('page bridge lets go of an element that changed origin while the context built', async () => {
