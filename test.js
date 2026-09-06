@@ -2619,7 +2619,17 @@ function createOptionsHarness({
   channelVolumes = {},
   deferStorage = false,
   failStorage = false,
-  failMutation = false
+  failMutation = false,
+  // What the worker answers instead of throwing: a reason it names per message
+  // type, or true for a refusal that names none.
+  refuseMutation = null,
+  // The read the failure path makes, held so a case can ask what the page is
+  // doing while it is out. The load's own read is not held.
+  holdReloadRead = false,
+  // A mutation whose answer is held, for the same reason.
+  holdMutation = '',
+  // Keys the page carries that the locale does not declare.
+  unknownI18nKeys = []
 } = {}) {
   const messages = JSON.parse(
     fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json'), 'utf8')
@@ -2637,9 +2647,18 @@ function createOptionsHarness({
     node.setAttribute('data-i18n', key);
     return node;
   });
+  // A key the locale does not declare. msg hands the key itself back, and what
+  // options.html ships is what the viewer is left with.
+  for (const key of unknownI18nKeys) {
+    const node = stubElement('');
+    node.setAttribute('data-i18n', key);
+    node.textContent = 'what the page ships';
+    i18nNodes.push(node);
+  }
   const sent = [];
   const warnings = [];
   const alerts = [];
+  const errors = [];
   const stored = {
     [u.SETTINGS_KEY]: { targetLufs: -18, adGainDb: -6, displayUnit: '%', showGainOverlay: true, ...settings },
     [u.CHANNEL_VOLUMES_KEY]: channelVolumes
@@ -2695,6 +2714,9 @@ function createOptionsHarness({
   const storageListeners = [];
   const timers = [];
   let resolveStorageGet = null;
+  let reads = 0;
+  let releaseReloadRead = null;
+  let releaseHeldMutation = null;
   const storageGate = deferStorage
     ? new Promise((resolve) => { resolveStorageGet = resolve; })
     : Promise.resolve();
@@ -2704,6 +2726,10 @@ function createOptionsHarness({
       local: {
         async get(keys) {
           await storageGate;
+          reads += 1;
+          if (holdReloadRead && reads > 1) {
+            await new Promise((resolve) => { releaseReloadRead = resolve; });
+          }
           if (failStorage) throw new Error('storage unavailable');
           return readStoredKeys(stored, keys);
         }
@@ -2713,7 +2739,12 @@ function createOptionsHarness({
     runtime: {
       async sendMessage(message) {
         sent.push(structuredClone(message));
+        if (holdMutation && message?.type === holdMutation && !releaseHeldMutation) {
+          await new Promise((resolve) => { releaseHeldMutation = resolve; });
+        }
         if (failMutation) throw new Error('service worker unavailable');
+        const refusal = refuseMutation?.[message?.type];
+        if (refusal) return { ok: false, ...(refusal === true ? {} : { reason: refusal }) };
         return { ok: true };
       }
     }
@@ -2722,6 +2753,9 @@ function createOptionsHarness({
   const context = vm.createContext({
     ...u,
     msg: (key, substitutions) => {
+      // Only the keys a case names take the fallback path; every other key has
+      // to be one the locale declares.
+      if (unknownI18nKeys.includes(key)) return key;
       assert.ok(messages[key], `msg('${key}') has no message`);
       const text = messages[key].message;
       return substitutions && substitutions.length ? text.replace('$VALUE$', substitutions[0]) : text;
@@ -2734,7 +2768,7 @@ function createOptionsHarness({
     esc: harnessEsc,
     console: {
       warn(...args) { warnings.push(args); },
-      error() {},
+      error(...args) { errors.push(args); },
       info() {}
     },
     alert(message) { alerts.push(message); },
@@ -2758,10 +2792,38 @@ function createOptionsHarness({
     unitButtons,
     sent,
     warnings,
+    errors,
     alerts,
     timers,
     async fire(id, type) {
       for (const listener of element(id).listeners[type] || []) await listener({ target: element(id) });
+      await flushTasks(8);
+    },
+    // Started, not awaited: a case can ask what the page looks like while the
+    // gesture is still out.
+    start(id, type) {
+      return Promise.all((element(id).listeners[type] || []).map((listener) => listener({ target: element(id) })));
+    },
+    startUnit(unit) {
+      const button = unitButtons.find((candidate) => candidate.getAttribute('data-unit') === unit);
+      assert.ok(button, `no unit button for ${unit}`);
+      return Promise.all((button.listeners.click || []).map((listener) => listener({ target: button })));
+    },
+    async releaseReloadRead() {
+      assert.ok(releaseReloadRead, 'the reload read is not out');
+      releaseReloadRead();
+      releaseReloadRead = null;
+      await flushTasks(8);
+    },
+    async releaseMutation() {
+      assert.ok(releaseHeldMutation, `${holdMutation} is not held`);
+      releaseHeldMutation();
+      await flushTasks(8);
+    },
+    async clickUnit(unit) {
+      const button = unitButtons.find((candidate) => candidate.getAttribute('data-unit') === unit);
+      assert.ok(button, `no unit button for ${unit}`);
+      for (const listener of button.listeners.click || []) await listener({ target: button });
       await flushTasks(8);
     },
     async clickDelete(channelId) {
@@ -8165,6 +8227,231 @@ test('settings mutations reject unknown fields and invalid values', () => {
   assert.throws(() => settingsStore.applySettingsMutation({}, {
     operation: 'patchSettings', patch: {}
   }), /must not be empty/);
+});
+
+test('options puts a refused settings save back, and names why', async () => {
+  // The control is drawn at the new value before the write is asked for, so a
+  // refusal has to put the page back on what is stored rather than leave the
+  // viewer looking at a value nothing holds.
+  const harness = createOptionsHarness({
+    settings: { targetLufs: -18, displayUnit: '%' },
+    refuseMutation: { [u.SETTINGS_MUTATION_MESSAGE]: 'settings-update-failed' }
+  });
+  await flushTasks(8);
+
+  harness.el('targetLufs').value = '-24';
+  await harness.fire('targetLufs', 'change');
+
+  assert.equal(harness.el('targetLufs').value, '-18', 'the control goes back to what is on file');
+  assert.equal(harness.el('settingsError').classList.contains('hidden'), false, 'and the page says so');
+  const named = harness.errors.filter((args) => String(args[0]).includes('failed to save settings field'));
+  assert.equal(named.length, 1, `the failure is named once (${harness.errors.length} logged)`);
+  assert.equal(String(named[0]?.[1]?.message), 'settings-update-failed',
+    'carrying the reason the worker gave');
+});
+
+test('options draws back what is on file, not what the defaults would be', async () => {
+  // The re-read after a refusal is what puts the page right, so it has to draw
+  // the settings it read. A page drawn from nothing shows the defaults, which
+  // for a viewer who never chose them is a second wrong value.
+  const harness = createOptionsHarness({
+    settings: { targetLufs: -24, adGainDb: -12 },
+    refuseMutation: { [u.SETTINGS_MUTATION_MESSAGE]: 'settings-update-failed' }
+  });
+  await flushTasks(8);
+
+  harness.el('targetLufs').value = '-30';
+  await harness.fire('targetLufs', 'change');
+
+  assert.equal(harness.el('targetLufs').value, '-24', 'the target on file is drawn back');
+  assert.equal(harness.el('targetLufsValue').textContent, '-24 LUFS', 'and named');
+  assert.equal(harness.el('adGainDb').value, '-12', 'and so is the setting beside it');
+});
+
+test('options draws nothing from a control operated before the load lands', async () => {
+  const harness = createOptionsHarness({ settings: { targetLufs: -24 }, deferStorage: true });
+  await flushTasks(8);
+
+  harness.el('targetLufs').value = '-30';
+  await harness.fire('targetLufs', 'change');
+
+  assert.equal(harness.el('targetLufsValue').textContent, '',
+    `the page is not drawn from a gesture it has nothing to check against (${harness.el('targetLufsValue').textContent})`);
+  assert.deepEqual(
+    harness.sent.filter((message) => message.type === u.SETTINGS_MUTATION_MESSAGE),
+    [],
+    'and no setting is asked of the worker'
+  );
+});
+
+test('options takes the Auto default out of use while its save is out', async () => {
+  const harness = createOptionsHarness({ holdMutation: u.SETTINGS_MUTATION_MESSAGE });
+  await flushTasks(8);
+  harness.el('defaultAutoLiveToggle').checked = true;
+  const saving = harness.start('defaultAutoLiveToggle', 'change');
+  await flushTasks(8);
+
+  assert.equal(harness.el('defaultAutoLiveToggle').disabled, true,
+    'the toggle is out of use while the save is');
+
+  await harness.releaseMutation();
+  await saving;
+  assert.equal(harness.el('defaultAutoLiveToggle').disabled, false, 'and comes back when it lands');
+});
+
+test('options keeps the Auto default out of use until the page has been put back', async () => {
+  // A refusal re-reads and redraws before the toggle is handed back, so what
+  // the viewer can press next is a page that says what is on file.
+  const harness = createOptionsHarness({
+    refuseMutation: { [u.SETTINGS_MUTATION_MESSAGE]: 'settings-update-failed' },
+    holdReloadRead: true
+  });
+  await flushTasks(8);
+  harness.el('defaultAutoLiveToggle').checked = true;
+  const saving = harness.start('defaultAutoLiveToggle', 'change');
+  await flushTasks(8);
+
+  assert.equal(harness.el('defaultAutoLiveToggle').disabled, true,
+    'the toggle is still out of use while the page is being put back');
+
+  await harness.releaseReloadRead();
+  await saving;
+  assert.equal(harness.el('defaultAutoLiveToggle').disabled, false, 'and comes back afterwards');
+});
+
+test('options waits for the unit it saved before its gesture is over', async () => {
+  const harness = createOptionsHarness({ holdMutation: u.SETTINGS_MUTATION_MESSAGE });
+  await flushTasks(8);
+  let over = false;
+  const clicking = harness.startUnit('dB').then(() => { over = true; });
+  await flushTasks(8);
+
+  assert.equal(over, false, 'the gesture is not over while the save is out');
+
+  await harness.releaseMutation();
+  await clicking;
+  assert.equal(over, true, 'and is once it lands');
+});
+
+test('options keeps what a change told it over what its own read brings back', async () => {
+  // The read was issued first and answers with what was on file then. A change
+  // that arrived while it was out is newer, and the read must not undo it.
+  const harness = createOptionsHarness({ settings: { targetLufs: -24 }, deferStorage: true });
+  await flushTasks(8);
+
+  harness.fireStorageChanged({ [u.SETTINGS_KEY]: { newValue: { targetLufs: -30 } } });
+  await flushTasks(8);
+  assert.equal(harness.el('targetLufs').value, '-30', 'the change is on the page');
+
+  harness.releaseStorage();
+  await flushTasks(8);
+
+  assert.equal(harness.el('targetLufs').value, '-30',
+    `and the older read does not put it back (${harness.el('targetLufs').value})`);
+});
+
+test('options names a refusal that gives no reason', async () => {
+  const harness = createOptionsHarness({
+    settings: { targetLufs: -18 },
+    refuseMutation: { [u.SETTINGS_MUTATION_MESSAGE]: true }
+  });
+  await flushTasks(8);
+
+  harness.el('targetLufs').value = '-24';
+  await harness.fire('targetLufs', 'change');
+
+  const named = harness.errors.filter((args) => String(args[0]).includes('failed to save settings field'));
+  assert.equal(String(named[0]?.[1]?.message), 'settings mutation failed',
+    'a refusal with nothing to say is still named');
+});
+
+test('options names a refused channel write by the reason the worker gave', async () => {
+  const harness = createOptionsHarness({
+    channelVolumes: { 123: { name: 'somechannel', login: 'somechannel', gainLive: 1.5 } },
+    refuseMutation: { [channelStore.CHANNEL_MUTATION_MESSAGE]: 'stored-state-invalid' }
+  });
+  await flushTasks(8);
+
+  await harness.clickDelete('123');
+
+  const named = harness.warnings.filter((args) => String(args[0]).includes('delete the channel'));
+  assert.equal(named.length, 1, `the failure is named (${JSON.stringify(harness.warnings.map((a) => a[0]))})`);
+  assert.equal(harness.alerts.length, 1, 'and the viewer is told');
+  assert.equal(String(named[0]?.[1]?.message), 'stored-state-invalid',
+    'carrying the reason rather than the wording used when there is none');
+});
+
+test('options writes nothing from a control operated before the load lands', async () => {
+  // The markup ships them disabled; a gesture already on its way when the page
+  // opened is turned down by the handler behind that.
+  const harness = createOptionsHarness({ deferStorage: true });
+  await flushTasks(8);
+  harness.sent.length = 0;
+
+  harness.el('targetLufs').value = '-24';
+  await harness.fire('targetLufs', 'change');
+  harness.el('adGainDb').value = '-12';
+  await harness.fire('adGainDb', 'change');
+  harness.el('overlayToggle').checked = true;
+  await harness.fire('overlayToggle', 'change');
+  harness.el('defaultAutoLiveToggle').checked = true;
+  await harness.fire('defaultAutoLiveToggle', 'change');
+  await harness.clickUnit('dB');
+
+  assert.deepEqual(harness.sent, [], 'nothing is asked of the worker');
+
+  harness.releaseStorage();
+  await flushTasks(8);
+  harness.el('targetLufs').value = '-24';
+  await harness.fire('targetLufs', 'change');
+  assert.equal(harness.sent.length, 1, 'and the same control writes once the load has landed');
+});
+
+test('options draws a channel that has no name by its id', async () => {
+  const harness = createOptionsHarness({
+    channelVolumes: { 456: { login: 'nameless', gainLive: 1.5 } }
+  });
+  await flushTasks(8);
+
+  assert.match(harness.el('channelsBody').textContent, />456</,
+    `the id stands in for the name (${harness.el('channelsBody').textContent.slice(0, 200)})`);
+});
+
+test('options draws an Auto row and a manual row apart', async () => {
+  const harness = createOptionsHarness({
+    settings: { autoApplyLoudnessLiveDefault: false },
+    channelVolumes: {
+      auto: { name: 'auto', login: 'auto', autoApplyLoudnessLive: true, autoGainLive: 2, gainLive: 0.5 },
+      manual: { name: 'manual', login: 'manual', autoApplyLoudnessLive: false, gainLive: 0.5 }
+    }
+  });
+  await flushTasks(8);
+  const markup = harness.el('channelsBody').textContent;
+
+  assert.match(markup, /class="ch-vol auto"/, 'the Auto row is marked as one');
+  assert.equal((markup.match(/class="ch-vol auto"/g) || []).length, 1,
+    `and only that row is (${markup.slice(0, 400)})`);
+  assert.ok(markup.includes(harness.message('labelAuto')), 'and it is labelled Auto');
+  assert.match(markup, />50%</, 'while the manual row shows the gain it holds');
+});
+
+test('options draws a dash where there is no gain to draw', async () => {
+  const harness = createOptionsHarness({
+    channelVolumes: { 789: { name: 'novod', login: 'novod', gainLive: 1.5 } }
+  });
+  await flushTasks(8);
+  const markup = harness.el('channelsBody').textContent;
+
+  assert.match(markup, />—</, `a kind never saved is a dash (${markup.slice(0, 300)})`);
+  assert.doesNotMatch(markup, /NaN/, 'rather than a number that is not one');
+});
+
+test('options keeps the text the page ships when the locale has no message', async () => {
+  const harness = createOptionsHarness({ unknownI18nKeys: ['noSuchKey'] });
+  await flushTasks(8);
+
+  const node = harness.i18nNodes.find((el) => el.getAttribute('data-i18n') === 'noSuchKey');
+  assert.equal(node.textContent, 'what the page ships');
 });
 
 test('settings mutations refuse what is not a mutation, and say so by name', () => {
