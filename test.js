@@ -4863,6 +4863,93 @@ test('content answers the popup only when the popup asked something', async () =
   assert.equal(typeof state?.appliesTo, 'string', 'while one that is gets an answer');
 });
 
+test('content names a VOD by whoever the answer named, and by the video otherwise', async () => {
+  // Before the owner answer arrives a VOD is filed under the video it is; once
+  // it arrives the channel is the owner, and the row carries the owner's name.
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/videos/300' });
+  await flushTasks();
+
+  const early = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(early.channel.id, 'vod-owner:300',
+    `the video stands in until the owner is known (${early.channel.id})`);
+  assert.equal(early.channel.name, '300', `named by the video (${early.channel.name})`);
+  assert.equal(early.channel.login, '', 'with no login yet');
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner', userId: '55', login: 'vodowner', displayName: 'VOD Owner',
+    source: 'video', contentKind: 'vod', contentId: '300'
+  });
+  await flushTasks();
+
+  const settled = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(settled.channel.id, '55', 'the owner is the channel once it is known');
+  assert.equal(settled.channel.name, 'VOD Owner', `named by the owner (${settled.channel.name})`);
+  assert.equal(settled.channel.login, 'vodowner');
+  assert.equal(settled.channel.url, 'https://www.twitch.tv/vodowner');
+});
+
+test('content names a live channel by the owner where there is one', async () => {
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/SomeChannel' });
+  await flushTasks();
+
+  const early = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(early.channel.id, 'login:somechannel', 'the login stands in');
+  assert.equal(early.channel.name, 'somechannel', `named by the login (${early.channel.name})`);
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner', userId: '55', login: 'somechannel', displayName: 'Some Channel',
+    source: 'user', contentKind: 'live', contentId: 'somechannel'
+  });
+  await flushTasks();
+
+  const settled = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(settled.channel.name, 'Some Channel',
+    `and the owner's name once it is known (${settled.channel.name})`);
+});
+
+test('content reads the settings again for a channel it moved to', async () => {
+  // A route change to another channel is another channel's saved gain. Keeping
+  // the one in force would play the previous channel's level under this one.
+  const harness = createContentHarness({
+    href: 'https://www.twitch.tv/somechannel',
+    channelVolumes: {
+      'login:somechannel': { name: 'somechannel', gainLive: 2 },
+      'login:otherchannel': { name: 'otherchannel', gainLive: 0.5 }
+    }
+  });
+  await flushTasks();
+  const first = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(first.gain, 2, `the first channel plays at its own gain (${first.gain})`);
+
+  await harness.navigate('https://www.twitch.tv/otherchannel');
+  await flushTasks();
+
+  const moved = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(moved.gain, 0.5, `and the one moved to plays at its own (${moved.gain})`);
+  assert.equal(moved.channel.id, 'login:otherchannel');
+});
+
+test('content reads the settings again when the same channel changes kind', async () => {
+  // A stream and its VOD hold separate gains under one owner, so moving
+  // between them is a move even though the channel has not changed.
+  const harness = createContentHarness({
+    href: 'https://www.twitch.tv/somechannel',
+    channelVolumes: { 'login:somechannel': { name: 'somechannel', gainLive: 2, gainVod: 0.25 } }
+  });
+  await flushTasks();
+  const live = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(live.gain, 2, `the stream plays at the live gain (${live.gain})`);
+
+  await harness.navigate('https://www.twitch.tv/videos/300');
+  await flushTasks();
+
+  const vod = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(vod.channel.kind, 'vod', 'the kind moved');
+  assert.notEqual(vod.gain, 2, `and the live gain is not what plays there (${vod.gain})`);
+});
+
 test('content saves a measurement no oftener than the storage can bear', async () => {
   // A block arrives ten times a second. Saving each one would write to storage
   // ten times a second for as long as the tab is open.
