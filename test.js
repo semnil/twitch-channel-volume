@@ -15632,6 +15632,12 @@ test('a page without Web Audio is named as such and nothing is built', async () 
 });
 
 test('a page whose Worker constructor is not one is left alone', () => {
+  // The positive control: where the page has a constructor, the bridge wraps
+  // it and the worker the page builds carries the listener.
+  const wrapped = createPageBridgeHarness();
+  wrapped.createWorker('blob:https://www.twitch.tv/player');
+  assert.equal(wrapped.workerListeners.length, 1);
+
   const harness = createPageBridgeHarness({ noWorker: true });
   assert.ok(!harness.warnings.some(
     (args) => String(args[0]).includes('Worker constructor could not be wrapped')
@@ -16259,4 +16265,96 @@ test('a merge from an id already pointed elsewhere leaves the alias where it is'
   });
   assert.equal(store.stored.channelVolumeAliases['vod-owner:100'], '55');
   assert.equal(store.stored.channelVolumes['77'], undefined);
+});
+
+test('the element the bridge takes is the largest one it can', async () => {
+  const harness = createPageBridgeHarness();
+  // A second player element, larger than the one the harness starts with.
+  const larger = harness.addVideo({
+    src: '',
+    srcObject: {},
+    crossOrigin: null,
+    clientWidth: 3840,
+    clientHeight: 2160
+  });
+  await harness.startMeasurement();
+  assert.deepEqual(harness.sourcedElements, [larger]);
+});
+
+test('an element another extension holds is refused in its own words', async () => {
+  const harness = createPageBridgeHarness({ mediaElementSourceTaken: true });
+  await harness.dispatchCommand('init');
+  await harness.dispatchCommand('attach');
+  const [refusal] = harness.messages.filter((message) => message.event === 'attach-failed');
+  assert.ok(refusal, 'the refusal is reported');
+  assert.equal(refusal.cause, 'element-taken');
+  assert.equal(refusal.reason, 'HTMLMediaElement already connected');
+});
+
+test('an owner with no id behind its login is not posted', async () => {
+  const harness = createPageBridgeHarness({ href: 'https://www.twitch.tv/somebroadcaster' });
+  harness.messages.length = 0;
+  harness.fetch('https://gql.twitch.tv/gql');
+  harness.resolveFetch({
+    clone: () => ({
+      async json() {
+        return { data: { user: { login: 'somebroadcaster', displayName: 'Some Broadcaster' } } };
+      }
+    })
+  });
+  await flushTasks(8);
+  assert.deepEqual(harness.messages.filter((message) => message.event === 'owner'), []);
+});
+
+test('init is answered once the worklet module is in, not before', async () => {
+  const harness = createPageBridgeHarness({ deferWorkletLoad: true });
+  harness.messages.length = 0;
+  const answered = harness.dispatchCommand('init');
+  await flushTasks(8);
+  assert.deepEqual(harness.messages.filter((message) => message.event === 'init-done'), []);
+  await harness.releaseWorkletLoad();
+  await answered;
+  assert.equal(harness.messages.filter((message) => message.event === 'init-done').length, 1);
+  assert.equal(harness.workletModules.length, 1);
+});
+
+test('the seed keeps its share of the window count as the ring turns over', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  // A stored value that stands on fewer windows than the seed floor: the
+  // padding is laid down but only the count it arrived with is reported.
+  await harness.dispatchCommand('resetMeasurement', {
+    epoch: 1,
+    initialIntegratedLufs: -20,
+    initialIntegratedWindows: 100
+  });
+  // An hour of audio below the absolute gate: it fills the ring without
+  // entering the index, so the seed is what the gate still holds when the
+  // oldest entry starts falling out.
+  const quiet = 1e-9;
+  for (let i = 0; i < 35_899; i++) harness.emitMeasurementBlock(quiet);
+  harness.messages.length = 0;
+  harness.emitMeasurementBlock(quiet);
+  const [lufs] = harness.messages.filter((message) => message.event === 'lufs');
+  assert.ok(lufs, 'a reading is reported');
+  assert.equal(lufs.integratedWindows, 100);
+});
+
+test('an element that carries its media without naming it is still refused out loud', async () => {
+  const harness = createPageBridgeHarness();
+  // The page's only element takes its media from a source child, so the src
+  // attribute is empty while what it loaded came from another origin.
+  harness.removeVideo(harness.currentVideo());
+  harness.addVideo({
+    src: '',
+    currentSrc: 'https://clips-media-assets.example/clip.mp4',
+    srcObject: null,
+    crossOrigin: null,
+    readyState: 4
+  });
+  await harness.dispatchCommand('init');
+  await harness.dispatchCommand('attach');
+  const [refusal] = harness.messages.filter((message) => message.event === 'attach-failed');
+  assert.ok(refusal, 'the refusal reaches content.js');
+  assert.equal(refusal.cause, 'cross-origin');
 });
