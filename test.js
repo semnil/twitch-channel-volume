@@ -16201,33 +16201,44 @@ function storeUnderTest(seed = {}, aliases = {}) {
   };
 }
 
-test('a mutation leaves the stored object it was handed untouched', async () => {
+test('a mutation leaves the stored object it was handed untouched', () => {
   const handed = {
     someone: {
       name: 'Someone',
       gainVod: 0.5,
       lastLufs: { vod: -20 },
       lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 },
-      __fieldVersions: { gainVod: 1, lastLufsVod: 1 }
+      __fieldVersions: { gainVod: 1, 'lastLufs.vod': 1 }
     }
   };
   const before = structuredClone(handed);
-  const store = storeUnderTest(handed);
-  await store.write({ operation: 'saveGain', channelId: 'someone', kind: 'vod', gain: 2 });
+  const next = channelStore.applyChannelVolumesMutation(
+    handed,
+    { operation: 'saveGain', channelId: 'someone', kind: 'vod', gain: 2, sequence: 9 },
+    100
+  );
   assert.deepEqual(handed, before);
-  assert.equal(store.stored.channelVolumes.someone.gainVod, 2);
+  assert.equal(next.someone.gainVod, 2);
+  assert.equal(next.someone.__fieldVersions.gainVod, 9);
 });
 
 test('a row whose sender knew no name is named by its id', async () => {
-  const store = storeUnderTest();
-  await store.write({
-    operation: 'saveGain',
-    channelId: 'vod-owner:100',
-    kind: 'vod',
-    gain: 2,
-    channel: { name: '', login: '', url: '' }
-  });
-  assert.equal(store.stored.channelVolumes['vod-owner:100'].name, 'vod-owner:100');
+  const anonymous = { name: '', login: '', url: '' };
+  const writes = [
+    { operation: 'saveGain', kind: 'vod', gain: 2 },
+    { operation: 'saveAuto', kind: 'vod', enabled: true },
+    { operation: 'saveMeasurement', kind: 'vod', lufs: -19, reference: u.LUFS_REFERENCE_VOLUME_1 },
+    { operation: 'saveAutoGain', kind: 'vod', autoGain: 1.5, reference: u.LUFS_REFERENCE_VOLUME_1 }
+  ];
+  for (const write of writes) {
+    const store = storeUnderTest();
+    await store.write({ ...write, channelId: 'vod-owner:100', channel: anonymous });
+    assert.equal(
+      store.stored.channelVolumes['vod-owner:100'].name,
+      'vod-owner:100',
+      `${write.operation} names the row it made`
+    );
+  }
 });
 
 test('a companion outlives no value through a merge', async () => {
@@ -16450,4 +16461,34 @@ test('a row the Auto gain creates carries the channel it was measured on', async
   assert.ok(row, 'the Auto gain is stored against the provisional id');
   assert.ok(Number.isFinite(row.autoGainVod), 'and it is an Auto gain that was stored');
   assert.equal(row.name, '100');
+});
+
+test('a merge keeps the fields and update numbers it does not understand', async () => {
+  // Storage written by a later version of the extension passes through here.
+  // Only the clip fields are dropped on purpose; everything else the merge
+  // does not recognise is carried across rather than destroyed.
+  const store = storeUnderTest({
+    'vod-owner:100': {
+      name: '100',
+      gainVod: 0.5,
+      lastLufs: { vod: -20, future: -11 },
+      lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1, future: u.LUFS_REFERENCE_VOLUME_1 },
+      lastLufsWindows: { vod: 300, future: 44 },
+      autoGainVod: 1.5,
+      autoGainRef: { vod: u.LUFS_REFERENCE_VOLUME_1, future: u.LUFS_REFERENCE_VOLUME_1 },
+      __fieldVersions: { gainVod: 2, 'lastLufs.clip': 3, futureField: 7 }
+    },
+    55: { name: 'Someone' }
+  });
+  await store.write({
+    operation: 'mergeChannelIds', fromId: 'vod-owner:100', toId: '55', kind: 'vod'
+  });
+  const row = store.stored.channelVolumes['55'];
+  assert.equal(row.lastLufs.future, -11);
+  assert.equal(row.lastLufsRef.future, u.LUFS_REFERENCE_VOLUME_1);
+  assert.equal(row.lastLufsWindows.future, 44);
+  assert.equal(row.autoGainRef.future, u.LUFS_REFERENCE_VOLUME_1);
+  assert.equal(row.__fieldVersions.futureField, 7);
+  // The clip is the one thing a row is not kept for.
+  assert.equal(row.__fieldVersions['lastLufs.clip'], undefined);
 });
