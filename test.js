@@ -15600,3 +15600,663 @@ test('content takes an indicator the page puts back after taking it out', async 
   harness.mutate();
   assert.deepEqual(sent().map((command) => command.active), [true]);
 });
+
+// ── page-bridge.js: shapes the page can put in front of the bridge ──────────
+
+test('the origin the bridge read for itself is not reported as missing', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.dispatchCommand('init');
+  // The positive control: an origin it could read is one it loads the module from.
+  assert.deepEqual(harness.workletModules, [
+    'chrome-extension://abcdefghijklmnopabcdefghijklmnop/audio-worklet.js'
+  ]);
+  assert.deepEqual(harness.errors, []);
+});
+
+test('init answers after the context it builds exists', async () => {
+  const harness = createPageBridgeHarness({ contextSampleRate: 44100 });
+  harness.messages.length = 0;
+  await harness.dispatchCommand('init');
+  const done = harness.messages.find((message) => message.event === 'init-done');
+  assert.ok(done, 'init is answered');
+  assert.equal(done.sampleRate, 44100);
+});
+
+test('a page without Web Audio is named as such and nothing is built', async () => {
+  const harness = createPageBridgeHarness({ noAudioContext: true });
+  await harness.dispatchCommand('init');
+  assert.equal(harness.contextsBuilt(), 0);
+  const said = harness.warnings.map((args) => String(args[0]));
+  assert.ok(said.includes('[TCV] Web Audio is unavailable in this page'));
+  assert.ok(!said.includes('[TCV] audio context unavailable'));
+});
+
+test('a page whose Worker constructor is not one is left alone', () => {
+  const harness = createPageBridgeHarness({ noWorker: true });
+  assert.ok(!harness.warnings.some(
+    (args) => String(args[0]).includes('Worker constructor could not be wrapped')
+  ));
+});
+
+test('a second attach request does not start a second attach loop', async () => {
+  const harness = createPageBridgeHarness();
+  harness.removeVideo(harness.currentVideo());
+  const idle = harness.timerCount();
+  await harness.dispatchCommand('attach');
+  assert.equal(harness.timerCount(), idle + 1);
+  await harness.dispatchCommand('attach');
+  assert.equal(harness.timerCount(), idle + 1);
+});
+
+test('an attach request while attached keeps the element already taken', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  assert.equal(harness.mediaSourceCalls(), 1);
+  // A larger element appearing later does not displace the one being measured.
+  harness.addVideo({
+    src: '',
+    srcObject: {},
+    crossOrigin: null,
+    clientWidth: 3840,
+    clientHeight: 2160
+  });
+  await harness.dispatchCommand('attach');
+  await harness.runTimers();
+  assert.equal(harness.mediaSourceCalls(), 1);
+  assert.equal(harness.sourcedElements.length, 1);
+});
+
+test('an attach made while the worklet is unavailable says the chain is not wired', async () => {
+  const harness = createPageBridgeHarness({ workletLoadFails: true });
+  await harness.dispatchCommand('init');
+  await harness.dispatchCommand('attach');
+  assert.ok(harness.warnings.some(
+    (args) => String(args[0]).includes('worklet not ready yet')
+  ));
+  assert.equal(harness.iirFilters.length, 0);
+  const attached = harness.messages.filter((message) => message.event === 'attached');
+  assert.equal(attached.length, 1);
+  assert.equal(attached[0].measuring, false);
+});
+
+test('a resume with no context yet builds one and answers with its state', async () => {
+  const harness = createPageBridgeHarness({ contextStartsSuspended: true });
+  assert.equal(harness.contextsBuilt(), 0);
+  harness.messages.length = 0;
+  await harness.dispatchCommand('resume');
+  assert.equal(harness.contextsBuilt(), 1);
+  const state = harness.messages.filter((message) => message.event === 'audio-context');
+  assert.equal(state[state.length - 1].state, 'running');
+  assert.ok(!harness.warnings.some((args) => String(args[0]).includes('stayed')));
+});
+
+test('a cue that ends where it starts leaves the DOM indicator speaking for the media', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.setPlayhead(9.5);
+  harness.emitPlayerCue({ rollType: 'midroll', startTime: 10, endTime: 10, podPosition: 0, podCount: 1 });
+  harness.messages.length = 0;
+  await harness.dispatchCommand('setAdActive', { active: true });
+  assert.deepEqual(
+    harness.messages.filter((message) => message.event === 'ad').map((message) => message.active),
+    [true]
+  );
+});
+
+test('a cue arriving while the playhead is unreadable leaves the DOM indicator speaking', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.setPlayhead(NaN);
+  harness.emitPlayerCue({ rollType: 'midroll', startTime: 10, endTime: 20, podPosition: 0, podCount: 1 });
+  harness.setPlayhead(5);
+  harness.messages.length = 0;
+  await harness.dispatchCommand('setAdActive', { active: true });
+  assert.deepEqual(
+    harness.messages.filter((message) => message.event === 'ad').map((message) => message.active),
+    [true]
+  );
+});
+
+test('an element sounding under a suspended context is not taken for the ad gain', async () => {
+  const harness = createPageBridgeHarness({ contextStartsSuspended: true });
+  await harness.startMeasurement();
+  assert.equal(harness.mediaSourceCalls(), 1);
+  harness.setPaused(true);
+  harness.addVideo({ volume: 0.5 });
+  await harness.dispatchCommand('setAdActive', { active: true });
+  await harness.runTimers();
+  assert.equal(harness.mediaSourceCalls(), 1);
+});
+
+test('an ad element muted to zero is left at the content gain rather than an infinite one', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  await harness.dispatchCommand('setGain', { value: 2 });
+  await harness.dispatchCommand('setAdGain', { value: 0.5 });
+  harness.setPaused(true);
+  const adElement = harness.addVideo({ volume: 0.5 });
+  await harness.dispatchCommand('setAdActive', { active: true });
+  const adGainNode = harness.gainNodes[harness.gainNodes.length - 1];
+  assert.equal(adGainNode.gain.value, 2 * 0.5 * (1 / 0.5));
+  // The element the ad plays in can be silenced while the break is still open.
+  adElement.volume = 0;
+  harness.emitMeasurementBlock(0.01);
+  assert.equal(adGainNode.gain.value, 2 * 0.5);
+});
+
+test('a request carrying no url is passed through rather than throwing', async () => {
+  const harness = createPageBridgeHarness();
+  const request = { method: 'POST' };
+  const result = harness.fetch(request);
+  assert.equal(harness.fetchCalls.length, 1);
+  assert.equal(harness.fetchCalls[0][0], request);
+  const response = { clone() { throw new Error('a response nobody reads is not cloned'); } };
+  harness.resolveFetch(response);
+  assert.equal(await result, response);
+});
+
+test('an owner is posted only where both the id and the login arrived', async () => {
+  const harness = createPageBridgeHarness({ href: 'https://www.twitch.tv/videos/100' });
+  harness.messages.length = 0;
+  harness.fetch('https://gql.twitch.tv/gql');
+  harness.resolveFetch({
+    clone: () => ({
+      async json() {
+        return {
+          data: {
+            video: { id: '100', owner: { id: '55', displayName: null } },
+            user: { id: '77', displayName: 'Someone' }
+          }
+        };
+      }
+    })
+  });
+  await flushTasks(8);
+  assert.deepEqual(harness.messages.filter((message) => message.event === 'owner'), []);
+});
+
+test('an owner with no display name is named by its login', async () => {
+  const harness = createPageBridgeHarness({ href: 'https://www.twitch.tv/videos/100' });
+  harness.messages.length = 0;
+  harness.fetch('https://gql.twitch.tv/gql');
+  harness.resolveFetch({
+    clone: () => ({
+      async json() {
+        return {
+          data: {
+            video: { id: '100', owner: { id: '55', login: 'somebroadcaster' } },
+            user: { id: '77', login: 'OtherName' }
+          }
+        };
+      }
+    })
+  });
+  await flushTasks(8);
+  const owners = harness.messages.filter((message) => message.event === 'owner');
+  assert.deepEqual(owners.map((owner) => [owner.source, owner.userId, owner.displayName]), [
+    ['video', '55', 'somebroadcaster'],
+    ['user', '77', 'OtherName']
+  ]);
+});
+
+// ── content.js: the state a page leaves behind, and the one it moves to ─────
+
+test('each kind falls back to the Auto default of its own kind', async () => {
+  const harness = createContentHarness({
+    channelVolumes: {},
+    settings: { autoApplyLoudnessLiveDefault: true, autoApplyLoudnessVodDefault: false }
+  });
+  await flushTasks(8);
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.autoApplyLoudnessLive, true);
+  assert.equal(state.autoApplyLoudnessVod, false);
+  // The page is a VOD, so the kind in force follows the VOD default.
+  assert.equal(state.autoApplyLoudness, false);
+});
+
+test('a stored reference with no value behind it seeds nothing', async () => {
+  const harness = createContentHarness({
+    channelVolumes: {
+      'vod-owner:100': { lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 } }
+    }
+  });
+  await flushTasks(8);
+  const resets = harness.commands.filter((command) => command.cmd === 'resetMeasurement');
+  assert.ok(resets.length, 'the measurement is reset at startup');
+  for (const command of resets) {
+    assert.deepEqual(Object.keys(command).sort(), ['cmd', 'epoch', 'type']);
+  }
+});
+
+test('a player with no volume row is left alone rather than reached into', async () => {
+  const harness = createContentHarness();
+  await flushTasks(8);
+  harness.removeVolumeRow();
+  assert.equal((await harness.dispatchGesture({ cmd: 'setGain', gain: 2 })).ok, true);
+  assert.deepEqual(harness.warnings, []);
+});
+
+test('a badge already beside the slider is moved rather than inserted again', async () => {
+  const harness = createContentHarness();
+  await flushTasks(8);
+  // The badge is already beside the slider: startup applied the stored gain.
+  assert.equal(harness.gainBadgeText(), '50%');
+  assert.equal(harness.badgeInsertCount(), 1);
+  assert.equal((await harness.dispatchGesture({ cmd: 'setGain', gain: 3 })).ok, true);
+  assert.equal(harness.gainBadgeText(), '300%');
+  assert.equal(harness.badgeInsertCount(), 1);
+});
+
+test('an owner named for other content is neither merged nor applied', async () => {
+  const harness = createContentHarness({ channelVolumes: {} });
+  await flushTasks(8);
+  const before = JSON.stringify(harness.stored[u.CHANNEL_VOLUMES_KEY]);
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '55',
+    login: 'someone',
+    displayName: 'Someone',
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '999'
+  });
+  await flushTasks(8);
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.channel.id, 'vod-owner:100');
+  assert.equal(JSON.stringify(harness.stored[u.CHANNEL_VOLUMES_KEY]), before);
+});
+
+test('an owner confirmed while the page moved on does not become the new page channel', async () => {
+  const harness = createContentHarness({
+    channelVolumes: {},
+    deferChannelMutationOperation: 'mergeChannelIds'
+  });
+  await flushTasks(8);
+  const accepted = harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '55',
+    login: 'someone',
+    displayName: 'Someone',
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '100'
+  });
+  await flushTasks(8);
+  await harness.navigate('https://www.twitch.tv/videos/200');
+  harness.releaseChannelMutation();
+  await accepted;
+  await flushTasks(8);
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.channel.id, 'vod-owner:200');
+});
+
+test('an owner that confirms the channel seeds the measurement against it', async () => {
+  const harness = createContentHarness({
+    channelVolumes: {
+      55: {
+        login: 'someone',
+        lastLufs: { vod: -21 },
+        lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 },
+        lastLufsWindows: { vod: 900 }
+      }
+    }
+  });
+  await flushTasks(8);
+  harness.commands.length = 0;
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '55',
+    login: 'someone',
+    displayName: 'Someone',
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '100'
+  });
+  await flushTasks(8);
+  const resets = harness.commands.filter((command) => command.cmd === 'resetMeasurement');
+  assert.equal(resets.length, 1);
+  assert.equal(resets[0].initialIntegratedLufs, -21);
+  assert.equal(resets[0].initialIntegratedWindows, 900);
+});
+
+test('the channel being left answers for nothing while the next one is read', async () => {
+  const harness = createContentHarness({
+    href: 'https://www.twitch.tv/somebroadcaster',
+    channelVolumes: {
+      'login:somebroadcaster': {
+        autoApplyLoudnessLive: true,
+        autoGainLive: 0.5,
+        autoGainRef: { live: u.LUFS_REFERENCE_VOLUME_1 },
+        lastLufs: { live: -20 },
+        lastLufsRef: { live: u.LUFS_REFERENCE_VOLUME_1 }
+      },
+      'login:another': {}
+    }
+  });
+  await flushTasks(8);
+  const before = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(before.autoApplyLoudness, true);
+  assert.equal(before.hasSavedMeasurement, true);
+  harness.deferNextStorageGet();
+  const navigated = harness.navigate('https://www.twitch.tv/another');
+  await navigated;
+  const during = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(during.channel.id, 'login:another');
+  assert.equal(during.autoApplyLoudness, false);
+  assert.equal(during.hasSavedMeasurement, false);
+  await harness.releaseStorageGet();
+  await navigated;
+});
+
+test('an owner that names the channel again keeps what is already loaded', async () => {
+  const owner = {
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '55',
+    login: 'someone',
+    displayName: 'Someone',
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '100'
+  };
+  const harness = createContentHarness({
+    channelVolumes: {
+      55: {
+        name: 'Someone',
+        login: 'someone',
+        autoApplyLoudnessVod: true,
+        autoGainVod: 0.5,
+        autoGainRef: { vod: u.LUFS_REFERENCE_VOLUME_1 },
+        lastLufs: { vod: -20 },
+        lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 }
+      }
+    }
+  });
+  await flushTasks(8);
+  await harness.dispatchMessage(owner);
+  await flushTasks(8);
+  const settled = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(settled.channel.id, '55');
+  assert.equal(settled.autoApplyLoudness, true);
+  assert.equal(settled.hasSavedMeasurement, true);
+  harness.deferNextStorageGet();
+  const again = harness.dispatchMessage(owner);
+  await flushTasks(8);
+  const during = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(during.autoApplyLoudness, true);
+  assert.equal(during.hasSavedMeasurement, true);
+  await harness.releaseStorageGet();
+  await again;
+});
+
+test('a clip takes the gain back to passthrough and holds no channel', async () => {
+  const harness = createContentHarness({
+    channelVolumes: { 'vod-owner:100': { gainVod: 0.5 } }
+  });
+  await flushTasks(8);
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).gain, 0.5);
+  harness.commands.length = 0;
+  await harness.navigate('https://www.twitch.tv/somebroadcaster/clip/SomeSlug');
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.channel.id, '');
+  assert.equal(state.gain, 1);
+  assert.deepEqual(
+    harness.commands.filter((command) => command.cmd === 'setGain').map((command) => command.value),
+    [1]
+  );
+});
+
+test('a reading with no integrated value behind it moves and stores nothing', async () => {
+  const harness = createContentHarness({ autoApply: true, autoGain: 0.5 });
+  await flushTasks(8);
+  const before = JSON.stringify(harness.stored[u.CHANNEL_VOLUMES_KEY]);
+  harness.commands.length = 0;
+  harness.advanceTime(60_000);
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    momentary: -18,
+    shortTerm: -18,
+    integrated: null,
+    integratedWindows: 0
+  });
+  await flushTasks(8);
+  assert.deepEqual(harness.commands.filter((command) => command.cmd === 'setGain'), []);
+  assert.equal(JSON.stringify(harness.stored[u.CHANNEL_VOLUMES_KEY]), before);
+});
+
+test('a settings change persists the Auto gain only where Auto is following', async () => {
+  const harness = createContentHarness({ channelVolumes: { 'vod-owner:100': {} } });
+  await flushTasks(8);
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    momentary: -18,
+    shortTerm: -18,
+    integrated: -24,
+    integratedWindows: 400
+  });
+  await flushTasks(8);
+  await harness.dispatchStorage({
+    [u.SETTINGS_KEY]: { newValue: { targetLufs: -14, adGainDb: -6, showGainOverlay: true } }
+  });
+  await flushTasks(8);
+  assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].autoGainVod, undefined);
+});
+
+test('a change to the saved channels alone is read back', async () => {
+  const harness = createContentHarness({ channelVolumes: { 'vod-owner:100': { gainVod: 0.5 } } });
+  await flushTasks(8);
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).gain, 0.5);
+  harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'] = { gainVod: 2 };
+  await harness.dispatchStorage({
+    [u.CHANNEL_VOLUMES_KEY]: { newValue: harness.stored[u.CHANNEL_VOLUMES_KEY] }
+  });
+  await flushTasks(8);
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).gain, 2);
+});
+
+test('a stored window count that is not a count is not passed on', async () => {
+  const harness = createContentHarness({
+    channelVolumes: {
+      'vod-owner:100': {
+        lastLufs: { vod: -20 },
+        lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 },
+        lastLufsWindows: { vod: -5 }
+      }
+    }
+  });
+  await flushTasks(8);
+  const resets = harness.commands.filter((command) => command.cmd === 'resetMeasurement');
+  assert.ok(resets.length, 'the measurement is reset at startup');
+  for (const command of resets) {
+    assert.equal(command.initialIntegratedLufs, -20);
+    assert.deepEqual(
+      Object.keys(command).sort(),
+      ['cmd', 'epoch', 'initialIntegratedLufs', 'type']
+    );
+  }
+});
+
+test('the row an owner confirms carries the name the owner gave', async () => {
+  const harness = createContentHarness({
+    channelVolumes: { 'vod-owner:100': { gainVod: 0.5 } }
+  });
+  await flushTasks(8);
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '55',
+    login: 'someone',
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '100'
+  });
+  await flushTasks(8);
+  const row = harness.stored[u.CHANNEL_VOLUMES_KEY]['55'];
+  assert.ok(row, 'the confirmed id holds the row');
+  assert.equal(row.login, 'someone');
+  assert.equal(row.name, 'someone');
+  assert.equal(row.url, 'https://www.twitch.tv/someone');
+});
+
+test('a page whose runtime is already gone starts up without reaching storage', async () => {
+  const harness = createContentHarness({ runtimeInvalid: true });
+  await flushTasks(8);
+  assert.deepEqual(harness.warnings, []);
+});
+
+test('a runtime that throws when asked for its id is read as gone', async () => {
+  const harness = createContentHarness({ runtimeThrows: true });
+  await flushTasks(8);
+  assert.deepEqual(harness.warnings, []);
+});
+
+test('the settings the page starts from are the stored ones', async () => {
+  const harness = createContentHarness({
+    settings: { targetLufs: -14, adGainDb: -12 }
+  });
+  await flushTasks(8);
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.targetLufs, -14);
+  assert.equal(state.adGainDb, -12);
+  const adGain = harness.commands.filter((command) => command.cmd === 'setAdGain');
+  assert.equal(adGain[adGain.length - 1].value, u.dbToGain(-12));
+});
+
+test('an owner whose login is not a name is given no channel url', async () => {
+  const harness = createContentHarness({ channelVolumes: {} });
+  await flushTasks(8);
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '55',
+    login: 12345,
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '100'
+  });
+  await flushTasks(8);
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.channel.id, '55');
+  assert.equal(state.channel.url, '');
+  assert.deepEqual(harness.warnings, []);
+});
+
+test('a saved-channels change arriving mid-merge is not read back onto the row being merged', async () => {
+  const harness = createContentHarness({
+    channelVolumes: { 'vod-owner:100': { gainVod: 0.5 } },
+    deferChannelMutationOperation: 'mergeChannelIds'
+  });
+  await flushTasks(8);
+  const accepted = harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '55',
+    login: 'someone',
+    displayName: 'Someone',
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '100'
+  });
+  await flushTasks(8);
+  harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'] = { gainVod: 3 };
+  await harness.dispatchStorage({
+    [u.CHANNEL_VOLUMES_KEY]: { newValue: harness.stored[u.CHANNEL_VOLUMES_KEY] }
+  });
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).gain, 0.5);
+  harness.releaseChannelMutation();
+  await accepted;
+});
+
+// ── channel-store.js: the object it was handed, and the row it writes ───────
+
+function storeUnderTest(seed = {}, aliases = {}) {
+  // The object the store is handed is held here rather than cloned on the way
+  // in or out, so a write that reaches back into it is visible.
+  const stored = {
+    channelVolumes: seed,
+    channelVolumeAliases: aliases,
+    channelVolumeSequence: 1
+  };
+  const storage = {
+    async get(keys) { return readStoredKeys(stored, keys); },
+    async set(update) { Object.assign(stored, update); }
+  };
+  return {
+    stored,
+    write: channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 100)
+  };
+}
+
+test('a mutation leaves the stored object it was handed untouched', async () => {
+  const handed = {
+    someone: {
+      name: 'Someone',
+      gainVod: 0.5,
+      lastLufs: { vod: -20 },
+      lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 },
+      __fieldVersions: { gainVod: 1, lastLufsVod: 1 }
+    }
+  };
+  const before = structuredClone(handed);
+  const store = storeUnderTest(handed);
+  await store.write({ operation: 'saveGain', channelId: 'someone', kind: 'vod', gain: 2 });
+  assert.deepEqual(handed, before);
+  assert.equal(store.stored.channelVolumes.someone.gainVod, 2);
+});
+
+test('a row whose sender knew no name is named by its id', async () => {
+  const store = storeUnderTest();
+  await store.write({
+    operation: 'saveGain',
+    channelId: 'vod-owner:100',
+    kind: 'vod',
+    gain: 2,
+    channel: { name: '', login: '', url: '' }
+  });
+  assert.equal(store.stored.channelVolumes['vod-owner:100'].name, 'vod-owner:100');
+});
+
+test('a companion outlives no value through a merge', async () => {
+  // The source's measurement was cleared, which is a state carrying an update
+  // number and no value; the reference left beside it goes with the value.
+  const store = storeUnderTest({
+    'vod-owner:100': {
+      name: '100',
+      lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 },
+      lastLufsWindows: { vod: 400 },
+      __fieldVersions: { 'lastLufs.vod': 5 }
+    },
+    55: {
+      name: 'Someone',
+      lastLufs: { vod: -20 },
+      lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 },
+      lastLufsWindows: { vod: 900 },
+      __fieldVersions: { 'lastLufs.vod': 1 }
+    }
+  });
+  await store.write({
+    operation: 'mergeChannelIds', fromId: 'vod-owner:100', toId: '55', kind: 'vod'
+  });
+  const row = store.stored.channelVolumes['55'];
+  assert.equal(row.lastLufs?.vod, undefined);
+  assert.equal(row.lastLufsRef?.vod, undefined);
+  assert.equal(row.lastLufsWindows?.vod, undefined);
+});
+
+test('a merge from an id already pointed elsewhere leaves the alias where it is', async () => {
+  const store = storeUnderTest({ 'vod-owner:100': { name: '100', gainVod: 0.5 } });
+  await store.write({
+    operation: 'mergeChannelIds', fromId: 'vod-owner:100', toId: '55', kind: 'vod'
+  });
+  assert.equal(store.stored.channelVolumeAliases['vod-owner:100'], '55');
+  await store.write({
+    operation: 'mergeChannelIds', fromId: 'vod-owner:100', toId: '77', kind: 'vod'
+  });
+  assert.equal(store.stored.channelVolumeAliases['vod-owner:100'], '55');
+  assert.equal(store.stored.channelVolumes['77'], undefined);
+});
