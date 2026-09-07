@@ -15854,7 +15854,9 @@ test('a badge already beside the slider is moved rather than inserted again', as
 });
 
 test('an owner named for other content is neither merged nor applied', async () => {
-  const harness = createContentHarness({ channelVolumes: {} });
+  const harness = createContentHarness({
+    channelVolumes: { 'vod-owner:100': { name: '100', gainVod: 0.5 } }
+  });
   await flushTasks(8);
   const before = JSON.stringify(harness.stored[u.CHANNEL_VOLUMES_KEY]);
   await harness.dispatchMessage({
@@ -15871,6 +15873,7 @@ test('an owner named for other content is neither merged nor applied', async () 
   const state = await harness.dispatchRuntime({ cmd: 'getState' });
   assert.equal(state.channel.id, 'vod-owner:100');
   assert.equal(JSON.stringify(harness.stored[u.CHANNEL_VOLUMES_KEY]), before);
+  assert.deepEqual(harness.stored[u.CHANNEL_ALIASES_KEY], {});
 });
 
 test('an owner confirmed while the page moved on does not become the new page channel', async () => {
@@ -16357,4 +16360,94 @@ test('an element that carries its media without naming it is still refused out l
   const [refusal] = harness.messages.filter((message) => message.event === 'attach-failed');
   assert.ok(refusal, 'the refusal reaches content.js');
   assert.equal(refusal.cause, 'cross-origin');
+});
+
+test('the channel an owner confirms answers for nothing while its own row is read', async () => {
+  const harness = createContentHarness({
+    channelVolumes: {
+      'vod-owner:100': {
+        autoApplyLoudnessVod: true,
+        autoGainVod: 0.5,
+        autoGainRef: { vod: u.LUFS_REFERENCE_VOLUME_1 },
+        lastLufs: { vod: -20 },
+        lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 }
+      },
+      55: { name: 'Someone', login: 'someone' }
+    }
+  });
+  await flushTasks(8);
+  const before = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(before.autoApplyLoudness, true);
+  assert.equal(before.hasSavedMeasurement, true);
+  harness.deferNextStorageGet();
+  const accepted = harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '55',
+    login: 'someone',
+    displayName: 'Someone',
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '100'
+  });
+  await flushTasks(8);
+  const during = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(during.channel.id, '55');
+  assert.equal(during.autoApplyLoudness, false);
+  assert.equal(during.hasSavedMeasurement, false);
+  await harness.releaseStorageGet();
+  await accepted;
+});
+
+test('a clip is seeded like any other page, with nothing to seed from', async () => {
+  const harness = createContentHarness({
+    channelVolumes: { 'vod-owner:100': { gainVod: 0.5 } }
+  });
+  await flushTasks(8);
+  harness.commands.length = 0;
+  await harness.navigate('https://www.twitch.tv/somebroadcaster/clip/SomeSlug');
+  const resets = harness.commands.filter((command) => command.cmd === 'resetMeasurement');
+  // One for the media that was left, one for the page that has no measurement
+  // of its own to restore.
+  assert.equal(resets.length, 2);
+  for (const command of resets) {
+    assert.deepEqual(Object.keys(command).sort(), ['cmd', 'epoch', 'type']);
+  }
+});
+
+test('a row the Auto gain creates carries the channel it was measured on', async () => {
+  // The measurement save is refused, so the row does not exist yet when the
+  // Auto gain is written: what names it is what that write carries.
+  const harness = createContentHarness({
+    channelVolumes: {},
+    settings: { autoApplyLoudnessVodDefault: true },
+    failChannelMutationOperation: 'saveMeasurement'
+  });
+  await flushTasks(8);
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).autoApplyLoudness, true);
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    momentary: -18,
+    shortTerm: -18,
+    integrated: -24,
+    integratedWindows: 400
+  });
+  await flushTasks(8);
+  assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'], undefined);
+  await harness.dispatchStorage({
+    [u.SETTINGS_KEY]: {
+      newValue: {
+        targetLufs: -14,
+        adGainDb: -6,
+        showGainOverlay: true,
+        autoApplyLoudnessVodDefault: true
+      }
+    }
+  });
+  await flushTasks(8);
+  const row = harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'];
+  assert.ok(row, 'the Auto gain is stored against the provisional id');
+  assert.ok(Number.isFinite(row.autoGainVod), 'and it is an Auto gain that was stored');
+  assert.equal(row.name, '100');
 });
