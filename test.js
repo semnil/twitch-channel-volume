@@ -2219,6 +2219,8 @@ function loggedWarning(harness, label) {
 function createContentHarness({
   // The timers the script arms are held until a case runs them.
   deferTimers = false,
+  // What the settings page has written before this page loaded.
+  settings = {},
   autoApply = false,
   autoGain,
   href = 'https://www.twitch.tv/videos/100',
@@ -2226,7 +2228,10 @@ function createContentHarness({
   deferInitialStorageGet = false,
   failInitialStorageGet = false,
   deferChannelMutationOperation = '',
-  failChannelMutationOperation = ''
+  failChannelMutationOperation = '',
+  // A runtime the extension reload has already taken out from under the page.
+  runtimeInvalid = false,
+  runtimeThrows = false
 } = {}) {
   const listeners = {};
   const documentListeners = {};
@@ -2235,7 +2240,7 @@ function createContentHarness({
   const warnings = [];
   const infos = [];
   let runtimeMessageListener;
-  let runtimeId = 'test-extension';
+  let runtimeId = runtimeInvalid ? '' : 'test-extension';
   const deferredTimers = [];
   let failNextStorageGet = failInitialStorageGet;
   let initialStorageGetDeferred = deferInitialStorageGet;
@@ -2252,7 +2257,8 @@ function createContentHarness({
       targetLufs: -18,
       adGainDb: -6,
       displayUnit: '%',
-      showGainOverlay: true
+      showGainOverlay: true,
+      ...settings
     },
     [u.CHANNEL_VOLUMES_KEY]: channelVolumes || {
       'vod-owner:100': {
@@ -2287,6 +2293,7 @@ function createContentHarness({
   const makeVolumeRow = () => {
     const row = {
       children: new Set(),
+      inserts: 0,
       removeChild(node) {
         row.children.delete(node);
         node.parentNode = null;
@@ -2297,6 +2304,7 @@ function createContentHarness({
       parentElement: row,
       insertAdjacentElement(position, node) {
         assert.equal(position, 'afterend');
+        row.inserts += 1;
         if (node.parentNode && node.parentNode !== row) node.parentNode.removeChild(node);
         row.children.add(node);
         node.parentNode = row;
@@ -2312,7 +2320,7 @@ function createContentHarness({
     querySelector(selector) {
       const text = String(selector);
       if (text.includes('video-ad-countdown')) return adNodes[0] || null;
-      if (text.includes('volume-slider__slider-container')) return volumeRow.sliderContainer;
+      if (text.includes('volume-slider__slider-container')) return volumeRow.sliderContainer || null;
       return null;
     },
     querySelectorAll(selector) {
@@ -2356,9 +2364,14 @@ function createContentHarness({
   };
   const chrome = {
     runtime: {
-      get id() { return runtimeId; },
+      get id() {
+        if (runtimeThrows) throw new Error('Extension context invalidated.');
+        return runtimeId;
+      },
       getURL(filename) { return `chrome-extension://test/${filename}`; },
       async sendMessage(message) {
+        // Chrome answers every call on an invalidated runtime with a throw.
+        if (runtimeThrows || !runtimeId) throw new Error('Extension context invalidated.');
         const mutation = message?.mutation;
         if (mutation) {
           if (channelMutationDeferred &&
@@ -2383,6 +2396,7 @@ function createContentHarness({
     storage: {
       local: {
         async get(keys) {
+          if (runtimeThrows || !runtimeId) throw new Error('Extension context invalidated.');
           if (initialStorageGetDeferred) {
             initialStorageGetDeferred = false;
             return new Promise((resolve) => {
@@ -2465,6 +2479,9 @@ function createContentHarness({
       return badge ? badge.textContent : null;
     },
     gainBadgeCount() { return volumeRow.children.size; },
+    badgeInsertCount() { return volumeRow.inserts; },
+    // A player whose volume row the page has taken away.
+    removeVolumeRow() { volumeRow.sliderContainer = null; },
     // The player is rebuilt: a new volume row, and the old one left behind
     // with whatever it still holds.
     rebuildPlayer() {
@@ -3218,6 +3235,10 @@ function createPageBridgeHarness({
   workletLoadFails = false,
   deferWorkletLoad = false,
   frozenWorker = false,
+  // A page with no Web Audio at all, and one whose Worker constructor is not
+  // one: both are shapes the bridge is asked to survive.
+  noAudioContext = false,
+  noWorker = false,
   // The page the bridge is on. What it names is stamped on the owner answer.
   href = 'https://www.twitch.tv/videos/100',
   // The rate the page's audio runs at, which the K-weighting is designed for.
@@ -3230,6 +3251,7 @@ function createPageBridgeHarness({
   let nextTimerId = 0;
   let contextThrows = audioContextThrows;
   const logs = [];
+  const errors = [];
   const workletModules = [];
   const iirFilters = [];
   const listeners = {};
@@ -3351,6 +3373,8 @@ function createPageBridgeHarness({
     }
     addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
     async resume() {
+      // The state moves when the promise settles, not when resume is called.
+      await Promise.resolve();
       // What Chrome does with a context the page has earned no gesture for.
       if (refusesResume || this.state === 'running') return;
       this.state = 'running';
@@ -3358,8 +3382,8 @@ function createPageBridgeHarness({
     }
   }
   const window = {
-    AudioContext,
-    Worker: TestWorker,
+    ...(noAudioContext ? {} : { AudioContext }),
+    ...(noWorker ? {} : { Worker: TestWorker }),
     addEventListener(type, listener) {
       (listeners[type] ||= []).push(listener);
     },
@@ -3379,7 +3403,7 @@ function createPageBridgeHarness({
     clearInterval(id) { timers.delete(id); },
     console: {
       warn(...args) { warnings.push(args); },
-      error() {},
+      error(...args) { errors.push(args); },
       info(...args) { logs.push(args); }
     },
     document: {
@@ -3416,7 +3440,10 @@ function createPageBridgeHarness({
     location,
     messages,
     logs,
+    errors,
     warnings,
+    // A loop that was started twice runs twice; the count is what says so.
+    timerCount() { return timers.size; },
     refuseResume(value) { refusesResume = value; },
     suspendContext() {
       builtContext.state = 'suspended';
