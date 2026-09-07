@@ -319,7 +319,7 @@
 
   async function acceptOwner(owner) {
     const classified = classify();
-    if (!ownerMatchesTwitchContent(owner, classified)) return false;
+    if (!ownerMatchesTwitchContent(owner, classified)) return;
 
     const confirmedId = String(owner.userId);
     const provisionalId = provisionalChannelIdForContent(classified);
@@ -340,9 +340,9 @@
         await migrateChannelId(provisionalId, confirmedId, classified.kind, confirmedChannel);
       } catch (error) {
         migratingChannelId = '';
-        if (!isContextValid()) return false;
+        if (!isContextValid()) return;
         console.warn('[TCV] provisional channel migration failed', error);
-        return false;
+        return;
       }
     }
 
@@ -351,7 +351,7 @@
     // its owner must not become the channel for the new URL.
     if (!ownerMatchesTwitchContent(owner, classify())) {
       migratingChannelId = '';
-      return false;
+      return;
     }
 
     pendingOwner = owner;
@@ -364,7 +364,6 @@
         currentMeasurementTarget() !== seededMeasurementTarget) {
       resetMeasurementForCurrentChannel();
     }
-    return true;
   }
 
   async function resolveChannel(seed) {

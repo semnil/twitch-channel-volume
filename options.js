@@ -208,16 +208,14 @@
   }
 
   async function updateSettings(patch) {
-    if (!settingsReady) return false;
+    if (!settingsReady) return;
     renderSettings({ ...currentSettings, ...patch });
     renderChannels(channelVolumes);
     try {
       await mutateSettings(patch);
       showSettingsError(false);
-      return true;
     } catch (error) {
       await reloadSettingsAfterFailure(error);
-      return false;
     }
   }
 
