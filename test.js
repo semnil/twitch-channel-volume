@@ -16466,29 +16466,56 @@ test('a row the Auto gain creates carries the channel it was measured on', async
 test('a merge keeps the fields and update numbers it does not understand', async () => {
   // Storage written by a later version of the extension passes through here.
   // Only the clip fields are dropped on purpose; everything else the merge
-  // does not recognise is carried across rather than destroyed.
+  // does not recognise is carried across rather than destroyed, from either
+  // side of the merge.
   const store = storeUnderTest({
     'vod-owner:100': {
       name: '100',
       gainVod: 0.5,
-      lastLufs: { vod: -20, future: -11 },
-      lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1, future: u.LUFS_REFERENCE_VOLUME_1 },
-      lastLufsWindows: { vod: 300, future: 44 },
+      lastLufs: { vod: -20, fromSource: -11 },
+      lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1, fromSource: u.LUFS_REFERENCE_VOLUME_1 },
+      lastLufsWindows: { vod: 300, fromSource: 44 },
       autoGainVod: 1.5,
-      autoGainRef: { vod: u.LUFS_REFERENCE_VOLUME_1, future: u.LUFS_REFERENCE_VOLUME_1 },
-      __fieldVersions: { gainVod: 2, 'lastLufs.clip': 3, futureField: 7 }
+      autoGainRef: { vod: u.LUFS_REFERENCE_VOLUME_1, fromSource: u.LUFS_REFERENCE_VOLUME_1 },
+      __fieldVersions: { gainVod: 2, 'lastLufs.clip': 3, fromSource: 7 }
     },
-    55: { name: 'Someone' }
+    55: {
+      name: 'Someone',
+      lastLufs: { fromTarget: -12 },
+      lastLufsRef: { fromTarget: u.LUFS_REFERENCE_VOLUME_1 },
+      lastLufsWindows: { fromTarget: 55 },
+      autoGainRef: { fromTarget: u.LUFS_REFERENCE_VOLUME_1 },
+      __fieldVersions: { fromTarget: 8 }
+    }
   });
   await store.write({
     operation: 'mergeChannelIds', fromId: 'vod-owner:100', toId: '55', kind: 'vod'
   });
   const row = store.stored.channelVolumes['55'];
-  assert.equal(row.lastLufs.future, -11);
-  assert.equal(row.lastLufsRef.future, u.LUFS_REFERENCE_VOLUME_1);
-  assert.equal(row.lastLufsWindows.future, 44);
-  assert.equal(row.autoGainRef.future, u.LUFS_REFERENCE_VOLUME_1);
-  assert.equal(row.__fieldVersions.futureField, 7);
+  for (const [field, side, value] of [
+    ['lastLufs', 'fromSource', -11], ['lastLufs', 'fromTarget', -12],
+    ['lastLufsRef', 'fromSource', u.LUFS_REFERENCE_VOLUME_1],
+    ['lastLufsRef', 'fromTarget', u.LUFS_REFERENCE_VOLUME_1],
+    ['lastLufsWindows', 'fromSource', 44], ['lastLufsWindows', 'fromTarget', 55],
+    ['autoGainRef', 'fromSource', u.LUFS_REFERENCE_VOLUME_1],
+    ['autoGainRef', 'fromTarget', u.LUFS_REFERENCE_VOLUME_1]
+  ]) {
+    assert.equal(row[field][side], value, `${field}.${side} is carried across`);
+  }
+  assert.equal(row.__fieldVersions.fromSource, 7);
+  assert.equal(row.__fieldVersions.fromTarget, 8);
   // The clip is the one thing a row is not kept for.
   assert.equal(row.__fieldVersions['lastLufs.clip'], undefined);
+});
+
+test('the row a merge lands on is named by its id where the sender knew no name', async () => {
+  const store = storeUnderTest({ 'vod-owner:100': { name: '100', gainVod: 0.5 } });
+  await store.write({
+    operation: 'mergeChannelIds',
+    fromId: 'vod-owner:100',
+    toId: '55',
+    kind: 'vod',
+    channel: { name: '', login: '', url: '' }
+  });
+  assert.equal(store.stored.channelVolumes['55'].name, '55');
 });
