@@ -316,6 +316,6 @@ if (typeof module !== 'undefined' && module.exports) {
     kWeightingForSampleRate, redesignBiquad,
     K_PRE_48K, K_RLB_48K,
     meanSquareToLufs, gatedIntegratedLufs,
-    esc
+    esc, msg
   };
 }

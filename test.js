@@ -2217,6 +2217,10 @@ function loggedWarning(harness, label) {
 }
 
 function createContentHarness({
+  // The timers the script arms are held until a case runs them.
+  deferTimers = false,
+  // What the settings page has written before this page loaded.
+  settings = {},
   autoApply = false,
   autoGain,
   href = 'https://www.twitch.tv/videos/100',
@@ -2224,7 +2228,10 @@ function createContentHarness({
   deferInitialStorageGet = false,
   failInitialStorageGet = false,
   deferChannelMutationOperation = '',
-  failChannelMutationOperation = ''
+  failChannelMutationOperation = '',
+  // A runtime the extension reload has already taken out from under the page.
+  runtimeInvalid = false,
+  runtimeThrows = false
 } = {}) {
   const listeners = {};
   const documentListeners = {};
@@ -2233,7 +2240,8 @@ function createContentHarness({
   const warnings = [];
   const infos = [];
   let runtimeMessageListener;
-  let runtimeId = 'test-extension';
+  let runtimeId = runtimeInvalid ? '' : 'test-extension';
+  const deferredTimers = [];
   let failNextStorageGet = failInitialStorageGet;
   let initialStorageGetDeferred = deferInitialStorageGet;
   let channelMutationDeferred = !!deferChannelMutationOperation;
@@ -2249,7 +2257,8 @@ function createContentHarness({
       targetLufs: -18,
       adGainDb: -6,
       displayUnit: '%',
-      showGainOverlay: true
+      showGainOverlay: true,
+      ...settings
     },
     [u.CHANNEL_VOLUMES_KEY]: channelVolumes || {
       'vod-owner:100': {
@@ -2284,6 +2293,7 @@ function createContentHarness({
   const makeVolumeRow = () => {
     const row = {
       children: new Set(),
+      inserts: 0,
       removeChild(node) {
         row.children.delete(node);
         node.parentNode = null;
@@ -2294,6 +2304,7 @@ function createContentHarness({
       parentElement: row,
       insertAdjacentElement(position, node) {
         assert.equal(position, 'afterend');
+        row.inserts += 1;
         if (node.parentNode && node.parentNode !== row) node.parentNode.removeChild(node);
         row.children.add(node);
         node.parentNode = row;
@@ -2309,7 +2320,7 @@ function createContentHarness({
     querySelector(selector) {
       const text = String(selector);
       if (text.includes('video-ad-countdown')) return adNodes[0] || null;
-      if (text.includes('volume-slider__slider-container')) return volumeRow.sliderContainer;
+      if (text.includes('volume-slider__slider-container')) return volumeRow.sliderContainer || null;
       return null;
     },
     querySelectorAll(selector) {
@@ -2353,9 +2364,14 @@ function createContentHarness({
   };
   const chrome = {
     runtime: {
-      get id() { return runtimeId; },
+      get id() {
+        if (runtimeThrows) throw new Error('Extension context invalidated.');
+        return runtimeId;
+      },
       getURL(filename) { return `chrome-extension://test/${filename}`; },
       async sendMessage(message) {
+        // Chrome answers every call on an invalidated runtime with a throw.
+        if (runtimeThrows || !runtimeId) throw new Error('Extension context invalidated.');
         const mutation = message?.mutation;
         if (mutation) {
           if (channelMutationDeferred &&
@@ -2380,6 +2396,7 @@ function createContentHarness({
     storage: {
       local: {
         async get(keys) {
+          if (runtimeThrows || !runtimeId) throw new Error('Extension context invalidated.');
           if (initialStorageGetDeferred) {
             initialStorageGetDeferred = false;
             return new Promise((resolve) => {
@@ -2419,7 +2436,13 @@ function createContentHarness({
     MutationObserver,
     queueMicrotask,
     setInterval() { return 1; },
-    setTimeout(callback) { queueMicrotask(callback); return 1; },
+    setTimeout(callback) {
+      // Held, a case can ask what the script does while a fallback it armed is
+      // still out — the wait for the bridge above all.
+      if (deferTimers) { deferredTimers.push(callback); return 1; }
+      queueMicrotask(callback);
+      return 1;
+    },
     URL,
     window
   });
@@ -2456,6 +2479,9 @@ function createContentHarness({
       return badge ? badge.textContent : null;
     },
     gainBadgeCount() { return volumeRow.children.size; },
+    badgeInsertCount() { return volumeRow.inserts; },
+    // A player whose volume row the page has taken away.
+    removeVolumeRow() { volumeRow.sliderContainer = null; },
     // The player is rebuilt: a new volume row, and the old one left behind
     // with whatever it still holds.
     rebuildPlayer() {
@@ -2473,6 +2499,11 @@ function createContentHarness({
     infos,
     async dispatchMessage(data) {
       await Promise.all((listeners.message || []).map((listener) => listener({ source: window, data })));
+    },
+    // A message that reached this window from somewhere else — another frame,
+    // or an extension posting into the page.
+    async dispatchMessageFrom(source, data) {
+      await Promise.all((listeners.message || []).map((listener) => listener({ source, data })));
     },
     async dispatchDocument(type) {
       for (const entry of (documentListeners[type] || []).slice()) {
@@ -2527,6 +2558,10 @@ function createContentHarness({
     invalidateRuntime() {
       runtimeId = '';
     },
+    async runDeferredTimers() {
+      for (const callback of deferredTimers.splice(0)) callback();
+      await flushTasks(8);
+    },
     advanceTime(ms) {
       currentTimeMs += ms;
     },
@@ -2553,7 +2588,11 @@ function createContentHarness({
           responded = true;
           resolve(response);
         });
-        if (keepOpen !== true && !responded) resolve(undefined);
+        if (keepOpen !== true && !responded) { resolve(undefined); return; }
+        // A handler that holds the channel open and answers nothing leaves its
+        // caller waiting. That is an answer that never came, which a case
+        // reads and fails on; waiting for it here would never end.
+        flushTasks(16).then(() => { if (!responded) resolve(undefined); });
       });
     }
   };
@@ -2619,7 +2658,17 @@ function createOptionsHarness({
   channelVolumes = {},
   deferStorage = false,
   failStorage = false,
-  failMutation = false
+  failMutation = false,
+  // What the worker answers instead of throwing: a reason it names per message
+  // type, or true for a refusal that names none.
+  refuseMutation = null,
+  // The read the failure path makes, held so a case can ask what the page is
+  // doing while it is out. The load's own read is not held.
+  holdReloadRead = false,
+  // A mutation whose answer is held, for the same reason.
+  holdMutation = '',
+  // Keys the page carries that the locale does not declare.
+  unknownI18nKeys = []
 } = {}) {
   const messages = JSON.parse(
     fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json'), 'utf8')
@@ -2637,9 +2686,18 @@ function createOptionsHarness({
     node.setAttribute('data-i18n', key);
     return node;
   });
+  // A key the locale does not declare. msg hands the key itself back, and what
+  // options.html ships is what the viewer is left with.
+  for (const key of unknownI18nKeys) {
+    const node = stubElement('');
+    node.setAttribute('data-i18n', key);
+    node.textContent = 'what the page ships';
+    i18nNodes.push(node);
+  }
   const sent = [];
   const warnings = [];
   const alerts = [];
+  const errors = [];
   const stored = {
     [u.SETTINGS_KEY]: { targetLufs: -18, adGainDb: -6, displayUnit: '%', showGainOverlay: true, ...settings },
     [u.CHANNEL_VOLUMES_KEY]: channelVolumes
@@ -2695,6 +2753,9 @@ function createOptionsHarness({
   const storageListeners = [];
   const timers = [];
   let resolveStorageGet = null;
+  let reads = 0;
+  let releaseReloadRead = null;
+  let releaseHeldMutation = null;
   const storageGate = deferStorage
     ? new Promise((resolve) => { resolveStorageGet = resolve; })
     : Promise.resolve();
@@ -2704,6 +2765,10 @@ function createOptionsHarness({
       local: {
         async get(keys) {
           await storageGate;
+          reads += 1;
+          if (holdReloadRead && reads > 1) {
+            await new Promise((resolve) => { releaseReloadRead = resolve; });
+          }
           if (failStorage) throw new Error('storage unavailable');
           return readStoredKeys(stored, keys);
         }
@@ -2713,7 +2778,12 @@ function createOptionsHarness({
     runtime: {
       async sendMessage(message) {
         sent.push(structuredClone(message));
+        if (holdMutation && message?.type === holdMutation && !releaseHeldMutation) {
+          await new Promise((resolve) => { releaseHeldMutation = resolve; });
+        }
         if (failMutation) throw new Error('service worker unavailable');
+        const refusal = refuseMutation?.[message?.type];
+        if (refusal) return { ok: false, ...(refusal === true ? {} : { reason: refusal }) };
         return { ok: true };
       }
     }
@@ -2722,6 +2792,9 @@ function createOptionsHarness({
   const context = vm.createContext({
     ...u,
     msg: (key, substitutions) => {
+      // Only the keys a case names take the fallback path; every other key has
+      // to be one the locale declares.
+      if (unknownI18nKeys.includes(key)) return key;
       assert.ok(messages[key], `msg('${key}') has no message`);
       const text = messages[key].message;
       return substitutions && substitutions.length ? text.replace('$VALUE$', substitutions[0]) : text;
@@ -2734,7 +2807,7 @@ function createOptionsHarness({
     esc: harnessEsc,
     console: {
       warn(...args) { warnings.push(args); },
-      error() {},
+      error(...args) { errors.push(args); },
       info() {}
     },
     alert(message) { alerts.push(message); },
@@ -2758,10 +2831,38 @@ function createOptionsHarness({
     unitButtons,
     sent,
     warnings,
+    errors,
     alerts,
     timers,
     async fire(id, type) {
       for (const listener of element(id).listeners[type] || []) await listener({ target: element(id) });
+      await flushTasks(8);
+    },
+    // Started, not awaited: a case can ask what the page looks like while the
+    // gesture is still out.
+    start(id, type) {
+      return Promise.all((element(id).listeners[type] || []).map((listener) => listener({ target: element(id) })));
+    },
+    startUnit(unit) {
+      const button = unitButtons.find((candidate) => candidate.getAttribute('data-unit') === unit);
+      assert.ok(button, `no unit button for ${unit}`);
+      return Promise.all((button.listeners.click || []).map((listener) => listener({ target: button })));
+    },
+    async releaseReloadRead() {
+      assert.ok(releaseReloadRead, 'the reload read is not out');
+      releaseReloadRead();
+      releaseReloadRead = null;
+      await flushTasks(8);
+    },
+    async releaseMutation() {
+      assert.ok(releaseHeldMutation, `${holdMutation} is not held`);
+      releaseHeldMutation();
+      await flushTasks(8);
+    },
+    async clickUnit(unit) {
+      const button = unitButtons.find((candidate) => candidate.getAttribute('data-unit') === unit);
+      assert.ok(button, `no unit button for ${unit}`);
+      for (const listener of button.listeners.click || []) await listener({ target: button });
       await flushTasks(8);
     },
     async clickDelete(channelId) {
@@ -3133,7 +3234,15 @@ function createPageBridgeHarness({
   audioContextThrows = false,
   workletLoadFails = false,
   deferWorkletLoad = false,
-  frozenWorker = false
+  frozenWorker = false,
+  // A page with no Web Audio at all, and one whose Worker constructor is not
+  // one: both are shapes the bridge is asked to survive.
+  noAudioContext = false,
+  noWorker = false,
+  // The page the bridge is on. What it names is stamped on the owner answer.
+  href = 'https://www.twitch.tv/videos/100',
+  // The rate the page's audio runs at, which the K-weighting is designed for.
+  contextSampleRate = 48000
 } = {}) {
   const messages = [];
   // Real ids: a loop that was cancelled has to stop running here too, or a
@@ -3142,9 +3251,11 @@ function createPageBridgeHarness({
   let nextTimerId = 0;
   let contextThrows = audioContextThrows;
   const logs = [];
+  const errors = [];
   const workletModules = [];
+  const iirFilters = [];
   const listeners = {};
-  const pageHref = 'https://www.twitch.tv/videos/100';
+  const pageHref = href;
   const location = { href: pageHref, origin: new URL(pageHref).origin };
   const videos = [];
   const makeVideo = (props = {}) => {
@@ -3192,7 +3303,8 @@ function createPageBridgeHarness({
   let measurementPort;
   const fetchCalls = [];
   const pendingFetches = [];
-  let resolveWorkletLoad;
+  const workletLoadWaiters = [];
+  let contextsBuilt = 0;
   let mediaSourceCalls = 0;
   let gainNode;
   const audioNode = () => ({
@@ -3215,7 +3327,8 @@ function createPageBridgeHarness({
   class AudioContext {
     constructor() {
       if (contextThrows) throw new DOMException('too many contexts', 'NotSupportedError');
-      this.sampleRate = 48000;
+      contextsBuilt += 1;
+      this.sampleRate = contextSampleRate;
       this.currentTime = 0;
       // Chrome starts a context suspended until the page has been interacted
       // with.
@@ -3225,7 +3338,7 @@ function createPageBridgeHarness({
       this.destination = {};
       this.audioWorklet = {
         addModule: async (url) => {
-          if (deferWorkletLoad) await new Promise((resolve) => { resolveWorkletLoad = resolve; });
+          if (deferWorkletLoad) await new Promise((resolve) => { workletLoadWaiters.push(resolve); });
           if (workletLoadFails) throw new Error('worklet module blocked');
           workletModules.push(url);
         }
@@ -3248,7 +3361,7 @@ function createPageBridgeHarness({
       gainNodes.push(node);
       return node;
     }
-    createIIRFilter() { return audioNode(); }
+    createIIRFilter(feedforward, feedback) { iirFilters.push({ feedforward, feedback }); return audioNode(); }
     createMediaElementSource(element) {
       mediaSourceCalls += 1;
       // What Chrome throws once another AudioContext holds the element.
@@ -3260,6 +3373,8 @@ function createPageBridgeHarness({
     }
     addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
     async resume() {
+      // The state moves when the promise settles, not when resume is called.
+      await Promise.resolve();
       // What Chrome does with a context the page has earned no gesture for.
       if (refusesResume || this.state === 'running') return;
       this.state = 'running';
@@ -3267,8 +3382,8 @@ function createPageBridgeHarness({
     }
   }
   const window = {
-    AudioContext,
-    Worker: TestWorker,
+    ...(noAudioContext ? {} : { AudioContext }),
+    ...(noWorker ? {} : { Worker: TestWorker }),
     addEventListener(type, listener) {
       (listeners[type] ||= []).push(listener);
     },
@@ -3288,7 +3403,7 @@ function createPageBridgeHarness({
     clearInterval(id) { timers.delete(id); },
     console: {
       warn(...args) { warnings.push(args); },
-      error() {},
+      error(...args) { errors.push(args); },
       info(...args) { logs.push(args); }
     },
     document: {
@@ -3325,13 +3440,17 @@ function createPageBridgeHarness({
     location,
     messages,
     logs,
+    errors,
     warnings,
+    // A loop that was started twice runs twice; the count is what says so.
+    timerCount() { return timers.size; },
     refuseResume(value) { refusesResume = value; },
     suspendContext() {
       builtContext.state = 'suspended';
       fire(builtContext, 'statechange');
     },
     workletModules,
+    iirFilters,
     fetch: (...args) => window.fetch(...args),
     fetchCalls,
     resolveFetch(response) {
@@ -3344,6 +3463,21 @@ function createPageBridgeHarness({
       assert.equal(typeof measurementPort?.onmessage, 'function');
     },
     dispatchCommand,
+    // A command that reached this window from somewhere else, or in a shape
+    // that is not one.
+    async dispatchCommandFrom(source, cmd) {
+      const pending = (listeners.message || []).map((listener) => listener({
+        source,
+        data: { type: '__twitch_channel_volume_cmd__', cmd }
+      }));
+      await Promise.all(pending);
+      await flushTasks(8);
+    },
+    async dispatchCommandAs(data) {
+      const pending = (listeners.message || []).map((listener) => listener({ source: window, data }));
+      await Promise.all(pending);
+      await flushTasks(8);
+    },
     async runTimers() {
       for (const callback of [...timers.values()]) await callback();
       await flushTasks();
@@ -3352,12 +3486,15 @@ function createPageBridgeHarness({
     allowAudioContext() { contextThrows = false; },
     mediaSourceCalls() { return mediaSourceCalls; },
     gainValue() { return gainNode ? gainNode.gain.value : null; },
+    // Every load being held, not the last one to arrive: a second context
+    // being built is what a case asks about, and one that stays parked is a
+    // run that never ends rather than a case that fails.
     async releaseWorkletLoad() {
-      assert.ok(resolveWorkletLoad, 'the worklet load is not pending');
-      resolveWorkletLoad();
-      resolveWorkletLoad = null;
+      assert.ok(workletLoadWaiters.length, 'no worklet load is pending');
+      for (const resolve of workletLoadWaiters.splice(0)) resolve();
       await flushTasks(8);
     },
+    contextsBuilt() { return contextsBuilt; },
     emitMeasurementBlock(ms) {
       measurementPort.onmessage({ data: { ms } });
     },
@@ -3561,6 +3698,168 @@ test('the worklet keeps what it has when a quantum brings no audio', () => {
   assert.equal(harness.posted.length, 1);
   assert.equal(harness.posted[0].samples, 4800);
   assert.ok(Math.abs(harness.posted[0].ms - 0.5) < 1e-6);
+});
+
+test('gainToDb answers for a gain that is not a level at all', () => {
+  // log10 of nothing is not a number a screen can show.
+  assert.equal(u.gainToDb(0), '-Inf');
+  assert.equal(u.gainToDb(-1), '-Inf');
+  assert.equal(u.gainToDb(1), '0.0');
+  assert.equal(u.gainToDb(2), '6.0');
+});
+
+test('msg answers with the key wherever the catalog cannot', () => {
+  const outer = globalThis.chrome;
+  try {
+    delete globalThis.chrome;
+    assert.equal(u.msg('someKey'), 'someKey', 'a page with no runtime at all');
+    globalThis.chrome = {};
+    assert.equal(u.msg('someKey'), 'someKey', 'a runtime with no i18n');
+    globalThis.chrome = { i18n: { getMessage: () => '' } };
+    assert.equal(u.msg('someKey'), 'someKey', 'a catalog that declares nothing for it');
+    globalThis.chrome = { i18n: { getMessage: (key) => (key === 'known' ? 'Known message' : '') } };
+    assert.equal(u.msg('known'), 'Known message', 'and the message where it does');
+  } finally {
+    if (outer === undefined) delete globalThis.chrome; else globalThis.chrome = outer;
+  }
+});
+
+test('the shared helpers answer for an entry that is not there', () => {
+  assert.equal(u.extractAutoGainForKind(null, 'live'), null);
+  assert.equal(u.extractAutoGainForKind(undefined, 'vod'), null);
+  assert.equal(u.extractAutoGainForKind({ autoGainLive: 'loud' }, 'live'), null,
+    'nor for one whose gain is not a number');
+  assert.equal(u.extractAutoGainForKind({ autoGainLive: 1.5 }, 'live'), 1.5);
+});
+
+test('an Auto choice made for every kind at once is still a choice', () => {
+  // An early shape wrote one flag for both kinds. It is read as the choice it
+  // was, rather than passed over so that a saved gain decides instead.
+  const entry = { autoApplyLoudness: true, gainLive: 0.5 };
+  assert.equal(u.resolveAutoApplySetting(entry, 'live', false), true);
+  assert.equal(u.resolveAutoApplySetting({ autoApplyLoudness: false, gainLive: 0.5 }, 'live', true), false);
+  // The per-kind flag outranks it.
+  assert.equal(
+    u.resolveAutoApplySetting({ autoApplyLoudness: true, autoApplyLoudnessLive: false }, 'live', true),
+    false
+  );
+});
+
+test('a gain is worked out only from numbers, and only where one comes out', () => {
+  assert.equal(u.calcGain(NaN, -18), 1.0, 'a level that is not a number');
+  assert.equal(u.calcGain(-Infinity, -18), 1.0, 'nor one that is no level');
+  assert.equal(u.calcGain(-18, Infinity), 1.0, 'a target that runs the gain off the end');
+  assert.ok(Math.abs(u.calcGain(-23, -18) - Math.pow(10, 5 / 20)) < 1e-9, 'and the gain where one comes out');
+
+  assert.equal(u.suggestedGain(NaN, -18), 1.0);
+  assert.equal(u.suggestedGain(-18, NaN), 1.0);
+  // calcGain would answer 0 here, which is silence rather than no suggestion.
+  assert.equal(u.suggestedGain(-18, -Infinity), 1.0, 'a target that is no target suggests nothing');
+});
+
+test('a URL is classified by the site it is on', () => {
+  assert.deepEqual(u.classifyTwitchUrl('https://example.com/videos/123'), { kind: 'none' },
+    'a video path somewhere else is no VOD of ours');
+  assert.deepEqual(u.classifyTwitchUrl('https://example.com/somechannel'), { kind: 'none' });
+  assert.deepEqual(u.classifyTwitchUrl('https://www.twitch.tv/videos/123'), { kind: 'vod', videoId: '123' });
+  // A clip lives three segments deep; two of them is not one.
+  assert.deepEqual(u.classifyTwitchUrl('https://www.twitch.tv/somechannel/clip'), { kind: 'none' });
+  assert.deepEqual(
+    u.classifyTwitchUrl('https://www.twitch.tv/SomeChannel/clip/Slug'),
+    { kind: 'clip', slug: 'Slug', login: 'somechannel' }
+  );
+});
+
+test('an owner answer is matched against the content it names', () => {
+  const live = { kind: 'live', login: 'somechannel' };
+  assert.equal(
+    u.ownerMatchesTwitchContent({ userId: '1', contentId: 'SomeChannel', contentKind: 'live', source: 'user' }, live),
+    true
+  );
+  for (const owner of [
+    undefined,
+    { contentId: 'somechannel', contentKind: 'live', source: 'user' },
+    { userId: '1', contentKind: 'live', source: 'user' },
+    { userId: '1', contentId: 'somechannel', contentKind: 'vod', source: 'user' },
+    { userId: '1', contentId: 'somechannel', contentKind: 'live', source: 'video' },
+    { userId: '1', contentId: 'another', contentKind: 'live', source: 'user' }
+  ]) {
+    assert.equal(u.ownerMatchesTwitchContent(owner, live), false, JSON.stringify(owner));
+  }
+  // A clip is matched by nobody: it carries no owner of its own.
+  assert.equal(
+    u.ownerMatchesTwitchContent(
+      { userId: '1', contentId: 'undefined', contentKind: 'clip', source: 'video' },
+      { kind: 'clip', slug: 'x' }
+    ),
+    false
+  );
+});
+
+test('a provisional id is made from the kind, and from what that kind carries', () => {
+  assert.equal(u.provisionalChannelIdForContent({ kind: 'live', login: 'somechannel' }), 'login:somechannel');
+  assert.equal(u.provisionalChannelIdForContent({ kind: 'live' }), '', 'a live page with no login names nothing');
+  assert.equal(u.provisionalChannelIdForContent({ kind: 'vod', videoId: '300' }), 'vod-owner:300');
+  // A login riding on a VOD is not what a VOD is filed under.
+  assert.equal(u.provisionalChannelIdForContent({ kind: 'vod', videoId: '300', login: 'somechannel' }), 'vod-owner:300');
+  assert.equal(u.provisionalChannelIdForContent({ kind: 'clip', slug: 'x' }), '');
+  assert.equal(u.provisionalChannelIdForContent(undefined), '');
+});
+
+test('an alias is followed only where there is a map to follow it through', () => {
+  assert.equal(u.resolveChannelIdAlias('login:a', null), 'login:a');
+  assert.equal(u.resolveChannelIdAlias('login:a', undefined), 'login:a');
+  assert.equal(u.resolveChannelIdAlias('login:a', 'not a map'), 'login:a');
+  assert.equal(u.resolveChannelIdAlias(42, { 42: '55' }), 42, 'an id that is not a string is not looked up');
+  assert.equal(u.resolveChannelIdAlias('login:a', { 'login:a': '55' }), '55');
+  assert.equal(u.resolveChannelIdAlias('login:a', { 'login:a': '' }), 'login:a',
+    'an entry pointing at nothing is not followed');
+  assert.equal(u.resolveChannelIdAlias('login:a', { 'login:a': 55 }), 'login:a',
+    'nor one pointing at something that is not an id');
+  assert.equal(u.resolveChannelIdAlias('login:a', { 'login:a': 'login:a' }), 'login:a',
+    'nor one pointing at itself');
+});
+
+test('the K-weighting at 48 kHz is the one written down, not one derived again', () => {
+  const at48k = u.kWeightingForSampleRate(48000);
+  assert.equal(at48k.pre, u.K_PRE_48K, 'the coefficients are used as they stand');
+  assert.equal(at48k.rlb, u.K_RLB_48K);
+
+  const at44k1 = u.kWeightingForSampleRate(44100);
+  assert.notEqual(at44k1.pre.b[0], u.K_PRE_48K.b[0],
+    `another rate is designed for that rate (${at44k1.pre.b[0]})`);
+  assert.notEqual(at44k1.rlb.a[1], u.K_RLB_48K.a[1], 'both filters with it');
+
+  // A rate that is not a number is not a rate to design for.
+  assert.equal(u.kWeightingForSampleRate(undefined).pre, u.K_PRE_48K);
+  assert.equal(u.kWeightingForSampleRate('nonsense').pre, u.K_PRE_48K);
+});
+
+test('the gate counts only blocks that are levels', () => {
+  const quiet = Math.pow(10, (u.ABSOLUTE_GATE_LUFS + 0.691) / 10) * 2;
+  assert.equal(u.gatedIntegratedLufs([]), -Infinity, 'nothing measured is no level');
+  assert.equal(u.gatedIntegratedLufs([NaN, 0, -1]), -Infinity, 'nor is nothing usable');
+
+  // A block of infinite power is not a measurement, and counting it would put
+  // the whole reading there.
+  const withInfinity = u.gatedIntegratedLufs([Infinity, quiet, quiet]);
+  const withoutIt = u.gatedIntegratedLufs([quiet, quiet]);
+  assert.ok(Number.isFinite(withInfinity), `the reading stays a number (${withInfinity})`);
+  assert.ok(Math.abs(withInfinity - withoutIt) < 1e-9, 'and is the one the real blocks give');
+});
+
+test('utils loads where there is no module to export to', () => {
+  // The popup, the options page and the content script load it as a plain
+  // script; only the tests and the worker have a module around it.
+  const sandbox = { console: { warn() {}, error() {} } };
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  assert.doesNotThrow(() => vm.runInContext(
+    fs.readFileSync(path.join(__dirname, 'utils.js'), 'utf8'),
+    sandbox,
+    { filename: 'utils.js' }
+  ));
+  assert.equal(typeof sandbox.calcGain, 'function', 'and its helpers are there to be used');
 });
 
 test('esc closes the attribute it is written into', () => {
@@ -4491,6 +4790,460 @@ test('active content script reports an owner migration storage failure', async (
     ),
     true
   );
+});
+
+test('a save files the channel under its own name, not its id', async () => {
+  // The row is what the settings page lists. A name that is the id is what a
+  // row looks like when nobody told it one, and the viewer reads that list.
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/somechannel' });
+  await flushTasks();
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner', userId: '123456789', login: 'somechannel',
+    displayName: 'Some Channel', source: 'user', contentKind: 'live', contentId: 'somechannel'
+  });
+  await flushTasks();
+
+  await harness.dispatchGesture({ cmd: 'setGain', gain: 2 });
+  await flushTasks();
+
+  const saved = harness.stored[u.CHANNEL_VOLUMES_KEY]['123456789'];
+  assert.equal(saved?.gainLive, 2, 'the gain is filed');
+  assert.equal(saved?.name, 'Some Channel',
+    `under the name the page gave (${saved?.name})`);
+  assert.equal(saved?.url, 'https://www.twitch.tv/somechannel',
+    `with the link to it (${saved?.url})`);
+
+  // A measurement saves the same way, and takes the channel it is measuring
+  // rather than whatever the tab holds by the time the save goes out.
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs', momentary: -21, shortTerm: -21, integrated: -21
+  });
+  await flushTasks();
+
+  const measured = harness.stored[u.CHANNEL_VOLUMES_KEY]['123456789'];
+  assert.equal(measured?.lastLufs?.live, -21, 'the measurement is filed');
+  assert.equal(measured?.name, 'Some Channel', 'under the same name');
+  assert.equal(measured?.login, 'somechannel', 'and the login it was measured on');
+});
+
+test('an Auto choice is filed under the channel it was made on', async () => {
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/somechannel' });
+  await flushTasks();
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner', userId: '123456789', login: 'somechannel',
+    displayName: 'Some Channel', source: 'user', contentKind: 'live', contentId: 'somechannel'
+  });
+  await flushTasks();
+
+  await harness.dispatchGesture({ cmd: 'setAutoApplyLoudness', enabled: true });
+  await flushTasks();
+
+  const saved = harness.stored[u.CHANNEL_VOLUMES_KEY]['123456789'];
+  assert.equal(saved?.autoApplyLoudnessLive, true, 'the choice is filed');
+  assert.equal(saved?.name, 'Some Channel', `under the channel's name (${saved?.name})`);
+  assert.equal(saved?.url, 'https://www.twitch.tv/somechannel', `with its link (${saved?.url})`);
+
+  // The gain Auto then works out is filed against the same channel.
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs', momentary: -21, shortTerm: -21, integrated: -21
+  });
+  await flushTasks();
+
+  const followed = harness.stored[u.CHANNEL_VOLUMES_KEY]['123456789'];
+  assert.ok(Number.isFinite(followed?.autoGainLive),
+    `the gain Auto worked out is filed (${followed?.autoGainLive})`);
+  assert.equal(followed?.name, 'Some Channel', 'under the same name');
+  assert.equal(followed?.login, 'somechannel', 'and the login it was measured on');
+});
+
+test('content tells the bridge an ad gain that moved, not one that was set again', async () => {
+  // The settings listener runs on every settings write, including ones that
+  // did not touch the ad gain. Sending it each time restarts a ramp the bridge
+  // is already running.
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/somechannel' });
+  await flushTasks();
+  harness.commands.length = 0;
+
+  await harness.dispatchStorage({
+    [u.SETTINGS_KEY]: { newValue: { adGainDb: -12, displayUnit: '%' } }
+  });
+  await flushTasks();
+  assert.equal(harness.commands.filter((command) => command.cmd === 'setAdGain').length, 1,
+    'a gain that moved is sent');
+
+  await harness.dispatchStorage({
+    [u.SETTINGS_KEY]: { newValue: { adGainDb: -12, displayUnit: 'dB' } }
+  });
+  await flushTasks();
+  assert.equal(harness.commands.filter((command) => command.cmd === 'setAdGain').length, 1,
+    'and a write that left it where it was is not');
+
+  await harness.dispatchStorage({
+    [u.SETTINGS_KEY]: { newValue: { adGainDb: -6, displayUnit: 'dB' } }
+  });
+  await flushTasks();
+  assert.equal(harness.commands.filter((command) => command.cmd === 'setAdGain').length, 2,
+    'while the next move is');
+});
+
+test('content answers the popup only when the popup asked something', async () => {
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/somechannel' });
+  await flushTasks();
+
+  for (const request of [null, undefined, 'getState', 42, true]) {
+    const answer = await harness.dispatchRuntime(request);
+    assert.equal(answer, undefined, `${JSON.stringify(request) ?? 'undefined'} is not a request`);
+  }
+
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(typeof state?.appliesTo, 'string', 'while one that is gets an answer');
+});
+
+test('content waits for the bridge to be ready before it asks for the element', async () => {
+  // The measurement chain is wired on the first attach, so attaching before
+  // the worklet has loaded leaves the gain working and the measurement not.
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/somechannel', deferTimers: true });
+  await flushTasks();
+
+  assert.equal(harness.commands.some((command) => command.cmd === 'attach'), false,
+    `nothing is asked for until the bridge says it is ready (${JSON.stringify(harness.commands.map((c) => c.cmd))})`);
+
+  await harness.dispatchMessage({ type: '__twitch_channel_volume__', event: 'init-done' });
+  await flushTasks();
+
+  assert.equal(harness.commands.some((command) => command.cmd === 'attach'), true,
+    'and once it says so, the element is asked for');
+
+  // The wait is not open-ended: a bridge that never answers is given three
+  // seconds, and then the element is asked for anyway.
+  const stalled = createContentHarness({ href: 'https://www.twitch.tv/somechannel', deferTimers: true });
+  await flushTasks();
+  assert.equal(stalled.commands.some((command) => command.cmd === 'attach'), false,
+    'a bridge that has not answered holds it');
+  await stalled.runDeferredTimers();
+  assert.equal(stalled.commands.some((command) => command.cmd === 'attach'), true,
+    'until the wait runs out');
+});
+
+test('content keeps the other kind\'s measurement when one is reset', async () => {
+  // A reset is for the kind on screen. The other kind's level was measured on
+  // other audio and is still what a later session would seed from.
+  const harness = createContentHarness({
+    href: 'https://www.twitch.tv/somechannel',
+    channelVolumes: {
+      'login:somechannel': {
+        name: 'somechannel',
+        gainLive: 2,
+        lastLufs: { live: -23, vod: -18 },
+        lastMeasuredAt: 100
+      }
+    }
+  });
+  await flushTasks();
+
+  await harness.dispatchGesture({ cmd: 'resetMeasurement' });
+  await flushTasks();
+
+  const row = harness.stored[u.CHANNEL_VOLUMES_KEY]['login:somechannel'];
+  assert.equal(row?.lastLufs?.live, undefined, 'the kind on screen is cleared');
+  assert.equal(row?.lastLufs?.vod, -18,
+    `while the other kind is kept (${JSON.stringify(row?.lastLufs)})`);
+
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.hasSavedMeasurement, false,
+    'and the popup is told there is nothing left to reset here');
+});
+
+test('content keeps the other kind\'s Auto reference when this kind gets one', async () => {
+  // Only a gain measured against volume 1 carries a reference, and each kind
+  // carries its own. Writing this kind's must not drop the other's.
+  const harness = createContentHarness({
+    href: 'https://www.twitch.tv/somechannel',
+    channelVolumes: {
+      'login:somechannel': {
+        name: 'somechannel',
+        autoGainVod: 1.5,
+        autoGainRef: { vod: 'volume-1' }
+      }
+    }
+  });
+  await flushTasks();
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs', momentary: -21, shortTerm: -21, integrated: -21
+  });
+  await flushTasks();
+
+  await harness.dispatchGesture({ cmd: 'setAutoApplyLoudness', enabled: true });
+  await flushTasks();
+
+  const row = harness.stored[u.CHANNEL_VOLUMES_KEY]['login:somechannel'];
+  assert.equal(row?.autoGainRef?.vod, 'volume-1',
+    `the other kind's reference is kept (${JSON.stringify(row?.autoGainRef)})`);
+  assert.ok(Number.isFinite(row?.autoGainLive), 'while this kind gets a gain');
+});
+
+test('content names a VOD by whoever the answer named, and by the video otherwise', async () => {
+  // Before the owner answer arrives a VOD is filed under the video it is; once
+  // it arrives the channel is the owner, and the row carries the owner's name.
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/videos/300' });
+  await flushTasks();
+
+  const early = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(early.channel.id, 'vod-owner:300',
+    `the video stands in until the owner is known (${early.channel.id})`);
+  assert.equal(early.channel.name, '300', `named by the video (${early.channel.name})`);
+  assert.equal(early.channel.login, '', 'with no login yet');
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner', userId: '55', login: 'vodowner', displayName: 'VOD Owner',
+    source: 'video', contentKind: 'vod', contentId: '300'
+  });
+  await flushTasks();
+
+  const settled = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(settled.channel.id, '55', 'the owner is the channel once it is known');
+  assert.equal(settled.channel.name, 'VOD Owner', `named by the owner (${settled.channel.name})`);
+  assert.equal(settled.channel.login, 'vodowner');
+  assert.equal(settled.channel.url, 'https://www.twitch.tv/vodowner');
+});
+
+test('content names a live channel by the owner where there is one', async () => {
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/SomeChannel' });
+  await flushTasks();
+
+  const early = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(early.channel.id, 'login:somechannel', 'the login stands in');
+  assert.equal(early.channel.name, 'somechannel', `named by the login (${early.channel.name})`);
+
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner', userId: '55', login: 'somechannel', displayName: 'Some Channel',
+    source: 'user', contentKind: 'live', contentId: 'somechannel'
+  });
+  await flushTasks();
+
+  const settled = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(settled.channel.name, 'Some Channel',
+    `and the owner's name once it is known (${settled.channel.name})`);
+});
+
+test('content reads the settings again for a channel it moved to', async () => {
+  // A route change to another channel is another channel's saved gain. Keeping
+  // the one in force would play the previous channel's level under this one.
+  const harness = createContentHarness({
+    href: 'https://www.twitch.tv/somechannel',
+    channelVolumes: {
+      'login:somechannel': { name: 'somechannel', gainLive: 2 },
+      'login:otherchannel': { name: 'otherchannel', gainLive: 0.5 }
+    }
+  });
+  await flushTasks();
+  const first = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(first.gain, 2, `the first channel plays at its own gain (${first.gain})`);
+
+  await harness.navigate('https://www.twitch.tv/otherchannel');
+  await flushTasks();
+
+  const moved = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(moved.gain, 0.5, `and the one moved to plays at its own (${moved.gain})`);
+  assert.equal(moved.channel.id, 'login:otherchannel');
+});
+
+test('content reads the settings again when the same channel changes kind', async () => {
+  // A stream and its VOD hold separate gains under one owner, so moving
+  // between them is a move even though the channel has not changed.
+  const harness = createContentHarness({
+    href: 'https://www.twitch.tv/somechannel',
+    channelVolumes: { 'login:somechannel': { name: 'somechannel', gainLive: 2, gainVod: 0.25 } }
+  });
+  await flushTasks();
+  const live = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(live.gain, 2, `the stream plays at the live gain (${live.gain})`);
+
+  await harness.navigate('https://www.twitch.tv/videos/300');
+  await flushTasks();
+
+  const vod = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(vod.channel.kind, 'vod', 'the kind moved');
+  assert.notEqual(vod.gain, 2, `and the live gain is not what plays there (${vod.gain})`);
+});
+
+test('content saves a measurement no oftener than the storage can bear', async () => {
+  // A block arrives ten times a second. Saving each one would write to storage
+  // ten times a second for as long as the tab is open.
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/somechannel' });
+  await flushTasks();
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner', userId: '123456789', login: 'somechannel',
+    displayName: 'Some Channel', source: 'user', contentKind: 'live', contentId: 'somechannel'
+  });
+  await flushTasks();
+
+  const lufs = async (integrated) => {
+    await harness.dispatchMessage({
+      type: '__twitch_channel_volume__',
+      event: 'lufs', momentary: integrated, shortTerm: integrated, integrated
+    });
+    await flushTasks();
+  };
+
+  await lufs(-21);
+  assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['123456789']?.lastLufs?.live, -21,
+    'the first measurement is saved');
+
+  await lufs(-30);
+  assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['123456789']?.lastLufs?.live, -21,
+    'the one right behind it is not');
+
+  harness.advanceTime(5001);
+  await lufs(-30);
+  assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['123456789']?.lastLufs?.live, -30,
+    'and one far enough behind is');
+});
+
+test('content saves nothing from a reading that is no reading', async () => {
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/somechannel' });
+  await flushTasks();
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner', userId: '123456789', login: 'somechannel',
+    displayName: 'Some Channel', source: 'user', contentKind: 'live', contentId: 'somechannel'
+  });
+  await flushTasks();
+  const before = JSON.stringify(harness.stored[u.CHANNEL_VOLUMES_KEY]);
+
+  // Before anything has passed the gate the bridge reports no integrated value
+  // at all, and there is nothing to file or to follow.
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs', momentary: -21, shortTerm: -21, integrated: -Infinity
+  });
+  await flushTasks();
+
+  assert.equal(JSON.stringify(harness.stored[u.CHANNEL_VOLUMES_KEY]), before,
+    `nothing is filed from it (${JSON.stringify(harness.stored[u.CHANNEL_VOLUMES_KEY])})`);
+});
+
+test('content takes an owner answer only for the content it is on', async () => {
+  // The answer names the content it was asked about. One for another page is
+  // one the tab has left, and taking it would file this page under that
+  // channel.
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/somechannel' });
+  await flushTasks();
+
+  for (const owner of [
+    { userId: '999', login: 'other', displayName: 'Other', source: 'user', contentKind: 'live', contentId: 'other' },
+    { userId: '999', login: 'somechannel', displayName: 'Other', source: 'video', contentKind: 'live', contentId: 'somechannel' },
+    { userId: '999', login: 'somechannel', displayName: 'Other', source: 'user', contentKind: 'vod', contentId: 'somechannel' },
+    { login: 'somechannel', displayName: 'Other', source: 'user', contentKind: 'live', contentId: 'somechannel' }
+  ]) {
+    await harness.dispatchMessage({ type: '__twitch_channel_volume__', event: 'owner', ...owner });
+    await flushTasks();
+  }
+
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.channel.id, 'login:somechannel',
+    `the channel stays the one the URL names (${state.channel.id})`);
+  assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['999'], undefined,
+    'and nothing is filed under the other');
+
+  // The answer for this page is taken.
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner', userId: '123456789', login: 'somechannel',
+    displayName: 'Some Channel', source: 'user', contentKind: 'live', contentId: 'somechannel'
+  });
+  await flushTasks();
+  const settled = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(settled.channel.id, '123456789', 'while the one for this page is');
+});
+
+test('content writes nothing once the runtime it had is gone', async () => {
+  // Reloading the extension leaves this script running with a runtime it can
+  // no longer reach. The audio graph and the badge do not depend on chrome.*,
+  // so it goes on playing — but every save has to stop, or it throws where
+  // nobody is listening.
+  const harness = createContentHarness({
+    href: 'https://www.twitch.tv/somechannel',
+    channelVolumes: { 'login:somechannel': { name: 'somechannel', gainLive: 0.5 } }
+  });
+  await flushTasks();
+  const before = JSON.stringify(harness.stored);
+
+  harness.invalidateRuntime();
+
+  await harness.dispatchGesture({ cmd: 'setGain', gain: 2 });
+  await harness.dispatchGesture({ cmd: 'setAutoApplyLoudness', enabled: true });
+  await harness.dispatchGesture({ cmd: 'resetMeasurement' });
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs', momentary: -21, shortTerm: -21, integrated: -21
+  });
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner', userId: '123456789', login: 'somechannel',
+    displayName: 'Some Channel', source: 'user', contentKind: 'live', contentId: 'somechannel'
+  });
+  await flushTasks();
+
+  assert.equal(JSON.stringify(harness.stored), before,
+    `nothing reaches storage (${JSON.stringify(harness.stored[u.CHANNEL_VOLUMES_KEY])})`);
+  // Nothing was attempted, so there is no failure to name — and the console it
+  // would be named in belongs to a page whose extension is gone.
+  assert.deepEqual(
+    harness.warnings.map(([message]) => message).filter((message) => String(message).startsWith('[TCV]')),
+    [],
+    `nothing is reported as having failed (${JSON.stringify(harness.warnings.map(([m]) => m))})`
+  );
+});
+
+test('content writes nothing for a page that resolves to no channel', async () => {
+  // A clip carries no channel, so there is nothing to file a gain or a
+  // measurement under. Saving one would put it under an id made up here.
+  const harness = createContentHarness({ href: 'https://clips.twitch.tv/SomeSlug' });
+  await flushTasks();
+  const before = JSON.stringify(harness.stored);
+
+  await harness.dispatchGesture({ cmd: 'setGain', gain: 2 });
+  await harness.dispatchGesture({ cmd: 'setAutoApplyLoudness', enabled: true });
+  await harness.dispatchGesture({ cmd: 'resetMeasurement' });
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs', momentary: -21, shortTerm: -21, integrated: -21
+  });
+  await flushTasks();
+
+  assert.equal(JSON.stringify(harness.stored), before,
+    `nothing is filed for a page with no channel (${JSON.stringify(harness.stored[u.CHANNEL_VOLUMES_KEY])})`);
+});
+
+test('content reads a bridge message only from the page it shares', async () => {
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/somechannel' });
+  await flushTasks();
+  const commandsBefore = harness.commands.length;
+
+  // A frame of its own, posting the same shape.
+  await harness.dispatchMessageFrom({ name: 'another frame' }, {
+    type: '__twitch_channel_volume__',
+    event: 'lufs', momentary: -21, shortTerm: -21, integrated: -21
+  });
+  // The page's own scripts, posting something else entirely.
+  await harness.dispatchMessage({ type: 'something else', event: 'lufs', integrated: -21 });
+  await harness.dispatchMessage(null);
+  await harness.dispatchMessage({ event: 'lufs', integrated: -21 });
+  await flushTasks();
+
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.lufs.integrated, -Infinity,
+    `none of it is read as a measurement (${state.lufs.integrated})`);
+  assert.equal(harness.commands.length, commandsBefore, 'and none of it is acted on');
 });
 
 test('content names the storage failure behind a rejected gain save', async () => {
@@ -8162,6 +8915,287 @@ test('settings mutations reject unknown fields and invalid values', () => {
   }), /must not be empty/);
 });
 
+test('options puts a refused settings save back, and names why', async () => {
+  // The control is drawn at the new value before the write is asked for, so a
+  // refusal has to put the page back on what is stored rather than leave the
+  // viewer looking at a value nothing holds.
+  const harness = createOptionsHarness({
+    settings: { targetLufs: -18, displayUnit: '%' },
+    refuseMutation: { [u.SETTINGS_MUTATION_MESSAGE]: 'settings-update-failed' }
+  });
+  await flushTasks(8);
+
+  harness.el('targetLufs').value = '-24';
+  await harness.fire('targetLufs', 'change');
+
+  assert.equal(harness.el('targetLufs').value, '-18', 'the control goes back to what is on file');
+  assert.equal(harness.el('settingsError').classList.contains('hidden'), false, 'and the page says so');
+  const named = harness.errors.filter((args) => String(args[0]).includes('failed to save settings field'));
+  assert.equal(named.length, 1, `the failure is named once (${harness.errors.length} logged)`);
+  assert.equal(String(named[0]?.[1]?.message), 'settings-update-failed',
+    'carrying the reason the worker gave');
+});
+
+test('options draws back what is on file, not what the defaults would be', async () => {
+  // The re-read after a refusal is what puts the page right, so it has to draw
+  // the settings it read. A page drawn from nothing shows the defaults, which
+  // for a viewer who never chose them is a second wrong value.
+  const harness = createOptionsHarness({
+    settings: { targetLufs: -24, adGainDb: -12 },
+    refuseMutation: { [u.SETTINGS_MUTATION_MESSAGE]: 'settings-update-failed' }
+  });
+  await flushTasks(8);
+
+  harness.el('targetLufs').value = '-30';
+  await harness.fire('targetLufs', 'change');
+
+  assert.equal(harness.el('targetLufs').value, '-24', 'the target on file is drawn back');
+  assert.equal(harness.el('targetLufsValue').textContent, '-24 LUFS', 'and named');
+  assert.equal(harness.el('adGainDb').value, '-12', 'and so is the setting beside it');
+});
+
+test('options draws nothing from a control operated before the load lands', async () => {
+  const harness = createOptionsHarness({ settings: { targetLufs: -24 }, deferStorage: true });
+  await flushTasks(8);
+
+  harness.el('targetLufs').value = '-30';
+  await harness.fire('targetLufs', 'change');
+
+  assert.equal(harness.el('targetLufsValue').textContent, '',
+    `the page is not drawn from a gesture it has nothing to check against (${harness.el('targetLufsValue').textContent})`);
+  assert.deepEqual(
+    harness.sent.filter((message) => message.type === u.SETTINGS_MUTATION_MESSAGE),
+    [],
+    'and no setting is asked of the worker'
+  );
+});
+
+test('options takes the Auto default out of use while its save is out', async () => {
+  const harness = createOptionsHarness({ holdMutation: u.SETTINGS_MUTATION_MESSAGE });
+  await flushTasks(8);
+  harness.el('defaultAutoLiveToggle').checked = true;
+  const saving = harness.start('defaultAutoLiveToggle', 'change');
+  await flushTasks(8);
+
+  assert.equal(harness.el('defaultAutoLiveToggle').disabled, true,
+    'the toggle is out of use while the save is');
+
+  await harness.releaseMutation();
+  await saving;
+  assert.equal(harness.el('defaultAutoLiveToggle').disabled, false, 'and comes back when it lands');
+});
+
+test('options keeps the Auto default out of use until the page has been put back', async () => {
+  // A refusal re-reads and redraws before the toggle is handed back, so what
+  // the viewer can press next is a page that says what is on file.
+  const harness = createOptionsHarness({
+    refuseMutation: { [u.SETTINGS_MUTATION_MESSAGE]: 'settings-update-failed' },
+    holdReloadRead: true
+  });
+  await flushTasks(8);
+  harness.el('defaultAutoLiveToggle').checked = true;
+  const saving = harness.start('defaultAutoLiveToggle', 'change');
+  await flushTasks(8);
+
+  assert.equal(harness.el('defaultAutoLiveToggle').disabled, true,
+    'the toggle is still out of use while the page is being put back');
+
+  await harness.releaseReloadRead();
+  await saving;
+  assert.equal(harness.el('defaultAutoLiveToggle').disabled, false, 'and comes back afterwards');
+});
+
+test('options waits for the unit it saved before its gesture is over', async () => {
+  const harness = createOptionsHarness({ holdMutation: u.SETTINGS_MUTATION_MESSAGE });
+  await flushTasks(8);
+  let over = false;
+  const clicking = harness.startUnit('dB').then(() => { over = true; });
+  await flushTasks(8);
+
+  assert.equal(over, false, 'the gesture is not over while the save is out');
+
+  await harness.releaseMutation();
+  await clicking;
+  assert.equal(over, true, 'and is once it lands');
+});
+
+test('options keeps what a change told it over what its own read brings back', async () => {
+  // The read was issued first and answers with what was on file then. A change
+  // that arrived while it was out is newer, and the read must not undo it.
+  const harness = createOptionsHarness({ settings: { targetLufs: -24 }, deferStorage: true });
+  await flushTasks(8);
+
+  harness.fireStorageChanged({ [u.SETTINGS_KEY]: { newValue: { targetLufs: -30 } } });
+  await flushTasks(8);
+  assert.equal(harness.el('targetLufs').value, '-30', 'the change is on the page');
+
+  harness.releaseStorage();
+  await flushTasks(8);
+
+  assert.equal(harness.el('targetLufs').value, '-30',
+    `and the older read does not put it back (${harness.el('targetLufs').value})`);
+});
+
+test('options names a refusal that gives no reason', async () => {
+  const harness = createOptionsHarness({
+    settings: { targetLufs: -18 },
+    refuseMutation: { [u.SETTINGS_MUTATION_MESSAGE]: true }
+  });
+  await flushTasks(8);
+
+  harness.el('targetLufs').value = '-24';
+  await harness.fire('targetLufs', 'change');
+
+  const named = harness.errors.filter((args) => String(args[0]).includes('failed to save settings field'));
+  assert.equal(String(named[0]?.[1]?.message), 'settings mutation failed',
+    'a refusal with nothing to say is still named');
+});
+
+test('options names a refused channel write by the reason the worker gave', async () => {
+  const harness = createOptionsHarness({
+    channelVolumes: { 123: { name: 'somechannel', login: 'somechannel', gainLive: 1.5 } },
+    refuseMutation: { [channelStore.CHANNEL_MUTATION_MESSAGE]: 'stored-state-invalid' }
+  });
+  await flushTasks(8);
+
+  await harness.clickDelete('123');
+
+  const named = harness.warnings.filter((args) => String(args[0]).includes('delete the channel'));
+  assert.equal(named.length, 1, `the failure is named (${JSON.stringify(harness.warnings.map((a) => a[0]))})`);
+  assert.equal(harness.alerts.length, 1, 'and the viewer is told');
+  assert.equal(String(named[0]?.[1]?.message), 'stored-state-invalid',
+    'carrying the reason rather than the wording used when there is none');
+});
+
+test('options writes nothing from a control operated before the load lands', async () => {
+  // The markup ships them disabled; a gesture already on its way when the page
+  // opened is turned down by the handler behind that.
+  const harness = createOptionsHarness({ deferStorage: true });
+  await flushTasks(8);
+  harness.sent.length = 0;
+
+  harness.el('targetLufs').value = '-24';
+  await harness.fire('targetLufs', 'change');
+  harness.el('adGainDb').value = '-12';
+  await harness.fire('adGainDb', 'change');
+  harness.el('overlayToggle').checked = true;
+  await harness.fire('overlayToggle', 'change');
+  harness.el('defaultAutoLiveToggle').checked = true;
+  await harness.fire('defaultAutoLiveToggle', 'change');
+  await harness.clickUnit('dB');
+
+  assert.deepEqual(harness.sent, [], 'nothing is asked of the worker');
+
+  harness.releaseStorage();
+  await flushTasks(8);
+  harness.el('targetLufs').value = '-24';
+  await harness.fire('targetLufs', 'change');
+  assert.equal(harness.sent.length, 1, 'and the same control writes once the load has landed');
+});
+
+test('options draws a channel that has no name by its id', async () => {
+  const harness = createOptionsHarness({
+    channelVolumes: { 456: { login: 'nameless', gainLive: 1.5 } }
+  });
+  await flushTasks(8);
+
+  assert.match(harness.el('channelsBody').textContent, />456</,
+    `the id stands in for the name (${harness.el('channelsBody').textContent.slice(0, 200)})`);
+});
+
+test('options draws an Auto row and a manual row apart', async () => {
+  const harness = createOptionsHarness({
+    settings: { autoApplyLoudnessLiveDefault: false },
+    channelVolumes: {
+      auto: { name: 'auto', login: 'auto', autoApplyLoudnessLive: true, autoGainLive: 2, gainLive: 0.5 },
+      manual: { name: 'manual', login: 'manual', autoApplyLoudnessLive: false, gainLive: 0.5 }
+    }
+  });
+  await flushTasks(8);
+  const markup = harness.el('channelsBody').textContent;
+
+  assert.match(markup, /class="ch-vol auto"/, 'the Auto row is marked as one');
+  assert.equal((markup.match(/class="ch-vol auto"/g) || []).length, 1,
+    `and only that row is (${markup.slice(0, 400)})`);
+  assert.ok(markup.includes(harness.message('labelAuto')), 'and it is labelled Auto');
+  assert.match(markup, />50%</, 'while the manual row shows the gain it holds');
+});
+
+test('options draws a dash where there is no gain to draw', async () => {
+  const harness = createOptionsHarness({
+    channelVolumes: { 789: { name: 'novod', login: 'novod', gainLive: 1.5 } }
+  });
+  await flushTasks(8);
+  const markup = harness.el('channelsBody').textContent;
+
+  assert.match(markup, />—</, `a kind never saved is a dash (${markup.slice(0, 300)})`);
+  assert.doesNotMatch(markup, /NaN/, 'rather than a number that is not one');
+});
+
+test('options keeps the text the page ships when the locale has no message', async () => {
+  const harness = createOptionsHarness({ unknownI18nKeys: ['noSuchKey'] });
+  await flushTasks(8);
+
+  const node = harness.i18nNodes.find((el) => el.getAttribute('data-i18n') === 'noSuchKey');
+  assert.equal(node.textContent, 'what the page ships');
+});
+
+test('settings mutations refuse what is not a mutation, and say so by name', () => {
+  // The reason is what background.js sorts the failures by: input the caller
+  // sent, state on file, or storage. A throw from reading a property of
+  // nothing carries no reason, and would be reported as storage failing.
+  for (const mutation of [null, undefined, 'patchSettings', 42, true]) {
+    assert.throws(
+      () => settingsStore.applySettingsMutation({}, mutation),
+      { reason: 'invalid-mutation', message: 'settings mutation must be an object' },
+      `mutation ${JSON.stringify(mutation) ?? 'undefined'}`
+    );
+  }
+
+  for (const patch of [null, undefined, 'displayUnit', 42, [], ['displayUnit']]) {
+    assert.throws(
+      () => settingsStore.applySettingsMutation({}, { operation: 'patchSettings', patch }),
+      { reason: 'invalid-mutation', message: 'settings patch must be an object' },
+      `patch ${JSON.stringify(patch) ?? 'undefined'}`
+    );
+  }
+
+  assert.throws(
+    () => settingsStore.applySettingsMutation({ targetLufs: -18 }, { operation: 'noSuchThing' }),
+    { reason: 'invalid-mutation', message: 'unknown settings mutation' }
+  );
+});
+
+test('settings stored as something other than settings are started over', () => {
+  // What is on file is spread into the result, so anything that is not an
+  // object has to be passed over rather than spread a character at a time.
+  // An array is an object, and one on file would be spread like any other; the
+  // store writes none, so what is passed over is what is not an object at all.
+  for (const stored of ['not settings', 42, true, null, undefined]) {
+    const result = settingsStore.applySettingsMutation(stored, {
+      operation: 'patchSettings', patch: { displayUnit: 'dB' }
+    });
+    assert.deepEqual(result, { displayUnit: 'dB' }, `stored ${JSON.stringify(stored)}`);
+  }
+});
+
+test('the ad gain is a number inside the range the slider offers', () => {
+  const accepts = (value) => settingsStore.applySettingsMutation({}, {
+    operation: 'patchSettings', patch: { adGainDb: value }
+  });
+  assert.deepEqual(accepts(-24), { adGainDb: -24 }, 'the bottom of the range');
+  assert.deepEqual(accepts(6), { adGainDb: 6 }, 'and the top');
+  assert.deepEqual(accepts(0), { adGainDb: 0 }, 'and inside it');
+
+  for (const value of [-25, -30, 7, 24, NaN, Infinity, -Infinity, '0', '-6', null, true]) {
+    assert.throws(
+      () => accepts(value),
+      { reason: 'invalid-mutation', message: 'invalid settings value: adGainDb' },
+      `adGainDb ${String(value)}`
+    );
+  }
+});
+
 test('settings initialization preserves existing Auto defaults', () => {
   const existing = {
     targetLufs: -16,
@@ -8252,7 +9286,14 @@ function createBackgroundHarness({ aliases, sequence } = {}) {
           responded = true;
           resolve({ keepOpen, response });
         });
-        if (keepOpen !== true && !responded) resolve({ keepOpen, response: undefined });
+        if (keepOpen !== true && !responded) { resolve({ keepOpen, response: undefined }); return; }
+        // A listener that holds the channel open and then answers nothing
+        // leaves its caller waiting. That is an answer that never came, which
+        // a case reads and fails on; waiting for it here would instead be a
+        // run that never ends.
+        flushTasks(16).then(() => {
+          if (!responded) resolve({ keepOpen, response: undefined });
+        });
       });
     },
     async send(mutation, type = channelStore.CHANNEL_MUTATION_MESSAGE) {
@@ -8364,6 +9405,694 @@ test('the service worker scripts do not share a top-level name', () => {
   }
 });
 
+function createStoreWriter(stored = {}) {
+  const state = structuredClone(stored);
+  const storage = {
+    async get(keys) { return readStoredKeys(state, keys); },
+    async set(update) { Object.assign(state, structuredClone(update)); }
+  };
+  return {
+    state,
+    write: channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 1000)
+  };
+}
+
+test('the writer writes no alias from an id to itself', async () => {
+  const writer = createStoreWriter({
+    channelVolumes: { 55: { name: 'somechannel', login: 'somechannel', gainLive: 1 } }
+  });
+
+  await writer.write({ operation: 'mergeChannelIds', fromId: '55', toId: '55', kind: 'live' });
+
+  assert.equal(writer.state.channelVolumeAliases['55'], undefined,
+    `an id is not made to point at itself (${JSON.stringify(writer.state.channelVolumeAliases)})`);
+});
+
+test('the writer reads an alias map as a map, or not at all', async () => {
+  const writer = createStoreWriter({
+    channelVolumes: { 55: { name: 'somechannel', login: 'somechannel' } },
+    channelVolumeAliases: 'login:somechannel'
+  });
+
+  await writer.write({ operation: 'saveGain', channelId: '55', kind: 'live', gain: 2 });
+
+  assert.deepEqual(
+    Object.keys(writer.state.channelVolumeAliases),
+    ['login:somechannel'],
+    `nothing of a map that is not one is carried into the one written back (${JSON.stringify(writer.state.channelVolumeAliases)})`
+  );
+});
+
+test('a merge from an id already canonicalised moves nothing and repoints nothing', async () => {
+  // A later owner answer can name a different channel for a provisional id
+  // that has already been settled. Following it would merge one confirmed
+  // owner into another, and would send everything filed under that
+  // provisional id to the wrong channel from then on.
+  const writer = createStoreWriter({
+    channelVolumes: {
+      55: { name: 'first', login: 'somechannel', gainLive: 0.5 },
+      66: { name: 'second', login: 'other', gainLive: 2 }
+    },
+    channelVolumeAliases: { 'login:somechannel': '55' }
+  });
+
+  await writer.write({
+    operation: 'mergeChannelIds', fromId: 'login:somechannel', toId: '66', kind: 'live'
+  });
+
+  assert.equal(writer.state.channelVolumes['55'].gainLive, 0.5, 'the settled row stays where it is');
+  assert.equal(writer.state.channelVolumes['66'].gainLive, 2, 'and nothing of it reaches the other');
+  assert.equal(writer.state.channelVolumeAliases['login:somechannel'], '55',
+    `and the provisional id still points where it was settled (${JSON.stringify(writer.state.channelVolumeAliases)})`);
+});
+
+test('the writer follows an alias before it applies a mutation', async () => {
+  // The sender knew only the provisional id. The value belongs to the channel
+  // that id was canonicalised to, and the name it captured then does not.
+  const writer = createStoreWriter({
+    channelVolumes: { 55: { name: 'confirmed', login: 'somechannel' } },
+    channelVolumeAliases: { 'login:somechannel': '55' }
+  });
+
+  await writer.write({
+    operation: 'saveGain', channelId: 'login:somechannel', kind: 'live', gain: 2,
+    channel: { name: 'stale name' }
+  });
+
+  assert.equal(writer.state.channelVolumes['55'].gainLive, 2, 'the gain lands on the channel');
+  assert.equal(writer.state.channelVolumes['login:somechannel'], undefined, 'not on the id it was sent to');
+  assert.equal(writer.state.channelVolumes['55'].name, 'confirmed',
+    `and the name captured before the id was known is not written (${writer.state.channelVolumes['55'].name})`);
+});
+
+test('the writer follows an alias on both ends of a merge', async () => {
+  const writer = createStoreWriter({
+    channelVolumes: { 55: { name: 'confirmed', login: 'somechannel', gainLive: 1 } },
+    channelVolumeAliases: { 'login:somechannel': '55' }
+  });
+
+  await writer.write({
+    operation: 'mergeChannelIds', fromId: 'login:somechannel', toId: '55', kind: 'live'
+  });
+
+  assert.deepEqual(Object.keys(writer.state.channelVolumes), ['55'],
+    'a merge onto the id an alias already points at makes no second row');
+  assert.equal(writer.state.channelVolumes['55'].gainLive, 1);
+});
+
+test('the writer records where a merge sent a provisional id', async () => {
+  const writer = createStoreWriter({
+    channelVolumes: { 'login:somechannel': { name: 'provisional', login: 'somechannel', gainLive: 2 } }
+  });
+
+  await writer.write({
+    operation: 'mergeChannelIds', fromId: 'login:somechannel', toId: '55', kind: 'live'
+  });
+
+  assert.equal(writer.state.channelVolumeAliases['login:somechannel'], '55',
+    `the provisional id points at the channel (${JSON.stringify(writer.state.channelVolumeAliases)})`);
+  assert.equal(writer.state.channelVolumes['55'].gainLive, 2);
+});
+
+test('the writer forgets every alias when the channels are cleared', async () => {
+  const writer = createStoreWriter({
+    channelVolumes: { 55: { name: 'somechannel', login: 'somechannel', gainLive: 2 } },
+    channelVolumeAliases: { 'login:somechannel': '55' }
+  });
+
+  await writer.write({ operation: 'clearChannels' });
+
+  assert.deepEqual(writer.state.channelVolumes, {}, 'the rows go');
+  assert.deepEqual(writer.state.channelVolumeAliases, {},
+    `and nothing is left pointing at them (${JSON.stringify(writer.state.channelVolumeAliases)})`);
+});
+
+test('the writer reads an alias map only where there is one to read', async () => {
+  for (const aliases of ['not a map', 42, null, undefined, true]) {
+    const writer = createStoreWriter({
+      channelVolumes: { 55: { name: 'somechannel', login: 'somechannel' } },
+      channelVolumeAliases: aliases
+    });
+
+    await writer.write({ operation: 'saveGain', channelId: '55', kind: 'live', gain: 2 });
+
+    assert.equal(writer.state.channelVolumes['55'].gainLive, 2, `aliases ${JSON.stringify(aliases) ?? 'undefined'}`);
+    assert.equal(typeof writer.state.channelVolumeAliases, 'object', 'and a map is written back');
+    assert.equal(writer.state.channelVolumeAliases['login:somechannel'], '55',
+      'carrying what the rows themselves say');
+  }
+});
+
+test('the writer refuses an alias map that points in a circle', async () => {
+  const writer = createStoreWriter({
+    channelVolumes: {},
+    channelVolumeAliases: { 'login:a': 'login:b', 'login:b': 'login:a' }
+  });
+
+  await assert.rejects(
+    () => writer.write({ operation: 'saveGain', channelId: 'login:a', kind: 'live', gain: 2 }),
+    { reason: 'stored-state-invalid', message: 'channel alias cycle detected' }
+  );
+});
+
+test('the writer stops following an alias that points at nothing', async () => {
+  for (const target of ['', 42, null, 'login:a']) {
+    const writer = createStoreWriter({
+      channelVolumes: {},
+      channelVolumeAliases: { 'login:a': target }
+    });
+
+    await writer.write({ operation: 'saveGain', channelId: 'login:a', kind: 'live', gain: 2 });
+
+    assert.equal(writer.state.channelVolumes['login:a']?.gainLive, 2,
+      `the save stays where it was sent (${JSON.stringify(target)})`);
+  }
+});
+
+test('an update number is a counter, and nothing else is one', () => {
+  // The number decides which of two tabs' saves wins. A value that cannot be
+  // ordered would settle that by accident.
+  for (const sequence of [0, -1, 1.5, '1', NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, null]) {
+    assert.throws(
+      () => channelStore.applyChannelVolumesMutation(
+        {}, { operation: 'saveGain', channelId: '55', kind: 'live', gain: 1, sequence }, 1
+      ),
+      { reason: 'invalid-mutation', message: 'sequence must be a positive safe integer' },
+      `sequence ${String(sequence)}`
+    );
+  }
+
+  const numbered = channelStore.applyChannelVolumesMutation(
+    {}, { operation: 'saveGain', channelId: '55', kind: 'live', gain: 1, sequence: 1 }, 1
+  );
+  assert.equal(numbered['55'].__fieldVersions.gainLive, 1, 'and one is taken');
+
+  // A save that carries no number at all is one from before the writer gave
+  // them out; it is applied and left unnumbered.
+  const unnumbered = channelStore.applyChannelVolumesMutation(
+    {}, { operation: 'saveGain', channelId: '55', kind: 'live', gain: 1 }, 1
+  );
+  assert.equal(unnumbered['55'].gainLive, 1);
+  assert.equal(unnumbered['55'].__fieldVersions, undefined);
+});
+
+test('the channel store leaves what it was handed alone', () => {
+  // The map comes from storage and goes back to the single writer. A mutation
+  // that wrote through into it would carry a half-applied change into whatever
+  // else is holding that object.
+  const stored = {
+    55: {
+      name: 'somechannel', gainLive: 0.5,
+      lastLufs: { live: -23 },
+      __fieldVersions: { gainLive: 1, 'lastLufs.live': 1 }
+    }
+  };
+  const before = JSON.stringify(stored);
+
+  channelStore.applyChannelVolumesMutation(
+    stored,
+    { operation: 'saveGain', channelId: '55', kind: 'live', gain: 2, sequence: 5 },
+    1
+  );
+
+  assert.equal(JSON.stringify(stored), before, 'the map it was handed is unchanged');
+});
+
+test('a measurement save checks the Auto gain riding with it', () => {
+  for (const autoGain of [-0.1, 6.1, NaN, Infinity, '1', null]) {
+    assert.throws(
+      () => channelStore.applyChannelVolumesMutation(
+        {},
+        { operation: 'saveMeasurement', channelId: '55', kind: 'live', lufs: -23, autoGain, sequence: 1 },
+        1
+      ),
+      { reason: 'invalid-mutation', message: 'autoGain must be finite and within [0, 6]' },
+      `autoGain ${String(autoGain)}`
+    );
+  }
+  const applied = channelStore.applyChannelVolumesMutation(
+    {},
+    { operation: 'saveMeasurement', channelId: '55', kind: 'live', lufs: -23, autoGain: 2, sequence: 1 },
+    1
+  );
+  assert.equal(applied['55'].autoGainLive, 2);
+  assert.equal(applied['55'].lastLufs.live, -23);
+});
+
+test('a save carrying no channel of its own leaves the row named as it was', () => {
+  for (const channel of [null, undefined, 'somechannel', 42, true, []]) {
+    const applied = channelStore.applyChannelVolumesMutation(
+      { 55: { name: 'kept', login: 'kept' } },
+      { operation: 'saveGain', channelId: '55', kind: 'live', gain: 1, sequence: 1, channel },
+      1
+    );
+    assert.equal(applied['55'].name, 'kept', `channel ${JSON.stringify(channel) ?? 'undefined'}`);
+    assert.equal(applied['55'].gainLive, 1, 'while the save itself lands');
+  }
+});
+
+test('a row put through the clip sweep keeps what is not a clip', () => {
+  // Rows written before clips were dropped carry per-kind maps with a clip in
+  // them, and maps that are not maps at all.
+  const swept = channelStore.applyChannelVolumesMutation(
+    {
+      55: {
+        name: 'somechannel', login: 'somechannel', gainLive: 1, gainClip: 2,
+        lastLufs: { live: -23, clip: -10 },
+        lastLufsRef: null,
+        lastLufsWindows: { live: 600, clip: 300 },
+        autoGainRef: { live: 'volume-1', clip: 'volume-1' },
+        __fieldVersions: { gainLive: 1, gainClip: 1 }
+      }
+    },
+    { operation: 'normalizeChannels' },
+    1
+  )['55'];
+
+  assert.equal(swept.gainClip, undefined, 'the clip gain goes');
+  assert.equal(swept.gainLive, 1, 'the live gain stays');
+  assert.deepEqual(swept.lastLufs, { live: -23 }, 'and the clip is taken out of the maps');
+  assert.deepEqual(swept.autoGainRef, { live: 'volume-1' });
+  assert.equal(swept.lastLufsRef, null, 'a map that is not one is stepped over, not read into');
+  assert.deepEqual(swept.lastLufsWindows, { live: 600 }, 'and the clip goes from the maps that are');
+  assert.deepEqual(swept.__fieldVersions, { gainLive: 1 }, 'and the numbers go with the fields');
+});
+
+test('the clip sweep keeps a row it had nothing to take from', () => {
+  // A row is deleted only when the sweep is what emptied it. One that was
+  // already holding nothing was not this pass's doing.
+  const kept = channelStore.applyChannelVolumesMutation(
+    {
+      55: { name: 'somechannel', login: 'somechannel', __fieldVersions: { gainLive: 1 } },
+      66: { name: 'clip only', login: 'cliponly', gainClip: 2 }
+    },
+    { operation: 'normalizeChannels' },
+    1
+  );
+
+  assert.notEqual(kept['55'], undefined,
+    `a row holding no gain is left where it is (${JSON.stringify(kept['55'])})`);
+  assert.equal(kept['66'], undefined, 'while a row the sweep emptied is deleted with the clip');
+});
+
+test('a merge takes a cleared measurement companion with it', () => {
+  // A reset leaves the number behind and takes the value: the row says a
+  // measurement was there and is not now. The companions describe a value that
+  // is gone, so they go with it rather than staying to describe nothing.
+  const merged = channelStore.applyChannelVolumesMutation(
+    {
+      'login:h': {
+        name: 'provisional', login: 'h',
+        lastLufsRef: { live: 'volume-1' },
+        lastLufsWindows: { live: 600 },
+        __fieldVersions: { 'lastLufs.live': 5 }
+      },
+      333: { name: 'confirmed', login: 'h', gainLive: 1 }
+    },
+    { operation: 'mergeChannelIds', fromId: 'login:h', toId: '333', kind: 'live' },
+    1
+  )['333'];
+
+  assert.equal(merged.lastLufs, undefined, 'no measurement comes across');
+  assert.equal(merged.lastLufsRef, undefined,
+    `nor the reference that described it (${JSON.stringify(merged.lastLufsRef)})`);
+  assert.equal(merged.lastLufsWindows, undefined,
+    `nor the windows (${JSON.stringify(merged.lastLufsWindows)})`);
+  assert.equal(merged.__fieldVersions['lastLufs.live'], 5,
+    'while the number that says it was reset is kept');
+  assert.equal(merged.gainLive, 1, 'and what the confirmed row held stays');
+});
+
+test('the clip sweep leaves a row it took nothing from', () => {
+  // A row is deleted only where the sweep is what emptied it. One that came in
+  // holding no value, and that the sweep had nothing to take from, was not
+  // this pass's doing.
+  const kept = channelStore.applyChannelVolumesMutation(
+    { 'orphan-id': { name: 'orphan', __fieldVersions: { gainLive: 1 } } },
+    { operation: 'normalizeChannels' },
+    1
+  );
+
+  assert.notEqual(kept['orphan-id'], undefined,
+    `the row is left where it is (${JSON.stringify(kept)})`);
+  assert.deepEqual(kept['orphan-id'].__fieldVersions, { gainLive: 1 },
+    'with the numbers it came in with');
+});
+
+test('a merge leaves a companion alone on both sides of the value it describes', () => {
+  // The companion belongs to a measurement. Where neither row has that
+  // measurement there is nothing to decide, and the merge neither carries the
+  // companion across nor takes it away.
+  const orphanOnSource = channelStore.applyChannelVolumesMutation(
+    {
+      'login:f': { name: 'provisional', login: 'f', lastLufsWindows: { live: 600 } },
+      111: { name: 'confirmed', login: 'f', gainLive: 1 }
+    },
+    { operation: 'mergeChannelIds', fromId: 'login:f', toId: '111', kind: 'live' },
+    1
+  )['111'];
+  assert.deepEqual(orphanOnSource.lastLufsWindows, { live: 600 },
+    `a companion only the provisional row held is carried (${JSON.stringify(orphanOnSource.lastLufsWindows)})`);
+  assert.equal(orphanOnSource.lastLufs, undefined, 'with no measurement invented beside it');
+
+  // The same, with a measurement on one side and a companion for the other
+  // kind on neither: the kind that has a measurement is decided, the kind that
+  // has none is left as found.
+  const mixed = channelStore.applyChannelVolumesMutation(
+    {
+      'login:g': {
+        name: 'provisional', login: 'g',
+        lastLufs: { live: -23 },
+        lastLufsWindows: { live: 600, vod: 900 },
+        __fieldVersions: { 'lastLufs.live': 5 }
+      },
+      222: { name: 'confirmed', login: 'g', gainLive: 1 }
+    },
+    { operation: 'mergeChannelIds', fromId: 'login:g', toId: '222', kind: 'live' },
+    1
+  )['222'];
+  assert.equal(mixed.lastLufs.live, -23, 'the kind with a measurement comes across');
+  assert.equal(mixed.lastLufsWindows.live, 600, 'with the companion that describes it');
+  assert.equal(mixed.lastLufsWindows.vod, 900,
+    `and the companion for the kind with none is left as found (${JSON.stringify(mixed.lastLufsWindows)})`);
+});
+
+test('a normalize names a row from the row that has a name', () => {
+  const named = channelStore.applyChannelVolumesMutation(
+    {
+      'login:somechannel': { name: 'Some Channel', login: 'somechannel', gainLive: 0.5 },
+      55: { name: '55', login: 'somechannel', gainVod: 2 }
+    },
+    { operation: 'normalizeChannels' },
+    1
+  );
+
+  assert.equal(named['55'].name, 'Some Channel',
+    `the name that is a name is the one kept (${named['55'].name})`);
+  assert.equal(named['55'].url, 'https://www.twitch.tv/somechannel');
+  assert.equal(named['login:somechannel'], undefined, 'and the provisional row is folded in');
+});
+
+test('a merge decides each field on its own update number', () => {
+  // The provisional id and the confirmed one were written by different tabs.
+  // Each field is settled by the number the single writer gave it, so a newer
+  // save wins whichever row it landed on.
+  const all = {
+    'login:a': {
+      name: 'provisional', login: 'a',
+      gainLive: 0.5, gainVod: 0.25,
+      autoApplyLoudnessLive: true,
+      autoGainLive: 2, autoGainRef: { live: 'volume-1' },
+      lastLufs: { live: -23, vod: -18 },
+      lastLufsRef: { live: 'volume-1', vod: 'volume-1' },
+      lastLufsWindows: { live: 600, vod: 300 },
+      lastMeasuredAt: 100,
+      __fieldVersions: {
+        gainLive: 9, gainVod: 1,
+        autoApplyLoudnessLive: 9,
+        autoGainLive: 9,
+        'lastLufs.live': 9, 'lastLufs.vod': 1
+      }
+    },
+    55: {
+      name: 'confirmed', login: 'a',
+      gainLive: 1.5, gainVod: 3,
+      autoApplyLoudnessLive: false,
+      autoGainLive: 4, autoGainRef: { live: 'volume-1' },
+      lastLufs: { live: -30, vod: -14 },
+      lastLufsRef: { live: 'volume-1', vod: 'volume-1' },
+      lastLufsWindows: { live: 900, vod: 1800 },
+      lastMeasuredAt: 200,
+      __fieldVersions: {
+        gainLive: 2, gainVod: 8,
+        autoApplyLoudnessLive: 2,
+        autoGainLive: 2,
+        'lastLufs.live': 2, 'lastLufs.vod': 8
+      }
+    }
+  };
+
+  const merged = channelStore.applyChannelVolumesMutation(
+    all,
+    { operation: 'mergeChannelIds', fromId: 'login:a', toId: '55', kind: 'live' },
+    1
+  )['55'];
+
+  assert.equal(merged.gainLive, 0.5, 'the newer save on the provisional row wins');
+  assert.equal(merged.gainVod, 3, 'and the newer one on the confirmed row wins too');
+  assert.equal(merged.autoApplyLoudnessLive, true, 'the Auto choice goes with its own number');
+  assert.equal(merged.autoGainLive, 2, 'and so does the gain Auto worked out');
+  assert.equal(merged.lastLufs.live, -23, 'the newer measurement is kept');
+  assert.equal(merged.lastLufs.vod, -14, 'each kind on its own');
+  assert.equal(merged.lastLufsWindows.live, 600,
+    `a companion goes where its measurement went (${JSON.stringify(merged.lastLufsWindows)})`);
+  assert.equal(merged.lastLufsWindows.vod, 1800);
+  assert.equal(merged.lastMeasuredAt, 200, 'and the later of the two times is kept');
+  assert.equal(merged.name, 'confirmed', 'the confirmed row keeps its name');
+  assert.equal(merged.__fieldVersions.gainLive, 9, 'and the number that won is the number kept');
+  assert.equal(merged.__fieldVersions['lastLufs.vod'], 8);
+  assert.equal(all['login:a'] !== undefined && merged !== undefined, true);
+});
+
+test('a merge carries what only one row holds', () => {
+  const all = {
+    'login:b': {
+      name: 'provisional', login: 'b',
+      autoGainVod: 1.25, autoGainRef: { vod: 'volume-1' },
+      lastLufs: { vod: -20 },
+      lastLufsRef: { vod: 'volume-1' },
+      lastLufsWindows: { vod: 450 },
+      lastMeasuredAt: 50,
+      __fieldVersions: { autoGainVod: 3, 'lastLufs.vod': 3 }
+    },
+    66: { name: 'confirmed', login: 'b', gainLive: 2 }
+  };
+
+  const merged = channelStore.applyChannelVolumesMutation(
+    all,
+    { operation: 'mergeChannelIds', fromId: 'login:b', toId: '66', kind: 'vod' },
+    1
+  )['66'];
+
+  assert.equal(merged.gainLive, 2, 'what only the confirmed row held stays');
+  assert.equal(merged.autoGainVod, 1.25, 'what only the provisional row held comes across');
+  assert.deepEqual(merged.autoGainRef, { vod: 'volume-1' }, 'with the reference that describes it');
+  assert.equal(merged.lastLufs.vod, -20);
+  assert.deepEqual(merged.lastLufsRef, { vod: 'volume-1' });
+  assert.deepEqual(merged.lastLufsWindows, { vod: 450 });
+  assert.equal(merged.lastMeasuredAt, 50, 'and the time it was measured at');
+  assert.equal(merged.__fieldVersions['lastLufs.vod'], 3, 'along with the number it carried');
+  assert.equal(merged.name, 'confirmed');
+});
+
+test('a merge leaves a companion the measurement it describes never had', () => {
+  // The merge settles the fields it was asked about. A companion with no
+  // measurement beside it was already on file that way, and is neither
+  // invented nor tidied away here.
+  const all = {
+    'login:c': {
+      name: 'provisional', login: 'c',
+      lastLufsRef: { live: 'volume-1' },
+      lastLufsWindows: { live: 600 }
+    },
+    77: { name: 'confirmed', login: 'c', gainLive: 1 }
+  };
+
+  const merged = channelStore.applyChannelVolumesMutation(
+    all,
+    { operation: 'mergeChannelIds', fromId: 'login:c', toId: '77', kind: 'live' },
+    1
+  )['77'];
+
+  assert.deepEqual(merged.lastLufsRef, { live: 'volume-1' },
+    `the companion is left as it was found (${JSON.stringify(merged.lastLufsRef)})`);
+  assert.deepEqual(merged.lastLufsWindows, { live: 600 });
+  assert.equal(merged.lastLufs, undefined, 'while no measurement is invented for it');
+});
+
+test('a merge names the row it makes after what the caller gave it', () => {
+  const all = { 'login:d': { name: 'provisional', login: 'd', gainLive: 0.5 } };
+
+  const merged = channelStore.applyChannelVolumesMutation(
+    all,
+    {
+      operation: 'mergeChannelIds', fromId: 'login:d', toId: '88', kind: 'live',
+      channel: { name: 'Given Name' }
+    },
+    1
+  )['88'];
+
+  assert.equal(merged.name, 'Given Name',
+    `the name the caller gave is the row's (${merged.name})`);
+
+  // With no name given, the row the merge makes is named by its id, and the
+  // pass that follows reads that as no name at all and puts the login there.
+  const unnamed = channelStore.applyChannelVolumesMutation(
+    { 'login:e': { name: 'provisional', login: 'e', gainLive: 0.5 } },
+    { operation: 'mergeChannelIds', fromId: 'login:e', toId: '99', kind: 'live' },
+    1
+  )['99'];
+  assert.equal(unnamed.name, 'e', `the login stands in for it (${unnamed.name})`);
+  assert.equal(unnamed.url, 'https://www.twitch.tv/e', 'and the link is the channel it names');
+  assert.equal(unnamed.gainLive, 0.5, 'while what came across is kept');
+});
+
+test('the channel store refuses what it cannot apply, by name', () => {
+  // background.js sorts a failure by the reason on the error. A throw from
+  // reading a property of nothing carries none, and would be reported to the
+  // viewer as storage failing rather than as a request that made no sense.
+  const refuses = (mutation, message) => assert.throws(
+    () => channelStore.applyChannelVolumesMutation({}, mutation, 1),
+    { reason: 'invalid-mutation', message },
+    JSON.stringify(mutation) ?? String(mutation)
+  );
+
+  for (const mutation of [null, undefined, 'saveGain', 42, true]) {
+    refuses(mutation, 'mutation must be an object');
+  }
+  refuses({ operation: 'noSuchOperation' }, 'unknown channelVolumes mutation');
+  refuses({}, 'unknown channelVolumes mutation');
+
+  for (const channelId of ['', 42, null, undefined, {}]) {
+    refuses({ operation: 'saveGain', channelId, kind: 'live', gain: 1 },
+      'channelId must be a non-empty string');
+    refuses({ operation: 'deleteChannel', channelId }, 'channelId must be a non-empty string');
+  }
+
+  for (const kind of ['clip', '', 'LIVE', undefined, 42]) {
+    refuses({ operation: 'saveGain', channelId: '55', kind, gain: 1 }, 'kind must be live or vod');
+  }
+
+  for (const gain of [-0.1, 6.1, NaN, Infinity, '1', null, undefined]) {
+    refuses({ operation: 'saveGain', channelId: '55', kind: 'live', gain },
+      'gain must be finite and within [0, 6]');
+  }
+
+  for (const enabled of ['true', 1, null, undefined]) {
+    refuses({ operation: 'saveAuto', channelId: '55', kind: 'live', enabled },
+      'enabled must be a boolean');
+  }
+
+  for (const lufs of [NaN, Infinity, '-23', null, undefined]) {
+    refuses({ operation: 'saveMeasurement', channelId: '55', kind: 'live', lufs },
+      'lufs must be finite');
+  }
+
+  for (const autoGain of [-0.1, 6.1, NaN, Infinity, '1', null]) {
+    refuses({ operation: 'saveAuto', channelId: '55', kind: 'live', enabled: true, autoGain },
+      'autoGain must be finite and within [0, 6]');
+    refuses({ operation: 'saveAutoGain', channelId: '55', kind: 'live', autoGain },
+      'autoGain must be finite and within [0, 6]');
+  }
+
+  for (const fromId of ['', 42, null]) {
+    refuses({ operation: 'mergeChannelIds', fromId, toId: '55', kind: 'live' },
+      'fromId must be a non-empty string');
+  }
+  for (const toId of ['', 42, null]) {
+    refuses({ operation: 'mergeChannelIds', fromId: 'login:a', toId, kind: 'live' },
+      'toId must be a non-empty string');
+  }
+
+  // The gain at either end of the range is one it can apply.
+  for (const gain of [0, 6]) {
+    const applied = channelStore.applyChannelVolumesMutation(
+      {}, { operation: 'saveGain', channelId: '55', kind: 'live', gain, sequence: 1 }, 1
+    );
+    assert.equal(applied['55'].gainLive, gain);
+  }
+});
+
+test('the channel store copies a name only where the page gave one', () => {
+  // The metadata rides along with a save. What is not a string with something
+  // in it is not a name, and writing it would put undefined on the row.
+  const withNothing = channelStore.applyChannelVolumesMutation(
+    { 55: { name: 'kept', login: 'kept', url: 'https://www.twitch.tv/kept' } },
+    {
+      operation: 'saveGain', channelId: '55', kind: 'live', gain: 1, sequence: 1,
+      channel: { name: '', login: 42, url: null }
+    },
+    1
+  );
+  assert.deepEqual(
+    { name: withNothing['55'].name, login: withNothing['55'].login, url: withNothing['55'].url },
+    { name: 'kept', login: 'kept', url: 'https://www.twitch.tv/kept' },
+    'nothing usable leaves what was there'
+  );
+
+  for (const channel of ['somechannel', 42, true]) {
+    const notAnObject = channelStore.applyChannelVolumesMutation(
+      { 55: { name: 'kept' } },
+      { operation: 'saveGain', channelId: '55', kind: 'live', gain: 1, sequence: 1, channel },
+      1
+    );
+    assert.equal(notAnObject['55'].name, 'kept', `channel ${JSON.stringify(channel)}`);
+  }
+
+  const withOne = channelStore.applyChannelVolumesMutation(
+    { 55: { name: 'old' } },
+    {
+      operation: 'saveGain', channelId: '55', kind: 'live', gain: 1, sequence: 1,
+      channel: { name: 'new', login: '', url: 'https://www.twitch.tv/new' }
+    },
+    1
+  );
+  assert.equal(withOne['55'].name, 'new', 'and a name that is one is taken');
+  assert.equal(withOne['55'].url, 'https://www.twitch.tv/new');
+  assert.equal(withOne['55'].login, undefined, 'while the empty one is not');
+});
+
+test('the channel store spreads a legacy gain into the kinds that have none', () => {
+  const both = channelStore.applyChannelVolumesMutation(
+    { 55: { name: 'legacy', gain: 0.5 } },
+    { operation: 'saveGain', channelId: '55', kind: 'live', gain: 2, sequence: 1 },
+    1
+  );
+  assert.equal(both['55'].gainVod, 0.5, 'the kind that had none takes the single gain');
+  assert.equal(both['55'].gainLive, 2, 'while the one being saved takes its new value');
+  assert.equal('gain' in both['55'], false, 'and the single gain is gone');
+
+  const alreadyPerKind = channelStore.applyChannelVolumesMutation(
+    { 55: { name: 'legacy', gain: 0.5, gainVod: 3 } },
+    { operation: 'saveGain', channelId: '55', kind: 'live', gain: 2, sequence: 1 },
+    1
+  );
+  assert.equal(alreadyPerKind['55'].gainVod, 3, 'a kind that already holds one keeps it');
+
+  const notAGain = channelStore.applyChannelVolumesMutation(
+    { 55: { name: 'legacy', gain: 'loud' } },
+    { operation: 'saveGain', channelId: '55', kind: 'live', gain: 2, sequence: 1 },
+    1
+  );
+  assert.equal(notAGain['55'].gainVod, undefined, 'a single gain that is not a number spreads nowhere');
+  assert.equal('gain' in notAGain['55'], false, 'and is still dropped');
+});
+
+test('the channel store saves onto a row that holds nothing usable', () => {
+  // A row the store never wrote — nothing, or something that is not a row at
+  // all. The save still lands, and a row with no name of its own is named by
+  // the id it is filed under.
+  for (const stored of [undefined, null, false, 0]) {
+    const applied = channelStore.applyChannelVolumesMutation(
+      { 55: stored },
+      { operation: 'saveGain', channelId: '55', kind: 'live', gain: 2, sequence: 1 },
+      1
+    );
+    assert.equal(applied['55'].gainLive, 2, `stored ${JSON.stringify(stored) ?? 'undefined'}`);
+    assert.equal(applied['55'].name, '55', 'and it is named by its id');
+  }
+
+  const named = channelStore.applyChannelVolumesMutation(
+    {},
+    {
+      operation: 'saveGain', channelId: '55', kind: 'live', gain: 2, sequence: 1,
+      channel: { name: 'somechannel' }
+    },
+    1
+  );
+  assert.equal(named['55'].name, 'somechannel', 'unless the save carried a name');
+});
+
 test('channel store names the rejections it raises', () => {
   assert.throws(
     () => channelStore.applyChannelVolumesMutation(
@@ -8407,6 +10136,32 @@ test('background separates stored state it cannot use from what the caller sent'
   const [exhaustedLog, exhaustedError] = exhausted.errors.at(-1);
   assert.equal(exhaustedLog, '[TCV] channelVolumes mutation blocked by the stored state');
   assert.equal(String(exhaustedError?.message), 'channel mutation sequence exhausted');
+});
+
+test('background names where a settings mutation failed', async () => {
+  // The three wordings say where the fault is — what the caller sent, the state
+  // on file, or storage itself. A report from a viewer's console is worth
+  // something only if they are told apart.
+  const invalid = createBackgroundHarness();
+  const invalidAnswer = await invalid.dispatch({
+    type: settingsStore.SETTINGS_MUTATION_MESSAGE,
+    mutation: { operation: 'patchSettings', patch: { displayUnit: 'furlongs' } }
+  });
+
+  assert.equal(invalidAnswer.response?.ok, false);
+  assert.equal(invalidAnswer.response?.reason, 'invalid-mutation');
+  assert.equal(invalid.errors.at(-1)?.[0], '[TCV] settings mutation rejected as invalid');
+
+  const broken = createBackgroundHarness();
+  broken.failNextSet();
+  const brokenAnswer = await broken.dispatch({
+    type: settingsStore.SETTINGS_MUTATION_MESSAGE,
+    mutation: { operation: 'patchSettings', patch: { displayUnit: 'dB' } }
+  });
+
+  assert.equal(brokenAnswer.response?.ok, false);
+  assert.equal(brokenAnswer.response?.reason, 'settings-update-failed');
+  assert.equal(broken.errors.at(-1)?.[0], '[TCV] settings mutation failed');
 });
 
 test('background names a message type it does not handle', async () => {
@@ -11599,6 +13354,345 @@ test('page bridge loads no module when it cannot name its own origin', async () 
   assert.deepEqual(harness.workletModules, []);
 });
 
+test('page bridge says the first block arrived once, and only once', async () => {
+  // The line is what a viewer diagnosing a silent measurement looks for, and
+  // ten a second is not a line anyone reads.
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  for (let block = 0; block < 5; block++) harness.emitMeasurementBlock(0.05);
+
+  const said = harness.logs.filter(([message]) => String(message).includes('first measurement block'));
+  assert.equal(said.length, 1, `said once (${said.length})`);
+});
+
+test('page bridge reads a block only where it is a number', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.messages.length = 0;
+
+  harness.emitMeasurementBlock(undefined);
+  harness.emitMeasurementBlock(NaN);
+  harness.emitMeasurementBlock('0.05');
+
+  assert.deepEqual(harness.messages, [],
+    `nothing is reported for what is not a measurement (${harness.messages.length})`);
+  assert.equal(
+    harness.logs.filter(([message]) => String(message).includes('first measurement block')).length,
+    0,
+    'and none of it counts as the first block'
+  );
+});
+
+test('page bridge keeps the recent blocks, not every block', async () => {
+  // The momentary and short-term readings are the last blocks; a run holds no
+  // more than it reads from, or a long stream grows without end.
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.messages.length = 0;
+
+  for (let block = 0; block < 400; block++) harness.emitMeasurementBlock(0.05);
+  const steady = harness.messages.at(-1);
+  assert.ok(Number.isFinite(steady.momentary), `the reading holds up (${steady.momentary})`);
+
+  // Loud blocks now: the momentary reading follows them, so what is kept is
+  // recent rather than everything since the start.
+  for (let block = 0; block < 4; block++) harness.emitMeasurementBlock(1.0);
+  const loud = harness.messages.at(-1);
+  assert.ok(loud.momentary > steady.momentary + 10,
+    `and follows what is playing now (${steady.momentary} to ${loud.momentary})`);
+});
+
+test('page bridge says the ad state moved, not that it was set again', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  const video = harness.currentVideo();
+  video.currentTime = 10;
+  harness.messages.length = 0;
+
+  await harness.dispatchCommand('setAdActive', { active: true });
+  await harness.dispatchCommand('setAdActive', { active: true });
+
+  const opened = harness.messages.filter((message) => message.event === 'ad' && message.active);
+  assert.equal(opened.length, 1, `the break is reported once (${opened.length})`);
+
+  await harness.dispatchCommand('setAdActive', { active: false });
+  await harness.dispatchCommand('setAdActive', { active: false });
+
+  const closed = harness.messages.filter((message) => message.event === 'ad' && !message.active);
+  assert.equal(closed.length, 1, `and its end once (${closed.length})`);
+});
+
+test('page bridge measures nothing where the page has no Web Audio', async () => {
+  const harness = createPageBridgeHarness({ audioContextThrows: true });
+
+  await harness.dispatchCommand('init');
+  await harness.dispatchCommand('attach');
+
+  assert.equal(harness.mediaSourceCalls(), 0, 'no element is taken');
+  assert.equal(
+    harness.messages.some((message) => message.event === 'attach-failed' && message.cause === 'audio-context'),
+    true,
+    `and the page is told why (${JSON.stringify(harness.messages.map((m) => m.event))})`
+  );
+});
+
+test('page bridge waits for a player with one loop, and stops when it has one', async () => {
+  // The element does not exist at document_start, so the loop retries. Two
+  // loops would ask twice a second and take the element twice.
+  const harness = createPageBridgeHarness();
+  const video = harness.currentVideo();
+  harness.removeVideo(video);
+
+  await harness.dispatchCommand('attach');
+  await harness.dispatchCommand('attach');
+  await harness.runTimers();
+
+  const waiting = harness.logs.filter(([message]) => String(message).includes('waiting for <video>'));
+  assert.equal(waiting.length, 1, `it says so once, not once per loop (${waiting.length})`);
+
+  harness.addVideo({ src: '', srcObject: {}, crossOrigin: null });
+  await harness.runTimers();
+  assert.equal(harness.mediaSourceCalls(), 1, 'the element is taken once');
+
+  const before = harness.mediaSourceCalls();
+  await harness.runTimers();
+  await harness.runTimers();
+  assert.equal(harness.mediaSourceCalls(), before,
+    'and the loop that was waiting for it has stopped');
+});
+
+test('page bridge says it is waiting on the first try and every tenth', async () => {
+  // The loop runs every second for as long as the page has no player. Saying
+  // so each time would fill the console; saying it once would leave a viewer
+  // reading a log from minutes ago.
+  const harness = createPageBridgeHarness();
+  harness.removeVideo(harness.currentVideo());
+  await harness.dispatchCommand('attach');
+
+  for (let tick = 0; tick < 20; tick++) await harness.runTimers();
+
+  const said = harness.logs.filter(([message]) => String(message).includes('waiting for <video>'));
+  assert.equal(said.length, 3, `once on the first try and every tenth after (${said.length})`);
+});
+
+test('page bridge says which kind of nothing it found', async () => {
+  // An element that is there but held by another extension is a different
+  // thing to report than no element at all, and only one of them is worth a
+  // viewer reloading the page for.
+  const harness = createPageBridgeHarness({ mediaElementSourceTaken: true });
+  await harness.dispatchCommand('attach');
+  await harness.runTimers();
+
+  const held = harness.logs.filter(([message]) => String(message).includes('held elsewhere'));
+  const absent = harness.logs.filter(([message]) => String(message).includes('waiting for <video>'));
+  assert.ok(held.length > 0, `an element held elsewhere is named as that (${JSON.stringify(harness.logs.map((l) => l[0]))})`);
+  assert.equal(absent.length, 0, 'and not as one that is not there');
+});
+
+test('page bridge reports a media it cannot reach once per element', async () => {
+  // The loop asks again every second. Reporting each refusal would fill the
+  // console with the same line for as long as the clip plays.
+  const harness = createPageBridgeHarness();
+  const video = harness.currentVideo();
+  video.srcObject = null;
+  video.src = 'https://clips.example/clip.mp4';
+  video.currentSrc = video.src;
+  video.crossOrigin = null;
+
+  await harness.dispatchCommand('attach');
+  for (let tick = 0; tick < 5; tick++) await harness.runTimers();
+
+  const reported = harness.logs.filter(([message]) => String(message).includes('another origin'));
+  assert.equal(reported.length, 1, `said once for that element (${reported.length})`);
+});
+
+test('page bridge weights for the rate the page runs at', async () => {
+  // BS.1770 writes the filters down at 48 kHz. At that rate they are used as
+  // they stand; at another they are designed again for it, or the weighting
+  // measures the wrong frequencies.
+  const at48k = createPageBridgeHarness();
+  await at48k.startMeasurement();
+  assert.equal(at48k.iirFilters.length, 2, 'the two K-weighting filters are built');
+  const asNumbers = (list) => [...list];
+  assert.deepEqual(asNumbers(at48k.iirFilters[0].feedforward), [...u.K_PRE_48K.b],
+    'the pre-filter is the one written down');
+  assert.deepEqual(asNumbers(at48k.iirFilters[1].feedforward), [...u.K_RLB_48K.b],
+    'and so is the high-pass');
+
+  const at44k1 = createPageBridgeHarness({ contextSampleRate: 44100 });
+  await at44k1.startMeasurement();
+  assert.notDeepEqual(asNumbers(at44k1.iirFilters[0].feedforward), [...u.K_PRE_48K.b],
+    `another rate is designed for that rate (${JSON.stringify([...at44k1.iirFilters[0].feedforward])})`);
+  assert.notDeepEqual(asNumbers(at44k1.iirFilters[1].feedforward), [...u.K_RLB_48K.b], 'both of them');
+});
+
+test('page bridge reads a block of no power as no level', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.messages.length = 0;
+
+  for (const ms of [0, -1]) harness.emitMeasurementBlock(ms);
+  const reading = harness.messages.at(-1);
+
+  assert.equal(reading.momentary, -Infinity, `no power is no level (${reading.momentary})`);
+  assert.equal(reading.shortTerm, -Infinity);
+  assert.equal(reading.integrated, -Infinity, 'and nothing is integrated from it');
+});
+
+test('page bridge reports no integrated level until something passes the gate', async () => {
+  // Below the absolute gate there is nothing a programme level could be read
+  // from, and a seed weighted on nothing is worth no windows.
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.messages.length = 0;
+
+  const belowTheGate = Math.pow(10, (-70 + 0.691) / 10) / 100;
+  for (let block = 0; block < 8; block++) harness.emitMeasurementBlock(belowTheGate);
+  const quiet = harness.messages.at(-1);
+
+  assert.equal(quiet.integrated, -Infinity,
+    `nothing passes the gate, so there is no integrated level (${quiet.integrated})`);
+  assert.equal(quiet.integratedWindows, 0, `and no windows to weigh one (${quiet.integratedWindows})`);
+
+  for (let block = 0; block < 8; block++) harness.emitMeasurementBlock(0.05);
+  const heard = harness.messages.at(-1);
+  assert.ok(Number.isFinite(heard.integrated), `once something does, there is (${heard.integrated})`);
+  assert.ok(heard.integratedWindows > 0, 'weighed on the windows that passed');
+});
+
+test('page bridge takes a command only from the page it shares', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.messages.length = 0;
+
+  await harness.dispatchCommandFrom({ name: 'another frame' }, 'resume');
+  await harness.dispatchCommandAs({ type: 'something else', cmd: 'resume' });
+  await harness.dispatchCommandAs(null);
+  await harness.dispatchCommandAs({ cmd: 'resume' });
+
+  assert.deepEqual(harness.messages, [],
+    `none of it is answered (${JSON.stringify(harness.messages.map((m) => m.event))})`);
+
+  await harness.dispatchCommand('resume');
+  assert.ok(harness.messages.length > 0, 'while a command from the page it shares is');
+});
+
+test('page bridge reads a cue only where it is one', async () => {
+  // The wrapper listens to every message the player's worker posts. Anything
+  // that is not a cue for the ad on this element must not open a break.
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  const video = harness.currentVideo();
+  video.currentTime = 10;
+  harness.messages.length = 0;
+
+  for (const cue of [
+    undefined,
+    null,
+    'midroll',
+    42,
+    { startTime: 5, endTime: 20 },
+    { rollType: 'midroll', startTime: NaN, endTime: 20 },
+    { rollType: 'midroll', startTime: 5, endTime: Infinity },
+    { rollType: 'midroll', startTime: 20, endTime: 5 },
+    { rollType: 'midroll', startTime: 20, endTime: 20 },
+    { rollType: 'midroll', startTime: 30, endTime: 40 },
+    { rollType: 'midroll', startTime: 1, endTime: 5 }
+  ]) {
+    harness.emitPlayerCue(cue);
+  }
+
+  assert.equal(
+    harness.messages.filter((message) => message.event === 'ad' && message.active).length,
+    0,
+    `no break is opened by any of them (${JSON.stringify(harness.messages.map((m) => m.event))})`
+  );
+
+  // A cue holding the playhead is one, and opens it.
+  harness.emitPlayerCue({ rollType: 'midroll', startTime: 5, endTime: 20 });
+  assert.equal(
+    harness.messages.some((message) => message.event === 'ad' && message.active),
+    true,
+    'while the cue for the ad on this element does'
+  );
+});
+
+test('page bridge reads a cue with no playhead to hold as no cue', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  const video = harness.currentVideo();
+  video.currentTime = NaN;
+  harness.messages.length = 0;
+
+  harness.emitPlayerCue({ rollType: 'midroll', startTime: 5, endTime: 20 });
+
+  assert.equal(
+    harness.messages.filter((message) => message.event === 'ad' && message.active).length,
+    0,
+    'an element whose position cannot be read holds no cue'
+  );
+});
+
+test('page bridge names a video the answer left unnamed from the URL it is on', async () => {
+  // The answer for a VOD carries the owner but not always the video. The URL
+  // is what the request was made on, so it is what names the video then — and
+  // only where the URL is a video, since nothing else is one.
+  const answerWithoutVideoId = () => ({
+    clone: () => ({
+      json: async () => ({
+        data: { video: { owner: { id: '55', login: 'somechannel', displayName: 'Some Channel' } } }
+      })
+    })
+  });
+
+  const onVod = createPageBridgeHarness({ href: 'https://www.twitch.tv/videos/300' });
+  await onVod.startMeasurement();
+  onVod.messages.length = 0;
+  const vodAnswered = onVod.fetch('https://gql.twitch.tv/gql');
+  onVod.resolveFetch(answerWithoutVideoId());
+  await vodAnswered;
+  await flushTasks(8);
+  const vodOwner = onVod.messages.find((message) => message.event === 'owner');
+  assert.equal(vodOwner?.contentKind, 'vod');
+  assert.equal(vodOwner?.contentId, '300',
+    `the video the URL names (${vodOwner?.contentId})`);
+
+  for (const href of [
+    'https://www.twitch.tv/somechannel',
+    'https://www.twitch.tv/somechannel/clip/SomeSlug',
+    'https://clips.twitch.tv/SomeSlug',
+    'https://www.twitch.tv/somechannel/about'
+  ]) {
+    const harness = createPageBridgeHarness({ href });
+    await harness.startMeasurement();
+    harness.messages.length = 0;
+    const answered = harness.fetch('https://gql.twitch.tv/gql');
+    harness.resolveFetch(answerWithoutVideoId());
+    await answered;
+    await flushTasks(8);
+    const owner = harness.messages.find((message) => message.event === 'owner');
+    assert.equal(owner?.contentId, '',
+      `a page that is not a video names none (${href}: ${owner?.contentId})`);
+  }
+
+  // Where the answer does name the video, that is the name used.
+  const named = createPageBridgeHarness({ href: 'https://www.twitch.tv/videos/300' });
+  await named.startMeasurement();
+  named.messages.length = 0;
+  const namedAnswered = named.fetch('https://gql.twitch.tv/gql');
+  named.resolveFetch({
+    clone: () => ({
+      json: async () => ({
+        data: { video: { id: '400', owner: { id: '55', login: 'somechannel', displayName: 'Some Channel' } } }
+      })
+    })
+  });
+  await namedAnswered;
+  await flushTasks(8);
+  assert.equal(named.messages.find((m) => m.event === 'owner')?.contentId, '400',
+    'the answer outranks the URL');
+});
+
 test('page bridge Integrated LUFS is invariant to gating window order', async () => {
   async function measure(blocks) {
     const harness = createPageBridgeHarness();
@@ -12466,6 +14560,24 @@ test('page bridge builds no audio context for an element it will not take', asyn
 
   assert.deepEqual(harness.messages.filter((message) => message.event === 'audio-context'), []);
   assert.equal(harness.mediaSourceCalls(), 0);
+});
+
+test('page bridge builds one context however many ask for one', async () => {
+  // init and attach both need the context, and the second is answered from the
+  // build the first started. Building a second takes the page's audio through
+  // two graphs, and the module load each one waits on doubles with it.
+  const harness = createPageBridgeHarness({ deferWorkletLoad: true });
+  const init = harness.dispatchCommand('init');
+  const attach = harness.dispatchCommand('attach');
+  await flushTasks(4);
+
+  assert.equal(harness.contextsBuilt(), 1);
+
+  await harness.releaseWorkletLoad();
+  await Promise.all([init, attach]);
+
+  assert.equal(harness.contextsBuilt(), 1, 'and the one built is the one kept');
+  assert.equal(harness.mediaSourceCalls(), 1);
 });
 
 test('page bridge lets go of an element that changed origin while the context built', async () => {
@@ -13487,4 +15599,923 @@ test('content takes an indicator the page puts back after taking it out', async 
   harness.reuseAdNode();
   harness.mutate();
   assert.deepEqual(sent().map((command) => command.active), [true]);
+});
+
+// ── page-bridge.js: shapes the page can put in front of the bridge ──────────
+
+test('the origin the bridge read for itself is not reported as missing', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.dispatchCommand('init');
+  // The positive control: an origin it could read is one it loads the module from.
+  assert.deepEqual(harness.workletModules, [
+    'chrome-extension://abcdefghijklmnopabcdefghijklmnop/audio-worklet.js'
+  ]);
+  assert.deepEqual(harness.errors, []);
+});
+
+test('init answers after the context it builds exists', async () => {
+  const harness = createPageBridgeHarness({ contextSampleRate: 44100 });
+  harness.messages.length = 0;
+  await harness.dispatchCommand('init');
+  const done = harness.messages.find((message) => message.event === 'init-done');
+  assert.ok(done, 'init is answered');
+  assert.equal(done.sampleRate, 44100);
+});
+
+test('a page without Web Audio is named as such and nothing is built', async () => {
+  const harness = createPageBridgeHarness({ noAudioContext: true });
+  await harness.dispatchCommand('init');
+  assert.equal(harness.contextsBuilt(), 0);
+  const said = harness.warnings.map((args) => String(args[0]));
+  assert.ok(said.includes('[TCV] Web Audio is unavailable in this page'));
+  assert.ok(!said.includes('[TCV] audio context unavailable'));
+});
+
+test('a page whose Worker constructor is not one is left alone', () => {
+  // The positive control: where the page has a constructor, the bridge wraps
+  // it and the worker the page builds carries the listener.
+  const wrapped = createPageBridgeHarness();
+  wrapped.createWorker('blob:https://www.twitch.tv/player');
+  assert.equal(wrapped.workerListeners.length, 1);
+
+  const harness = createPageBridgeHarness({ noWorker: true });
+  assert.ok(!harness.warnings.some(
+    (args) => String(args[0]).includes('Worker constructor could not be wrapped')
+  ));
+});
+
+test('a second attach request does not start a second attach loop', async () => {
+  const harness = createPageBridgeHarness();
+  harness.removeVideo(harness.currentVideo());
+  const idle = harness.timerCount();
+  await harness.dispatchCommand('attach');
+  assert.equal(harness.timerCount(), idle + 1);
+  await harness.dispatchCommand('attach');
+  assert.equal(harness.timerCount(), idle + 1);
+});
+
+test('an attach request while attached keeps the element already taken', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  assert.equal(harness.mediaSourceCalls(), 1);
+  // A larger element appearing later does not displace the one being measured.
+  harness.addVideo({
+    src: '',
+    srcObject: {},
+    crossOrigin: null,
+    clientWidth: 3840,
+    clientHeight: 2160
+  });
+  await harness.dispatchCommand('attach');
+  await harness.runTimers();
+  assert.equal(harness.mediaSourceCalls(), 1);
+  assert.equal(harness.sourcedElements.length, 1);
+});
+
+test('an attach made while the worklet is unavailable says the chain is not wired', async () => {
+  const harness = createPageBridgeHarness({ workletLoadFails: true });
+  await harness.dispatchCommand('init');
+  await harness.dispatchCommand('attach');
+  assert.ok(harness.warnings.some(
+    (args) => String(args[0]).includes('worklet not ready yet')
+  ));
+  assert.equal(harness.iirFilters.length, 0);
+  const attached = harness.messages.filter((message) => message.event === 'attached');
+  assert.equal(attached.length, 1);
+  assert.equal(attached[0].measuring, false);
+});
+
+test('a resume with no context yet builds one and answers with its state', async () => {
+  const harness = createPageBridgeHarness({ contextStartsSuspended: true });
+  assert.equal(harness.contextsBuilt(), 0);
+  harness.messages.length = 0;
+  await harness.dispatchCommand('resume');
+  assert.equal(harness.contextsBuilt(), 1);
+  const state = harness.messages.filter((message) => message.event === 'audio-context');
+  assert.equal(state[state.length - 1].state, 'running');
+  assert.ok(!harness.warnings.some((args) => String(args[0]).includes('stayed')));
+});
+
+test('a cue that ends where it starts leaves the DOM indicator speaking for the media', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.setPlayhead(9.5);
+  harness.emitPlayerCue({ rollType: 'midroll', startTime: 10, endTime: 10, podPosition: 0, podCount: 1 });
+  harness.messages.length = 0;
+  await harness.dispatchCommand('setAdActive', { active: true });
+  assert.deepEqual(
+    harness.messages.filter((message) => message.event === 'ad').map((message) => message.active),
+    [true]
+  );
+});
+
+test('a cue arriving while the playhead is unreadable leaves the DOM indicator speaking', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  harness.setPlayhead(NaN);
+  harness.emitPlayerCue({ rollType: 'midroll', startTime: 10, endTime: 20, podPosition: 0, podCount: 1 });
+  harness.setPlayhead(5);
+  harness.messages.length = 0;
+  await harness.dispatchCommand('setAdActive', { active: true });
+  assert.deepEqual(
+    harness.messages.filter((message) => message.event === 'ad').map((message) => message.active),
+    [true]
+  );
+});
+
+test('an element sounding under a suspended context is not taken for the ad gain', async () => {
+  const harness = createPageBridgeHarness({ contextStartsSuspended: true });
+  await harness.startMeasurement();
+  assert.equal(harness.mediaSourceCalls(), 1);
+  harness.setPaused(true);
+  harness.addVideo({ volume: 0.5 });
+  await harness.dispatchCommand('setAdActive', { active: true });
+  await harness.runTimers();
+  assert.equal(harness.mediaSourceCalls(), 1);
+});
+
+test('an ad element muted to zero is left at the content gain rather than an infinite one', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  await harness.dispatchCommand('setGain', { value: 2 });
+  await harness.dispatchCommand('setAdGain', { value: 0.5 });
+  harness.setPaused(true);
+  const adElement = harness.addVideo({ volume: 0.5 });
+  await harness.dispatchCommand('setAdActive', { active: true });
+  const adGainNode = harness.gainNodes[harness.gainNodes.length - 1];
+  assert.equal(adGainNode.gain.value, 2 * 0.5 * (1 / 0.5));
+  // The element the ad plays in can be silenced while the break is still open.
+  adElement.volume = 0;
+  harness.emitMeasurementBlock(0.01);
+  assert.equal(adGainNode.gain.value, 2 * 0.5);
+});
+
+test('a request carrying no url is passed through rather than throwing', async () => {
+  const harness = createPageBridgeHarness();
+  const request = { method: 'POST' };
+  const result = harness.fetch(request);
+  assert.equal(harness.fetchCalls.length, 1);
+  assert.equal(harness.fetchCalls[0][0], request);
+  const response = { clone() { throw new Error('a response nobody reads is not cloned'); } };
+  harness.resolveFetch(response);
+  assert.equal(await result, response);
+});
+
+test('an owner is posted only where both the id and the login arrived', async () => {
+  const harness = createPageBridgeHarness({ href: 'https://www.twitch.tv/videos/100' });
+  harness.messages.length = 0;
+  harness.fetch('https://gql.twitch.tv/gql');
+  harness.resolveFetch({
+    clone: () => ({
+      async json() {
+        return {
+          data: {
+            video: { id: '100', owner: { id: '55', displayName: null } },
+            user: { id: '77', displayName: 'Someone' }
+          }
+        };
+      }
+    })
+  });
+  await flushTasks(8);
+  assert.deepEqual(harness.messages.filter((message) => message.event === 'owner'), []);
+});
+
+test('an owner with no display name is named by its login', async () => {
+  const harness = createPageBridgeHarness({ href: 'https://www.twitch.tv/videos/100' });
+  harness.messages.length = 0;
+  harness.fetch('https://gql.twitch.tv/gql');
+  harness.resolveFetch({
+    clone: () => ({
+      async json() {
+        return {
+          data: {
+            video: { id: '100', owner: { id: '55', login: 'somebroadcaster' } },
+            user: { id: '77', login: 'OtherName' }
+          }
+        };
+      }
+    })
+  });
+  await flushTasks(8);
+  const owners = harness.messages.filter((message) => message.event === 'owner');
+  assert.deepEqual(owners.map((owner) => [owner.source, owner.userId, owner.displayName]), [
+    ['video', '55', 'somebroadcaster'],
+    ['user', '77', 'OtherName']
+  ]);
+});
+
+// ── content.js: the state a page leaves behind, and the one it moves to ─────
+
+test('each kind falls back to the Auto default of its own kind', async () => {
+  const harness = createContentHarness({
+    channelVolumes: {},
+    settings: { autoApplyLoudnessLiveDefault: true, autoApplyLoudnessVodDefault: false }
+  });
+  await flushTasks(8);
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.autoApplyLoudnessLive, true);
+  assert.equal(state.autoApplyLoudnessVod, false);
+  // The page is a VOD, so the kind in force follows the VOD default.
+  assert.equal(state.autoApplyLoudness, false);
+});
+
+test('a stored reference with no value behind it seeds nothing', async () => {
+  const harness = createContentHarness({
+    channelVolumes: {
+      'vod-owner:100': { lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 } }
+    }
+  });
+  await flushTasks(8);
+  const resets = harness.commands.filter((command) => command.cmd === 'resetMeasurement');
+  assert.ok(resets.length, 'the measurement is reset at startup');
+  for (const command of resets) {
+    assert.deepEqual(Object.keys(command).sort(), ['cmd', 'epoch', 'type']);
+  }
+});
+
+test('a player with no volume row is left alone rather than reached into', async () => {
+  const harness = createContentHarness();
+  await flushTasks(8);
+  harness.removeVolumeRow();
+  assert.equal((await harness.dispatchGesture({ cmd: 'setGain', gain: 2 })).ok, true);
+  assert.deepEqual(harness.warnings, []);
+});
+
+test('a badge already beside the slider is moved rather than inserted again', async () => {
+  const harness = createContentHarness();
+  await flushTasks(8);
+  // The badge is already beside the slider: startup applied the stored gain.
+  assert.equal(harness.gainBadgeText(), '50%');
+  assert.equal(harness.badgeInsertCount(), 1);
+  assert.equal((await harness.dispatchGesture({ cmd: 'setGain', gain: 3 })).ok, true);
+  assert.equal(harness.gainBadgeText(), '300%');
+  assert.equal(harness.badgeInsertCount(), 1);
+});
+
+test('an owner named for other content is neither merged nor applied', async () => {
+  const harness = createContentHarness({
+    channelVolumes: { 'vod-owner:100': { name: '100', gainVod: 0.5 } }
+  });
+  await flushTasks(8);
+  const before = JSON.stringify(harness.stored[u.CHANNEL_VOLUMES_KEY]);
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '55',
+    login: 'someone',
+    displayName: 'Someone',
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '999'
+  });
+  await flushTasks(8);
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.channel.id, 'vod-owner:100');
+  assert.equal(JSON.stringify(harness.stored[u.CHANNEL_VOLUMES_KEY]), before);
+  assert.deepEqual(harness.stored[u.CHANNEL_ALIASES_KEY], {});
+});
+
+test('an owner confirmed while the page moved on does not become the new page channel', async () => {
+  const harness = createContentHarness({
+    channelVolumes: {},
+    deferChannelMutationOperation: 'mergeChannelIds'
+  });
+  await flushTasks(8);
+  const accepted = harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '55',
+    login: 'someone',
+    displayName: 'Someone',
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '100'
+  });
+  await flushTasks(8);
+  await harness.navigate('https://www.twitch.tv/videos/200');
+  harness.releaseChannelMutation();
+  await accepted;
+  await flushTasks(8);
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.channel.id, 'vod-owner:200');
+});
+
+test('an owner that confirms the channel seeds the measurement against it', async () => {
+  const harness = createContentHarness({
+    channelVolumes: {
+      55: {
+        login: 'someone',
+        lastLufs: { vod: -21 },
+        lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 },
+        lastLufsWindows: { vod: 900 }
+      }
+    }
+  });
+  await flushTasks(8);
+  harness.commands.length = 0;
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '55',
+    login: 'someone',
+    displayName: 'Someone',
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '100'
+  });
+  await flushTasks(8);
+  const resets = harness.commands.filter((command) => command.cmd === 'resetMeasurement');
+  assert.equal(resets.length, 1);
+  assert.equal(resets[0].initialIntegratedLufs, -21);
+  assert.equal(resets[0].initialIntegratedWindows, 900);
+});
+
+test('the channel being left answers for nothing while the next one is read', async () => {
+  const harness = createContentHarness({
+    href: 'https://www.twitch.tv/somebroadcaster',
+    channelVolumes: {
+      'login:somebroadcaster': {
+        autoApplyLoudnessLive: true,
+        autoGainLive: 0.5,
+        autoGainRef: { live: u.LUFS_REFERENCE_VOLUME_1 },
+        lastLufs: { live: -20 },
+        lastLufsRef: { live: u.LUFS_REFERENCE_VOLUME_1 }
+      },
+      'login:another': {}
+    }
+  });
+  await flushTasks(8);
+  const before = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(before.autoApplyLoudness, true);
+  assert.equal(before.hasSavedMeasurement, true);
+  harness.deferNextStorageGet();
+  const navigated = harness.navigate('https://www.twitch.tv/another');
+  await navigated;
+  const during = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(during.channel.id, 'login:another');
+  assert.equal(during.autoApplyLoudness, false);
+  assert.equal(during.hasSavedMeasurement, false);
+  await harness.releaseStorageGet();
+  await navigated;
+});
+
+test('an owner that names the channel again keeps what is already loaded', async () => {
+  const owner = {
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '55',
+    login: 'someone',
+    displayName: 'Someone',
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '100'
+  };
+  const harness = createContentHarness({
+    channelVolumes: {
+      55: {
+        name: 'Someone',
+        login: 'someone',
+        autoApplyLoudnessVod: true,
+        autoGainVod: 0.5,
+        autoGainRef: { vod: u.LUFS_REFERENCE_VOLUME_1 },
+        lastLufs: { vod: -20 },
+        lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 }
+      }
+    }
+  });
+  await flushTasks(8);
+  await harness.dispatchMessage(owner);
+  await flushTasks(8);
+  const settled = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(settled.channel.id, '55');
+  assert.equal(settled.autoApplyLoudness, true);
+  assert.equal(settled.hasSavedMeasurement, true);
+  harness.deferNextStorageGet();
+  const again = harness.dispatchMessage(owner);
+  await flushTasks(8);
+  const during = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(during.autoApplyLoudness, true);
+  assert.equal(during.hasSavedMeasurement, true);
+  await harness.releaseStorageGet();
+  await again;
+});
+
+test('a clip takes the gain back to passthrough and holds no channel', async () => {
+  const harness = createContentHarness({
+    channelVolumes: { 'vod-owner:100': { gainVod: 0.5 } }
+  });
+  await flushTasks(8);
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).gain, 0.5);
+  harness.commands.length = 0;
+  await harness.navigate('https://www.twitch.tv/somebroadcaster/clip/SomeSlug');
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.channel.id, '');
+  assert.equal(state.gain, 1);
+  assert.deepEqual(
+    harness.commands.filter((command) => command.cmd === 'setGain').map((command) => command.value),
+    [1]
+  );
+});
+
+test('a reading with no integrated value behind it moves and stores nothing', async () => {
+  const harness = createContentHarness({ autoApply: true, autoGain: 0.5 });
+  await flushTasks(8);
+  const before = JSON.stringify(harness.stored[u.CHANNEL_VOLUMES_KEY]);
+  harness.commands.length = 0;
+  harness.advanceTime(60_000);
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    momentary: -18,
+    shortTerm: -18,
+    integrated: null,
+    integratedWindows: 0
+  });
+  await flushTasks(8);
+  assert.deepEqual(harness.commands.filter((command) => command.cmd === 'setGain'), []);
+  assert.equal(JSON.stringify(harness.stored[u.CHANNEL_VOLUMES_KEY]), before);
+});
+
+test('a settings change persists the Auto gain only where Auto is following', async () => {
+  const harness = createContentHarness({ channelVolumes: { 'vod-owner:100': {} } });
+  await flushTasks(8);
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    momentary: -18,
+    shortTerm: -18,
+    integrated: -24,
+    integratedWindows: 400
+  });
+  await flushTasks(8);
+  await harness.dispatchStorage({
+    [u.SETTINGS_KEY]: { newValue: { targetLufs: -14, adGainDb: -6, showGainOverlay: true } }
+  });
+  await flushTasks(8);
+  assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].autoGainVod, undefined);
+});
+
+test('a change to the saved channels alone is read back', async () => {
+  const harness = createContentHarness({ channelVolumes: { 'vod-owner:100': { gainVod: 0.5 } } });
+  await flushTasks(8);
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).gain, 0.5);
+  harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'] = { gainVod: 2 };
+  await harness.dispatchStorage({
+    [u.CHANNEL_VOLUMES_KEY]: { newValue: harness.stored[u.CHANNEL_VOLUMES_KEY] }
+  });
+  await flushTasks(8);
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).gain, 2);
+});
+
+test('a stored window count that is not a count is not passed on', async () => {
+  const harness = createContentHarness({
+    channelVolumes: {
+      'vod-owner:100': {
+        lastLufs: { vod: -20 },
+        lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 },
+        lastLufsWindows: { vod: -5 }
+      }
+    }
+  });
+  await flushTasks(8);
+  const resets = harness.commands.filter((command) => command.cmd === 'resetMeasurement');
+  assert.ok(resets.length, 'the measurement is reset at startup');
+  for (const command of resets) {
+    assert.equal(command.initialIntegratedLufs, -20);
+    assert.deepEqual(
+      Object.keys(command).sort(),
+      ['cmd', 'epoch', 'initialIntegratedLufs', 'type']
+    );
+  }
+});
+
+test('the row an owner confirms carries the name the owner gave', async () => {
+  const harness = createContentHarness({
+    channelVolumes: { 'vod-owner:100': { gainVod: 0.5 } }
+  });
+  await flushTasks(8);
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '55',
+    login: 'someone',
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '100'
+  });
+  await flushTasks(8);
+  const row = harness.stored[u.CHANNEL_VOLUMES_KEY]['55'];
+  assert.ok(row, 'the confirmed id holds the row');
+  assert.equal(row.login, 'someone');
+  assert.equal(row.name, 'someone');
+  assert.equal(row.url, 'https://www.twitch.tv/someone');
+});
+
+test('a page whose runtime is already gone starts up without reaching storage', async () => {
+  const harness = createContentHarness({ runtimeInvalid: true });
+  await flushTasks(8);
+  assert.deepEqual(harness.warnings, []);
+});
+
+test('a runtime that throws when asked for its id is read as gone', async () => {
+  const harness = createContentHarness({ runtimeThrows: true });
+  await flushTasks(8);
+  assert.deepEqual(harness.warnings, []);
+});
+
+test('the settings the page starts from are the stored ones', async () => {
+  const harness = createContentHarness({
+    settings: { targetLufs: -14, adGainDb: -12 }
+  });
+  await flushTasks(8);
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.targetLufs, -14);
+  assert.equal(state.adGainDb, -12);
+  const adGain = harness.commands.filter((command) => command.cmd === 'setAdGain');
+  assert.equal(adGain[adGain.length - 1].value, u.dbToGain(-12));
+});
+
+test('an owner whose login is not a name is given no channel url', async () => {
+  const harness = createContentHarness({ channelVolumes: {} });
+  await flushTasks(8);
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '55',
+    login: 12345,
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '100'
+  });
+  await flushTasks(8);
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.channel.id, '55');
+  assert.equal(state.channel.url, '');
+  assert.deepEqual(harness.warnings, []);
+});
+
+test('a saved-channels change arriving mid-merge is not read back onto the row being merged', async () => {
+  const harness = createContentHarness({
+    channelVolumes: { 'vod-owner:100': { gainVod: 0.5 } },
+    deferChannelMutationOperation: 'mergeChannelIds'
+  });
+  await flushTasks(8);
+  const accepted = harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '55',
+    login: 'someone',
+    displayName: 'Someone',
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '100'
+  });
+  await flushTasks(8);
+  harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'] = { gainVod: 3 };
+  await harness.dispatchStorage({
+    [u.CHANNEL_VOLUMES_KEY]: { newValue: harness.stored[u.CHANNEL_VOLUMES_KEY] }
+  });
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).gain, 0.5);
+  harness.releaseChannelMutation();
+  await accepted;
+});
+
+// ── channel-store.js: the object it was handed, and the row it writes ───────
+
+function storeUnderTest(seed = {}, aliases = {}) {
+  // The object the store is handed is held here rather than cloned on the way
+  // in or out, so a write that reaches back into it is visible.
+  const stored = {
+    channelVolumes: seed,
+    channelVolumeAliases: aliases,
+    channelVolumeSequence: 1
+  };
+  const storage = {
+    async get(keys) { return readStoredKeys(stored, keys); },
+    async set(update) { Object.assign(stored, update); }
+  };
+  return {
+    stored,
+    write: channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 100)
+  };
+}
+
+test('a mutation leaves the stored object it was handed untouched', () => {
+  const handed = {
+    someone: {
+      name: 'Someone',
+      gainVod: 0.5,
+      lastLufs: { vod: -20 },
+      lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 },
+      __fieldVersions: { gainVod: 1, 'lastLufs.vod': 1 }
+    }
+  };
+  const before = structuredClone(handed);
+  const next = channelStore.applyChannelVolumesMutation(
+    handed,
+    { operation: 'saveGain', channelId: 'someone', kind: 'vod', gain: 2, sequence: 9 },
+    100
+  );
+  assert.deepEqual(handed, before);
+  assert.equal(next.someone.gainVod, 2);
+  assert.equal(next.someone.__fieldVersions.gainVod, 9);
+});
+
+test('a row whose sender knew no name is named by its id', async () => {
+  const anonymous = { name: '', login: '', url: '' };
+  const writes = [
+    { operation: 'saveGain', kind: 'vod', gain: 2 },
+    { operation: 'saveAuto', kind: 'vod', enabled: true },
+    { operation: 'saveMeasurement', kind: 'vod', lufs: -19, reference: u.LUFS_REFERENCE_VOLUME_1 },
+    { operation: 'saveAutoGain', kind: 'vod', autoGain: 1.5, reference: u.LUFS_REFERENCE_VOLUME_1 }
+  ];
+  for (const write of writes) {
+    const store = storeUnderTest();
+    await store.write({ ...write, channelId: 'vod-owner:100', channel: anonymous });
+    assert.equal(
+      store.stored.channelVolumes['vod-owner:100'].name,
+      'vod-owner:100',
+      `${write.operation} names the row it made`
+    );
+  }
+});
+
+test('a companion outlives no value through a merge', async () => {
+  // The source's measurement was cleared, which is a state carrying an update
+  // number and no value; the reference left beside it goes with the value.
+  const store = storeUnderTest({
+    'vod-owner:100': {
+      name: '100',
+      lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 },
+      lastLufsWindows: { vod: 400 },
+      __fieldVersions: { 'lastLufs.vod': 5 }
+    },
+    55: {
+      name: 'Someone',
+      lastLufs: { vod: -20 },
+      lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 },
+      lastLufsWindows: { vod: 900 },
+      __fieldVersions: { 'lastLufs.vod': 1 }
+    }
+  });
+  await store.write({
+    operation: 'mergeChannelIds', fromId: 'vod-owner:100', toId: '55', kind: 'vod'
+  });
+  const row = store.stored.channelVolumes['55'];
+  assert.equal(row.lastLufs?.vod, undefined);
+  assert.equal(row.lastLufsRef?.vod, undefined);
+  assert.equal(row.lastLufsWindows?.vod, undefined);
+});
+
+test('a merge from an id already pointed elsewhere leaves the alias where it is', async () => {
+  const store = storeUnderTest({ 'vod-owner:100': { name: '100', gainVod: 0.5 } });
+  await store.write({
+    operation: 'mergeChannelIds', fromId: 'vod-owner:100', toId: '55', kind: 'vod'
+  });
+  assert.equal(store.stored.channelVolumeAliases['vod-owner:100'], '55');
+  await store.write({
+    operation: 'mergeChannelIds', fromId: 'vod-owner:100', toId: '77', kind: 'vod'
+  });
+  assert.equal(store.stored.channelVolumeAliases['vod-owner:100'], '55');
+  assert.equal(store.stored.channelVolumes['77'], undefined);
+});
+
+test('the element the bridge takes is the largest one it can', async () => {
+  const harness = createPageBridgeHarness();
+  // A second player element, larger than the one the harness starts with.
+  const larger = harness.addVideo({
+    src: '',
+    srcObject: {},
+    crossOrigin: null,
+    clientWidth: 3840,
+    clientHeight: 2160
+  });
+  await harness.startMeasurement();
+  assert.deepEqual(harness.sourcedElements, [larger]);
+});
+
+test('an element another extension holds is refused in its own words', async () => {
+  const harness = createPageBridgeHarness({ mediaElementSourceTaken: true });
+  await harness.dispatchCommand('init');
+  await harness.dispatchCommand('attach');
+  const [refusal] = harness.messages.filter((message) => message.event === 'attach-failed');
+  assert.ok(refusal, 'the refusal is reported');
+  assert.equal(refusal.cause, 'element-taken');
+  assert.equal(refusal.reason, 'HTMLMediaElement already connected');
+});
+
+test('an owner with no id behind its login is not posted', async () => {
+  const harness = createPageBridgeHarness({ href: 'https://www.twitch.tv/somebroadcaster' });
+  harness.messages.length = 0;
+  harness.fetch('https://gql.twitch.tv/gql');
+  harness.resolveFetch({
+    clone: () => ({
+      async json() {
+        return { data: { user: { login: 'somebroadcaster', displayName: 'Some Broadcaster' } } };
+      }
+    })
+  });
+  await flushTasks(8);
+  assert.deepEqual(harness.messages.filter((message) => message.event === 'owner'), []);
+});
+
+test('init is answered once the worklet module is in, not before', async () => {
+  const harness = createPageBridgeHarness({ deferWorkletLoad: true });
+  harness.messages.length = 0;
+  const answered = harness.dispatchCommand('init');
+  await flushTasks(8);
+  assert.deepEqual(harness.messages.filter((message) => message.event === 'init-done'), []);
+  await harness.releaseWorkletLoad();
+  await answered;
+  assert.equal(harness.messages.filter((message) => message.event === 'init-done').length, 1);
+  assert.equal(harness.workletModules.length, 1);
+});
+
+test('the seed keeps its share of the window count as the ring turns over', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  // A stored value that stands on fewer windows than the seed floor: the
+  // padding is laid down but only the count it arrived with is reported.
+  await harness.dispatchCommand('resetMeasurement', {
+    epoch: 1,
+    initialIntegratedLufs: -20,
+    initialIntegratedWindows: 100
+  });
+  // An hour of audio below the absolute gate: it fills the ring without
+  // entering the index, so the seed is what the gate still holds when the
+  // oldest entry starts falling out.
+  const quiet = 1e-9;
+  for (let i = 0; i < 35_899; i++) harness.emitMeasurementBlock(quiet);
+  harness.messages.length = 0;
+  harness.emitMeasurementBlock(quiet);
+  const [lufs] = harness.messages.filter((message) => message.event === 'lufs');
+  assert.ok(lufs, 'a reading is reported');
+  assert.equal(lufs.integratedWindows, 100);
+});
+
+test('an element that carries its media without naming it is still refused out loud', async () => {
+  const harness = createPageBridgeHarness();
+  // The page's only element takes its media from a source child, so the src
+  // attribute is empty while what it loaded came from another origin.
+  harness.removeVideo(harness.currentVideo());
+  harness.addVideo({
+    src: '',
+    currentSrc: 'https://clips-media-assets.example/clip.mp4',
+    srcObject: null,
+    crossOrigin: null,
+    readyState: 4
+  });
+  await harness.dispatchCommand('init');
+  await harness.dispatchCommand('attach');
+  const [refusal] = harness.messages.filter((message) => message.event === 'attach-failed');
+  assert.ok(refusal, 'the refusal reaches content.js');
+  assert.equal(refusal.cause, 'cross-origin');
+});
+
+test('the channel an owner confirms answers for nothing while its own row is read', async () => {
+  const harness = createContentHarness({
+    channelVolumes: {
+      'vod-owner:100': {
+        autoApplyLoudnessVod: true,
+        autoGainVod: 0.5,
+        autoGainRef: { vod: u.LUFS_REFERENCE_VOLUME_1 },
+        lastLufs: { vod: -20 },
+        lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1 }
+      },
+      55: { name: 'Someone', login: 'someone' }
+    }
+  });
+  await flushTasks(8);
+  const before = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(before.autoApplyLoudness, true);
+  assert.equal(before.hasSavedMeasurement, true);
+  harness.deferNextStorageGet();
+  const accepted = harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '55',
+    login: 'someone',
+    displayName: 'Someone',
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '100'
+  });
+  await flushTasks(8);
+  const during = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(during.channel.id, '55');
+  assert.equal(during.autoApplyLoudness, false);
+  assert.equal(during.hasSavedMeasurement, false);
+  await harness.releaseStorageGet();
+  await accepted;
+});
+
+test('a clip is seeded like any other page, with nothing to seed from', async () => {
+  const harness = createContentHarness({
+    channelVolumes: { 'vod-owner:100': { gainVod: 0.5 } }
+  });
+  await flushTasks(8);
+  harness.commands.length = 0;
+  await harness.navigate('https://www.twitch.tv/somebroadcaster/clip/SomeSlug');
+  const resets = harness.commands.filter((command) => command.cmd === 'resetMeasurement');
+  // One for the media that was left, one for the page that has no measurement
+  // of its own to restore.
+  assert.equal(resets.length, 2);
+  for (const command of resets) {
+    assert.deepEqual(Object.keys(command).sort(), ['cmd', 'epoch', 'type']);
+  }
+});
+
+test('a row the Auto gain creates carries the channel it was measured on', async () => {
+  // The measurement save is refused, so the row does not exist yet when the
+  // Auto gain is written: what names it is what that write carries.
+  const harness = createContentHarness({
+    channelVolumes: {},
+    settings: { autoApplyLoudnessVodDefault: true },
+    failChannelMutationOperation: 'saveMeasurement'
+  });
+  await flushTasks(8);
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).autoApplyLoudness, true);
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs',
+    momentary: -18,
+    shortTerm: -18,
+    integrated: -24,
+    integratedWindows: 400
+  });
+  await flushTasks(8);
+  assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'], undefined);
+  await harness.dispatchStorage({
+    [u.SETTINGS_KEY]: {
+      newValue: {
+        targetLufs: -14,
+        adGainDb: -6,
+        showGainOverlay: true,
+        autoApplyLoudnessVodDefault: true
+      }
+    }
+  });
+  await flushTasks(8);
+  const row = harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'];
+  assert.ok(row, 'the Auto gain is stored against the provisional id');
+  assert.ok(Number.isFinite(row.autoGainVod), 'and it is an Auto gain that was stored');
+  assert.equal(row.name, '100');
+});
+
+test('a merge keeps the fields and update numbers it does not understand', async () => {
+  // Storage written by a later version of the extension passes through here.
+  // Only the clip fields are dropped on purpose; everything else the merge
+  // does not recognise is carried across rather than destroyed, from either
+  // side of the merge.
+  const store = storeUnderTest({
+    'vod-owner:100': {
+      name: '100',
+      gainVod: 0.5,
+      lastLufs: { vod: -20, fromSource: -11 },
+      lastLufsRef: { vod: u.LUFS_REFERENCE_VOLUME_1, fromSource: u.LUFS_REFERENCE_VOLUME_1 },
+      lastLufsWindows: { vod: 300, fromSource: 44 },
+      autoGainVod: 1.5,
+      autoGainRef: { vod: u.LUFS_REFERENCE_VOLUME_1, fromSource: u.LUFS_REFERENCE_VOLUME_1 },
+      __fieldVersions: { gainVod: 2, 'lastLufs.clip': 3, fromSource: 7 }
+    },
+    55: {
+      name: 'Someone',
+      lastLufs: { fromTarget: -12 },
+      lastLufsRef: { fromTarget: u.LUFS_REFERENCE_VOLUME_1 },
+      lastLufsWindows: { fromTarget: 55 },
+      autoGainRef: { fromTarget: u.LUFS_REFERENCE_VOLUME_1 },
+      __fieldVersions: { fromTarget: 8 }
+    }
+  });
+  await store.write({
+    operation: 'mergeChannelIds', fromId: 'vod-owner:100', toId: '55', kind: 'vod'
+  });
+  const row = store.stored.channelVolumes['55'];
+  for (const [field, side, value] of [
+    ['lastLufs', 'fromSource', -11], ['lastLufs', 'fromTarget', -12],
+    ['lastLufsRef', 'fromSource', u.LUFS_REFERENCE_VOLUME_1],
+    ['lastLufsRef', 'fromTarget', u.LUFS_REFERENCE_VOLUME_1],
+    ['lastLufsWindows', 'fromSource', 44], ['lastLufsWindows', 'fromTarget', 55],
+    ['autoGainRef', 'fromSource', u.LUFS_REFERENCE_VOLUME_1],
+    ['autoGainRef', 'fromTarget', u.LUFS_REFERENCE_VOLUME_1]
+  ]) {
+    assert.equal(row[field][side], value, `${field}.${side} is carried across`);
+  }
+  assert.equal(row.__fieldVersions.fromSource, 7);
+  assert.equal(row.__fieldVersions.fromTarget, 8);
+  // The clip is the one thing a row is not kept for.
+  assert.equal(row.__fieldVersions['lastLufs.clip'], undefined);
+});
+
+test('the row a merge lands on is named by its id where the sender knew no name', async () => {
+  const store = storeUnderTest({ 'vod-owner:100': { name: '100', gainVod: 0.5 } });
+  await store.write({
+    operation: 'mergeChannelIds',
+    fromId: 'vod-owner:100',
+    toId: '55',
+    kind: 'vod',
+    channel: { name: '', login: '', url: '' }
+  });
+  assert.equal(store.stored.channelVolumes['55'].name, '55');
 });
