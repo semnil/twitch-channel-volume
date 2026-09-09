@@ -6,7 +6,9 @@
 //   node tools/mutation/sweep.mjs --verify [<tree>]
 //
 // A mutant that does not parse is not a measurement and is left out of the
-// count. The source file is restored after every run.
+// count. The source file is put back after every run and read again to check
+// that it came back; where it did not, the marker stays over the tree and the
+// exit says so rather than 0.
 //
 // Ctrl-C reaches the suite the sweep is running, and a run a signal took is not
 // a verdict: the source goes back and the exit is 130. The marker goes with it
@@ -227,9 +229,12 @@ function mutantsFor(source) {
 // takes that line: a reason measured for one guard would otherwise go on
 // standing for a different guard nobody has measured.
 //
-// The check is that the site still holds at least as many as are named; a line
-// that grew a mutant nobody has judged comes back from the next sweep as one
-// standing unnamed, which is the sweep's job rather than this one's.
+// The check is that the site still holds at least as many as are named. Both of
+// the other ways a list drifts are the sweep's job rather than this one's: a
+// line that grew a mutant nobody has judged comes back from the next sweep as
+// one standing unnamed, and an entry whose mutant the suite has come to kill
+// still names a site, so nothing here can see it — only a sweep of that file
+// can, by what it does not find standing.
 if (verifying) {
   let text;
   try { text = readFileSync(EQUIVALENTS, 'utf8'); }
