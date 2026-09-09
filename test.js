@@ -16638,8 +16638,10 @@ function sweepBox(source) {
   git('init', '-q', '-b', 'main');
   git('add', '-A');
   git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'box');
-  // A shim loaded before sweep.mjs, so that a named fs call can be made to fail
-  // the way a full disk or a read-only directory makes it fail.
+  // A shim loaded before sweep.mjs, so that the filesystem under it can be made
+  // to fail: a named call refused the way a full disk or a read-only directory
+  // refuses it, and a restore that reports success while putting down something
+  // else.
   fs.writeFileSync(path.join(box, 'inject.cjs'), [
     "const fs = require('fs');",
     "for (const [name, code] of [['writeFileSync', 'ENOSPC'], ['unlinkSync', 'EACCES']]) {",

@@ -208,7 +208,7 @@ options.html / options.js
 | `tools/verify-version.sh` | Holds a release tag to the manifest: `version_name` where the manifest has one (which has to begin with `version`), `version` otherwise. Run only where a release is being made |
 | `tools/fonts/` | The M PLUS 1p faces used for drawing (Regular / Bold) and OFL.txt. Taken from `ofl/mplus1p` in google/fonts (commit `66a36c8`). Kept in the repository so that CI and each machine produce the same pixels |
 | `test.js` | Unit tests (`node test.js`) — utils and the stores, plus content.js / page-bridge.js / audio-worklet.js / popup.js / options.js / background.js run in a VM harness |
-| `tools/mutation/` | What holds the suite to more than being green. `sweep.mjs` turns a source into mutants by rule, runs a suite against each and reports the ones that live through it; `sweep-all.sh` walks a list of sources into one report and stops the run where a sweep stopped rather than leaving an empty section; `fast-suite.sh` is `node test.js` without the cases that shell out to python, for a sweep that would otherwise spend its time there. `equivalents.md` names every mutant the suite lets through and what was measured about each, and `sweep.mjs --verify` — which `test.js` runs — asks whether each entry still names a site the code has. `sweep.mjs` is the same file in the sibling extensions; a change to it belongs in all three |
+| `tools/mutation/` | What holds the suite to more than being green. `sweep.mjs` turns a source into mutants by rule, runs a suite against each and reports the ones that live through it; `sweep-all.sh` walks a list of sources into one report and stops the run where a sweep stopped rather than leaving an empty section; `fast-suite.sh` is `node test.js` without the packaging surface, whose slow cases shell out to python; it excludes on the case name, so it is used with `MUTATE_CONFIRM="node test.js"` and never on its own. `equivalents.md` names every mutant the suite lets through and what was measured about each, and `sweep.mjs --verify` — which `test.js` runs — asks whether each entry still names a site the code has. `sweep.mjs` is the same file in the sibling extensions; a change to it belongs in all three |
 
 ## Key design decisions
 
@@ -286,8 +286,8 @@ node test.js
 # Sweep one source for mutants the suite lets through (writes into the tree it
 # is given, so give it a worktree rather than the checkout being worked in).
 # MUTATE_LINES=<first>-<last> sweeps a region, MUTATE_COUNT=1 sizes a run
-# without making one, and MUTATE_CONFIRM=<shell line> re-judges the survivors
-# alone against a second suite.
+# without making one, MUTATE_CONFIRM=<shell line> re-judges the survivors alone
+# against a second suite, and MUTATE_OPTIONAL=1 adds the optional-chaining rule.
 MUTATE_CONFIRM="node test.js" node tools/mutation/sweep.mjs <worktree> content.js \
   sh tools/mutation/fast-suite.sh
 

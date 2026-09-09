@@ -16,7 +16,9 @@ that line, and a reason measured for one guard would go on standing for a
 different guard nobody has measured. Every list item in this file is read as
 an entry, so a bullet that is not one — or one that has lost a backtick, a
 `×N`, or the `-` at the margin — is refused by name rather than passed over as
-prose.
+prose. What `--verify` cannot see is an entry whose mutant the suite has come
+to kill: the site is still there, so only a sweep of that file finds it, by what
+it does not find standing.
 
 ## page-bridge.js
 
