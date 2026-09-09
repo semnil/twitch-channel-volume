@@ -29,10 +29,8 @@ numbers.
 
 The balanced tree's empty-node exits. `treeHeight` and `treeCount` answer 0 for
 a node that is not there, and a walk that reaches one returns what the guard
-returns, so the exits save the walk rather than change it. `:154`'s `||` reads
-a height of 0 either way.
+returns, so the exits save the walk rather than change it.
 
-- `page-bridge.js:154` || becomes && ×1 — ||
 - `page-bridge.js:187` a guard is dropped ×1 — if (!node) return null;
 - `page-bridge.js:224` a guard is dropped ×1 — if (!node) return null;
 - `page-bridge.js:229` a guard is dropped ×1 — if (!node.left) return node.right;
