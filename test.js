@@ -2925,6 +2925,7 @@ function createPopupHarness({
   const presetButtons = [];
   const sent = [];
   const warnings = [];
+  const infos = [];
   const intervals = [];
   let resolveAutoSave;
   let currentState = {
@@ -3060,7 +3061,7 @@ function createPopupHarness({
     console: {
       warn(...args) { warnings.push(args); },
       error() {},
-      info() {}
+      info(...args) { infos.push(args); }
     },
     requestAnimationFrame(callback) { callback(); },
     setInterval(callback) { return intervals.push(callback); },
@@ -3079,6 +3080,7 @@ function createPopupHarness({
     i18nNodes,
     sent,
     warnings,
+    infos,
     message: (key, substitutions) => {
       const text = messages[key] ? messages[key].message : key;
       return substitutions && substitutions.length
@@ -10891,10 +10893,16 @@ test('popup says where to open it when the tab is not a Twitch one', async () =>
   assert.equal(harness.el('mainArea').classList.contains('hidden'), true);
   // Nothing is asked of a tab the extension does not run in.
   assert.deepEqual(harness.sent, []);
+  // The reason is named at info, which Chrome keeps out of the extension's error
+  // list, and not as a warning, which it collects there.
   assert.deepEqual(
-    harness.warnings.filter((args) => args[0] === '[TCV] state request failed')
+    harness.infos.filter((args) => args[0] === '[TCV] state request failed')
       .map((args) => args[1]),
     ['no Twitch tab to ask']
+  );
+  assert.deepEqual(
+    harness.warnings.filter((args) => args[0] === '[TCV] state request failed'),
+    []
   );
 });
 
@@ -10957,32 +10965,44 @@ test('popup leaves its own message up when the tab it re-reads is gone', async (
   assert.equal(harness.el('autoError').classList.contains('hidden'), false);
   assert.equal(harness.el('mainArea').classList.contains('hidden'), false);
   assert.deepEqual(
-    harness.warnings.filter((args) => args[0] === '[TCV] state request failed')
+    harness.infos.filter((args) => args[0] === '[TCV] state request failed')
       .map((args) => args[1]),
     ['no Twitch tab to ask']
+  );
+  assert.deepEqual(
+    harness.warnings.filter((args) => args[0] === '[TCV] state request failed'),
+    []
   );
 });
 
 test('popup names a reason that takes over from another', async () => {
   const harness = createPopupHarness({ tabUrl: '' });
   await flushTasks(8);
-  const named = () => harness.warnings
+  const named = (lines) => lines
     .filter((args) => args[0] === '[TCV] state request failed')
     .map((args) => String(args[1]));
 
-  assert.deepEqual(named(), ['no Twitch tab to ask']);
+  assert.deepEqual(named(harness.infos), ['no Twitch tab to ask']);
+  assert.deepEqual(named(harness.warnings), []);
 
   // The tab comes back and the page is the one that cannot answer now. Nothing
-  // arrived in between, so a stretch that reports once would say nothing.
+  // arrived in between, so a stretch that reports once would say nothing. This
+  // reason is a warning.
   harness.setTabUrl('https://www.twitch.tv/somechannel');
   harness.breakSendMessage('Could not establish connection.');
   await harness.poll();
-  assert.equal(named().length, 2);
-  assert.match(named()[1], /Could not establish connection/);
+  assert.equal(named(harness.warnings).length, 1);
+  assert.match(named(harness.warnings)[0], /Could not establish connection/);
 
   // The same reason again is still the same thing to say.
   await harness.poll();
-  assert.equal(named().length, 2);
+  assert.equal(named(harness.warnings).length, 1);
+
+  // The tab leaves Twitch again, and that reason takes over in turn.
+  harness.setTabUrl('');
+  await harness.poll();
+  assert.deepEqual(named(harness.infos), ['no Twitch tab to ask', 'no Twitch tab to ask']);
+  assert.equal(named(harness.warnings).length, 1);
 });
 
 test('popup keeps a save in flight from being failed by the read after it', async () => {
