@@ -3391,7 +3391,7 @@ function createPageBridgeHarness({
     },
     fetch(...args) {
       fetchCalls.push(args);
-      return new Promise((resolve, reject) => { pendingFetches.push({ resolve, reject }); });
+      return new Promise((resolve) => { pendingFetches.push(resolve); });
     },
     postMessage(message) {
       messages.push(structuredClone(message));
@@ -3457,22 +3457,7 @@ function createPageBridgeHarness({
     fetchCalls,
     resolveFetch(response) {
       assert.ok(pendingFetches.length, 'no request is waiting for a response');
-      for (const { resolve } of pendingFetches.splice(0)) resolve(response);
-    },
-    rejectFetch(reason) {
-      assert.ok(pendingFetches.length, 'no request is waiting for a response');
-      for (const { reject } of pendingFetches.splice(0)) reject(reason);
-    },
-    // An error made in the page's realm, where the network's errors are made.
-    pageError(errorName, message) {
-      return vm.runInContext(`new ${errorName}(${JSON.stringify(message)})`, context);
-    },
-    // An unhandled rejection as the window dispatches one. Answers whether a
-    // listener prevented its default.
-    dispatchUnhandledRejection(reason) {
-      const event = { reason, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
-      for (const listener of listeners.unhandledrejection || []) listener(event);
-      return event.defaultPrevented;
+      for (const resolve of pendingFetches.splice(0)) resolve(response);
     },
     async startMeasurement() {
       await dispatchCommand('init');
@@ -8143,64 +8128,133 @@ test('the fetch hook hands back the response the page asked for', async () => {
   assert.equal(harness.fetchCalls.length, 2);
 });
 
-test('a request that could not be made on a channel page stays out of the error list', async () => {
-  for (const href of [
+// Loads the bridge into a context of its own, in a node process where an
+// unhandled rejection is reported for a promise with no handler, and prints for
+// each scenario whether the promise the page holds was reported and whether a
+// listener prevented its default. The fetch it wraps makes the reason inside the
+// call, so the reason's stack names what called fetch, and rejects afterwards.
+const UNHANDLED_REJECTION_DRIVER = [
+  "const fs = require('node:fs');",
+  "const vm = require('node:vm');",
+  'const bridgePath = process.argv[1];',
+  'const channelHrefs = JSON.parse(process.argv[2]);',
+  'const offHrefs = JSON.parse(process.argv[3]);',
+  "const SCRIPT_URL = 'chrome-extension://abcdefghijklmnopabcdefghijklmnop/page-bridge.js';",
+  'function loadBridge(href) {',
+  '  const listeners = {};',
+  '  const location = { href, origin: new URL(href).origin };',
+  '  const network = { failure: null, promise: null, reason: null };',
+  '  const window = {',
+  '    addEventListener(type, fn) { (listeners[type] ||= []).push(fn); },',
+  '    postMessage() {},',
+  '    fetch() {',
+  '      const make = network.failure;',
+  '      network.failure = null;',
+  '      if (!make) return new Promise(() => {});',
+  '      const reason = make();',
+  '      network.reason = reason;',
+  '      network.promise = new Promise((resolve, reject) => { setTimeout(() => reject(reason), 0); });',
+  '      return network.promise;',
+  '    }',
+  '  };',
+  '  const context = vm.createContext({',
+  '    window, location, URL, DOMException,',
+  '    console: { info() {}, warn() {}, error() {}, log() {} },',
+  '    document: { querySelectorAll: () => [] },',
+  '    setInterval: () => 0, clearInterval() {}',
+  '  });',
+  "  vm.runInContext(fs.readFileSync(bridgePath, 'utf8'), context, { filename: SCRIPT_URL });",
+  "  const makeError = vm.runInContext('(name, message) => (name === \"TypeError\" ? new TypeError(message) : new DOMException(message, name))', context);",
+  '  return {',
+  '    listeners, location, window, network,',
+  '    failNext(name, message) { network.failure = () => makeError(name, message); },',
+  "    pageRejects: vm.runInContext('(message) => Promise.reject(new TypeError(message))', context)",
+  '  };',
+  '}',
+  'const settle = () => new Promise((resolve) => setTimeout(resolve, 20));',
+  'const results = {};',
+  'async function scenario(name, href, act) {',
+  '  const bridge = loadBridge(href);',
+  '  const seen = [];',
+  '  const onRejection = (reason, promise) => {',
+  '    const event = { reason, promise, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };',
+  '    for (const fn of bridge.listeners.unhandledrejection || []) fn(event);',
+  '    seen.push(event);',
+  '  };',
+  "  process.on('unhandledRejection', onRejection);",
+  '  const held = act(bridge);',
+  '  await settle();',
+  '  await settle();',
+  "  process.off('unhandledRejection', onRejection);",
+  '  results[name] = seen.filter((event) => event.promise === held).map((event) => event.defaultPrevented);',
+  '}',
+  "const API = 'https://www.twitch.tv/api/something';",
+  "const CHANNEL = 'https://www.twitch.tv/somechannel';",
+  '(async () => {',
+  "  await scenario('a promise with a handler', CHANNEL, (b) => { const p = b.pageRejects('Failed to fetch'); p.catch(() => {}); return p; });",
+  "  await scenario('the page\\'s own promise', CHANNEL, (b) => b.pageRejects('Failed to fetch'));",
+  '  for (const href of channelHrefs) {',
+  "    await scenario('left alone on ' + href, href, (b) => { b.failNext('TypeError', 'Failed to fetch'); return b.window.fetch(API); });",
+  '  }',
+  "  await scenario('a then made from it', CHANNEL, (b) => { b.failNext('TypeError', 'Failed to fetch'); return b.window.fetch(API).then((res) => res); });",
+  "  await scenario('an async function awaiting it', CHANNEL, (b) => { b.failNext('TypeError', 'Failed to fetch'); return (async () => { await b.window.fetch(API); })(); });",
+  "  await scenario('an abort', CHANNEL, (b) => { b.failNext('AbortError', 'signal is aborted without reason'); return b.window.fetch(API); });",
+  "  await scenario('another TypeError', CHANNEL, (b) => { b.failNext('TypeError', 'something else'); return b.window.fetch(API); });",
+  '  for (const href of offHrefs) {',
+  "    await scenario('made on ' + href, href, (b) => { b.failNext('TypeError', 'Failed to fetch'); return b.window.fetch(API); });",
+  '  }',
+  "  await scenario('made off a channel, failed on one', 'https://www.twitch.tv/directory', (b) => {",
+  "    b.failNext('TypeError', 'Failed to fetch'); const p = b.window.fetch(API); b.location.href = CHANNEL; return p;",
+  '  });',
+  "  await scenario('made on a channel, failed off it', CHANNEL, (b) => {",
+  "    b.failNext('TypeError', 'Failed to fetch'); const p = b.window.fetch(API); b.location.href = 'https://www.twitch.tv/directory'; return p;",
+  '  });',
+  '  const handed = loadBridge(CHANNEL);',
+  "  handed.failNext('TypeError', 'Failed to fetch');",
+  '  const promise = handed.window.fetch(API);',
+  '  let caught = null;',
+  '  promise.catch((err) => { caught = err; });',
+  '  await settle();',
+  "  results['the page is handed'] = { networkPromise: promise === handed.network.promise, networkReason: caught === handed.network.reason };",
+  '  process.stdout.write(JSON.stringify(results));',
+  '})();'
+].join('\n');
+
+test('a request that could not be made on a channel page stays out of the error list, and nothing else does', () => {
+  const channelHrefs = [
     'https://www.twitch.tv/somechannel',
     'https://www.twitch.tv/videos/100',
     'https://www.twitch.tv/somechannel/clip/SomeSlug',
     'https://clips.twitch.tv/SomeSlug',
     'https://clips.twitch.tv/SomeSlug/edit'
-  ]) {
-    const harness = createPageBridgeHarness({ href });
-    const request = harness.fetch('https://www.twitch.tv/api/something');
-    const failed = harness.pageError('TypeError', 'Failed to fetch');
-    harness.rejectFetch(failed);
-    // The page is handed the request's own promise, and it rejects with that reason.
-    await assert.rejects(request, (err) => err === failed);
-    await flushTasks();
-    assert.equal(harness.dispatchUnhandledRejection(failed), true, href);
-  }
-
-  const harness = createPageBridgeHarness({ href: 'https://www.twitch.tv/somechannel' });
-  // The same TypeError from a promise the page made itself is left as it is.
-  assert.equal(harness.dispatchUnhandledRejection(harness.pageError('TypeError', 'Failed to fetch')), false);
-  // So is a request that failed with something else.
-  const other = harness.pageError('TypeError', 'something else');
-  const request = harness.fetch('https://www.twitch.tv/api/something');
-  harness.rejectFetch(other);
-  await assert.rejects(request);
-  await flushTasks();
-  assert.equal(harness.dispatchUnhandledRejection(other), false);
-});
-
-test('a request made off a channel page is left as it is', async () => {
+  ];
   // Each single-segment path the content script does not take for a channel,
-  // and paths of more than one segment that are not a VOD or a clip.
-  for (const path of [
-    ...u.TWITCH_RESERVED_PATHS,
-    'directory/category/just-chatting',
-    'somechannel/videos'
-  ]) {
-    const href = `https://www.twitch.tv/${path}`;
-    assert.equal(u.classifyTwitchUrl(href).kind, 'none', href);
-    const harness = createPageBridgeHarness({ href });
-    const request = harness.fetch('https://www.twitch.tv/api/something');
-    const failed = harness.pageError('TypeError', 'Failed to fetch');
-    harness.rejectFetch(failed);
-    await assert.rejects(request);
-    await flushTasks();
-    assert.equal(harness.dispatchUnhandledRejection(failed), false, href);
-  }
+  // and paths of more than one segment that are neither a VOD nor a clip.
+  const offHrefs = [...u.TWITCH_RESERVED_PATHS, 'directory/category/just-chatting', 'somechannel/videos']
+    .map((path) => `https://www.twitch.tv/${path}`);
+  for (const href of channelHrefs) assert.notEqual(u.classifyTwitchUrl(href).kind, 'none', href);
+  for (const href of offHrefs) assert.equal(u.classifyTwitchUrl(href).kind, 'none', href);
 
-  // The page a request was made on is what counts, not the one it fails on.
-  const harness = createPageBridgeHarness({ href: 'https://www.twitch.tv/directory' });
-  const request = harness.fetch('https://www.twitch.tv/api/something');
-  harness.location.href = 'https://www.twitch.tv/somechannel';
-  const failed = harness.pageError('TypeError', 'Failed to fetch');
-  harness.rejectFetch(failed);
-  await assert.rejects(request);
-  await flushTasks();
-  assert.equal(harness.dispatchUnhandledRejection(failed), false);
+  const run = spawnSync(process.execPath, [
+    '-e', UNHANDLED_REJECTION_DRIVER,
+    path.join(__dirname, 'page-bridge.js'), JSON.stringify(channelHrefs), JSON.stringify(offHrefs)
+  ], { encoding: 'utf8' });
+  assert.equal(run.status, 0, run.stderr);
+
+  const expected = {
+    'a promise with a handler': [],
+    "the page's own promise": [false],
+    ...Object.fromEntries(channelHrefs.map((href) => [`left alone on ${href}`, [true]])),
+    'a then made from it': [true],
+    'an async function awaiting it': [true],
+    'an abort': [false],
+    'another TypeError': [false],
+    ...Object.fromEntries(offHrefs.map((href) => [`made on ${href}`, [false]])),
+    'made off a channel, failed on one': [false],
+    'made on a channel, failed off it': [true],
+    'the page is handed': { networkPromise: true, networkReason: true }
+  };
+  assert.deepEqual(JSON.parse(run.stdout), expected);
 });
 
 test('GraphQL owner fallback keeps the request-time VOD identity across navigation', async () => {

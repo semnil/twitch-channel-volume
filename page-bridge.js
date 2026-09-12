@@ -1052,30 +1052,30 @@
     return { kind: 'none', id: '' };
   }
 
-  // The reasons that requests made through the wrapper below on a live, VOD or
-  // clip page failed with, when the request could not be made at all (a
-  // TypeError reading "Failed to fetch"). An unhandled rejection carrying one of
-  // them has its default prevented; any other rejection is left as it is.
-  const failedContentRequests = new WeakSet();
+  // A request made on a live, VOD or clip page goes through
+  // requestMadeOnContentPage below, and the TypeError a request that could not
+  // be made rejects with carries the stack of the call that made it. An
+  // unhandled rejection whose reason is that TypeError, with that function in
+  // its stack, has its default prevented. Any other rejection is left as it is.
+  const CONTENT_REQUEST_FRAME = /\bat requestMadeOnContentPage \(chrome-extension:\/\//;
   window.addEventListener('unhandledrejection', (e) => {
-    if (failedContentRequests.has(e.reason)) e.preventDefault();
+    const r = e.reason;
+    if (r instanceof TypeError && r.message === 'Failed to fetch' && CONTENT_REQUEST_FRAME.test(String(r.stack))) {
+      e.preventDefault();
+    }
   });
 
   const origFetch = window.fetch;
+  function requestMadeOnContentPage(page, fetchArgs) {
+    return origFetch.apply(page, fetchArgs);
+  }
   window.fetch = function (...args) {
     const requestIdentity = currentContentIdentity();
-    const result = origFetch.apply(this, args);
+    const result = requestIdentity.kind !== 'none'
+      ? requestMadeOnContentPage(this, args)
+      : origFetch.apply(this, args);
     let url = '';
     try { url = (typeof args[0] === 'string') ? args[0] : (args[0]?.url || ''); } catch (_) {}
-
-    if (requestIdentity.kind !== 'none') {
-      // The request's promise is held as handled from here, so a request the
-      // page leaves without a handler raises no unhandled rejection of its own,
-      // whatever it fails with.
-      result.then(undefined, (err) => {
-        if (err instanceof TypeError && err.message === 'Failed to fetch') failedContentRequests.add(err);
-      });
-    }
 
     if (url.includes('gql.twitch.tv')) {
       result.then((resp) => resp.clone().json()).then((data) => {
