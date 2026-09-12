@@ -127,11 +127,18 @@
   // takes over from another within one stretch is its own thing to say.
   let stateRequestFailureNamed = '';
 
-  function reportStateRequestFailure(reason) {
+  // A reason passed as not actionable is logged at info, which Chrome keeps out
+  // of the extension's error list; the rest are warnings, which it collects
+  // there.
+  function reportStateRequestFailure(reason, { actionable = true } = {}) {
     const named = String(reason);
     if (named === stateRequestFailureNamed) return;
     stateRequestFailureNamed = named;
-    console.warn('[TCV] state request failed', reason);
+    if (actionable) {
+      console.warn('[TCV] state request failed', reason);
+    } else {
+      console.info('[TCV] state request failed', reason);
+    }
   }
 
   async function requestState({ showConnectionError = true } = {}) {
@@ -141,7 +148,7 @@
       // manifest asks for twitch.tv alone and for no tabs permission, so Chrome
       // withholds the URL of every other tab.
       if (!tab?.url || !/twitch\.tv/.test(tab.url)) {
-        reportStateRequestFailure('no Twitch tab to ask');
+        reportStateRequestFailure('no Twitch tab to ask', { actionable: false });
         if (showConnectionError) showStatus(msg('openOnTwitch'));
         return null;
       }
