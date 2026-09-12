@@ -89,24 +89,10 @@ saves is a no-op; and the chain list is empty whenever there is no context.
 - `page-bridge.js:903` a guard is dropped ×1 — if (domAdActive === !!active) return;
 - `page-bridge.js:1003` a guard is dropped ×1 — if (!ctx) return;
 
-`currentContentIdentity`'s clip and live branches. Its one reader asks
-`requestIdentity?.kind === 'vod'`, so every other kind is the same answer.
-
-- `page-bridge.js:1035` && becomes || ×1 — &&
-- `page-bridge.js:1035` === becomes !== ×1 — ===
-- `page-bridge.js:1035` a guard body is dropped ×1 — if (segs.length >= 3 && segs[1] === 'clip') {
-- `page-bridge.js:1035` a guard is always taken ×1 — if (segs.length >= 3 && segs[1] === 'clip') {
-- `page-bridge.js:1038` && becomes || ×1 — &&
-- `page-bridge.js:1038` === becomes !== ×1 — ===
-- `page-bridge.js:1038` a guard body is dropped ×1 — if (url.hostname === 'clips.twitch.tv' && segs[0]) {
-- `page-bridge.js:1038` a guard is always taken ×1 — if (url.hostname === 'clips.twitch.tv' && segs[0]) {
-- `page-bridge.js:1041` === becomes !== ×1 — ===
-- `page-bridge.js:1041` a guard is dropped ×1 — if (segs.length === 1) return { kind: 'live', id: segs[0].toLowerCase()
-
 The dropped await on `ensureContext` in `resume`. `createContext` assigns `ctx`
 before its first await, so the resume that follows has it.
 
-- `page-bridge.js:1149` an await is dropped ×1 — await
+- `page-bridge.js:1166` an await is dropped ×1 — await
 
 ## content.js
 

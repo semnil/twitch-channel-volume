@@ -1027,6 +1027,13 @@
 
   // ── Fetch hook: GraphQL ─────────────────────────────────────────────
 
+  // A mirror of TWITCH_RESERVED_PATHS in utils.js, which this world does not load.
+  const RESERVED_PATHS = new Set([
+    'directory', 'subscriptions', 'inventory', 'wallet', 'drops',
+    'settings', 'friends', 'following', 'p', 'jobs', 'turbo',
+    'videos', 'login', 'signup', 'search'
+  ]);
+
   function currentContentIdentity() {
     try {
       const url = new URL(location.href);
@@ -1038,19 +1045,20 @@
       if (url.hostname === 'clips.twitch.tv' && segs[0]) {
         return { kind: 'clip', id: segs[0] };
       }
-      if (segs.length === 1) return { kind: 'live', id: segs[0].toLowerCase() };
+      if (segs.length === 1 && !RESERVED_PATHS.has(segs[0])) {
+        return { kind: 'live', id: segs[0].toLowerCase() };
+      }
     } catch (_) {}
     return { kind: 'none', id: '' };
   }
 
-  // An unhandled rejection whose reason is the TypeError a failed request
-  // rejects with has its default prevented, so a page fetch nothing handles is
-  // not reported against the wrapper below. Any other rejection is left as it is.
+  // The reasons that requests made through the wrapper below on a live, VOD or
+  // clip page failed with, when the request could not be made at all (a
+  // TypeError reading "Failed to fetch"). An unhandled rejection carrying one of
+  // them has its default prevented; any other rejection is left as it is.
+  const failedContentRequests = new WeakSet();
   window.addEventListener('unhandledrejection', (e) => {
-    const r = e.reason;
-    if (r instanceof TypeError && r.message === 'Failed to fetch') {
-      e.preventDefault();
-    }
+    if (failedContentRequests.has(e.reason)) e.preventDefault();
   });
 
   const origFetch = window.fetch;
@@ -1059,6 +1067,15 @@
     const result = origFetch.apply(this, args);
     let url = '';
     try { url = (typeof args[0] === 'string') ? args[0] : (args[0]?.url || ''); } catch (_) {}
+
+    if (requestIdentity.kind !== 'none') {
+      // The request's promise is held as handled from here, so a request the
+      // page leaves without a handler raises no unhandled rejection of its own,
+      // whatever it fails with.
+      result.then(undefined, (err) => {
+        if (err instanceof TypeError && err.message === 'Failed to fetch') failedContentRequests.add(err);
+      });
+    }
 
     if (url.includes('gql.twitch.tv')) {
       result.then((resp) => resp.clone().json()).then((data) => {

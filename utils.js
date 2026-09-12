@@ -311,7 +311,7 @@ if (typeof module !== 'undefined' && module.exports) {
     autoGainFieldForKind, extractAutoGainForKind, extractAutoDisplayGain,
     autoApplyFieldForKind, autoApplyDefaultFieldForKind,
     resolveAutoApplySetting, resolvePreferredGain,
-    classifyTwitchUrl, ownerMatchesTwitchContent, provisionalChannelIdForContent,
+    TWITCH_RESERVED_PATHS, classifyTwitchUrl, ownerMatchesTwitchContent, provisionalChannelIdForContent,
     resolveChannelIdAlias, twitchChannelUrlForEntry,
     kWeightingForSampleRate, redesignBiquad,
     K_PRE_48K, K_RLB_48K,
