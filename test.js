@@ -15697,7 +15697,7 @@ test('an attach made while the worklet is unavailable says the chain is not wire
   await harness.dispatchCommand('init');
   await harness.dispatchCommand('attach');
   assert.ok(harness.warnings.some(
-    (args) => String(args[0]).includes('worklet not ready yet')
+    (args) => String(args[0]).includes('attached without a measurement chain')
   ));
   assert.equal(harness.iirFilters.length, 0);
   const attached = harness.messages.filter((message) => message.event === 'attached');
