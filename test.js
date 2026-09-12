@@ -3459,6 +3459,14 @@ function createPageBridgeHarness({
       assert.ok(pendingFetches.length, 'no request is waiting for a response');
       for (const resolve of pendingFetches.splice(0)) resolve(response);
     },
+    // An unhandled rejection as the window dispatches one, its reason made in
+    // the page's realm. Answers whether a listener prevented its default.
+    rejectPromise(errorName, message) {
+      const reason = vm.runInContext(`new ${errorName}(${JSON.stringify(message)})`, context);
+      const event = { reason, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+      for (const listener of listeners.unhandledrejection || []) listener(event);
+      return event.defaultPrevented;
+    },
     async startMeasurement() {
       await dispatchCommand('init');
       await dispatchCommand('attach');
@@ -8126,6 +8134,14 @@ test('the fetch hook hands back the response the page asked for', async () => {
   await flushTasks();
   assert.equal(harness.messages.filter((message) => message.event === 'owner').length, 1);
   assert.equal(harness.fetchCalls.length, 2);
+});
+
+test('a page request that fails with nothing handling it stays out of the error list', () => {
+  const harness = createPageBridgeHarness();
+  assert.equal(harness.rejectPromise('TypeError', 'Failed to fetch'), true);
+  // Anything else the page leaves unhandled is left as it is.
+  assert.equal(harness.rejectPromise('TypeError', 'something else'), false);
+  assert.equal(harness.rejectPromise('Error', 'Failed to fetch'), false);
 });
 
 test('GraphQL owner fallback keeps the request-time VOD identity across navigation', async () => {

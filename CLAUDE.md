@@ -34,6 +34,8 @@ page-bridge.js (MAIN world content script, document_start)
 ├── Fetch hook (GraphQL only):
 │   └── gql.twitch.tv → extracts user.id / video.owner.id plus the
 │       content kind/id current at request time
+├── unhandledrejection listener: prevents the default of a `TypeError: Failed to fetch` rejection,
+│   so a page fetch nothing handles is not reported against the fetch wrapper
 ├── Worker hook: wraps `Worker` only to add a message listener. The worker is constructed
 │   with the arguments the page passed
 │   └── Reads the ad cues the player posts (`rollType` and `startTime` / `endTime` in media time).
@@ -219,6 +221,7 @@ options.html / options.js
 - **Measurement across sessions**: the stored LUFS is saved together with the window count it stands on (`lastLufsWindows`), and the next measurement is seeded with that many windows. Seeded as a single window, new audio arriving at 10 windows per second washes it away within a second, and Auto would set the gain from an Integrated value covering 0.4 seconds of the programme. The floor is 300 windows (30 seconds) and the cap is 1800 windows (3 minutes). With the cap at the ring buffer's own hour, the seed is a point mass at one value, so the relative gate pins to that value and the Integrated value would not move for over 20 minutes after the broadcaster genuinely lowers their level. At 3 minutes, watching for the same length of time reaches the seed's weight. A stored value with no window count (from before the extension update), and a window count that cannot be read, are weighted at the floor. The reported window count counts only windows that passed the relative gate, and the seed's share is replaced by the window count it arrived with — the padding up to the floor is not reported as measured, and windows the gate dropped and windows the ring buffer evicted are left uncounted. Which windows belong to the seed is decided from the gating window's sequence number rather than from its level (the index is keyed on level, so audio at the seed's level lands on the seed's node)
 - **GainNode, not HTMLMediaElement.volume**: volume clips at 1.0. The GainNode provides 0.0–6.0 (0–600%)
 - **MAIN world / ISOLATED world split**: Twitch's CSP forbids inline script, so the AudioContext and the fetch hook run in page-bridge.js (MAIN world, document_start)
+- **A page fetch nothing handles**: Chrome reports an unhandled rejection from a page request against the `window.fetch` wrapper the request went through, and records `Uncaught (in promise) TypeError: Failed to fetch` in the extension's error list. The bridge's `unhandledrejection` listener calls `preventDefault()` when `reason instanceof TypeError && reason.message === 'Failed to fetch'` and leaves any other rejection as it is
 - **Channel ID strategy**: 
   - Live uses the login from the URL (`login:<name>`) only before the owner response arrives, and merges into the same numeric ID as VOD once GraphQL `user.id` resolves
   - VOD uses `owner.id` from the GraphQL response (numeric, immutable). The fallback is `vod-owner:<videoId>`
