@@ -692,7 +692,7 @@
     if (workletReady) {
       buildMeasurementChain(c);
     } else {
-      console.warn('[TCV] worklet not ready yet; will wire measurement chain after load');
+      console.warn('[TCV] attached without a measurement chain; the worklet module is not loaded');
     }
     postAttached();
   }
