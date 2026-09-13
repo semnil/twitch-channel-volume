@@ -1027,6 +1027,13 @@
 
   // ── Fetch hook: GraphQL ─────────────────────────────────────────────
 
+  // A mirror of TWITCH_RESERVED_PATHS in utils.js, which this world does not load.
+  const RESERVED_PATHS = new Set([
+    'directory', 'subscriptions', 'inventory', 'wallet', 'drops',
+    'settings', 'friends', 'following', 'p', 'jobs', 'turbo',
+    'videos', 'login', 'signup', 'search'
+  ]);
+
   function currentContentIdentity() {
     try {
       const url = new URL(location.href);
@@ -1038,15 +1045,35 @@
       if (url.hostname === 'clips.twitch.tv' && segs[0]) {
         return { kind: 'clip', id: segs[0] };
       }
-      if (segs.length === 1) return { kind: 'live', id: segs[0].toLowerCase() };
+      if (segs.length === 1 && !RESERVED_PATHS.has(segs[0])) {
+        return { kind: 'live', id: segs[0].toLowerCase() };
+      }
     } catch (_) {}
     return { kind: 'none', id: '' };
   }
 
+  // A request made on a live, VOD or clip page goes through
+  // requestMadeOnContentPage below, and the TypeError a request that could not
+  // be made rejects with carries the stack of the call that made it. An
+  // unhandled rejection whose reason is that TypeError, with that function in
+  // its stack, has its default prevented. Any other rejection is left as it is.
+  const CONTENT_REQUEST_FRAME = /\bat requestMadeOnContentPage \(chrome-extension:\/\//;
+  window.addEventListener('unhandledrejection', (e) => {
+    const r = e.reason;
+    if (r instanceof TypeError && r.message === 'Failed to fetch' && CONTENT_REQUEST_FRAME.test(String(r.stack))) {
+      e.preventDefault();
+    }
+  });
+
   const origFetch = window.fetch;
+  function requestMadeOnContentPage(page, fetchArgs) {
+    return origFetch.apply(page, fetchArgs);
+  }
   window.fetch = function (...args) {
     const requestIdentity = currentContentIdentity();
-    const result = origFetch.apply(this, args);
+    const result = requestIdentity.kind !== 'none'
+      ? requestMadeOnContentPage(this, args)
+      : origFetch.apply(this, args);
     let url = '';
     try { url = (typeof args[0] === 'string') ? args[0] : (args[0]?.url || ''); } catch (_) {}
 
