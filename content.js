@@ -525,7 +525,37 @@
 
   // ── Save integrated periodically to limit storage churn ───────────
 
+  // A failed save is repeated with the next block, which arrives ten times a
+  // second. A stretch of failures is named at info where it starts and as a
+  // warning once it has lasted this long; Chrome collects the warning as an
+  // error of the extension.
+  const SAVE_FAILURE_WARN_AFTER_MS = 5000;
+
   let lastSavedAt = 0;
+  let saveFailingSince = 0;
+  let saveFailureWarned = false;
+
+  function measurementSaved() {
+    saveFailingSince = 0;
+    saveFailureWarned = false;
+  }
+
+  function measurementSaveFailed(error) {
+    lastSavedAt = 0;
+    // Nothing is named once the page has outlived the extension.
+    if (!isContextValid()) return;
+    const now = Date.now();
+    if (!saveFailingSince) {
+      saveFailingSince = now;
+      console.info('[TCV] measurement not persisted', error);
+      return;
+    }
+    if (!saveFailureWarned && now - saveFailingSince >= SAVE_FAILURE_WARN_AFTER_MS) {
+      saveFailureWarned = true;
+      console.warn('[TCV] failed to persist measurement and Auto gain', error);
+    }
+  }
+
   function throttledSaveIntegrated() {
     const now = Date.now();
     if (now - lastSavedAt < 5000) return;
@@ -536,10 +566,7 @@
       lastLufs.integrated,
       integratedWindows,
       currentAutoApplyLoudness ? currentGain : undefined
-    ).catch((error) => {
-      lastSavedAt = 0;
-      console.warn('[TCV] failed to persist measurement and Auto gain', error);
-    });
+    ).then(measurementSaved, measurementSaveFailed);
   }
 
   // ── DOM-based ad detection ────────────────────────────────────────

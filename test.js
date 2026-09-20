@@ -2229,6 +2229,9 @@ function createContentHarness({
   failInitialStorageGet = false,
   deferChannelMutationOperation = '',
   failChannelMutationOperation = '',
+  // The operation Chrome answers with a rejection rather than a response.
+  rejectChannelMutationOperation = '',
+  rejectChannelMutationMessage = 'Could not establish connection. Receiving end does not exist.',
   // A runtime the extension reload has already taken out from under the page.
   runtimeInvalid = false,
   runtimeThrows = false
@@ -2246,6 +2249,7 @@ function createContentHarness({
   let initialStorageGetDeferred = deferInitialStorageGet;
   let channelMutationDeferred = !!deferChannelMutationOperation;
   let failingChannelMutationOperation = failChannelMutationOperation;
+  let rejectingChannelMutationOperation = rejectChannelMutationOperation;
   let resolveInitialStorageGet;
   let pendingStorageGetDeferred = false;
   let resolvePendingStorageGet;
@@ -2378,6 +2382,9 @@ function createContentHarness({
               mutation.operation === deferChannelMutationOperation) {
             channelMutationDeferred = false;
             await new Promise((resolve) => { resolveChannelMutation = resolve; });
+          }
+          if (mutation.operation === rejectingChannelMutationOperation) {
+            throw new Error(rejectChannelMutationMessage);
           }
           if (mutation.operation === failingChannelMutationOperation) {
             failingChannelMutationOperation = '';
@@ -2569,6 +2576,12 @@ function createContentHarness({
       assert.ok(resolveInitialStorageGet, 'initial storage read is not pending');
       resolveInitialStorageGet();
       resolveInitialStorageGet = null;
+    },
+    rejectChannelMutations(operation) {
+      rejectingChannelMutationOperation = operation;
+    },
+    stopRejectingChannelMutations() {
+      rejectingChannelMutationOperation = '';
     },
     releaseChannelMutation() {
       assert.ok(resolveChannelMutation, 'channel mutation is not pending');
@@ -5108,6 +5121,111 @@ test('content saves a measurement no oftener than the storage can bear', async (
   await lufs(-30);
   assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['123456789']?.lastLufs?.live, -30,
     'and one far enough behind is');
+});
+
+// The measurement save is the one call the page makes to the extension on its
+// own, ten times a second, for as long as a channel plays.
+function createMeasuringHarness(options = {}) {
+  return createContentHarness({ href: 'https://www.twitch.tv/somechannel', ...options });
+}
+
+async function measureOn(harness, integrated) {
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs', momentary: integrated, shortTerm: integrated, integrated
+  });
+  await flushTasks();
+}
+
+async function claimChannel(harness) {
+  await flushTasks();
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner', userId: '123456789', login: 'somechannel',
+    displayName: 'Some Channel', source: 'user', contentKind: 'live', contentId: 'somechannel'
+  });
+  await flushTasks();
+}
+
+const notPersisted = (harness) =>
+  harness.infos.filter((args) => args[0] === '[TCV] measurement not persisted');
+const persistFailed = (harness) =>
+  harness.warnings.filter((args) => args[0] === '[TCV] failed to persist measurement and Auto gain');
+
+test('a measurement the extension did not take is named once, out of its error list', async () => {
+  const harness = createMeasuringHarness({ rejectChannelMutationOperation: 'saveMeasurement' });
+  await claimChannel(harness);
+
+  await measureOn(harness, -21);
+  assert.equal(notPersisted(harness).length, 1, 'the failure is named');
+  assert.match(String(notPersisted(harness)[0][1]), /Receiving end does not exist/);
+  // Chrome collects a warning as an error of the extension. A save the next
+  // block repeats is not one.
+  assert.deepEqual(persistFailed(harness), []);
+
+  // The next block repeats the save, and the stretch is already named.
+  await measureOn(harness, -22);
+  await measureOn(harness, -23);
+  assert.equal(notPersisted(harness).length, 1);
+  assert.deepEqual(persistFailed(harness), []);
+});
+
+test('a stretch of failed saves that lasts is named as a warning, once', async () => {
+  const harness = createMeasuringHarness({ rejectChannelMutationOperation: 'saveMeasurement' });
+  await claimChannel(harness);
+
+  await measureOn(harness, -21);
+  harness.advanceTime(4999);
+  await measureOn(harness, -22);
+  assert.deepEqual(persistFailed(harness), [], 'a stretch shorter than the wait is not collected');
+
+  harness.advanceTime(2);
+  await measureOn(harness, -23);
+  assert.equal(persistFailed(harness).length, 1);
+  assert.match(String(persistFailed(harness)[0][1]), /Receiving end does not exist/);
+
+  harness.advanceTime(10_000);
+  await measureOn(harness, -24);
+  await measureOn(harness, -25);
+  assert.equal(persistFailed(harness).length, 1, 'the stretch is named once, not per block');
+  assert.equal(notPersisted(harness).length, 1);
+});
+
+test('a save that gets through ends the stretch the failures opened', async () => {
+  const harness = createMeasuringHarness({ rejectChannelMutationOperation: 'saveMeasurement' });
+  await claimChannel(harness);
+
+  await measureOn(harness, -21);
+  harness.advanceTime(5001);
+  await measureOn(harness, -22);
+  assert.equal(persistFailed(harness).length, 1);
+
+  harness.stopRejectingChannelMutations();
+  await measureOn(harness, -23);
+  assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['123456789']?.lastLufs?.live, -23);
+
+  harness.rejectChannelMutations('saveMeasurement');
+  harness.advanceTime(5001);
+  await measureOn(harness, -24);
+  assert.equal(notPersisted(harness).length, 2, 'the next failure opens a stretch of its own');
+  assert.equal(persistFailed(harness).length, 1, 'which has not lasted yet');
+});
+
+test('a save the extension was taken out from under is named nowhere', async () => {
+  const harness = createMeasuringHarness({
+    deferChannelMutationOperation: 'saveMeasurement',
+    rejectChannelMutationOperation: 'saveMeasurement'
+  });
+  await claimChannel(harness);
+
+  await measureOn(harness, -21);
+  // The reload lands while the service worker still holds the mutation.
+  harness.invalidateRuntime();
+  harness.releaseChannelMutation();
+  await flushTasks(8);
+
+  assert.deepEqual(notPersisted(harness), []);
+  assert.deepEqual(persistFailed(harness), []);
 });
 
 test('content saves nothing from a reading that is no reading', async () => {
