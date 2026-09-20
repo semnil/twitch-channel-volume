@@ -124,8 +124,8 @@ The three dropped awaits on `resolveChannel`. It holds no await of its own, so
 its promise is already settled when it is returned.
 
 - `content.js:359` an await is dropped ×1 — await
-- `content.js:622` an await is dropped ×1 — await
-- `content.js:911` an await is dropped ×1 — await
+- `content.js:649` an await is dropped ×1 — await
+- `content.js:938` an await is dropped ×1 — await
 
 `reapplyForCurrentChannel`'s "no channel here" exit and its staleness check. The
 path below the exit loads nothing for an empty id, resolves the gain to 1.0 with
@@ -146,9 +146,9 @@ differ on is the other kind's `autoGainRef` and `lastLufs`, and `lastMeasuredAt`
 — content.js reads `lastLufs` only at `currentChannel.kind`, `lastMeasuredAt`
 nowhere, and the entry is reloaded before another kind is read.
 
-- `content.js:798` || becomes && ×1 — ||
-- `content.js:850` a guard is always taken ×1 — if (currentChannelEntry) {
-- `content.js:852` || becomes && ×1 — ||
+- `content.js:825` || becomes && ×1 — ||
+- `content.js:877` a guard is always taken ×1 — if (currentChannelEntry) {
+- `content.js:879` || becomes && ×1 — ||
 
 ## channel-store.js
 
