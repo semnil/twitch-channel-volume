@@ -1,0 +1,86 @@
+name: Tag release
+run-name: tag release for ${{ github.event.workflow_run.head_sha }}
+
+# Turns a merged version bump into a release. The version lives in manifest.json
+# alone and a version bump is its own pull request, so merging that pull request
+# is the release: this workflow tags the merge commit and starts release.yaml on
+# the tag.
+#
+# Runs when CI finishes on main rather than on the push, so the tag names a
+# commit whose tests have passed.
+#
+# A tag pushed with the repository's GITHUB_TOKEN starts no workflow, so
+# release.yaml is dispatched on the tag. release.yaml decides by the ref type, and
+# a dispatch on a tag makes a release exactly as a tag push does.
+#
+# A push that does not move the version ends here without tagging. A version the
+# release path declines fails the job before the tag is pushed.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+# One group per tested commit, so two merges landing together each get their own
+# run and neither cancels the other.
+concurrency:
+  group: tag-release-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write # create and push the tag
+  actions: write # dispatch release.yaml
+
+jobs:
+  tag:
+    name: Tag A Version Bump 🏷️
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # The commit CI reported on, not whatever main points at now, with its
+      # first parent readable so the version can be compared.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      # A tag already on the remote is never moved. One at another commit fails
+      # the job. One at this commit is this release's own tag, and release.yaml
+      # is dispatched on it unless a release.yaml run on that tag exists.
+      - name: Tag And Start The Release 🛫
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          : Tag And Start The Release
+          if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
+          tag="$(bash tools/tag-plan.sh "${HEAD_SHA}")"
+          if [[ -z "${tag}" ]]; then
+            echo "nothing to release at ${HEAD_SHA}"
+            exit 0
+          fi
+          listed="$(git ls-remote --tags origin "refs/tags/${tag}" "refs/tags/${tag}^{}")"
+          peeled="$(printf '%s\n' "${listed}" | awk -v ref="refs/tags/${tag}^{}" '$2 == ref { print $1 }')"
+          direct="$(printf '%s\n' "${listed}" | awk -v ref="refs/tags/${tag}" '$2 == ref { print $1 }')"
+          existing="${peeled:-${direct}}"
+          if [[ -z "${existing}" ]]; then
+            git tag "${tag}" "${HEAD_SHA}"
+            git push origin "refs/tags/${tag}"
+            echo "tagged ${tag} at ${HEAD_SHA}"
+          elif [[ "${existing}" != "${HEAD_SHA}" ]]; then
+            echo "::error::${tag} already names ${existing}, not ${HEAD_SHA} — leaving it alone"
+            exit 1
+          else
+            runs="$(gh run list --workflow release.yaml --branch "${tag}" --json databaseId --jq length)"
+            if (( runs > 0 )); then
+              echo "${tag} already names ${HEAD_SHA} and release.yaml has run on it"
+              exit 0
+            fi
+            echo "${tag} already names ${HEAD_SHA} and release.yaml has not run on it"
+          fi
+          gh workflow run release.yaml --ref "${tag}"
+          echo "dispatched release.yaml on ${tag}"
