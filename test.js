@@ -1151,7 +1151,7 @@ test('the archive comes back from the download as it went', () => {
     `nothing else in the job stands on it — ${standing.length} step(s) do`);
 });
 
-// A tag push is an intent to release. A tag naming no release this workflow
+// A run on a tag is an intent to release. A tag naming no release this workflow
 // makes used to pass through as a run that packed, uploaded and released
 // nothing — a green tick against a tag with no release behind it.
 test('a tag naming no release is refused before anything is built', () => {
@@ -1164,42 +1164,42 @@ test('a tag naming no release is refused before anything is built', () => {
     'the release workflow runs the tag script');
 
   const box = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'tcv-tag-'));
-  const ask = (event, ref) => {
+  const ask = (refType, ref) => {
     const out = path.join(box, 'out');
     fs.writeFileSync(out, '');
     const run = spawnSync('bash', [script], {
       encoding: 'utf8',
-      env: { ...process.env, GITHUB_EVENT_NAME: event, GITHUB_REF_NAME: ref,
+      env: { ...process.env, GITHUB_REF_TYPE: refType, GITHUB_REF_NAME: ref,
         GITHUB_OUTPUT: out, RUNNER_DEBUG: '' }
     });
     return { run, wrote: fs.readFileSync(out, 'utf8').trim().split('\n').filter(Boolean) };
   };
   let released = 0;
-  for (const [event, ref, wanted] of [
-    ['push', 'v1.2.3', ['validTag=true', 'prerelease=false', 'version=v1.2.3']],
-    ['push', 'v1.2.3-rc1', ['validTag=true', 'prerelease=true', 'version=v1.2.3-rc1']],
-    ['push', 'v1.2.3-beta2', ['validTag=true', 'prerelease=true', 'version=v1.2.3-beta2']],
-    ['push', 'v1.2.3-alpha', ['validTag=true', 'prerelease=true', 'version=v1.2.3-alpha']],
-    // A run somebody started by hand carries a branch name here and makes no
+  for (const [refType, ref, wanted] of [
+    ['tag', 'v1.2.3', ['validTag=true', 'prerelease=false', 'version=v1.2.3']],
+    ['tag', 'v1.2.3-rc1', ['validTag=true', 'prerelease=true', 'version=v1.2.3-rc1']],
+    ['tag', 'v1.2.3-beta2', ['validTag=true', 'prerelease=true', 'version=v1.2.3-beta2']],
+    ['tag', 'v1.2.3-alpha', ['validTag=true', 'prerelease=true', 'version=v1.2.3-alpha']],
+    // A run on a branch carries a branch name here and makes no
     // release, which is not a failure — it is what the flag is for.
-    ['workflow_dispatch', 'main', ['validTag=false']],
-    ['workflow_dispatch', 'v1.2.3', ['validTag=false']],
+    ['branch', 'main', ['validTag=false']],
+    ['branch', 'v1.2.3', ['validTag=false']],
     // Four parts, two parts, and a word the prerelease arm does not name.
-    ['push', 'v1.2.3.4', null],
-    ['push', 'v1.2', null],
-    ['push', 'v1.2.3-nightly', null]
+    ['tag', 'v1.2.3.4', null],
+    ['tag', 'v1.2', null],
+    ['tag', 'v1.2.3-nightly', null]
   ]) {
-    const { run, wrote } = ask(event, ref);
+    const { run, wrote } = ask(refType, ref);
     if (wanted === null) {
-      assert.notEqual(run.status, 0, `${event} of ${ref} is refused`);
+      assert.notEqual(run.status, 0, `${refType} ${ref} is refused`);
       assert.match(run.stdout + run.stderr, /::error::tag .* names no release/,
-        `${event} of ${ref} says why`);
+        `${refType} ${ref} says why`);
       assert.deepEqual(wrote, [],
-        `${event} of ${ref} leaves no flag for a later job to read`);
+        `${refType} ${ref} leaves no flag for a later job to read`);
     } else {
       assert.equal(run.status, 0,
-        `${event} of ${ref} passes — ${(run.stdout + run.stderr).trim()}`);
-      assert.deepEqual(wrote, wanted, `${event} of ${ref} sets ${wanted.join(' ')}`);
+        `${refType} ${ref} passes — ${(run.stdout + run.stderr).trim()}`);
+      assert.deepEqual(wrote, wanted, `${refType} ${ref} sets ${wanted.join(' ')}`);
       if (wrote.includes('validTag=true')) { released += 1; }
     }
   }
