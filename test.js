@@ -12166,7 +12166,7 @@ test('--check does not take a tracked file into memory to read it', { skip: gene
 
     const probe = spawnSync('python3', ['-B', '-c', COST_PROBE, sandbox], { encoding: 'utf8' });
     assert.equal(probe.status, 0, 'the cost probe ran: ' + probe.stderr);
-    const [status, peak] = probe.stdout.trim().split('\n');
+    const [status, peak] = probe.stdout.trim().split(/\r?\n/);
     // A run over the untouched tree peaks around 40 MB here, so anything below
     // what the file itself holds means it was read in pieces.
     assert.ok(Number(peak) < room,
@@ -12194,7 +12194,7 @@ test('--check does not inflate a tracked image beyond what the drawing needs',
 
       const probe = spawnSync('python3', ['-B', '-c', COST_PROBE, sandbox], { encoding: 'utf8' });
       assert.equal(probe.status, 0, 'the cost probe ran: ' + probe.stderr);
-      const [status, peak] = probe.stdout.trim().split('\n');
+      const [status, peak] = probe.stdout.trim().split(/\r?\n/);
       // A run over the untouched tree peaks around 40 MB here, and one that
       // inflates a block at a time without a ceiling reaches 133 MB, so the
       // bound sits between the two.
@@ -12526,7 +12526,8 @@ test('a directory that will not take this run says so', { skip: generatorSkip
       { cwd: sandbox, encoding: 'utf8' });
     assert.equal(redraw.status, 1, 'the tracked directory refusing is exit 1: ' + redraw.stderr);
     assert.doesNotMatch(redraw.stderr, /Traceback/);
-    assert.match(redraw.stderr, /docs\/screenshots cannot be written \(Permission denied\)/);
+    assert.match(redraw.stderr, new RegExp(
+      `${shownPath('docs', 'screenshots')} cannot be written \\(Permission denied\\)`));
     assert.deepEqual(fs.readdirSync(tracked).filter((name) => !name.endsWith('.png')), [],
       'and left nothing of its own behind');
 
@@ -12534,7 +12535,8 @@ test('a directory that will not take this run says so', { skip: generatorSkip
     const unreadable = runCheck(sandbox);
     assert.equal(unreadable.status, 1, 'a tracked directory that cannot be listed');
     assert.doesNotMatch(unreadable.stderr, /Traceback/);
-    assert.match(unreadable.stderr, /docs\/screenshots: cannot be read \(Permission denied\)/);
+    assert.match(unreadable.stderr, new RegExp(
+      `${shownPath('docs', 'screenshots')}: cannot be read \\(Permission denied\\)`));
   } finally {
     fs.chmodSync(readonly, 0o755);
     fs.chmodSync(tracked, 0o755);
@@ -13003,7 +13005,8 @@ test('an image that cannot be read is not called one that cannot be written',
       assert.equal(redraw.status, 1, 'the run stops: ' + redraw.stderr);
       assert.doesNotMatch(redraw.stderr, /Traceback/);
       assert.match(redraw.stderr,
-        /docs\/screenshots\/overlay_en\.png cannot be copied to .+ \(Permission denied\)/);
+        new RegExp(`${shownPath('docs', 'screenshots', 'overlay_en.png')} cannot be copied to .+`
+          + ' \\(Permission denied\\)'));
       assert.doesNotMatch(redraw.stderr, /cannot be written/);
     } finally {
       fs.chmodSync(target, 0o644);
@@ -13076,7 +13079,8 @@ test('--check turns down a tracked directory that is a link to one', { skip: gen
     fs.symlinkSync('nowhere', path.join(sandbox, 'docs/screenshots'));
     const dangling = runCheck(sandbox);
     assert.equal(dangling.status, 1, 'the dangling link is reported: ' + (dangling.stderr || ''));
-    assert.match(dangling.stderr, /docs\/screenshots: a symbolic link \(points at nowhere\)/);
+    assert.match(dangling.stderr, new RegExp(
+      `${shownPath('docs', 'screenshots')}: a symbolic link \\(points at nowhere\\)`));
     const drawn = spawnSync('python3', ['-B', 'gen_screenshots.py'],
       { cwd: sandbox, encoding: 'utf8' });
     assert.equal(drawn.status, 1, 'and drawing refuses it too: ' + drawn.stderr);
@@ -13094,7 +13098,8 @@ test('--check turns down a tracked directory that is a link to one', { skip: gen
     const run = runCheck(sandbox);
     assert.equal(run.status, 1, 'the linked directory is reported: ' + (run.stderr || run.stdout));
     assert.match(run.stderr,
-      /docs\/screenshots: a symbolic link \(points at screenshots\.source\)/);
+      new RegExp(`${shownPath('docs', 'screenshots')}: a symbolic link`
+        + ' \\(points at screenshots\\.source\\)'));
     assert.doesNotMatch(run.stderr, /screenshots match the code that draws them/,
       'and the six images under it are not vouched for');
 
@@ -13104,7 +13109,7 @@ test('--check turns down a tracked directory that is a link to one', { skip: gen
     fs.writeFileSync(path.join(sandbox, 'docs/screenshots'), '');
     const asFile = runCheck(sandbox);
     assert.equal(asFile.status, 1, 'a file by that name is reported too');
-    assert.match(asFile.stderr, /docs\/screenshots: not a directory/);
+    assert.match(asFile.stderr, new RegExp(`${shownPath('docs', 'screenshots')}: not a directory`));
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
   }
