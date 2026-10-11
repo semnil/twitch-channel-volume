@@ -105,6 +105,10 @@ function withFixtureDir(prefix, body) {
   assert.ok(!fs.existsSync(dir), `${dir} was left behind`);
 }
 
+// Why a case that makes a symbolic link does not run here, or false where it runs.
+const SYMLINK_SKIP = process.platform === 'win32'
+  && 'symlinks need a privilege this does not ask for';
+
 // This project's own rule, not the browser's: no underscore-prefixed name
 // outside `_locales`, and no Python leftovers, anywhere in the tree the
 // package is built from. Chrome refuses an unpacked extension only for an
@@ -376,7 +380,9 @@ test('the forbidden-name walk skips the scratch roots and nothing else', () => {
   });
 });
 
-test('the store package carries only the files the extension loads', () => {
+// The tree carries a link to content.js under a name nothing references when
+// `withLinks` is set.
+function packsOnlyWhatLoads(withLinks) {
   // pack.py runs for real here: a declaration read out of its source would
   // still pass with the selection that uses it deleted.
   withFixtureDir('tcv-pack-', (fixture) => {
@@ -444,7 +450,7 @@ test('the store package carries only the files the extension loads', () => {
     write('docs/security-audit.md');
     write('docs/en/security-audit.md');
     write('node_modules/_cache/index.js');
-    fs.symlinkSync(path.join(fixture, 'content.js'), path.join(fixture, 'linked.js'));
+    if (withLinks) fs.symlinkSync(path.join(fixture, 'content.js'), path.join(fixture, 'linked.js'));
     for (const name of SCRATCH_DIRS) write(path.join(name, 'session', '_metadata', 'note.txt'));
     fs.copyFileSync(path.join(__dirname, 'pack.py'), path.join(fixture, 'pack.py'));
 
@@ -502,7 +508,13 @@ test('the store package carries only the files the extension loads', () => {
     assert.ok(held.some(([, digest]) => digest !== ofNothing),
       'the fixture gives the packer something to get wrong');
   });
-});
+}
+
+test('the store package carries only the files the extension loads',
+  () => packsOnlyWhatLoads(false));
+
+test('the store package leaves out a link nothing references', { skip: SYMLINK_SKIP },
+  () => packsOnlyWhatLoads(true));
 
 
 // gen_icons.py writes beside itself rather than beside whatever directory it
@@ -2085,7 +2097,8 @@ test('the store package refuses to leave out what it has to carry', () => {
   }
 });
 
-test('the store package refuses a reference that leaves it', () => {
+// The cases that reach outside through a symbolic link run when `withLinks` is set.
+function refusesWhatLeaves(withLinks) {
   // A path that resolves outside the package would carry a file nobody
   // reviewed into the store zip under a name that looks local.
   const tmpRoot = fs.realpathSync(os.tmpdir());
@@ -2114,13 +2127,15 @@ test('the store package refuses a reference that leaves it', () => {
   });
 
   try {
-    // A symlinked parent directory: only the last name looks local.
-    const throughParent = run((fixture) => {
-      fs.writeFileSync(path.join(fixture, 'manifest.json'), manifest(['linked/secret.js']));
-      fs.symlinkSync(outside, path.join(fixture, 'linked'));
-    });
-    assert.notEqual(throughParent.status, 0);
-    assert.match(throughParent.stderr, /linked\/secret\.js/);
+    if (withLinks) {
+      // A symlinked parent directory: only the last name looks local.
+      const throughParent = run((fixture) => {
+        fs.writeFileSync(path.join(fixture, 'manifest.json'), manifest(['linked/secret.js']));
+        fs.symlinkSync(outside, path.join(fixture, 'linked'));
+      });
+      assert.notEqual(throughParent.status, 0);
+      assert.match(throughParent.stderr, /linked\/secret\.js/);
+    }
 
     const climbing = run((fixture) => {
       fs.writeFileSync(path.join(fixture, 'manifest.json'), manifest(['../secret.js']));
@@ -2145,30 +2160,38 @@ test('the store package refuses a reference that leaves it', () => {
     assert.notEqual(absolute.status, 0);
     assert.match(absolute.stderr, /secret\.js/);
 
-    // The locale directories are listed rather than referenced, and one of
-    // them can be a link just as easily.
-    const linkedLocaleDir = run((fixture) => {
-      fs.writeFileSync(path.join(fixture, 'manifest.json'),
-        manifest([], { default_locale: 'ja' }));
-      fs.mkdirSync(path.join(fixture, '_locales'));
-      fs.symlinkSync(outside, path.join(fixture, '_locales', 'ja'));
-    });
-    assert.notEqual(linkedLocaleDir.status, 0);
-    assert.match(linkedLocaleDir.stderr, /_locales\/ja\/messages\.json/);
+    if (withLinks) {
+      // The locale directories are listed rather than referenced, and one of
+      // them can be a link just as easily.
+      const linkedLocaleDir = run((fixture) => {
+        fs.writeFileSync(path.join(fixture, 'manifest.json'),
+          manifest([], { default_locale: 'ja' }));
+        fs.mkdirSync(path.join(fixture, '_locales'));
+        fs.symlinkSync(outside, path.join(fixture, '_locales', 'ja'));
+      });
+      assert.notEqual(linkedLocaleDir.status, 0);
+      assert.match(linkedLocaleDir.stderr, /_locales\/ja\/messages\.json/);
 
-    const linkedLocaleRoot = run((fixture) => {
-      fs.writeFileSync(path.join(fixture, 'manifest.json'),
-        manifest([], { default_locale: 'ja' }));
-      fs.symlinkSync(outside, path.join(fixture, '_locales'));
-    });
-    assert.notEqual(linkedLocaleRoot.status, 0);
-    assert.match(linkedLocaleRoot.stderr, /_locales\//);
+      const linkedLocaleRoot = run((fixture) => {
+        fs.writeFileSync(path.join(fixture, 'manifest.json'),
+          manifest([], { default_locale: 'ja' }));
+        fs.symlinkSync(outside, path.join(fixture, '_locales'));
+      });
+      assert.notEqual(linkedLocaleRoot.status, 0);
+      assert.match(linkedLocaleRoot.stderr, /_locales\//);
+    }
   } finally {
     fs.rmSync(outside, { recursive: true, force: true });
   }
-});
+}
 
-test('the store package refuses a reference it cannot pack', () => {
+test('the store package refuses a reference that leaves it', () => refusesWhatLeaves(false));
+
+test('the store package refuses a link that leaves it', { skip: SYMLINK_SKIP },
+  () => refusesWhatLeaves(true));
+
+// The cases where a link stands in for a file it packs run when `withLinks` is set.
+function refusesWhatItCannotPack(withLinks) {
   withFixtureDir('tcv-pack-missing-', (fixture) => {
     const writeManifest = (extra = {}) => fs.writeFileSync(
       path.join(fixture, 'manifest.json'), JSON.stringify({
@@ -2187,6 +2210,7 @@ test('the store package refuses a reference it cannot pack', () => {
     });
     assert.notEqual(missing.status, 0);
     assert.match(missing.stderr, /content\.js/);
+    if (!withLinks) return;
 
     // A referenced symlink resolves outside the package: it is not packed
     // silently in place of the file it points at.
@@ -2218,7 +2242,13 @@ test('the store package refuses a reference it cannot pack', () => {
     assert.notEqual(linkedLocale.status, 0);
     assert.match(linkedLocale.stderr, /messages\.json/);
   });
-});
+}
+
+test('the store package refuses a reference it cannot pack',
+  () => refusesWhatItCannotPack(false));
+
+test('the store package refuses a link where a file it packs belongs', { skip: SYMLINK_SKIP },
+  () => refusesWhatItCannotPack(true));
 
 async function flushTasks(turns = 4) {
   for (let i = 0; i < turns; i++) {
@@ -12444,7 +12474,7 @@ test('--check turns down a size the code no longer draws', { skip: generatorSkip
 });
 
 test('--check names a link with nothing at the end of it', { skip: generatorSkip
-  || (process.platform === 'win32' && 'symlinks need a privilege this does not ask for') }, () => {
+  || SYMLINK_SKIP }, () => {
   const sandbox = screenshotSandbox();
   try {
     // exists() reads through the link and finds nothing, which reads as a name
@@ -12761,7 +12791,7 @@ function overALink(mode, { replaced = true } = {}) {
 }
 
 test('a rollback puts back a link with nothing at the end of it', { skip: generatorSkip
-  || (process.platform === 'win32' && 'symlinks need a privilege this does not ask for') }, () => {
+  || SYMLINK_SKIP }, () => {
   const seen = overALink('dangling');
   // Not "absent": the run did not commit its images, so it does not get to
   // decide the name is gone either.
@@ -12769,14 +12799,14 @@ test('a rollback puts back a link with nothing at the end of it', { skip: genera
 });
 
 test('a rollback puts back a link rather than what it pointed at', { skip: generatorSkip
-  || (process.platform === 'win32' && 'symlinks need a privilege this does not ask for') }, () => {
+  || SYMLINK_SKIP }, () => {
   const seen = overALink('pointing');
   assert.match(seen.state, /^link -> .*elsewhere\.png$/, 'the link is back: ' + seen.told);
   assert.ok(seen.pointed_at_held, 'and what it pointed at was never written through');
 });
 
 test('a link the rollback cannot put back is kept, target and all', { skip: generatorSkip
-  || (process.platform === 'win32' && 'symlinks need a privilege this does not ask for') }, () => {
+  || SYMLINK_SKIP }, () => {
   const seen = overALink('linkback');
   // Where it pointed lives in this run and nowhere else, so it has to leave the
   // run: in what is said, and in what is kept.
@@ -12789,7 +12819,7 @@ test('a link the rollback cannot put back is kept, target and all', { skip: gene
 
 test('a link that cannot be copied stops the run before it replaces anything',
   { skip: generatorSkip
-    || (process.platform === 'win32' && 'symlinks need a privilege this does not ask for') }, () => {
+    || SYMLINK_SKIP }, () => {
     const seen = overALink('linkbackup', { replaced: false });
     // Nothing to put back is only safe while nothing has been taken away.
     assert.match(seen.told, /overlay_en\.png cannot be copied to .+ \(Permission denied\)/,
@@ -12812,7 +12842,7 @@ test('a first run says it could not take its own image back out', { skip: genera
 
 test('a link to a directory under a drawn name is turned down, not written through',
   { skip: generatorSkip
-    || (process.platform === 'win32' && 'symlinks need a privilege this does not ask for') }, () => {
+    || SYMLINK_SKIP }, () => {
     const sandbox = screenshotSandbox();
     try {
       // shutil.move puts the file inside a directory it is handed, and a link
@@ -13009,7 +13039,7 @@ test('a destination handed on the command line is answered as an argument',
   });
 
 test('--check turns down a tracked directory that is a link to one', { skip: generatorSkip
-  || (process.platform === 'win32' && 'symlinks need a privilege this does not ask for') }, () => {
+  || SYMLINK_SKIP }, () => {
   const sandbox = screenshotSandbox();
   try {
     // A link anywhere on the way there hides the same thing: lstat answers for
@@ -13081,7 +13111,7 @@ test('--check turns down a tracked directory that is a link to one', { skip: gen
 });
 
 test('--check turns down a tracked image that is a link to one', { skip: generatorSkip
-  || (process.platform === 'win32' && 'symlinks need a privilege this does not ask for') }, () => {
+  || SYMLINK_SKIP }, () => {
   const sandbox = screenshotSandbox();
   try {
     // Everything that opens the file follows the link, so the pixels match and
@@ -13188,7 +13218,6 @@ test('--out writes where it is told, and nowhere else', { skip: generatorSkip },
     // and one that is a file — each is the argument being wrong rather than
     // the images differing, and none of them is a place to write.
     fs.writeFileSync(path.join(sandbox, 'afile'), '');
-    fs.symlinkSync('nowhere', path.join(sandbox, 'broken'));
     for (const args of [['--chek'], ['--check', '--chek'],
       ['--check', '--out', elsewhere], ['--out', elsewhere, '--check'],
       ['--out', '--chek'],
@@ -13196,20 +13225,17 @@ test('--out writes where it is told, and nowhere else', { skip: generatorSkip },
       ['--out', path.join(sandbox, 'afile')],
       // A destination that does not exist yet is created, so what has to hold
       // is the nearest name that does: under a file there is no directory to
-      // make, and a link that points nowhere is not a directory either — both
-      // used to reach os.makedirs and come back as a traceback.
+      // make — it used to reach os.makedirs and come back as a traceback.
       ['--out', path.join(sandbox, 'afile', 'child')],
-      ['--out', path.join(sandbox, 'broken')],
       // `..` after a name is only walkable if that name is a directory. The
       // path collapses to a place that would be fine, so a check that reads
       // the collapsed one never sees the file it was told to go through.
       // path.join would collapse the `..` here as well, so these are spelled
       // out: what has to reach the generator is the path as written. The last
-      // two walk back onto a name that is there, past one that is not — the
+      // one walks back onto a name that is there, past one that is not — the
       // walk stops at the missing name, so the collapsed path is what says no.
       ['--out', [sandbox, 'afile', '..', 'escaped'].join(path.sep)],
-      ['--out', [sandbox, 'missing', '..', 'afile'].join(path.sep)],
-      ['--out', [sandbox, 'missing', '..', 'broken'].join(path.sep)]]) {
+      ['--out', [sandbox, 'missing', '..', 'afile'].join(path.sep)]]) {
       const refused = spawnSync('python3', ['-B', 'gen_screenshots.py', ...args],
         { cwd: sandbox, encoding: 'utf8' });
       assert.equal(refused.status, 2,
@@ -13219,7 +13245,6 @@ test('--out writes where it is told, and nowhere else', { skip: generatorSkip },
     assert.ok(!fs.existsSync(path.join(sandbox, '--chek')), 'and none of them made a directory');
     assert.ok(!fs.statSync(path.join(sandbox, 'afile')).isDirectory(),
       'nor turned a file into one');
-    assert.ok(!fs.existsSync(path.join(sandbox, 'broken')), 'nor gave a broken link somewhere to point');
     assert.ok(!fs.existsSync(path.join(sandbox, 'escaped')), 'nor wrote where the path collapsed to');
     assert.ok(!fs.existsSync(path.join(sandbox, 'missing')), 'nor made the name it was told to pass');
 
@@ -13246,8 +13271,32 @@ test('--out writes where it is told, and nowhere else', { skip: generatorSkip },
   }
 });
 
+test('--out turns down a link that points nowhere', { skip: generatorSkip || SYMLINK_SKIP },
+  () => {
+    const sandbox = screenshotSandbox();
+    try {
+      // A link that points nowhere is not a directory to make — it used to
+      // reach os.makedirs and come back as a traceback. The second walks back
+      // onto it past a name that is not there, so the collapsed path is what
+      // says no.
+      fs.symlinkSync('nowhere', path.join(sandbox, 'broken'));
+      for (const args of [['--out', path.join(sandbox, 'broken')],
+        ['--out', [sandbox, 'missing', '..', 'broken'].join(path.sep)]]) {
+        const refused = spawnSync('python3', ['-B', 'gen_screenshots.py', ...args],
+          { cwd: sandbox, encoding: 'utf8' });
+        assert.equal(refused.status, 2,
+          `${args.join(' ')} is refused: ` + (refused.stderr || ''));
+        assert.match(refused.stderr, /usage:/, `${args.join(' ')} is told the shape of the command`);
+      }
+      assert.ok(!fs.existsSync(path.join(sandbox, 'broken')), 'nor gave a broken link somewhere to point');
+      assert.ok(!fs.existsSync(path.join(sandbox, 'missing')), 'nor made the name it was told to pass');
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
 test('--out lands where the path leads, not where it folds to', { skip: generatorSkip
-  || (process.platform === 'win32' && 'symlinks need a privilege this does not ask for') }, () => {
+  || SYMLINK_SKIP }, () => {
   const sandbox = screenshotSandbox();
   try {
     // `link/..` is the directory the link points into, not the one the link
