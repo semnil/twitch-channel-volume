@@ -8,6 +8,9 @@ const vm = require('node:vm');
 const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 const crypto = require('node:crypto');
+// Python children write their output in UTF-8, the encoding every read below
+// decodes it with, whatever code page the host gives a pipe.
+process.env.PYTHONIOENCODING = 'utf-8';
 const u = require('./utils.js');
 // utils' esc writes text into an element and reads the markup back. This realm
 // has no DOM, so it gets the one thing esc reaches for, serialising the way a
@@ -88,7 +91,7 @@ function heldInZip(dir, archive) {
     + '    print(name, hashlib.sha256(held.read(name)).hexdigest())',
     archive], { cwd: dir, encoding: 'utf8' });
   assert.equal(read.status, 0, read.stderr);
-  return read.stdout.trim().split('\n').filter(Boolean)
+  return read.stdout.trim().split(/\r?\n/).filter(Boolean)
     .map((line) => line.split(' '));
 }
 
@@ -158,7 +161,7 @@ function namesOnWindows(cwd, where) {
   }
   assert.equal(run.status, 0,
     `the windows path harness runs on ${where} — ${(run.stderr || '').trim()}`);
-  const names = (run.stdout || '').trim().split('\n').filter(Boolean);
+  const names = (run.stdout || '').trim().split(/\r?\n/).filter(Boolean);
   const backslashed = names.filter((name) => name.includes('\\'));
   assert.deepEqual(backslashed, [],
     `every name inside ${where}'s package stays POSIX on Windows`);
@@ -1242,7 +1245,7 @@ test('a reference naming a drive is refused under Windows path semantics', () =>
     return;
   }
   assert.equal(run.status, 0, `the drive-letter probe runs — ${(run.stderr || '').trim()}`);
-  const answers = Object.fromEntries((run.stdout || '').trim().split('\n')
+  const answers = Object.fromEntries((run.stdout || '').trim().split(/\r?\n/)
     .filter(Boolean).map((line) => line.split(' ')));
   assert.equal(answers['content.js'], 'True',
     'a path inside the package still resolves under Windows path semantics');
@@ -2004,7 +2007,7 @@ test('the store package refuses to leave out what it has to carry', () => {
       + ' oct(held.external_attr >> 16))',
       'twitch-channel-volume-0.0.0.zip'], { cwd: box, encoding: 'utf8' });
     assert.equal(read.status, 0, read.stderr);
-    const entries = read.stdout.trim().split('\n').filter(Boolean);
+    const entries = read.stdout.trim().split(/\r?\n/).filter(Boolean);
     assert.ok(entries.length > 0, 'the package has entries to read');
     for (const entry of entries) {
       assert.match(entry, / \(1980, 1, 1, 0, 0, 0\) 3 0o100644$/,
@@ -2032,7 +2035,7 @@ test('the store package refuses to leave out what it has to carry', () => {
       + '    print("entry", held.filename, held.create_system)'],
     { cwd: box, encoding: 'utf8' });
     assert.equal(asWindows.status, 0, asWindows.stderr);
-    const hosts = asWindows.stdout.split('\n')
+    const hosts = asWindows.stdout.split(/\r?\n/)
       .map((line) => line.match(/^entry (.+) (\d+)$/)).filter(Boolean);
     assert.ok(hosts.length > 0, 'the package has entries to read');
     for (const [, name, host] of hosts) {
@@ -2049,7 +2052,7 @@ test('the store package refuses to leave out what it has to carry', () => {
     const box = buildMinimal();
     const built = runPack(box, []);
     assert.equal(built.status, 0, built.stderr);
-    const named = built.stdout.split('\n')
+    const named = built.stdout.split(/\r?\n/)
       .map((line) => line.match(/^\s*\+ (.+)$/)).filter(Boolean).map((match) => match[1]);
     const listed = runPack(box, ['--list']);
     assert.equal(listed.status, 0, listed.stderr);
@@ -13294,7 +13297,7 @@ test('the destination is walked by the separators the platform accepts', () => {
     + "print(m.path_parts('/tmp/afile/child', posixpath.sep, posixpath.altsep))"],
   { cwd: __dirname, encoding: 'utf8' });
   assert.equal(parts.status, 0, 'the split answered: ' + parts.stderr);
-  assert.deepEqual(parts.stdout.trim().split('\n'), [
+  assert.deepEqual(parts.stdout.trim().split(/\r?\n/), [
     "['tmp', 'afile', 'child']",
     "['tmp', 'afile']",
     "['tmp', 'afile', 'child']",
