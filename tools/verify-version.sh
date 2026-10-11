@@ -22,8 +22,8 @@ if [[ -z "${version}" ]]; then
 fi
 if [[ -z "${shown}" ]]; then
   shown="${version}"
-elif [[ "${shown}" != "${version}"* ]]; then
-  echo "::error::manifest.json version_name (${shown}) does not begin with version (${version})"
+elif [[ "${shown}" != "${version}" && "${shown}" != "${version}-"* ]]; then
+  echo "::error::manifest.json version_name (${shown}) does not begin with version (${version}) followed by -"
   exit 1
 fi
 if [[ "${tag}" != "${shown}" ]]; then
