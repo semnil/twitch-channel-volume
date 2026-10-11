@@ -1139,7 +1139,7 @@ def check():
         if drawn_as and drawn_as not in present:
             spellings.setdefault(drawn_as, []).append(name)
         else:
-            orphans.append(f'{here}/{name}')
+            orphans.append(os.path.join(here, name))
     # Where two or more claim one name, which to keep is not something this can
     # know — renaming them in turn drops the second onto the first.
     misspelled = [(names[0], drawn_as) for drawn_as, names in sorted(spellings.items())
@@ -1159,17 +1159,17 @@ def check():
         # go by hand.
         print('Delete: ' + ' '.join(orphans), file=sys.stderr)
     for name, drawn_as in misspelled:
-        print(f'{here}/{name}: spelled differently (the code draws {drawn_as})',
+        print(f'{os.path.join(here, name)}: spelled differently (the code draws {drawn_as})',
               file=sys.stderr)
     if misspelled:
-        print('Rename: ' + ' '.join(f'{here}/{name} → {drawn_as}'
+        print('Rename: ' + ' '.join(f'{os.path.join(here, name)} → {drawn_as}'
                                     for name, drawn_as in misspelled), file=sys.stderr)
     for names, drawn_as in contested:
         for name in names:
-            print(f'{here}/{name}: one of {len(names)} files claiming the name {drawn_as}',
+            print(f'{os.path.join(here, name)}: one of {len(names)} files claiming the name {drawn_as}',
                   file=sys.stderr)
         print(f'Keep one as {drawn_as} and delete the rest: '
-              + ' '.join(f'{here}/{name}' for name in names), file=sys.stderr)
+              + ' '.join(os.path.join(here, name) for name in names), file=sys.stderr)
     if stale or orphans or misspelled:
         return 1
     print(f'{len(drawn)} screenshots match the code that draws them.')

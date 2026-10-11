@@ -12376,8 +12376,10 @@ test('--check asks for a rename, not a deletion, when only the spelling differs'
 
       const run = runCheck(sandbox);
       assert.equal(run.status, 1, 'the spelling is reported: ' + (run.stderr || run.stdout));
-      assert.match(run.stderr, /popup_ja\.PNG: spelled differently \(the code draws popup_ja\.png\)/);
-      assert.match(run.stderr, /Rename: .*popup_ja\.PNG → popup_ja\.png/);
+      const misspelled = shownPath('docs', 'screenshots', 'popup_ja.PNG');
+      assert.match(run.stderr, new RegExp(
+        `${misspelled}: spelled differently \\(the code draws popup_ja\\.png\\)`));
+      assert.match(run.stderr, new RegExp(`Rename: ${misspelled} → popup_ja\\.png`));
       assert.doesNotMatch(run.stderr, /Delete: /, 'and it is not on the list to delete');
 
       // Where both spellings can exist at once, renaming onto the other one is
