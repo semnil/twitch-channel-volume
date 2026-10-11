@@ -270,11 +270,13 @@ def _spelled(root, relative):
 
 
 def _packaged(root, relative):
+    # A host that folds case answers realpath with the tree's spelling, which
+    # _resolve takes for a link; the spelling is asked first so that it is named.
+    if not _spelled(os.path.realpath(root), relative):
+        raise SystemExit(f'the tree spells this another way: {relative}')
     full = _resolve(root, relative)
     if full is None:
         raise SystemExit(f'reference leaves the package: {relative}')
-    if not _spelled(os.path.realpath(root), relative):
-        raise SystemExit(f'the tree spells this another way: {relative}')
     return full
 
 

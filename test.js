@@ -1251,6 +1251,44 @@ test('a reference naming a drive is refused under Windows path semantics', () =>
   }
 });
 
+test('a misspelled reference is named as one where realpath folds case', () => {
+  // Windows answers realpath with the spelling the tree holds. This host may
+  // not, so realpath is made to answer that way here.
+  const foldingProbe = [
+    'import importlib.util, os',
+    'spec = importlib.util.spec_from_file_location("packmod", "pack.py")',
+    'mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)',
+    'real = os.path.realpath',
+    'def folded(p):',
+    '    drive, rest = os.path.splitdrive(real(p))',
+    '    at = drive + os.sep',
+    '    for part in [name for name in rest.split(os.sep) if name]:',
+    '        held = os.listdir(at) if os.path.isdir(at) else []',
+    '        if part not in held:',
+    '            part = next((n for n in held if n.lower() == part.lower()), part)',
+    '        at = os.path.join(at, part)',
+    '    return at',
+    'os.path.realpath = folded',
+    'assert folded(os.path.join(os.getcwd(), "Content.js")) != os.path.join(os.getcwd(), "Content.js")',
+    'for name in ["content.js", "Content.js"]:',
+    '    try:',
+    '        mod._packaged(os.getcwd(), name)',
+    '        print(name, "packed")',
+    '    except SystemExit as refusal:',
+    '        print(name, refusal)'
+  ].join('\n');
+  withFixtureDir('tcv-folded-', (fixture) => {
+    fs.copyFileSync(path.join(__dirname, 'pack.py'), path.join(fixture, 'pack.py'));
+    fs.writeFileSync(path.join(fixture, 'content.js'), '');
+    const run = spawnSync('python3', ['-B', '-c', foldingProbe], { cwd: fixture, encoding: 'utf8' });
+    assert.equal(run.status, 0, `the folding probe runs — ${(run.stderr || '').trim()}`);
+    assert.deepEqual(run.stdout.trim().split(/\r?\n/), [
+      'content.js packed',
+      'Content.js the tree spells this another way: Content.js'
+    ]);
+  });
+});
+
 test('the names inside the package are POSIX on Windows too', () => {
   // A zip entry uses forward slashes and the manifest spells its references
   // that way, so those are one name. Windows is where they would not be, and
