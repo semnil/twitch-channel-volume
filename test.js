@@ -11527,6 +11527,11 @@ const generatorReason = (generatorImport.stderr || '').trim().split('\n').pop() 
 const generatorSkip = generatorImport.error || generatorImport.status === 3
   ? 'gen_screenshots.py cannot draw here: ' + generatorReason
   : false;
+// A path as the generator names it, as a pattern: the names joined with this
+// host's separator.
+const shownPath = (...parts) => parts
+  .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  .join(path.sep.replace(/\\/g, '\\\\'));
 
 test('gen_screenshots.py imports, or says it cannot draw here', () => {
   assert.ok(generatorImport.error === undefined || generatorSkip,
@@ -12516,7 +12521,8 @@ test('a name a redraw cannot overwrite is named, not raised over', { skip: gener
     assert.doesNotMatch(redraw.stderr, /Traceback/);
     // Named as the copy it is - taking one of the image it is about to
     // overwrite, with where that copy was going named too.
-    assert.match(redraw.stderr, /docs\/screenshots\/popup_ja\.png cannot be copied to .+/);
+    assert.match(redraw.stderr, new RegExp(
+      `${shownPath('docs', 'screenshots', 'popup_ja.png')} cannot be copied to .+`));
     assert.ok(fs.statSync(target).isDirectory(), 'and the name is left as it was');
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
@@ -12639,9 +12645,11 @@ test('a refusal while drawing names the destination, not the working directory',
     assert.equal(run.status, 0, 'the probe ran: ' + (run.stderr || run.stdout));
     const seen = JSON.parse(run.stdout);
     assert.equal(seen.code, 1, 'the run reports rather than raises: ' + seen.told);
-    assert.match(seen.told, /docs\/screenshots cannot be drawn into \(Permission denied\)/);
+    assert.match(seen.told, new RegExp(
+      `${shownPath('docs', 'screenshots')} cannot be drawn into \\(Permission denied\\)`));
     // The name it was handed is inside a directory this run picked and removed.
-    assert.doesNotMatch(seen.told, /screenshots\/tmp/, 'a name the reader cannot look at');
+    assert.doesNotMatch(seen.told, new RegExp(shownPath('screenshots', 'tmp')),
+      'a name the reader cannot look at');
     assert.equal(seen.left.length, 6, 'and it took its working directory with it');
   });
 
