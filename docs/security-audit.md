@@ -1,6 +1,6 @@
 # Security audit
 
-> 日本語版: [../ja/security-audit.md](../ja/security-audit.md)
+> 日本語版: [security-audit.ja.md](security-audit.ja.md)
 
 ## Scope
 
