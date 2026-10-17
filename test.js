@@ -448,7 +448,7 @@ function packsOnlyWhatLoads(withLinks) {
     write('icons/source.svg');
     write('_locales/ja/notes.txt');
     write('docs/security-audit.md');
-    write('docs/en/security-audit.md');
+    write('docs/security-audit.ja.md');
     write('node_modules/_cache/index.js');
     if (withLinks) fs.symlinkSync(path.join(fixture, 'content.js'), path.join(fixture, 'linked.js'));
     for (const name of SCRATCH_DIRS) write(path.join(name, 'session', '_metadata', 'note.txt'));
@@ -4670,7 +4670,7 @@ test('the documentation pairs keep their names, their shape and their links', ()
 
   const PAIRS = [
     ['README.md', 'README.ja.md'],
-    ['docs/en/security-audit.md', 'docs/ja/security-audit.md'],
+    ['docs/security-audit.md', 'docs/security-audit.ja.md'],
     ['PRIVACY_POLICY.md', 'PRIVACY_POLICY_JA.md']
   ];
   for (const [en, ja] of PAIRS) {

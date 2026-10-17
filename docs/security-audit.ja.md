@@ -1,6 +1,6 @@
 # セキュリティ監査
 
-> English version: [../en/security-audit.md](../en/security-audit.md)
+> English version: [security-audit.md](security-audit.md)
 
 ## 対象
 
