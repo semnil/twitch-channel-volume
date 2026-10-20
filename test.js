@@ -1057,6 +1057,8 @@ test('a page leaves its wording to the catalog', () => {
 // carries none, so the language the markup was written in is not the one shown.
 test('a page declares the language of the catalog that filled it', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, 'manifest.json'), 'utf8'));
+  assert.equal(manifest.default_locale, 'en',
+    'a browser language the extension carries no catalog for is answered in English');
   for (const locale of localesWithCatalog(path.join(__dirname, '_locales'))) {
     const catalog = JSON.parse(
       fs.readFileSync(path.join(__dirname, '_locales', locale, 'messages.json'), 'utf8'));
