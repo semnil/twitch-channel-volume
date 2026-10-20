@@ -156,10 +156,11 @@ flowchart LR
 
 ## i18n
 
-- `_locales/ja/messages.json` — Japanese, the default
-- `_locales/en/messages.json` — English
+- `_locales/en/messages.json` — English, the `default_locale`: a browser language with no catalog here is answered in English
+- `_locales/ja/messages.json` — Japanese
 - The manifest's name/description use `__MSG_` references
 - The popup/options UI strings use the `data-i18n` attribute + `chrome.i18n.getMessage`
+- popup/options set `<html lang>` from the `pageLanguage` message, which each catalog answers with its own locale, so the page declares the language of the catalog Chrome filled it from. The markup's `lang` is `default_locale`'s
 
 ## User workflow
 
