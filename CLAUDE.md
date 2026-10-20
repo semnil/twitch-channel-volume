@@ -300,7 +300,7 @@ python3 pack.py --list
 
 ## Conventions
 
-- Documentation is maintained in English and Japanese, English first: `README.md` / `README.ja.md` at the root, `docs/<name>.md` / `docs/<name>.ja.md` under `docs`. This overrides the global CLAUDE.md default of writing documentation in Japanese
+- **Override of the global CLAUDE.md's 「ドキュメント」 language rule**: documentation is maintained in English and Japanese, English first: `README.md` / `README.ja.md` at the root, `docs/<name>.md` / `docs/<name>.ja.md` under `docs`
 - `PRIVACY_POLICY.md` keeps its name because the Chrome Web Store listing links to it by path. `PRIVACY_POLICY_JA.md` keeps its name because the README pair and the English policy point at it
 - `CLAUDE.md` is English only and has no Japanese counterpart
 - Commit messages follow Conventional Commits
