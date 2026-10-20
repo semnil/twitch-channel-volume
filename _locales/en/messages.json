@@ -145,5 +145,8 @@
   },
   "adDetected": {
     "message": "Ad detected"
+  },
+  "pageLanguage": {
+    "message": "en"
   }
 }

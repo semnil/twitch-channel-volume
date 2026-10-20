@@ -145,5 +145,8 @@
   },
   "adDetected": {
     "message": "CM 検出中"
+  },
+  "pageLanguage": {
+    "message": "ja"
   }
 }

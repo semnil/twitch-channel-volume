@@ -89,6 +89,8 @@
       const text = msg(key);
       if (text && text !== key) el.textContent = text;
     });
+    const language = msg('pageLanguage');
+    if (language && language !== 'pageLanguage') document.documentElement.lang = language;
   }
 
   function fmtLufs(v) {

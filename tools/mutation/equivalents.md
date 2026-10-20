@@ -193,15 +193,15 @@ its check guards finds no targets.
 `setAutoApplyLoudness`'s gain check. The branch above it throws on `!res?.ok`,
 so a response that reaches this line carries the gain content.js answers with.
 
-- `popup.js:369` a guard is always taken ×1 — if (Number.isFinite(res.gain)) {
+- `popup.js:371` a guard is always taken ×1 — if (Number.isFinite(res.gain)) {
 
 The `await refresh()` ending `applyMeasured`, `setGain` and
 `setAutoApplyLoudness`. All three are called from click handlers that discard
 the promise, so nothing observes when they settle.
 
-- `popup.js:323` an await is dropped ×1 — await
-- `popup.js:341` an await is dropped ×1 — await
-- `popup.js:373` an await is dropped ×1 — await
+- `popup.js:325` an await is dropped ×1 — await
+- `popup.js:343` an await is dropped ×1 — await
+- `popup.js:375` an await is dropped ×1 — await
 
 ## utils.js
 
@@ -223,5 +223,5 @@ The default-Auto toggle's and the unit buttons' readiness checks.
 `updateSettings` opens with the same one, so the mutant reaches it and stops
 there.
 
-- `options.js:262` a guard is dropped ×1 — if (!settingsReady) return;
-- `options.js:275` a guard is dropped ×1 — if (!settingsReady) return;
+- `options.js:264` a guard is dropped ×1 — if (!settingsReady) return;
+- `options.js:277` a guard is dropped ×1 — if (!settingsReady) return;
