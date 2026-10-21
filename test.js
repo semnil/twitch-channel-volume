@@ -4230,6 +4230,17 @@ test('the settings table keeps a channel id inside the attribute it is written i
     `the whole id stays in the attribute (${markup.replace(/\s+/g, ' ').slice(0, 240)})`);
 });
 
+test('the settings table names a row by its id where the stored name is not text', async () => {
+  const harness = createOptionsHarness({
+    channelVolumes: { 123: { name: { not: 'text' }, gainLive: 1.5 } }
+  });
+  await flushTasks(8);
+  const markup = harness.el('channelsBody').textContent;
+
+  assert.ok(markup.includes('<td class="ch-name">123</td>') && !markup.includes('[object Object]'),
+    `the row is drawn under its id (${markup.replace(/\s+/g, ' ').slice(0, 240)})`);
+});
+
 test('calcGain: target equals measured → unity gain', () => {
   assert.equal(u.calcGain(-18, -18).toFixed(6), '1.000000');
 });

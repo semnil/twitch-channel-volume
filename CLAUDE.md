@@ -151,7 +151,7 @@ flowchart LR
 - Ad gain slider (-24 to +6 dB, default -6 dB)
 - Display unit (% / dB)
 - Gain overlay on/off toggle (default ON)
-- Saved Channels table (two Live / VOD columns, the last applied Auto gain while Auto is on, deletable)
+- Saved Channels table (two Live / VOD columns, the last applied Auto gain while Auto is on, deletable). A stored name that is not text is shown as the channel id
 - Every settings control and deletion (clear all, the row ×) is disabled until the initial settings load completes
 - Saves only the item that changed through the Service Worker's settings mutation, synced through storage.onChanged
 
