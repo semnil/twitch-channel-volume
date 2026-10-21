@@ -4104,6 +4104,19 @@ test('an owner answer is matched against the content it names', () => {
   ]) {
     assert.equal(u.ownerMatchesTwitchContent(owner, live), false, JSON.stringify(owner));
   }
+  // A script in the page's own world can post the owner event as well as the
+  // bridge can. The id is taken only as a Twitch user id, a string of digits,
+  // and a content id that is not text matches nothing.
+  for (const owner of [
+    { userId: '__proto__', contentId: 'somechannel', contentKind: 'live', source: 'user' },
+    { userId: 'somechannel', contentId: 'somechannel', contentKind: 'live', source: 'user' },
+    { userId: '12a', contentId: 'somechannel', contentKind: 'live', source: 'user' },
+    { userId: 1, contentId: 'somechannel', contentKind: 'live', source: 'user' },
+    { userId: { id: '1' }, contentId: 'somechannel', contentKind: 'live', source: 'user' },
+    { userId: '1', contentId: 42, contentKind: 'live', source: 'user' }
+  ]) {
+    assert.equal(u.ownerMatchesTwitchContent(owner, live), false, JSON.stringify(owner));
+  }
   // A clip is matched by nobody: it carries no owner of its own.
   assert.equal(
     u.ownerMatchesTwitchContent(
@@ -5145,6 +5158,27 @@ test('a save files the channel under its own name, not its id', async () => {
   assert.equal(measured?.lastLufs?.live, -21, 'the measurement is filed');
   assert.equal(measured?.name, 'Some Channel', 'under the same name');
   assert.equal(measured?.login, 'somechannel', 'and the login it was measured on');
+});
+
+test('an owner answer whose names are not text names the channel with text', async () => {
+  // A name of another type in the owner event counts as no name, so the row
+  // is filed under one the tab already holds.
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/somechannel' });
+  await flushTasks();
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner', userId: '123456789', login: { not: 'text' },
+    displayName: { not: 'text' }, source: 'user', contentKind: 'live', contentId: 'somechannel'
+  });
+  await flushTasks();
+
+  await harness.dispatchGesture({ cmd: 'setGain', gain: 2 });
+  await flushTasks();
+
+  const saved = harness.stored[u.CHANNEL_VOLUMES_KEY]['123456789'];
+  assert.equal(saved?.gainLive, 2, 'the gain is filed under the owner id');
+  assert.equal(typeof saved?.name, 'string',
+    `under a name that is text (${JSON.stringify(saved?.name)})`);
 });
 
 test('an Auto choice is filed under the channel it was made on', async () => {
@@ -10546,6 +10580,31 @@ test('the channel store refuses what it cannot apply, by name', () => {
     refuses({ operation: 'mergeChannelIds', fromId: 'login:a', toId, kind: 'live' },
       'toId must be a non-empty string');
   }
+
+  // A row is written only under an id of a form the extension makes: a Twitch
+  // user id, or the provisional login: / vod-owner: id used until it is known.
+  // A key every object inherits is none of them.
+  for (const id of ['__proto__', 'constructor', 'someone', '12a', 'login:', 'vod-owner:']) {
+    for (const mutation of [
+      { operation: 'saveGain', channelId: id, kind: 'live', gain: 1 },
+      { operation: 'saveAuto', channelId: id, kind: 'live', enabled: true },
+      { operation: 'saveMeasurement', channelId: id, kind: 'live', lufs: -20 },
+      { operation: 'clearMeasurement', channelId: id, kind: 'live' },
+      { operation: 'saveAutoGain', channelId: id, kind: 'live', autoGain: 1 }
+    ]) {
+      refuses(mutation, 'channelId is not a channel id the extension writes');
+    }
+    refuses({ operation: 'mergeChannelIds', fromId: id, toId: '55', kind: 'live' },
+      'fromId is not a channel id the extension writes');
+    refuses({ operation: 'mergeChannelIds', fromId: 'login:a', toId: id, kind: 'live' },
+      'toId is not a channel id the extension writes');
+  }
+  // A row stored under another key by an earlier version can still be deleted.
+  const legacy = channelStore.applyChannelVolumesMutation(
+    { someone: { name: 'Someone', gainLive: 1 }, 'clip-owner:x': { name: 'x', gainClip: 1 } },
+    { operation: 'deleteChannel', channelId: 'someone' }, 1
+  );
+  assert.equal(legacy.someone, undefined, 'a legacy key is deleted');
 
   // The gain at either end of the range is one it can apply.
   for (const gain of [0, 6]) {
@@ -16808,7 +16867,7 @@ function storeUnderTest(seed = {}, aliases = {}) {
 
 test('a mutation leaves the stored object it was handed untouched', () => {
   const handed = {
-    someone: {
+    55: {
       name: 'Someone',
       gainVod: 0.5,
       lastLufs: { vod: -20 },
@@ -16819,12 +16878,12 @@ test('a mutation leaves the stored object it was handed untouched', () => {
   const before = structuredClone(handed);
   const next = channelStore.applyChannelVolumesMutation(
     handed,
-    { operation: 'saveGain', channelId: 'someone', kind: 'vod', gain: 2, sequence: 9 },
+    { operation: 'saveGain', channelId: '55', kind: 'vod', gain: 2, sequence: 9 },
     100
   );
   assert.deepEqual(handed, before);
-  assert.equal(next.someone.gainVod, 2);
-  assert.equal(next.someone.__fieldVersions.gainVod, 9);
+  assert.equal(next['55'].gainVod, 2);
+  assert.equal(next['55'].__fieldVersions.gainVod, 9);
 });
 
 test('a row whose sender knew no name is named by its id', async () => {
@@ -16844,6 +16903,24 @@ test('a row whose sender knew no name is named by its id', async () => {
       `${write.operation} names the row it made`
     );
   }
+  // A name that is not text names the row no more than an empty one does, and
+  // neither does it name the row a merge makes.
+  const untyped = { name: { not: 'text' } };
+  for (const write of writes) {
+    const store = storeUnderTest();
+    await store.write({ ...write, channelId: 'vod-owner:100', channel: untyped });
+    assert.equal(
+      store.stored.channelVolumes['vod-owner:100'].name,
+      'vod-owner:100',
+      `${write.operation} names the row it made by its id (${JSON.stringify(store.stored.channelVolumes['vod-owner:100'].name)})`
+    );
+  }
+  const merging = storeUnderTest({ 'vod-owner:100': { gainVod: 0.5 } });
+  await merging.write({
+    operation: 'mergeChannelIds', fromId: 'vod-owner:100', toId: '55', kind: 'vod', channel: untyped
+  });
+  assert.equal(typeof merging.stored.channelVolumes['55']?.name, 'string',
+    `a merge names the row it made with text (${JSON.stringify(merging.stored.channelVolumes['55']?.name)})`);
 });
 
 test('a companion outlives no value through a merge', async () => {

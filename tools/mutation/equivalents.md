@@ -110,45 +110,45 @@ The url `channelMetadata` puts on a mutation. Measured against the store: a
 merge whose channel names only the login comes back holding `name` and `url` all
 the same, because the store fills both from the login it was given.
 
-- `content.js:331` || becomes && ×1 — ||
+- `content.js:334` || becomes && ×1 — ||
 
 `acceptOwner`'s provisional-id check. A provisional id is `login:<name>` or
 `vod-owner:<id>` and a confirmed one is numeric, so the second clause is never
 false; the first is only false on a clip, which `ownerMatchesTwitchContent`
 refuses two lines up.
 
-- `content.js:337` && becomes || ×1 — &&
-- `content.js:337` a guard is always taken ×1 — if (provisionalId && provisionalId !== confirmedId) {
+- `content.js:340` && becomes || ×1 — &&
+- `content.js:340` a guard is always taken ×1 — if (provisionalId && provisionalId !== confirmedId) {
 
 The three dropped awaits on `resolveChannel`. It holds no await of its own, so
 its promise is already settled when it is returned.
 
-- `content.js:359` an await is dropped ×1 — await
-- `content.js:649` an await is dropped ×1 — await
-- `content.js:938` an await is dropped ×1 — await
+- `content.js:362` an await is dropped ×1 — await
+- `content.js:652` an await is dropped ×1 — await
+- `content.js:941` an await is dropped ×1 — await
 
 `reapplyForCurrentChannel`'s "no channel here" exit and its staleness check. The
 path below the exit loads nothing for an empty id, resolves the gain to 1.0 with
 no entry and applies that, which is what the body does; and the revision beside
 the staleness check is bumped by every channel change, so it answers first.
 
-- `content.js:403` a guard body is dropped ×1 — if (!ch.id || ch.kind === 'none') {
-- `content.js:403` || becomes && ×1 — ||
-- `content.js:413` || becomes && ×1 — ||
+- `content.js:406` a guard body is dropped ×1 — if (!ch.id || ch.kind === 'none') {
+- `content.js:406` || becomes && ×1 — ||
+- `content.js:416` || becomes && ×1 — ||
 
 `handleBridgeMessage`'s runtime check. Each case reaches a guard of its own —
 the storage helpers above — and the rest only post to the page.
 
-- `content.js:445` a guard is dropped ×1 — if (!isContextValid()) return;
+- `content.js:448` a guard is dropped ×1 — if (!isContextValid()) return;
 
 The cached entry an Auto save and a measurement reset rewrite. What the mutants
 differ on is the other kind's `autoGainRef` and `lastLufs`, and `lastMeasuredAt`
 — content.js reads `lastLufs` only at `currentChannel.kind`, `lastMeasuredAt`
 nowhere, and the entry is reloaded before another kind is read.
 
-- `content.js:825` || becomes && ×1 — ||
-- `content.js:877` a guard is always taken ×1 — if (currentChannelEntry) {
-- `content.js:879` || becomes && ×1 — ||
+- `content.js:828` || becomes && ×1 — ||
+- `content.js:880` a guard is always taken ×1 — if (currentChannelEntry) {
+- `content.js:882` || becomes && ×1 — ||
 
 ## channel-store.js
 
@@ -156,7 +156,7 @@ nowhere, and the entry is reloaded before another kind is read.
 `undefined`, `Number.isFinite(undefined)` is false, and `delete entry.gain` on a
 key that is not there is a no-op — the same object comes back.
 
-- `channel-store.js:67` a guard is dropped ×1 — if (!Object.prototype.hasOwnProperty.call(entry, 'gain')) return entry;
+- `channel-store.js:84` a guard is dropped ×1 — if (!Object.prototype.hasOwnProperty.call(entry, 'gain')) return entry;
 
 `withoutClipFields`'s type checks. A non-object spreads to something whose clip
 fields are absent and whose key count does not change, so `dropped` stays false
@@ -164,29 +164,29 @@ and the entry it was given comes back; and `__fieldVersions` is one of
 `ROW_SHARED_VALUE_FIELDS`, so `holdsNoValue` answers false for the copy and the
 row is written back unchanged.
 
-- `channel-store.js:120` a guard is dropped ×1 — if (!entry || typeof entry !== 'object') return entry;
-- `channel-store.js:120` || becomes && ×1 — ||
-- `channel-store.js:144` && becomes || ×1 — &&
-- `channel-store.js:147` a guard is always taken ×1 — if (Object.keys(kept).length !== Object.keys(versions).length) {
+- `channel-store.js:137` a guard is dropped ×1 — if (!entry || typeof entry !== 'object') return entry;
+- `channel-store.js:137` || becomes && ×1 — ||
+- `channel-store.js:161` && becomes || ×1 — &&
+- `channel-store.js:164` a guard is always taken ×1 — if (Object.keys(kept).length !== Object.keys(versions).length) {
 
 `cloneEntry`'s deep copy of the version map. `setFieldVersion` replaces that
 object rather than writing into it, and no other writer touches it in place, so
 the copy has nothing to protect.
 
-- `channel-store.js:162` === becomes !== ×1 — ===
-- `channel-store.js:162` a guard body is dropped ×1 — if (entry?.[FIELD_VERSIONS_FIELD] && typeof entry[FIELD_VERSIONS_FIELD]
+- `channel-store.js:179` === becomes !== ×1 — ===
+- `channel-store.js:179` a guard body is dropped ×1 — if (entry?.[FIELD_VERSIONS_FIELD] && typeof entry[FIELD_VERSIONS_FIELD]
 
 `resolveStoredAlias`'s cycle check. **This one is not equivalent: the mutant
 does not terminate.** A suite carrying it never reports green — the sweep stops
 it at its own timeout rather than passing it — so it is named here to be
 accounted for, not because the code cannot tell the difference.
 
-- `channel-store.js:521` && becomes || ×1 — &&
+- `channel-store.js:538` && becomes || ×1 — &&
 
 The alias rebuild after a write. `clearChannels` leaves no rows, so the rebuild
 its check guards finds no targets.
 
-- `channel-store.js:599` a guard is always taken ×1 — if (resolvedMutation.operation !== 'clearChannels') {
+- `channel-store.js:616` a guard is always taken ×1 — if (resolvedMutation.operation !== 'clearChannels') {
 
 ## popup.js
 
@@ -213,9 +213,9 @@ mean is `NaN`, which `meanSquareToLufs` answers `-Infinity` for. Checked against
 agree on every one.
 
 - `utils.js:115` a guard is dropped ×1 — if (!Number.isFinite(measuredLufs)) return 1.0;
-- `utils.js:287` a guard is dropped ×1 — if (valid.length === 0) return -Infinity;
-- `utils.js:290` a guard is dropped ×1 — if (passAbs.length === 0) return -Infinity;
-- `utils.js:295` a guard is dropped ×1 — if (passRel.length === 0) return -Infinity;
+- `utils.js:292` a guard is dropped ×1 — if (valid.length === 0) return -Infinity;
+- `utils.js:295` a guard is dropped ×1 — if (passAbs.length === 0) return -Infinity;
+- `utils.js:300` a guard is dropped ×1 — if (passRel.length === 0) return -Infinity;
 
 ## options.js
 

@@ -44,6 +44,23 @@ function assertChannelId(value, field = 'channelId') {
   }
 }
 
+// The ids a row is written under: a Twitch user id, and the provisional
+// login: / vod-owner: id the channel goes by until that is known.
+const WRITABLE_CHANNEL_ID = /^(?:\d+|login:.+|vod-owner:.+)$/;
+
+function assertWritableChannelId(value, field = 'channelId') {
+  assertChannelId(value, field);
+  if (!WRITABLE_CHANNEL_ID.test(value)) {
+    throw invalidChannelMutation(`${field} is not a channel id the extension writes`);
+  }
+}
+
+// The name a row the store makes starts with: the sender's where it is text,
+// the id otherwise.
+function fallbackRowName(channel, channelId) {
+  return typeof channel?.name === 'string' && channel.name ? channel.name : channelId;
+}
+
 function assertKind(kind) {
   if (!CHANNEL_MUTATION_KINDS.has(kind)) {
     throw invalidChannelMutation('kind must be live or vod');
@@ -299,13 +316,13 @@ function applyMeasurementWindows(entry, mutation) {
 
 function mergeProvisionalEntry(all, mutation) {
   const { fromId, toId, kind, channel } = mutation;
-  assertChannelId(fromId, 'fromId');
-  assertChannelId(toId, 'toId');
+  assertWritableChannelId(fromId, 'fromId');
+  assertWritableChannelId(toId, 'toId');
   assertKind(kind);
   if (fromId === toId || !all[fromId]) return;
 
   const source = cloneEntry(all[fromId], fromId);
-  const target = cloneEntry(all[toId], channel?.name || toId);
+  const target = cloneEntry(all[toId], fallbackRowName(channel, toId));
   const merged = { ...source, ...target };
   const mergedVersions = {
     ...(source[FIELD_VERSIONS_FIELD] || {}),
@@ -398,12 +415,12 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
 
   switch (mutation.operation) {
     case 'saveGain': {
-      assertChannelId(mutation.channelId);
+      assertWritableChannelId(mutation.channelId);
       assertKind(mutation.kind);
       if (!Number.isFinite(mutation.gain) || mutation.gain < 0 || mutation.gain > 6) {
         throw invalidChannelMutation('gain must be finite and within [0, 6]');
       }
-      const entry = cloneEntry(all[mutation.channelId], mutation.channel?.name || mutation.channelId);
+      const entry = cloneEntry(all[mutation.channelId], fallbackRowName(mutation.channel, mutation.channelId));
       copyMetadata(entry, mutation.channel);
       entry[storeGainFieldForKind(mutation.kind)] = mutation.gain;
       setFieldVersion(entry, storeGainFieldForKind(mutation.kind), mutation.sequence);
@@ -411,12 +428,12 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
       break;
     }
     case 'saveAuto': {
-      assertChannelId(mutation.channelId);
+      assertWritableChannelId(mutation.channelId);
       assertKind(mutation.kind);
       if (typeof mutation.enabled !== 'boolean') {
         throw invalidChannelMutation('enabled must be a boolean');
       }
-      const entry = cloneEntry(all[mutation.channelId], mutation.channel?.name || mutation.channelId);
+      const entry = cloneEntry(all[mutation.channelId], fallbackRowName(mutation.channel, mutation.channelId));
       copyMetadata(entry, mutation.channel);
       entry[storeAutoFieldForKind(mutation.kind)] = mutation.enabled;
       setFieldVersion(entry, storeAutoFieldForKind(mutation.kind), mutation.sequence);
@@ -432,10 +449,10 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
       break;
     }
     case 'saveMeasurement': {
-      assertChannelId(mutation.channelId);
+      assertWritableChannelId(mutation.channelId);
       assertKind(mutation.kind);
       if (!Number.isFinite(mutation.lufs)) throw invalidChannelMutation('lufs must be finite');
-      const entry = cloneEntry(all[mutation.channelId], mutation.channel?.name || mutation.channelId);
+      const entry = cloneEntry(all[mutation.channelId], fallbackRowName(mutation.channel, mutation.channelId));
       copyMetadata(entry, mutation.channel);
       entry.lastLufs = { ...(entry.lastLufs || {}), [mutation.kind]: mutation.lufs };
       applyMeasurementReference(entry, mutation, 'lastLufsRef');
@@ -454,7 +471,7 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
       break;
     }
     case 'clearMeasurement': {
-      assertChannelId(mutation.channelId);
+      assertWritableChannelId(mutation.channelId);
       assertKind(mutation.kind);
       const entry = cloneEntry(all[mutation.channelId], mutation.channelId);
       const lastLufs = { ...(entry.lastLufs || {}) };
@@ -474,12 +491,12 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
       break;
     }
     case 'saveAutoGain': {
-      assertChannelId(mutation.channelId);
+      assertWritableChannelId(mutation.channelId);
       assertKind(mutation.kind);
       if (!Number.isFinite(mutation.autoGain) || mutation.autoGain < 0 || mutation.autoGain > 6) {
         throw invalidChannelMutation('autoGain must be finite and within [0, 6]');
       }
-      const entry = cloneEntry(all[mutation.channelId], mutation.channel?.name || mutation.channelId);
+      const entry = cloneEntry(all[mutation.channelId], fallbackRowName(mutation.channel, mutation.channelId));
       copyMetadata(entry, mutation.channel);
       entry[storeAutoGainFieldForKind(mutation.kind)] = mutation.autoGain;
       setFieldVersion(entry, storeAutoGainFieldForKind(mutation.kind), mutation.sequence);

@@ -165,8 +165,13 @@ function classifyTwitchUrl(href) {
   return { kind: 'none' };
 }
 
+// The owner event can be posted by any script in the page's own world as well
+// as by the bridge. It names a channel only with a Twitch user id, a string of
+// digits, and a content id that is text.
 function ownerMatchesTwitchContent(owner, classified) {
-  if (!owner?.userId || !owner.contentId || owner.contentKind !== classified?.kind) {
+  if (typeof owner?.userId !== 'string' || !/^\d+$/.test(owner.userId) ||
+      typeof owner.contentId !== 'string' || !owner.contentId ||
+      owner.contentKind !== classified?.kind) {
     return false;
   }
   if (classified.kind === 'live') {
