@@ -447,8 +447,8 @@ function packsOnlyWhatLoads(withLinks) {
     write('.git', 'gitdir: /elsewhere');
     write('icons/source.svg');
     write('_locales/ja/notes.txt');
-    write('docs/security-audit.md');
-    write('docs/security-audit.ja.md');
+    write('docs/screenshots/popup_en.png');
+    write('docs/screenshots/popup_ja.png');
     write('node_modules/_cache/index.js');
     if (withLinks) fs.symlinkSync(path.join(fixture, 'content.js'), path.join(fixture, 'linked.js'));
     for (const name of SCRATCH_DIRS) write(path.join(name, 'session', '_metadata', 'note.txt'));
@@ -4605,7 +4605,7 @@ test('no message is declared that nothing mentions, and both locales agree', () 
 
 test('privacy policies list exactly the manifest permissions', () => {
   const manifest = readJson('manifest.json');
-  // The audit report cites this test for what the extension asks for.
+  // The permissions the extension asks for, held exactly.
   assert.deepEqual(manifest.permissions, ['storage']);
   assert.deepEqual(manifest.host_permissions, ['*://*.twitch.tv/*']);
   const hosts = new Set(
@@ -4702,7 +4702,6 @@ test('the documentation pairs keep their names, their shape and their links', ()
 
   const PAIRS = [
     ['README.md', 'README.ja.md'],
-    ['docs/security-audit.md', 'docs/security-audit.ja.md'],
     ['PRIVACY_POLICY.md', 'PRIVACY_POLICY_JA.md']
   ];
   for (const [en, ja] of PAIRS) {
@@ -4741,7 +4740,7 @@ test('the issue templates are English, with the note that says Japanese is welco
 
 test('the page is given the worklet module and nothing else', () => {
   const manifest = readJson('manifest.json');
-  // The audit report cites this test for what the extension exposes to the page.
+  // The extension exposes the worklet module alone, to the Twitch hosts alone.
   assert.deepEqual(
     manifest.web_accessible_resources.flatMap((entry) => entry.resources),
     ['audio-worklet.js']
