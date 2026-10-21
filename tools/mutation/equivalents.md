@@ -115,7 +115,7 @@ the same, because the store fills both from the login it was given.
 `acceptOwner`'s provisional-id check. A provisional id is `login:<name>` or
 `vod-owner:<id>` and a confirmed one is numeric, so the second clause is never
 false; the first is only false on a clip, which `ownerMatchesTwitchContent`
-refuses two lines up.
+refuses at the top of `acceptOwner`.
 
 - `content.js:340` && becomes || ×1 — &&
 - `content.js:340` a guard is always taken ×1 — if (provisionalId && provisionalId !== confirmedId) {
