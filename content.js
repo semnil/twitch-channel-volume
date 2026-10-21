@@ -321,14 +321,17 @@
     const classified = classify();
     if (!ownerMatchesTwitchContent(owner, classified)) return;
 
+    // A name the event carries is taken only as text.
+    const login = typeof owner.login === 'string' ? owner.login : '';
+    const displayName = typeof owner.displayName === 'string' ? owner.displayName : '';
     const confirmedId = String(owner.userId);
     const provisionalId = provisionalChannelIdForContent(classified);
     const confirmedChannel = {
       ...currentChannel,
       id: confirmedId,
-      login: owner.login || currentChannel.login,
-      name: owner.displayName || owner.login || currentChannel.name,
-      url: twitchChannelUrl(owner.login || currentChannel.login),
+      login: login || currentChannel.login,
+      name: displayName || login || currentChannel.name,
+      url: twitchChannelUrl(login || currentChannel.login),
       kind: classified.kind,
       slug: classified.slug,
       videoId: classified.videoId
@@ -354,7 +357,7 @@
       return;
     }
 
-    pendingOwner = owner;
+    pendingOwner = { ...owner, login, displayName };
     try {
       await resolveChannel();
     } finally {

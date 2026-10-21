@@ -122,7 +122,8 @@
     for (const id of ids) {
       const entry = all[id];
       const tr = document.createElement('tr');
-      const name = entry.name || id;
+      // A stored name that is not text is shown as the channel id.
+      const name = typeof entry.name === 'string' && entry.name ? entry.name : id;
       const url = twitchUrlForId(id, entry);
       const link = url
         ? `<a class="ch-link" href="${esc(url)}" target="_blank">${esc(name)}</a>`

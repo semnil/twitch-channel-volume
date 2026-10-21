@@ -78,7 +78,7 @@ flowchart LR
   - live: the login name from the URL (`login:<name>`) / the numeric ID once GraphQL user.id resolves
   - vod: GraphQL owner.id (`<numeric>`) / fallback `vod-owner:<videoId>`
   - clip: none. A clip carries no channel, no stored value and no owner lookup
-- Matches the owner response against the current login / videoId and merges the provisional ID's settings into the numeric ID
+- Matches the owner response against the current login / videoId and merges the provisional ID's settings into the numeric ID. Any script in the page's MAIN world can post the owner event as well as the bridge can: it names a channel only with a `userId` that is a string of digits and a `contentId` that is text (`ownerMatchesTwitchContent`), and its `login` / `displayName` are taken only as text
 - Automatic application of the stored gain (managed separately per Live/VOD kind)
 - LUFS auto-follow: while the per-channel × Live/VOD Auto setting is on, the baseline gain is recomputed from the distance to Target LUFS, no more often than the popup's display period (1 second)
 - Gain overlay: a span is inserted as the **next sibling** of `.volume-slider__slider-container`. The mute wrapper and the slider container are siblings in a flex row inside the player controls, so the span sits directly to the right of the slider container. Visibility follows the parent `[data-a-target="player-controls"][data-a-visible]` toggle by itself (it is embedded inside the player controls). Shown only while gain ≠ 1.0 and an audio chain exists; the display is fixed to `%` and does not follow displayUnit. A route change rebuilds the player, and the span already made is inserted beside the new slider container, which moves it out of the one that was replaced
@@ -103,6 +103,7 @@ flowchart LR
 
 - Serialises the read-modify-write of channelVolumes through a single queue
 - Validates and applies gain / Auto / LUFS / delete / clear mutations
+- Writes and merges a row only under a Twitch user id or a provisional `login:` / `vod-owner:` id (`assertWritableChannelId`, refused as `invalid-mutation`); a key every object inherits, `__proto__` among them, is none of them. `deleteChannel` takes any key, since an earlier version's rows can carry another. A row the store makes is named by the sender's name where that is text and by its id otherwise (`fallbackRowName`)
 - A measurement reset deletes only the lastLufs of the target kind and the lastLufsRef / lastLufsWindows that describe it (autoGainRef stays), and keeps the deletion as a state carrying an update number, so it survives ID merging
 - Persists the alias from a provisional ID to the numeric owner ID and resolves the canonical ID in every mutation. A `clip-owner:<slug>` alias is removed on every write: nothing is kept for a clip for it to point at (name / login / url from the provisional side are not applied when the alias is forwarded)
 - Merges a Live row and a numeric owner row that share a login, and normalises the URL to the channel URL
@@ -150,7 +151,7 @@ flowchart LR
 - Ad gain slider (-24 to +6 dB, default -6 dB)
 - Display unit (% / dB)
 - Gain overlay on/off toggle (default ON)
-- Saved Channels table (two Live / VOD columns, the last applied Auto gain while Auto is on, deletable)
+- Saved Channels table (two Live / VOD columns, the last applied Auto gain while Auto is on, deletable). A stored name that is not text is shown as the channel id
 - Every settings control and deletion (clear all, the row ×) is disabled until the initial settings load completes
 - Saves only the item that changed through the Service Worker's settings mutation, synced through storage.onChanged
 
