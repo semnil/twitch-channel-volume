@@ -1,0 +1,32 @@
+name: Dependabot auto-merge test
+
+# Runs .github/tests/dependabot-auto-merge-test.sh, which checks that dependabot-auto-merge.yml reports on every pull
+# request and which updates it auto-merges.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/dependabot-auto-merge.yml
+      - .github/workflows/dependabot-auto-merge-test.yml
+      - .github/tests/dependabot-auto-merge-test.sh
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/dependabot-auto-merge.yml
+      - .github/workflows/dependabot-auto-merge-test.yml
+      - .github/tests/dependabot-auto-merge-test.sh
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dependabot-auto-merge-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run the auto-merge workflow test
+        run: bash .github/tests/dependabot-auto-merge-test.sh
