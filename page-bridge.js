@@ -782,7 +782,7 @@
   }
 
   function setGain(value) {
-    baselineGain = Math.max(0, Math.min(6, Number(value) || 1));
+    baselineGain = Number.isFinite(value) ? Math.max(0, Math.min(6, value)) : 1;
     applyEffectiveGain();
   }
 

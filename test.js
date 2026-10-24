@@ -15412,6 +15412,22 @@ test('page bridge builds a retried context at the gain the ad calls for', async 
   assert.equal(harness.gainValue(), 0.25);
 });
 
+test('page bridge drives the gain node to a requested gain of 0', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  // The positive control: a gain other than unity reaches the node.
+  await harness.dispatchCommand('setGain', { value: 0.5 });
+  assert.equal(harness.gainValue(), 0.5);
+
+  // The popup's 0% preset and the slider at its left end send 0.
+  await harness.dispatchCommand('setGain', { value: 0 });
+  assert.equal(harness.gainValue(), 0);
+
+  // A command that carries no number still leaves the node at unity.
+  await harness.dispatchCommand('setGain', {});
+  assert.equal(harness.gainValue(), 1);
+});
+
 test('page bridge reports a taken media element once and stays silent after', async () => {
   const harness = createPageBridgeHarness({ mediaElementSourceTaken: true });
   await harness.dispatchCommand('init');
