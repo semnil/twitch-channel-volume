@@ -73,26 +73,26 @@ read, and with a short list the splice count is negative and removes nothing.
 together and clears both together, so a gain without a context is not a state
 the bridge has.
 
-- `page-bridge.js:795` || becomes && ×1 — ||
+- `page-bridge.js:797` || becomes && ×1 — ||
 
 `adStartRollbackBlocks`'s three-way check. `adBreakStartMedia` is only set by a
 cue, which is what sets `adCueSeen`, and a break only opens while
 `playerBreakActive` has a finite playhead. Neither mutant's discriminating state
 is reachable.
 
-- `page-bridge.js:832` || becomes && ×2 — ||
+- `page-bridge.js:834` || becomes && ×2 — ||
 
 `setDomAdActive`'s dedup and `syncAdElementGains`' context check.
 `updateAdState` opens with `if (wanted === adActive) return`, so the repeat one
 saves is a no-op; and the chain list is empty whenever there is no context.
 
-- `page-bridge.js:903` a guard is dropped ×1 — if (domAdActive === !!active) return;
-- `page-bridge.js:1003` a guard is dropped ×1 — if (!ctx) return;
+- `page-bridge.js:905` a guard is dropped ×1 — if (domAdActive === !!active) return;
+- `page-bridge.js:1005` a guard is dropped ×1 — if (!ctx) return;
 
 The dropped await on `ensureContext` in `resume`. `createContext` assigns `ctx`
 before its first await, so the resume that follows has it.
 
-- `page-bridge.js:1166` an await is dropped ×1 — await
+- `page-bridge.js:1168` an await is dropped ×1 — await
 
 ## content.js
 
