@@ -15839,6 +15839,36 @@ test('page bridge applies the ad gain to the element a client-side ad plays in',
   assert.equal(node.disconnected, true);
 });
 
+test('page bridge carries a gain change to the ad element where no block arrives', async () => {
+  // The measurement chain never comes up, so no block follows a change.
+  const harness = createPageBridgeHarness({ workletLoadFails: true });
+  await harness.dispatchCommand('init');
+  await harness.dispatchCommand('attach');
+  assert.equal(harness.messages.find((message) => message.event === 'attached')?.measuring, false);
+  await harness.dispatchCommand('setGain', { value: 0.5 });
+  await harness.dispatchCommand('setAdGain', { value: 0.5 });
+
+  harness.setPaused(true);
+  const adVideo = harness.addVideo({ volume: 0.5 });
+  await harness.dispatchCommand('setAdActive', { active: true });
+  assert.ok(harness.sourcedElements.includes(adVideo));
+  const node = harness.gainNodes.at(-1);
+  // 0.5 (channel) x 0.5 (ad) x 1/0.5 (the player's volume against the element's).
+  assert.ok(Math.abs(node.gain.value - 0.5) < 1e-9, `gain ${node.gain.value}`);
+
+  await harness.dispatchCommand('setGain', { value: 0 });
+  assert.equal(harness.gainValue(), 0);
+  assert.equal(node.gain.value, 0);
+
+  await harness.dispatchCommand('setGain', { value: 2 });
+  assert.ok(Math.abs(harness.gainValue() - 1) < 1e-9, `gain ${harness.gainValue()}`);
+  assert.ok(Math.abs(node.gain.value - 2) < 1e-9, `gain ${node.gain.value}`);
+
+  await harness.dispatchCommand('setAdGain', { value: 0.25 });
+  assert.ok(Math.abs(harness.gainValue() - 0.5) < 1e-9, `gain ${harness.gainValue()}`);
+  assert.ok(Math.abs(node.gain.value - 1) < 1e-9, `gain ${node.gain.value}`);
+});
+
 test('page bridge leaves another element alone while the measured one plays', async () => {
   const harness = createPageBridgeHarness();
   await harness.startMeasurement();
