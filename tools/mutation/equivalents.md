@@ -58,41 +58,41 @@ await and returns there; the tick stops the loop at its own end either way;
 `clearInterval(null)` is a no-op; and `attach` is only ever called with an
 element `findVideo` returned, which is never the one already held.
 
-- `page-bridge.js:602` a guard body is dropped ×1 — if (attachedVideo) {
-- `page-bridge.js:631` a guard is always taken ×1 — if (attachTimer) {
-- `page-bridge.js:646` a guard is dropped ×1 — if (!video || attachedVideo === video) return;
-- `page-bridge.js:646` || becomes && ×1 — ||
+- `page-bridge.js:604` a guard body is dropped ×1 — if (attachedVideo) {
+- `page-bridge.js:633` a guard is always taken ×1 — if (attachTimer) {
+- `page-bridge.js:648` a guard is dropped ×1 — if (!video || attachedVideo === video) return;
+- `page-bridge.js:648` || becomes && ×1 — ||
 
 The block trim. `blocksToLufs` reads the tail, so what the trim drops is never
 read, and with a short list the splice count is negative and removes nothing.
 
-- `page-bridge.js:719` a guard body is dropped ×1 — if (blocks.length > Math.max(MOMENTARY_BLOCKS, SHORT_BLOCKS) * 4) {
-- `page-bridge.js:719` a guard is always taken ×1 — if (blocks.length > Math.max(MOMENTARY_BLOCKS, SHORT_BLOCKS) * 4) {
+- `page-bridge.js:732` a guard body is dropped ×1 — if (blocks.length > Math.max(MOMENTARY_BLOCKS, SHORT_BLOCKS) * 4) {
+- `page-bridge.js:732` a guard is always taken ×1 — if (blocks.length > Math.max(MOMENTARY_BLOCKS, SHORT_BLOCKS) * 4) {
 
 `applyEffectiveGain`'s check. `createContext` assigns the gain and the context
 together and clears both together, so a gain without a context is not a state
 the bridge has.
 
-- `page-bridge.js:797` || becomes && ×1 — ||
+- `page-bridge.js:809` || becomes && ×1 — ||
 
 `adStartRollbackBlocks`'s three-way check. `adBreakStartMedia` is only set by a
 cue, which is what sets `adCueSeen`, and a break only opens while
 `playerBreakActive` has a finite playhead. Neither mutant's discriminating state
 is reachable.
 
-- `page-bridge.js:834` || becomes && ×2 — ||
+- `page-bridge.js:846` || becomes && ×2 — ||
 
 `setDomAdActive`'s dedup and `syncAdElementGains`' context check.
 `updateAdState` opens with `if (wanted === adActive) return`, so the repeat one
 saves is a no-op; and the chain list is empty whenever there is no context.
 
-- `page-bridge.js:905` a guard is dropped ×1 — if (domAdActive === !!active) return;
-- `page-bridge.js:1005` a guard is dropped ×1 — if (!ctx) return;
+- `page-bridge.js:917` a guard is dropped ×1 — if (domAdActive === !!active) return;
+- `page-bridge.js:1017` a guard is dropped ×1 — if (!ctx) return;
 
 The dropped await on `ensureContext` in `resume`. `createContext` assigns `ctx`
 before its first await, so the resume that follows has it.
 
-- `page-bridge.js:1168` an await is dropped ×1 — await
+- `page-bridge.js:1180` an await is dropped ×1 — await
 
 ## content.js
 
