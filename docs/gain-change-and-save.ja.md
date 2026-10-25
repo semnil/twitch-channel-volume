@@ -574,7 +574,10 @@ sequenceDiagram
       end
       content->>content: showGainOverlay を取り込み、updateGainOverlay、autoRaiseFrom = null
       content->>content: reapplyForCurrentChannel
-      opt 読み直しが追い越されていない
+      opt 読み直しが追い越された
+        content->>content: もう 1 回 reapplyForCurrentChannel
+      end
+      opt 最後の読み直しが追い越されていない
         content->>bridge: setGain (applyGain)
         opt Auto がオンで、Integrated が有限
           content->>sw: autoGain = calcGain(integrated, targetLufs) で saveAutoGain
@@ -592,6 +595,7 @@ sequenceDiagram
 - それぞれの Twitch のタブで: 新しい `targetLufs` は、Auto がオンで Integrated が有限ならすぐにゲインを変える (`reapplyForCurrentChannel` を通る)。新しい `adGainDb` は、CM 中ならノードを変え、CM 要素のノードも同じ手順の中で変わる (`setAdGainOffset` が `syncAdElementGains` を動かす)。新しい Auto 既定値は、その種別の Auto の選択も手動ゲインも行に無いチャンネルについて Auto を切り替えるが、`autoApplyLoudness<Kind>` は書かない。`showGainOverlay` はオーバーレイだけを変える。
 - このリスナーは、`autoLoudnessSettings` が変われば、どの項目が変わったかに関係なく、行を読み直して `saveAutoGain` の条件を調べる。
 - content・popup・設定ページは、`autoLoudnessSettings` を `sync` の変更からだけ取り込む。local でこのキーが変わるのは移し替えが消すときだけで、その変更は設定を運ばない。
+- その読み直しが追い越されたとき (`onChanged` に届いたチャンネルの書き込みが始めた読み直し、owner のイベント、遷移による) は、それが返ったあとで、そのときのチャンネルと行についてもう 1 回読み直し、そこでかけたゲインを `saveAutoGain` で送る。もう 1 回も追い越されたときは、3 回目はしない。
 - popup は `displayUnit` を取り込み、`sliderSynced` を消して、`getState` を読み直す。ほかに開いている設定ページは設定を描き直す。
 - 失敗: 設定ページは保存された設定を読み直し、`settingsSaveFailed` (「設定を保存できませんでした。保存済みの値へ戻しました」) を出して、`[TCV] failed to save settings field` とログに出す。content では、読み直しか `saveAutoGain` の失敗を `[TCV] failed to reapply or persist settings` とログに出す。
 

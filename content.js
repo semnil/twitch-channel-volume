@@ -767,18 +767,23 @@
       showGainOverlay = next.showGainOverlay ?? true;
       updateGainOverlay();
       autoRaiseFrom = null;
-      reapplyForCurrentChannel().then((applied) => {
-        if (!applied || !currentAutoApplyLoudness || !Number.isFinite(lastLufs.integrated)) {
-          return;
-        }
-        return saveChannelAutoGain(
-          currentChannel.id,
-          currentChannel.kind,
-          calcGain(lastLufs.integrated, targetLufs)
-        );
-      }).catch((error) => {
-        console.warn('[TCV] failed to reapply or persist settings', error);
-      });
+      reapplyForCurrentChannel()
+        // A read that was overtaken applied nothing, and the Auto save went
+        // with it; the reapply is made once more against the channel and the
+        // row as they stand then.
+        .then((applied) => applied || reapplyForCurrentChannel())
+        .then((applied) => {
+          if (!applied || !currentAutoApplyLoudness || !Number.isFinite(lastLufs.integrated)) {
+            return;
+          }
+          return saveChannelAutoGain(
+            currentChannel.id,
+            currentChannel.kind,
+            calcGain(lastLufs.integrated, targetLufs)
+          );
+        }).catch((error) => {
+          console.warn('[TCV] failed to reapply or persist settings', error);
+        });
     }
     if (areaName === 'local' && (changes[CHANNEL_VOLUMES_KEY] || changes[CHANNEL_ALIASES_KEY]) &&
         currentChannel.id) {

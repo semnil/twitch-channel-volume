@@ -2561,8 +2561,9 @@ function createContentHarness({
   let failingChannelMutationOperation = failChannelMutationOperation;
   let rejectingChannelMutationOperation = rejectChannelMutationOperation;
   let resolveInitialStorageGet;
-  let pendingStorageGetDeferred = false;
-  let resolvePendingStorageGet;
+  // Reads held in the order they were asked for, released oldest first.
+  let pendingStorageGetDeferrals = 0;
+  const resolvePendingStorageGets = [];
   let resolveChannelMutation;
   let currentTimeMs = 10_000;
   const location = { href };
@@ -2691,10 +2692,10 @@ function createContentHarness({
         resolveInitialStorageGet = () => resolve(readStoredKeys(area, keys));
       });
     }
-    if (pendingStorageGetDeferred) {
-      pendingStorageGetDeferred = false;
+    if (pendingStorageGetDeferrals > 0) {
+      pendingStorageGetDeferrals -= 1;
       return new Promise((resolve) => {
-        resolvePendingStorageGet = () => resolve(readStoredKeys(area, keys));
+        resolvePendingStorageGets.push(() => resolve(readStoredKeys(area, keys)));
       });
     }
     if (failNextStorageGet) {
@@ -2888,12 +2889,11 @@ function createContentHarness({
       failNextStorageGet = true;
     },
     deferNextStorageGet() {
-      pendingStorageGetDeferred = true;
+      pendingStorageGetDeferrals += 1;
     },
     async releaseStorageGet() {
-      assert.ok(resolvePendingStorageGet, 'storage read is not pending');
-      resolvePendingStorageGet();
-      resolvePendingStorageGet = null;
+      assert.ok(resolvePendingStorageGets.length, 'storage read is not pending');
+      resolvePendingStorageGets.shift()();
       await flushTasks(8);
     },
     invalidateRuntime() {
@@ -5582,6 +5582,74 @@ test('page bridge says the player is playing while it is neither paused nor mute
   harness.setVolume(1);
   await harness.dispatchCommand('setGain', { value: 0 });
   assert.deepEqual(playing(), [true], 'at a gain of 0');
+});
+
+// A settings change that turns an Auto default on, whose read of the row comes
+// back overtaken before the read that overtook it: Auto is on for the channel
+// only once a read has taken the change, and the Auto gain is owed all the same.
+test('content saves the Auto gain an Auto default turned on gives when its read of the row was overtaken', async () => {
+  const harness = createMeasuringHarness();
+  await claimChannel(harness);
+  await measureOn(harness, -24);
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).autoApplyLoudness, false);
+  const stored = () => harness.stored[u.CHANNEL_VOLUMES_KEY]['123456789']?.autoGainLive;
+  assert.equal(stored(), undefined, 'no Auto gain while Auto is off');
+
+  harness.synced[u.SETTINGS_KEY] = {
+    ...(harness.synced[u.SETTINGS_KEY] || {}), autoApplyLoudnessLiveDefault: true
+  };
+  harness.deferNextStorageGet();
+  harness.deferNextStorageGet();
+  await harness.dispatchStorage({
+    [u.SETTINGS_KEY]: { newValue: structuredClone(harness.synced[u.SETTINGS_KEY]) }
+  }, 'sync');
+  await harness.dispatchStorage({
+    [u.CHANNEL_VOLUMES_KEY]: { newValue: structuredClone(harness.stored[u.CHANNEL_VOLUMES_KEY]) }
+  }, 'local');
+  await harness.releaseStorageGet();
+  await harness.releaseStorageGet();
+  assert.ok(Math.abs(stored() - u.calcGain(-24, -18)) < 1e-12, `the row holds ${stored()}`);
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).autoApplyLoudness, true);
+});
+
+// A settings change's read of the row is overtaken by the read a channel write
+// starts, as the startup read is; the Auto gain the new target gives is owed
+// to the row all the same.
+test('content saves the Auto gain for a new target when its read of the row was overtaken', async () => {
+  const harness = createMeasuringHarness({ settings: { autoApplyLoudnessLiveDefault: true } });
+  await claimChannel(harness);
+  await measureOn(harness, -24);
+  const stored = () => harness.stored[u.CHANNEL_VOLUMES_KEY]['123456789']?.autoGainLive;
+  assert.ok(Math.abs(stored() - u.calcGain(-24, -18)) < 1e-12, 'the gain for the old target');
+
+  harness.synced[u.SETTINGS_KEY] = { ...harness.synced[u.SETTINGS_KEY], targetLufs: -20 };
+  harness.deferNextStorageGet();
+  await harness.dispatchStorage({
+    [u.SETTINGS_KEY]: { newValue: structuredClone(harness.synced[u.SETTINGS_KEY]) }
+  }, 'sync');
+  await harness.dispatchStorage({
+    [u.CHANNEL_VOLUMES_KEY]: { newValue: structuredClone(harness.stored[u.CHANNEL_VOLUMES_KEY]) }
+  }, 'local');
+  await harness.releaseStorageGet();
+
+  assert.ok(Math.abs(stored() - u.calcGain(-24, -20)) < 1e-12, `the row holds ${stored()}`);
+  assert.ok(Math.abs((await harness.dispatchRuntime({ cmd: 'getState' })).gain - u.calcGain(-24, -20)) < 1e-12);
+
+  // The overtaken read can come back before the one that overtook it has
+  // applied anything.
+  harness.synced[u.SETTINGS_KEY] = { ...harness.synced[u.SETTINGS_KEY], targetLufs: -22 };
+  harness.deferNextStorageGet();
+  harness.deferNextStorageGet();
+  await harness.dispatchStorage({
+    [u.SETTINGS_KEY]: { newValue: structuredClone(harness.synced[u.SETTINGS_KEY]) }
+  }, 'sync');
+  await harness.dispatchStorage({
+    [u.CHANNEL_VOLUMES_KEY]: { newValue: structuredClone(harness.stored[u.CHANNEL_VOLUMES_KEY]) }
+  }, 'local');
+  await harness.releaseStorageGet();
+  assert.ok(Math.abs(stored() - u.calcGain(-24, -22)) < 1e-12, `the row holds ${stored()}`);
+  await harness.releaseStorageGet();
+  assert.ok(Math.abs(stored() - u.calcGain(-24, -22)) < 1e-12, `the row holds ${stored()}`);
 });
 
 // The measurement save is the one call the page makes to the extension on its

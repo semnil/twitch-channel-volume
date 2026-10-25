@@ -574,7 +574,10 @@ sequenceDiagram
       end
       content->>content: showGainOverlay taken, updateGainOverlay, autoRaiseFrom = null
       content->>content: reapplyForCurrentChannel
-      opt the read was not overtaken
+      opt the read was overtaken
+        content->>content: reapplyForCurrentChannel once more
+      end
+      opt the last read was not overtaken
         content->>bridge: setGain (applyGain)
         opt Auto on and Integrated finite
           content->>sw: saveAutoGain with autoGain = calcGain(integrated, targetLufs)
@@ -592,6 +595,7 @@ Drawn from: `options.js` the listeners of `targetLufs`, `adGainDb`, the two defa
 - In each Twitch tab: a new `targetLufs` changes the gain at once under Auto with a finite Integrated value (through `reapplyForCurrentChannel`). A new `adGainDb` changes the node during an ad, and the ad-element nodes in the same step (`setAdGainOffset` runs `syncAdElementGains`). A new Auto default changes Auto for a channel whose row has neither an Auto choice nor a manual gain for the kind, without writing `autoApplyLoudness<Kind>`. `showGainOverlay` changes the overlay only.
 - The listener re-reads the row and checks the `saveAutoGain` condition for any change of `autoLoudnessSettings`, whichever field changed.
 - content, the popup and the options page take `autoLoudnessSettings` from the `sync` area alone. In local the key changes only when the move removes it, and that change carries no settings.
+- When that read is overtaken (by the read a channel write reaching `onChanged` starts, by an owner event or by a navigation), the listener reapplies once more after it returns, against the channel and the row as they stand then, and the gain that reapply applies is the one `saveAutoGain` carries. A reapply overtaken again is not made a third time.
 - The popup takes `displayUnit`, clears `sliderSynced` and reads `getState` again. Another open options page re-renders the settings.
 - Failure: the options page reads the stored settings again, shows `settingsSaveFailed` ("Could not save the setting. The saved value was restored.") and logs `[TCV] failed to save settings field`. In content, a failure of the read or of `saveAutoGain` is logged as `[TCV] failed to reapply or persist settings`.
 
