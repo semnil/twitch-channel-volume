@@ -55,6 +55,10 @@
   let measurementEpoch = 0;
   let currentCanonicalChannelId = '';
   let seededMeasurementTarget = '';
+  // Set at startup and on a route change: the measurement is owed a reset
+  // seeded from the row, and whichever read of the row wins sends it, a read
+  // a write reaching chrome.storage.onChanged started included.
+  let seededResetPending = false;
   let lastAutoGainUpdateAt = -Infinity;
   // When a measured level last set the gain Auto plays; null from a
   // measurement reset, a settings change or a saved Auto toggle until the next
@@ -267,6 +271,12 @@
     sendResetMeasurement(savedMeasurementForCurrentChannel());
   }
 
+  function sendPendingSeededReset() {
+    if (!seededResetPending) return;
+    seededResetPending = false;
+    resetMeasurementForCurrentChannel();
+  }
+
   let initResolve;
   const initPromise = new Promise((res) => { initResolve = res; });
 
@@ -452,6 +462,7 @@
       currentChannelEntry = null;
       currentAutoApplyLoudness = false;
       applyGain(1.0);
+      sendPendingSeededReset();
       return true;
     }
     const revision = ++preferenceRevision;
@@ -471,6 +482,7 @@
     applyGain(preferred.autoApply && Number.isFinite(lastLufs.integrated)
       ? autoGainToPlay()
       : preferred.gain);
+    sendPendingSeededReset();
     return true;
   }
 
@@ -697,7 +709,8 @@
     sendResetMeasurement();
     sendCmd({ cmd: 'attach' });
     await resolveChannel();
-    if (await reapplyForCurrentChannel()) resetMeasurementForCurrentChannel();
+    seededResetPending = true;
+    await reapplyForCurrentChannel();
   }
 
   // Every entry point below starts the handling and drops the promise.
@@ -999,7 +1012,8 @@
     injectWorklet();
     await loadSettings();
     await resolveChannel();
-    if (await reapplyForCurrentChannel()) resetMeasurementForCurrentChannel();
+    seededResetPending = true;
+    await reapplyForCurrentChannel();
     // Wait for the worklet to be ready before attaching so the measurement
     // chain is wired up on first attach. Fall back after a timeout.
     await Promise.race([

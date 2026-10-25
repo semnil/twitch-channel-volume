@@ -59,6 +59,8 @@ content chooses the baseline gain in `resolvePreferredGain` (`utils.js`) from th
 
 `reapplyForCurrentChannel` reads the row (`loadChannelEntry`) and then applies the gain `resolvePreferredGain` resolves, or, with Auto on and a finite Integrated value, the gain `autoGainToPlay` gives (scenario 5). When a newer read, a navigation or a channel change has started while it was reading (`preferenceRevision`, or a different `currentChannel`), it returns false and applies nothing; the diagrams below draw that as `opt the read was not overtaken`. On a page with no channel id or of kind `none` it reads nothing, applies 1.0 and returns true.
 
+Startup and SPA navigation set `seededResetPending` before their read. While it is set, the reapply that applies its gain, whichever event started it, then sends the reset seeded from the row it read and clears the mark (`sendPendingSeededReset`).
+
 Every path below that changes the gain ends in this common step:
 
 ```mermaid
@@ -188,17 +190,17 @@ sequenceDiagram
   and content
     content->>storage: readStoredSettings autoLoudnessSettings (loadSettings)
     content->>bridge: setAdGain dbToGain(adGainDb)
-    content->>content: resolveChannel from the URL
+    content->>content: resolveChannel from the URL, seededResetPending = true
     alt Live or VOD
       content->>storage: get channelVolumes, channelVolumeAliases (loadChannelEntry)
       opt the read was not overtaken
         content->>content: resolvePreferredGain, Integrated is still -Infinity
         content->>bridge: setGain (applyGain)
-        content->>bridge: resetMeasurement with the next epoch, seeded from lastLufs and lastLufsWindows
+        content->>bridge: resetMeasurement with the next epoch, seeded from lastLufs and lastLufsWindows, seededResetPending = false
       end
     else clip or kind none
       content->>bridge: setGain 1.0
-      content->>bridge: resetMeasurement with the next epoch, no seed
+      content->>bridge: resetMeasurement with the next epoch, no seed, seededResetPending = false
     end
   end
   content->>bridge: attach, after init-done or 3000 ms
@@ -206,12 +208,12 @@ sequenceDiagram
   bridge-->>content: attached with measuring and takenElsewhere
 ```
 
-Drawn from: `content.js` the startup block at the end of the file, `injectWorklet`, `loadSettings`, `resolveChannel`, `reapplyForCurrentChannel`, `loadChannelEntry`, `resetMeasurementForCurrentChannel`, `savedMeasurementForCurrentChannel`, `sendResetMeasurement`; `page-bridge.js` the command listener (`init`, `setAdGain`, `setGain`, `resetMeasurement`, `attach`), `ensureContext`, `createContext`, `resetMeasurement`, `scheduleAttach`, `attach`; `utils.js` `resolvePreferredGain`.
+Drawn from: `content.js` the startup block at the end of the file, `injectWorklet`, `loadSettings`, `resolveChannel`, `reapplyForCurrentChannel`, `loadChannelEntry`, `sendPendingSeededReset`, `resetMeasurementForCurrentChannel`, `savedMeasurementForCurrentChannel`, `sendResetMeasurement`; `page-bridge.js` the command listener (`init`, `setAdGain`, `setGain`, `resetMeasurement`, `attach`), `ensureContext`, `createContext`, `resetMeasurement`, `scheduleAttach`, `attach`; `utils.js` `resolvePreferredGain`.
 
 - Applied gain: the gain resolved from the stored row. With Auto on it is the stored `autoGain<Kind>` (when its reference is `volume1`) or the manual gain or 1.0, since no measurement has arrived yet. On a clip or a page of kind `none`, `reapplyForCurrentChannel` reads nothing and applies 1.0.
 - `loadSettings` takes the settings it read only where no synced settings change reached the `onChanged` listener while the read was out (`settingsRevision`); it sends `setAdGain` either way.
 - The seed (the stored value the measurement starts from) is sent only when `lastLufsRef[kind]` is `volume1` and `lastLufs[kind]` is finite; `lastLufsWindows[kind]` goes with it when it is a positive integer. The bridge weighs the seed as at least 300 and at most 1800 gating windows (`MIN_SEED_WINDOWS`, `MAX_SEED_WINDOWS`).
-- When the read is overtaken by a reapply that `chrome.storage.onChanged` started (scenario 12), startup sends neither `setGain` nor the reset; that reapply sends `setGain` alone, so the measurement starts with no seed.
+- When the read is overtaken by a reapply that `chrome.storage.onChanged` started (scenario 12), startup sends neither `setGain` nor the reset. The reapply that overtook it sends `setGain` and, since `seededResetPending` is still set, the reset seeded from the row it read.
 - Saves: none. The first per-channel write of the tab is the `saveMeasurement` of scenario 5.
 
 ### 2. Install or update, and values stored by earlier versions
@@ -438,25 +440,25 @@ sequenceDiagram
   content->>content: checkAdDom
   content->>bridge: resetMeasurement with the next epoch, no seed
   content->>bridge: attach
-  content->>content: resolveChannel from the new URL
+  content->>content: resolveChannel from the new URL, seededResetPending = true
   alt Live or VOD
     content->>storage: get channelVolumes, channelVolumeAliases
     opt the read was not overtaken
       content->>content: resolvePreferredGain with Integrated -Infinity
       content->>bridge: setGain (applyGain)
-      content->>bridge: resetMeasurement with the next epoch, seeded from the new row
+      content->>bridge: resetMeasurement with the next epoch, seeded from the new row, seededResetPending = false
     end
   else clip or kind none
     content->>bridge: setGain 1.0
-    content->>bridge: resetMeasurement with the next epoch, no seed
+    content->>bridge: resetMeasurement with the next epoch, no seed, seededResetPending = false
   end
 ```
 
-Drawn from: `content.js` the `history.pushState` / `history.replaceState` wrappers, the `popstate` listener, the navigation `MutationObserver`, `handleNavigation`, `onNavigate`, `checkAdDom`, `resolveChannel`, `reapplyForCurrentChannel`, `resetMeasurementForCurrentChannel`; `page-bridge.js` the `mediaChanged` command, `forgetCues`, `updateAdState`.
+Drawn from: `content.js` the `history.pushState` / `history.replaceState` wrappers, the `popstate` listener, the navigation `MutationObserver`, `handleNavigation`, `onNavigate`, `checkAdDom`, `resolveChannel`, `reapplyForCurrentChannel`, `sendPendingSeededReset`, `resetMeasurementForCurrentChannel`; `page-bridge.js` the `mediaChanged` command, `forgetCues`, `updateAdState`.
 
 - The `pushState` / `replaceState` wrappers call `checkAdDom` before the URL changes and start `handleNavigation` in a microtask after it.
 - Applied gain: the gain resolved for the new channel and kind without a measurement (the stored Auto gain with reference `volume1`, the manual gain, or 1.0), and 1.0 on a clip or a page of kind `none`. When an ad was active, `updateAdState` in the bridge ends it and the node goes back to `baselineGain`.
-- When the read is overtaken, neither `setGain` nor the seeded reset is sent from this navigation. A newer navigation sends both from its own read. A reapply that `chrome.storage.onChanged` started (scenario 12) sends `setGain` alone, so then no seeded reset follows the unseeded one.
+- When the read is overtaken, neither `setGain` nor the seeded reset is sent from this navigation. The reapply that overtook it sends both from its own read, whether a newer navigation or `chrome.storage.onChanged` (scenario 12) started it, so the seeded reset follows the unseeded one either way.
 - Leaving a clip whose element was refused as `cross-origin` clears `audioUnavailable` and its cause. Other notices are kept across the navigation.
 - Saves: none. A `saveMeasurement` already sent carries the channel id it was sent with.
 
@@ -645,12 +647,15 @@ sequenceDiagram
     opt the read was not overtaken
       content->>content: resolvePreferredGain
       content->>bridge: setGain (applyGain)
+      opt seededResetPending, set by startup or navigation
+        content->>bridge: resetMeasurement with the next epoch, seeded from the row, seededResetPending = false
+      end
     end
   end
   Note over popup: no listener for channelVolumes,<br>getState is read every 1000 ms
 ```
 
-Drawn from: `content.js` the `storage.onChanged` listener, `reapplyForCurrentChannel`, `loadChannelEntry`; `popup.js` the `storage.onChanged` listener and the `setInterval(refresh, DISPLAY_UPDATE_INTERVAL_MS)` call.
+Drawn from: `content.js` the `storage.onChanged` listener, `reapplyForCurrentChannel`, `loadChannelEntry`, `sendPendingSeededReset`; `popup.js` the `storage.onChanged` listener and the `setInterval(refresh, DISPLAY_UPDATE_INTERVAL_MS)` call.
 
 - The listener does not look at which row changed: a tab on any channel re-reads its own row and sends `setGain`. The value changes where the resolved gain differs from `currentGain`.
 - With Auto on and a finite Integrated value, this path applies the gain `autoGainToPlay` gives and does not go through the 1000 ms gate of `applyAutoGain`.

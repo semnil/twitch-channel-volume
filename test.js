@@ -7652,7 +7652,7 @@ test('content reseeds on a kind change when SPA navigation lost the reapply race
 
   // Navigate to the same owner's VOD, but hold the reapply read open and let a
   // storage change start a second reapply. The first one then loses the
-  // revision race and returns false, so navigation never reseeds.
+  // revision race and returns false.
   harness.deferNextStorageGet();
   const navigation = harness.navigate('https://www.twitch.tv/videos/100');
   await flushTasks();
@@ -7662,12 +7662,12 @@ test('content reseeds on a kind change when SPA navigation lost the reapply race
   await harness.releaseStorageGet();
   await navigation;
 
-  // Only the unconditional reset from onNavigate ran: the reapply that would
-  // have reseeded lost the race, so the seeded target is still the live one.
+  // The unconditional reset from onNavigate, then the one the read that won
+  // sends for the VOD's provisional id, which has no row and so no seed.
   const duringNavigation = harness.commands
     .filter((command) => command.cmd === 'resetMeasurement');
-  assert.equal(duringNavigation.length, 1);
-  assert.equal(duringNavigation[0].initialIntegratedLufs, undefined);
+  assert.deepEqual(duringNavigation.map((command) => command.initialIntegratedLufs),
+    [undefined, undefined]);
   harness.commands.length = 0;
 
   await harness.dispatchMessage({
@@ -7686,6 +7686,49 @@ test('content reseeds on a kind change when SPA navigation lost the reapply race
   const afterOwner = harness.commands.filter((command) => command.cmd === 'resetMeasurement');
   assert.equal(afterOwner.length, 1);
   assert.equal(afterOwner[0].initialIntegratedLufs, -23);
+});
+
+// A write anywhere reaches the tab as a change notice, and the read that
+// notice starts overtakes the one startup or a route change made. The seed is
+// owed to the measurement either way.
+test('content seeds the measurement from the read that won, after startup and after a route change', async () => {
+  const channelVolumes = {
+    'vod-owner:100': { name: '100', gainVod: 0.5, ...measured({ vod: -20 }, 1800) },
+    'vod-owner:200': { name: '200', gainVod: 0.5, ...measured({ vod: -22 }, 1800) }
+  };
+  const resets = (harness) => harness.commands
+    .filter((command) => command.cmd === 'resetMeasurement')
+    .map((command) => [command.initialIntegratedLufs, command.initialIntegratedWindows]);
+  const writeElsewhere = (harness) => harness.dispatchStorage({
+    [u.CHANNEL_VOLUMES_KEY]: { newValue: structuredClone(channelVolumes) }
+  }, 'local');
+
+  // Control: nothing overtakes the startup read.
+  const alone = createContentHarness({ channelVolumes });
+  await flushTasks();
+  assert.deepEqual(resets(alone), [[-20, 1800]]);
+
+  const harness = createContentHarness({ channelVolumes });
+  harness.deferNextStorageGet();
+  await flushTasks();
+  await writeElsewhere(harness);
+  await harness.releaseStorageGet();
+  assert.deepEqual(resets(harness), [[-20, 1800]], 'startup');
+
+  harness.commands.length = 0;
+  harness.deferNextStorageGet();
+  const navigation = harness.navigate('https://www.twitch.tv/videos/200');
+  await flushTasks();
+  await writeElsewhere(harness);
+  await harness.releaseStorageGet();
+  await navigation;
+  assert.deepEqual(resets(harness), [[undefined, undefined], [-22, 1800]], 'route change');
+
+  // The seed is owed once: a later write re-reads the row and resets nothing.
+  harness.commands.length = 0;
+  await writeElsewhere(harness);
+  assert.deepEqual(resets(harness), []);
+  assert.ok(harness.commands.some((command) => command.cmd === 'setGain'));
 });
 
 // The popup and the content script joined up, so what one sends is what the

@@ -59,6 +59,8 @@ content は、今のチャンネルの行をもとに `resolvePreferredGain` (`u
 
 `reapplyForCurrentChannel` は行を読み (`loadChannelEntry`)、そのあとで `resolvePreferredGain` が決めたゲインをかける。Auto がオンで Integrated が有限なら、代わりに `autoGainToPlay` のゲインをかける (場面 5)。読んでいる間に、あとからの読み直し・遷移・チャンネルの変化が始まっていたら (`preferenceRevision`、または `currentChannel` が変わっていたら)、false を返して何もかけない。下の図ではこれを `opt 読み直しが追い越されていない` と書く。チャンネル ID が無いページや種別 `none` のページでは、何も読まずに 1.0 をかけて true を返す。
 
+起動と SPA 遷移は、読む前に `seededResetPending` (種つきのリセットがまだ、という印) を立てる。印が立っている間は、ゲインをかけた読み直しが、どのきっかけで始まったものでも、続けて読んだ行を種にしたリセットを送り、印を下ろす (`sendPendingSeededReset`)。
+
 ゲインを変える下の流れは、どれも最後にこの共通の手順を通る。
 
 ```mermaid
@@ -188,17 +190,17 @@ sequenceDiagram
   and content
     content->>storage: readStoredSettings autoLoudnessSettings (loadSettings)
     content->>bridge: setAdGain dbToGain(adGainDb)
-    content->>content: URL から resolveChannel
+    content->>content: URL から resolveChannel、seededResetPending = true
     alt Live か VOD
       content->>storage: get channelVolumes、channelVolumeAliases (loadChannelEntry)
       opt 読み直しが追い越されていない
         content->>content: resolvePreferredGain、Integrated はまだ -Infinity
         content->>bridge: setGain (applyGain)
-        content->>bridge: 次の epoch で resetMeasurement、lastLufs と lastLufsWindows を種にする
+        content->>bridge: 次の epoch で resetMeasurement、lastLufs と lastLufsWindows を種にする、seededResetPending = false
       end
     else クリップか種別 none
       content->>bridge: setGain 1.0
-      content->>bridge: 次の epoch で resetMeasurement、種なし
+      content->>bridge: 次の epoch で resetMeasurement、種なし、seededResetPending = false
     end
   end
   content->>bridge: init-done か 3000 ms のあとで attach
@@ -206,12 +208,12 @@ sequenceDiagram
   bridge-->>content: attached と measuring、takenElsewhere
 ```
 
-図のもと: `content.js` の末尾にある起動の処理、`injectWorklet`、`loadSettings`、`resolveChannel`、`reapplyForCurrentChannel`、`loadChannelEntry`、`resetMeasurementForCurrentChannel`、`savedMeasurementForCurrentChannel`、`sendResetMeasurement`。`page-bridge.js` のコマンドのリスナー (`init`、`setAdGain`、`setGain`、`resetMeasurement`、`attach`)、`ensureContext`、`createContext`、`resetMeasurement`、`scheduleAttach`、`attach`。`utils.js` の `resolvePreferredGain`。
+図のもと: `content.js` の末尾にある起動の処理、`injectWorklet`、`loadSettings`、`resolveChannel`、`reapplyForCurrentChannel`、`loadChannelEntry`、`sendPendingSeededReset`、`resetMeasurementForCurrentChannel`、`savedMeasurementForCurrentChannel`、`sendResetMeasurement`。`page-bridge.js` のコマンドのリスナー (`init`、`setAdGain`、`setGain`、`resetMeasurement`、`attach`)、`ensureContext`、`createContext`、`resetMeasurement`、`scheduleAttach`、`attach`。`utils.js` の `resolvePreferredGain`。
 
 - かかるゲイン: 保存された行から決まるゲイン。まだ計測結果が届いていないので、Auto がオンなら、参照が `volume1` の保存済み `autoGain<Kind>`、手動ゲイン、1.0 のどれかになる。クリップや種別 `none` のページでは、`reapplyForCurrentChannel` は何も読まずに 1.0 をかける。
 - `loadSettings` は、読み出しの間に同期された設定の変更が `onChanged` リスナーに届いていなかったときだけ、読んだ設定を取り込む (`settingsRevision`)。`setAdGain` はどちらでも送る。
 - 種 (計測の初めに入れておく保存値) は、`lastLufsRef[kind]` が `volume1` で `lastLufs[kind]` が有限の数のときだけ送る。`lastLufsWindows[kind]` が正の整数ならそれも送る。bridge は種を 300 個以上 1800 個以下のゲーティング窓の重みで扱う (`MIN_SEED_WINDOWS`、`MAX_SEED_WINDOWS`)。
-- 読み直しが `chrome.storage.onChanged` の始めた読み直し (場面 12) に追い越されたときは、起動からは `setGain` もリセットも送らない。その読み直しは `setGain` だけを送るので、計測は種なしで始まる。
+- 読み直しが `chrome.storage.onChanged` の始めた読み直し (場面 12) に追い越されたときは、起動からは `setGain` もリセットも送らない。追い越した読み直しが `setGain` を送り、`seededResetPending` がまだ立っているので、続けて読んだ行を種にしたリセットを送る。
 - 保存: なし。このタブで最初のチャンネルごとの書き込みは、場面 5 の `saveMeasurement`。
 
 ### 2. インストール・更新と、以前の版が保存した値
@@ -438,25 +440,25 @@ sequenceDiagram
   content->>content: checkAdDom
   content->>bridge: 次の epoch で resetMeasurement、種なし
   content->>bridge: attach
-  content->>content: 新しい URL から resolveChannel
+  content->>content: 新しい URL から resolveChannel、seededResetPending = true
   alt Live か VOD
     content->>storage: get channelVolumes、channelVolumeAliases
     opt 読み直しが追い越されていない
       content->>content: Integrated が -Infinity のまま resolvePreferredGain
       content->>bridge: setGain (applyGain)
-      content->>bridge: 次の epoch で resetMeasurement、新しい行を種にする
+      content->>bridge: 次の epoch で resetMeasurement、新しい行を種にする、seededResetPending = false
     end
   else クリップか種別 none
     content->>bridge: setGain 1.0
-    content->>bridge: 次の epoch で resetMeasurement、種なし
+    content->>bridge: 次の epoch で resetMeasurement、種なし、seededResetPending = false
   end
 ```
 
-図のもと: `content.js` の `history.pushState` / `history.replaceState` の包み、`popstate` リスナー、遷移を見張る `MutationObserver`、`handleNavigation`、`onNavigate`、`checkAdDom`、`resolveChannel`、`reapplyForCurrentChannel`、`resetMeasurementForCurrentChannel`。`page-bridge.js` の `mediaChanged` コマンド、`forgetCues`、`updateAdState`。
+図のもと: `content.js` の `history.pushState` / `history.replaceState` の包み、`popstate` リスナー、遷移を見張る `MutationObserver`、`handleNavigation`、`onNavigate`、`checkAdDom`、`resolveChannel`、`reapplyForCurrentChannel`、`sendPendingSeededReset`、`resetMeasurementForCurrentChannel`。`page-bridge.js` の `mediaChanged` コマンド、`forgetCues`、`updateAdState`。
 
 - `pushState` / `replaceState` の包みは、URL が変わる前に `checkAdDom` を呼び、変わったあとにマイクロタスクで `handleNavigation` を始める。
 - かかるゲイン: 新しいチャンネルと種別について、計測結果なしで決まるゲイン (参照が `volume1` の保存済み Auto のゲイン、手動ゲイン、1.0 のどれか)。クリップや種別 `none` のページでは 1.0。CM 中だった場合は、bridge の `updateAdState` が CM を終わらせ、ノードは `baselineGain` へ戻る。
-- 読み直しが追い越されたときは、この遷移からは `setGain` も種つきのリセットも送らない。あとから始まった遷移なら、自分の読み直しから両方を送る。`chrome.storage.onChanged` が始めた読み直し (場面 12) は `setGain` だけを送るので、その場合は種なしのリセットのあとに種つきのリセットが続かない。
+- 読み直しが追い越されたときは、この遷移からは `setGain` も種つきのリセットも送らない。追い越した読み直しが、あとから始まった遷移のものでも `chrome.storage.onChanged` (場面 12) が始めたものでも、自分の読み直しから両方を送るので、どちらの場合も種なしのリセットのあとに種つきのリセットが続く。
 - `cross-origin` として要素を断られたクリップから離れるときは、`audioUnavailable` とその原因を消す。ほかのお知らせは遷移のあとも残す。
 - 保存: なし。すでに送った `saveMeasurement` は、送ったときのチャンネル ID のまま届く。
 
@@ -645,12 +647,15 @@ sequenceDiagram
     opt 読み直しが追い越されていない
       content->>content: resolvePreferredGain
       content->>bridge: setGain (applyGain)
+      opt 起動か遷移が立てた seededResetPending
+        content->>bridge: 次の epoch で resetMeasurement、行を種にする、seededResetPending = false
+      end
     end
   end
   Note over popup: channelVolumes のリスナーは無く、<br>getState を 1000 ms ごとに読む
 ```
 
-図のもと: `content.js` の `storage.onChanged` リスナー、`reapplyForCurrentChannel`、`loadChannelEntry`。`popup.js` の `storage.onChanged` リスナーと `setInterval(refresh, DISPLAY_UPDATE_INTERVAL_MS)` の呼び出し。
+図のもと: `content.js` の `storage.onChanged` リスナー、`reapplyForCurrentChannel`、`loadChannelEntry`、`sendPendingSeededReset`。`popup.js` の `storage.onChanged` リスナーと `setInterval(refresh, DISPLAY_UPDATE_INTERVAL_MS)` の呼び出し。
 
 - リスナーはどの行が変わったかを見ない。どのチャンネルのタブも自分の行を読み直して `setGain` を送る。値が変わるのは、決まったゲインが `currentGain` と違うときだけ。
 - Auto がオンで Integrated が有限なら、この流れは `autoGainToPlay` のゲインをかけ、`applyAutoGain` の 1000 ms の間引きを通らない。
