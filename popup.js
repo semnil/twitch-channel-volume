@@ -436,10 +436,12 @@
   //
   // A drag the popup loses focus in ends there. Chrome commits the value the
   // slider holds with a change ahead of the blur, and what the drag does after
-  // it, the change at the release included, is not sent. The next press of the
-  // pointer or of a key begins a gesture again; a key's repeat does not.
+  // it, the change at the release included, is not sent: such a change puts
+  // the thumb back to the value the slider held at the blur. The next press of
+  // the pointer or of a key begins a gesture again; a key's repeat does not.
   let sliderPointerHeld = false;
   let sliderGestureEnded = false;
+  let sliderValueAtEnd = '';
   const beginSliderGesture = (event) => {
     sliderAppliesTo = currentAppliesTo;
     if (!event.repeat) sliderGestureEnded = false;
@@ -453,7 +455,9 @@
   $('manualSlider').addEventListener('pointercancel', releaseSliderPointer);
   $('manualSlider').addEventListener('keydown', beginSliderGesture);
   window.addEventListener('blur', () => {
-    if (sliderPointerHeld) sliderGestureEnded = true;
+    if (!sliderPointerHeld) return;
+    sliderGestureEnded = true;
+    sliderValueAtEnd = $('manualSlider').value;
   });
 
   $('manualSlider').addEventListener('input', (e) => {
@@ -467,7 +471,10 @@
     $('manualValue').textContent = f.text + f.unit;
   });
   $('manualSlider').addEventListener('change', (e) => {
-    if (sliderGestureEnded) return;
+    if (sliderGestureEnded) {
+      e.target.value = sliderValueAtEnd;
+      return;
+    }
     const appliesTo = sliderAppliesTo ?? currentAppliesTo;
     sliderAppliesTo = null;
     setGain(Number(e.target.value), appliesTo);

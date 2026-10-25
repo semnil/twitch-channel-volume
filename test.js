@@ -7911,9 +7911,11 @@ test('a drag the popup loses focus in is saved at the blur, and nothing it does 
 
   await move(155);
   await popup.fire('manualSlider', 'pointerup');
+  assert.equal(popup.el('manualSlider').value, '155', 'the thumb follows the pointer to its release');
   await popup.fire('manualSlider', 'change');
   assert.deepEqual(gainsSent(), [0.45], 'the rest of the drag and its release');
   assert.equal(popup.el('manualValue').textContent, '45%', 'the label stays where the save left it');
+  assert.equal(popup.el('manualSlider').value, '45', 'and the release puts the thumb back there');
 
   // A key's repeat is the hold already under way; a key pressed begins again.
   await popup.fire('manualSlider', 'keydown', { repeat: true });
@@ -7959,6 +7961,7 @@ test('a drag the popup lost focus in writes nothing to the channel the tab moves
   assert.equal(stored()['login:streamer_b'], undefined);
   assert.equal(stored()['login:streamer_a']?.gainLive, 0.45);
   assert.equal(popup.sent.filter((request) => request.cmd === 'setGain').length, 1);
+  assert.equal(popup.el('manualSlider').value, '45');
 });
 
 // An Auto switch answers with the gain the page settled on, which is not the

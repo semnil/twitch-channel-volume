@@ -287,7 +287,7 @@ sequenceDiagram
 
 - `input` (スライダーを動かしている間) は Current の表示と値のラベルを変えるだけで、何も送らない。`change` で `setGain` を 1 回送る。プリセットのボタンはスライダーを動かし、同じ 2 つの表示を変えて、`setGain` を 1 回送る。これらの送信をためたりまとめたりする仕組みはほかに無い。
 - スライダーは、操作を始めたとき (`pointerdown`、`keydown`、または最初の `input`) に写しておいた `appliesTo` を送る。プリセットと「チャンネルに適用」ボタンは、最後に描いた状態の `appliesTo` を送る。
-- スライダーをポインターで押さえている間 (`pointerdown` から `pointerup` / `pointercancel` まで) に popup の `window` が `blur` すると、そこで操作を終える。`blur` より先に届いた `change` は `setGain` を送ってある。そのあとのスライダーの `input` と `change` は、離したときの `change` も含めて、次の `pointerdown` か、繰り返しでない `keydown` まで何もしない。
+- スライダーをポインターで押さえている間 (`pointerdown` から `pointerup` / `pointercancel` まで) に popup の `window` が `blur` すると、そこで操作を終える。`blur` より先に届いた `change` は `setGain` を送ってある。そのあとは次の `pointerdown` か、繰り返しでない `keydown` まで、スライダーの `input` は何もせず、`change` は離したときのものも含めて何も送らず、つまみを `blur` の時点のスライダーの値へ戻す。
 - 「チャンネルに適用」(`applyMeasured`) は `resume` を送ってから、最後の `getState` から計算した Suggested のゲイン `suggestedGain(lufs.integrated, targetLufs)` で `setGain` を送る。このボタンが押せるのは、Auto がオフで、有限の Integrated があり、チャンネルがあり、音声が使えるとき。表示は「$VALUE$ をチャンネルに適用」で、$VALUE$ に表示単位でのゲインが入る。
 - popup は、Auto がオン、Auto の保存待ち、`audioUnavailable` が true、または Live / VOD のチャンネルが無いページのとき、スライダーとプリセットを押せなくする。
 - 書き込み: `saveGain` が正式な行の `gain<Kind>` を書く。
@@ -735,7 +735,7 @@ sequenceDiagram
 | インストール・更新 | SW は送らない | `normalizeChannels`。設定は書かない | `background.js` の `onInstalled` |
 | 設定ページを開く | options は送らない | `normalizeChannels` | `options.js` の `loadAll` |
 | popup のスライダーの `input` | 変わらない、表示だけ | なし | `popup.js` の `input` リスナー |
-| スライダーを押さえたまま popup が `blur` する | 変わらない。残りのドラッグは送らない | なし | `popup.js` の `window` の `blur` リスナー |
+| スライダーを押さえたまま popup が `blur` する | 変わらない。残りのドラッグは送らず、その `change` でつまみを戻す | なし | `popup.js` の `window` の `blur` リスナー |
 | popup のスライダーの `change`、プリセットのクリック | 選んだゲイン | `saveGain` | `popup.js` の `setGain`、`content.js` の `setGain`、`saveChannelGain` |
 | 「チャンネルに適用」 | Suggested のゲイン | `saveGain` | `popup.js` の `applyMeasured` |
 | `saveGain` が断られる | 保存済みのゲインへ戻る | なし | `content.js` の `setGain`、`reapplyForCurrentChannel` |
