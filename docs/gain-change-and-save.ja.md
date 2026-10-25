@@ -475,7 +475,7 @@ sequenceDiagram
   participant content as content.js
   participant sw as Service Worker
   page->>bridge: fetch のフックを通る gql.twitch.tv への fetch
-  bridge->>bridge: extractOwnerFromGraphQL: data.user か data.video.owner
+  bridge->>bridge: extractOwnerFromGraphQL: data.user か、data.video.id のある data.video.owner
   bridge-->>content: owner と userId、login、displayName、source、contentKind、contentId
   content->>content: acceptOwner: ownerMatchesTwitchContent で URL と照らし合わせる
   content->>content: migratingChannelId = 仮 ID
@@ -502,6 +502,7 @@ sequenceDiagram
 
 図のもと: `page-bridge.js` の `window.fetch` の包み、`extractOwnerFromGraphQL`、`postOwner`。`content.js` の `handleBridgeMessage` の `owner`、`acceptOwner`、`migrateChannelId`、`resolveChannel`、`reapplyForCurrentChannel`、`currentMeasurementTarget`、`resetMeasurementForCurrentChannel`。`utils.js` の `ownerMatchesTwitchContent`、`provisionalChannelIdForContent`。`channel-store.js` の `mergeProvisionalEntry`、`resolveMutation`。
 
+- bridge は、どのコンテンツのものかを応答だけから決める。`data.user` は `login` を、`data.video.owner` は `data.video.id` を `contentId` にする。`data.video.id` の無い応答の `data.video.owner` からは、owner を送らない。
 - Live のページが取る owner は、`source: 'user'` で、`contentId` が URL の login のもの。VOD のページが取るのは、`source: 'video'` で、`contentId` が動画 ID のもの。クリップのページは何も取らない。`userId` は数字だけの文字列でなければならない。
 - 書き込み: `mergeChannelIds`。ゲイン・Auto・Auto のゲイン・LUFS の各項目は、片方だけが持っていればその値を取り、両方が持っていれば版番号の大きい方を取る。同じ番号なら、ユーザー ID の行の値を残す。`lastLufs` では、`clearMeasurement` が記録した「消した」という状態も、持っているものとして数える。`lastLufsRef` と `lastLufsWindows` は説明している `lastLufs` の値と一緒に、`autoGainRef` は `autoGain<Kind>` と一緒に動く。`lastMeasuredAt` は 2 つのうち新しい方、`name` / `login` / `url` は owner のイベントから取る。仮 ID からユーザー ID への別名を保存する。
 - `currentChannel.id` が `migratingChannelId` と同じ間、content の `onChanged` リスナーは行を読み直さない (場面 12)。そのため、まとめる書き込みそのものによって、途中で仮 ID の行のゲインがかかることはない。

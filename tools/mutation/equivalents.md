@@ -92,7 +92,7 @@ saves is a no-op; and the chain list is empty whenever there is no context.
 The dropped await on `ensureContext` in `resume`. `createContext` assigns `ctx`
 before its first await, so the resume that follows has it.
 
-- `page-bridge.js:1183` an await is dropped ×1 — await
+- `page-bridge.js:1182` an await is dropped ×1 — await
 
 ## content.js
 

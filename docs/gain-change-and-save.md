@@ -475,7 +475,7 @@ sequenceDiagram
   participant content as content.js
   participant sw as Service Worker
   page->>bridge: fetch to gql.twitch.tv through the fetch hook
-  bridge->>bridge: extractOwnerFromGraphQL: data.user or data.video.owner
+  bridge->>bridge: extractOwnerFromGraphQL: data.user, or data.video.owner with data.video.id
   bridge-->>content: owner with userId, login, displayName, source, contentKind, contentId
   content->>content: acceptOwner: ownerMatchesTwitchContent against the URL
   content->>content: migratingChannelId = provisional id
@@ -502,6 +502,7 @@ sequenceDiagram
 
 Drawn from: `page-bridge.js` the `window.fetch` wrapper, `extractOwnerFromGraphQL`, `postOwner`; `content.js` the `owner` case of `handleBridgeMessage`, `acceptOwner`, `migrateChannelId`, `resolveChannel`, `reapplyForCurrentChannel`, `currentMeasurementTarget`, `resetMeasurementForCurrentChannel`; `utils.js` `ownerMatchesTwitchContent`, `provisionalChannelIdForContent`; `channel-store.js` `mergeProvisionalEntry`, `resolveMutation`.
 
+- The bridge names the content from the answer alone: `data.user` with its `login` as `contentId`, and `data.video.owner` with `data.video.id`. A `data.video.owner` whose answer carries no `data.video.id` posts no owner.
 - A Live page takes an owner with `source: 'user'` whose `contentId` is the login in the URL; a VOD page one with `source: 'video'` whose `contentId` is the video id. A clip page takes none. The `userId` has to be a string of digits.
 - Write: `mergeChannelIds`. For each gain / Auto / Auto gain / LUFS field, a field held by one side is taken from that side, and a field held by both goes to the side with the higher field version, the user-id row keeping its value on a tie. For `lastLufs`, a removal recorded by `clearMeasurement` counts as held. `lastLufsRef` and `lastLufsWindows` go with the `lastLufs` value they describe, `autoGainRef` with `autoGain<Kind>`, `lastMeasuredAt` is the later of the two, and `name` / `login` / `url` come from the owner event. The alias from the provisional id to the user id is stored.
 - While `currentChannel.id` equals `migratingChannelId`, the `onChanged` listener of content does not re-read the row (scenario 12), so the merge's own write does not apply the provisional row's gain in between.

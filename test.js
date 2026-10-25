@@ -9254,32 +9254,37 @@ test('a request that could not be made on a channel page stays out of the error 
   assert.deepEqual(JSON.parse(run.stdout), expected);
 });
 
-test('GraphQL owner fallback keeps the request-time VOD identity across navigation', async () => {
+// The answer arrives after the request, on whatever page the tab is on by
+// then. An owner it names no video for is not taken as the owner of any.
+test('GraphQL video owner with no video id is no owner, across navigation or not', async () => {
+  const answer = (video) => ({
+    clone() {
+      return { async json() { return { data: { video } }; } };
+    }
+  });
+  const ownerOnly = { owner: { id: '123', login: 'owner', displayName: 'Owner' } };
+  const owners = (harness) => harness.messages
+    .filter((message) => message.event === 'owner')
+    .map((message) => [message.contentKind, message.contentId, message.userId]);
+
   const harness = createPageBridgeHarness();
   harness.messages.length = 0;
   harness.fetch('https://gql.twitch.tv/gql');
   harness.location.href = 'https://www.twitch.tv/videos/200';
-  harness.resolveFetch({
-    clone() {
-      return {
-        async json() {
-          return {
-            data: {
-              video: {
-                owner: { id: '123', login: 'owner', displayName: 'Owner' }
-              }
-            }
-          };
-        }
-      };
-    }
-  });
+  harness.resolveFetch(answer(ownerOnly));
   await flushTasks();
+  assert.deepEqual(owners(harness), [], 'the page moved on while the request was out');
 
-  const owners = harness.messages.filter((message) => message.event === 'owner');
-  assert.equal(owners.length, 1);
-  assert.equal(owners[0].contentKind, 'vod');
-  assert.equal(owners[0].contentId, '100');
+  harness.fetch('https://gql.twitch.tv/gql');
+  harness.resolveFetch(answer(ownerOnly));
+  await flushTasks();
+  assert.deepEqual(owners(harness), [], 'the page it was made on');
+
+  // The same answer naming its video names an owner.
+  harness.fetch('https://gql.twitch.tv/gql');
+  harness.resolveFetch(answer({ id: '100', ...ownerOnly }));
+  await flushTasks();
+  assert.deepEqual(owners(harness), [['vod', '100', '123']]);
 });
 
 test('page bridge reads no owner out of a clip response', async () => {
@@ -15215,10 +15220,9 @@ test('page bridge reads a cue with no playhead to hold as no cue', async () => {
   );
 });
 
-test('page bridge names a video the answer left unnamed from the URL it is on', async () => {
-  // The answer for a VOD carries the owner but not always the video. The URL
-  // is what the request was made on, so it is what names the video then — and
-  // only where the URL is a video, since nothing else is one.
+test('page bridge names a video only from the answer, never from the URL it is on', async () => {
+  // The URL says which page the tab is on when the answer arrives, not which
+  // video the answer is about.
   const answerWithoutVideoId = () => ({
     clone: () => ({
       json: async () => ({
@@ -15234,10 +15238,8 @@ test('page bridge names a video the answer left unnamed from the URL it is on', 
   onVod.resolveFetch(answerWithoutVideoId());
   await vodAnswered;
   await flushTasks(8);
-  const vodOwner = onVod.messages.find((message) => message.event === 'owner');
-  assert.equal(vodOwner?.contentKind, 'vod');
-  assert.equal(vodOwner?.contentId, '300',
-    `the video the URL names (${vodOwner?.contentId})`);
+  assert.deepEqual(onVod.messages.filter((message) => message.event === 'owner'), [],
+    'a video page');
 
   for (const href of [
     'https://www.twitch.tv/somechannel',
@@ -15252,9 +15254,7 @@ test('page bridge names a video the answer left unnamed from the URL it is on', 
     harness.resolveFetch(answerWithoutVideoId());
     await answered;
     await flushTasks(8);
-    const owner = harness.messages.find((message) => message.event === 'owner');
-    assert.equal(owner?.contentId, '',
-      `a page that is not a video names none (${href}: ${owner?.contentId})`);
+    assert.deepEqual(harness.messages.filter((message) => message.event === 'owner'), [], href);
   }
 
   // Where the answer does name the video, that is the name used.

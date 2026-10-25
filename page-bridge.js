@@ -1096,30 +1096,29 @@
 
     if (url.includes('gql.twitch.tv')) {
       result.then((resp) => resp.clone().json()).then((data) => {
-        extractOwnerFromGraphQL(data, requestIdentity);
+        extractOwnerFromGraphQL(data);
       }).catch(() => {});
     }
     return result;
   };
 
-  function extractOwnerFromGraphQL(payload, requestIdentity) {
+  function extractOwnerFromGraphQL(payload) {
     const items = Array.isArray(payload) ? payload : [payload];
     for (const item of items) {
       try {
         const data = item?.data;
         if (!data) continue;
-        // VideoMetadata: data.video.owner.{id,login,displayName}
+        // VideoMetadata: data.video.{id,owner.{id,login,displayName}}. An
+        // owner whose answer names no video is not taken as any video's.
         const v = data.video;
-        if (v?.owner?.id && v?.owner?.login) {
+        if (v?.owner?.id && v?.owner?.login && v.id != null) {
           postOwner({
             userId: String(v.owner.id),
             login: v.owner.login,
             displayName: v.owner.displayName || v.owner.login,
             source: 'video',
             contentKind: 'vod',
-            contentId: v.id != null
-              ? String(v.id)
-              : (requestIdentity?.kind === 'vod' ? requestIdentity.id : '')
+            contentId: String(v.id)
           });
         }
         // StreamMetadata / User: data.user.{id,login,displayName}
