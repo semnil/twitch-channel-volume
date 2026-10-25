@@ -5121,6 +5121,7 @@ test('invalidated content script stops a queued owner migration without reportin
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -21,
     shortTerm: -21,
     integrated: -21
@@ -5226,7 +5227,7 @@ test('a save files the channel under its own name, not its id', async () => {
   // rather than whatever the tab holds by the time the save goes out.
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
-    event: 'lufs', momentary: -21, shortTerm: -21, integrated: -21
+    event: 'lufs', playing: true, momentary: -21, shortTerm: -21, integrated: -21
   });
   await flushTasks();
 
@@ -5278,7 +5279,7 @@ test('an Auto choice is filed under the channel it was made on', async () => {
   // The gain Auto then works out is filed against the same channel.
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
-    event: 'lufs', momentary: -21, shortTerm: -21, integrated: -21
+    event: 'lufs', playing: true, momentary: -21, shortTerm: -21, integrated: -21
   });
   await flushTasks();
 
@@ -5403,7 +5404,7 @@ test('content keeps the other kind\'s Auto reference when this kind gets one', a
   await flushTasks();
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
-    event: 'lufs', momentary: -21, shortTerm: -21, integrated: -21
+    event: 'lufs', playing: true, momentary: -21, shortTerm: -21, integrated: -21
   });
   await flushTasks();
 
@@ -5518,7 +5519,7 @@ test('content saves a measurement no oftener than the storage can bear', async (
   const lufs = async (integrated) => {
     await harness.dispatchMessage({
       type: '__twitch_channel_volume__',
-      event: 'lufs', momentary: integrated, shortTerm: integrated, integrated
+      event: 'lufs', playing: true, momentary: integrated, shortTerm: integrated, integrated
     });
     await flushTasks();
   };
@@ -5537,6 +5538,52 @@ test('content saves a measurement no oftener than the storage can bear', async (
     'and one far enough behind is');
 });
 
+// Two tabs on one channel and kind save to one row. The tab the viewer is not
+// listening to does not write its own reading over the other's.
+test('content saves a measurement only while the bridge says the player is playing', async () => {
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/somechannel' });
+  await claimChannel(harness);
+  const saved = () => harness.stored[u.CHANNEL_VOLUMES_KEY]['123456789']?.lastLufs?.live;
+  const block = (integrated, playing) => harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs', playing, momentary: integrated, shortTerm: integrated, integrated
+  });
+
+  await block(-21, false);
+  await flushTasks();
+  assert.equal(saved(), undefined, 'a paused or muted player');
+  await block(-22, undefined);
+  await flushTasks();
+  assert.equal(saved(), undefined, 'a block that does not say');
+
+  await block(-23, true);
+  await flushTasks();
+  assert.equal(saved(), -23, 'the first block that plays is saved at once');
+});
+
+test('page bridge says the player is playing while it is neither paused nor muted', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  const playing = () => {
+    harness.messages.length = 0;
+    harness.emitMeasurementBlock(0.01);
+    return harness.messages.filter((message) => message.event === 'lufs').map((m) => m.playing);
+  };
+
+  assert.deepEqual(playing(), [true]);
+  harness.setPaused(true);
+  assert.deepEqual(playing(), [false], 'paused');
+  harness.setPaused(false);
+  harness.setMuted(true);
+  assert.deepEqual(playing(), [false], 'muted');
+  harness.setMuted(false);
+  harness.setVolume(0);
+  assert.deepEqual(playing(), [true], 'at volume 0');
+  harness.setVolume(1);
+  await harness.dispatchCommand('setGain', { value: 0 });
+  assert.deepEqual(playing(), [true], 'at a gain of 0');
+});
+
 // The measurement save is the one call the page makes to the extension on its
 // own, ten times a second, for as long as a channel plays.
 function createMeasuringHarness(options = {}) {
@@ -5546,7 +5593,7 @@ function createMeasuringHarness(options = {}) {
 async function measureOn(harness, integrated) {
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
-    event: 'lufs', momentary: integrated, shortTerm: integrated, integrated
+    event: 'lufs', playing: true, momentary: integrated, shortTerm: integrated, integrated
   });
   await flushTasks();
 }
@@ -5657,7 +5704,7 @@ test('content saves nothing from a reading that is no reading', async () => {
   // at all, and there is nothing to file or to follow.
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
-    event: 'lufs', momentary: -21, shortTerm: -21, integrated: -Infinity
+    event: 'lufs', playing: true, momentary: -21, shortTerm: -21, integrated: -Infinity
   });
   await flushTasks();
 
@@ -5718,7 +5765,7 @@ test('content writes nothing once the runtime it had is gone', async () => {
   await harness.dispatchGesture({ cmd: 'resetMeasurement' });
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
-    event: 'lufs', momentary: -21, shortTerm: -21, integrated: -21
+    event: 'lufs', playing: true, momentary: -21, shortTerm: -21, integrated: -21
   });
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
@@ -5750,7 +5797,7 @@ test('content writes nothing for a page that resolves to no channel', async () =
   await harness.dispatchGesture({ cmd: 'resetMeasurement' });
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
-    event: 'lufs', momentary: -21, shortTerm: -21, integrated: -21
+    event: 'lufs', playing: true, momentary: -21, shortTerm: -21, integrated: -21
   });
   await flushTasks();
 
@@ -5766,7 +5813,7 @@ test('content reads a bridge message only from the page it shares', async () => 
   // A frame of its own, posting the same shape.
   await harness.dispatchMessageFrom({ name: 'another frame' }, {
     type: '__twitch_channel_volume__',
-    event: 'lufs', momentary: -21, shortTerm: -21, integrated: -21
+    event: 'lufs', playing: true, momentary: -21, shortTerm: -21, integrated: -21
   });
   // The page's own scripts, posting something else entirely.
   await harness.dispatchMessage({ type: 'something else', event: 'lufs', integrated: -21 });
@@ -5881,6 +5928,7 @@ test('content Auto mode follows LUFS and recalculates when the target changes', 
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -23,
     shortTerm: -23,
     integrated: -23
@@ -5922,6 +5970,7 @@ test('content limits Auto gain updates to the popup display interval', async () 
   const emitIntegrated = (integrated) => harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: integrated,
     shortTerm: integrated,
     integrated
@@ -5951,7 +6000,7 @@ test('content limits Auto gain updates to the popup display interval', async () 
 // One block as the bridge posts it: the Integrated value, and the short-term
 // loudness beside it, which is the Integrated value where none is given.
 function lufsPost(integrated, shortTerm = integrated) {
-  return { type: '__twitch_channel_volume__', event: 'lufs', momentary: shortTerm, shortTerm, integrated };
+  return { type: '__twitch_channel_volume__', event: 'lufs', playing: true, momentary: shortTerm, shortTerm, integrated };
 }
 
 // A gain in dB, unrounded: gainToDb rounds to the 0.1 dB the screen shows.
@@ -6231,6 +6280,7 @@ test('content manual mode does not follow incoming LUFS measurements', async () 
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -23,
     shortTerm: -23,
     integrated: -23
@@ -6564,6 +6614,7 @@ test('content keeps the audio notice through the messages that do not answer it'
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -23,
     shortTerm: -23,
     integrated: -23
@@ -6688,6 +6739,7 @@ test('content ignores measurements taken while the player audio is out of reach'
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -14,
     shortTerm: -14,
     integrated: -14
@@ -6844,6 +6896,7 @@ test('content stores a measurement the next session can seed from', async () => 
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -21,
     shortTerm: -21,
     integrated: -21,
@@ -6891,6 +6944,7 @@ test('content ignores a window count the bridge cannot have measured', async () 
     await harness.dispatchMessage({
       type: '__twitch_channel_volume__',
       event: 'lufs',
+      playing: true,
       momentary: -21,
       shortTerm: -21,
       integrated: -21,
@@ -7383,6 +7437,7 @@ test('content keeps the running measurement when the owner resolves the same cha
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -16.2,
     shortTerm: -16.2,
     integrated: -16.2
@@ -7423,6 +7478,7 @@ test('content clears the saved and active measurement for the current media kind
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -23,
     shortTerm: -23,
     integrated: -23
@@ -7455,6 +7511,7 @@ test('content clears the saved and active measurement for the current media kind
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -22,
     shortTerm: -22,
     integrated: -22
@@ -7480,6 +7537,7 @@ test('content ignores measurements while the reset storage mutation is pending',
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -15,
     shortTerm: -15,
     integrated: -15
@@ -7508,6 +7566,7 @@ test('content keeps the active measurement when resetting storage fails', async 
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -19,
     shortTerm: -19,
     integrated: -19
@@ -7578,6 +7637,7 @@ test('content drops a measurement produced before the reset it requested', async
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     epoch: resetCommand.epoch - 1,
     momentary: -15,
     shortTerm: -15,
@@ -7612,6 +7672,7 @@ test('content accepts a measurement stamped with the current reset epoch', async
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     epoch: resetCommand.epoch,
     momentary: -15,
     shortTerm: -15,
@@ -7921,6 +7982,7 @@ test('the slider follows the gain the page returns to when Auto goes off', async
   await content.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -30,
     shortTerm: -30,
     integrated: -30
@@ -8807,6 +8869,7 @@ test('turning Auto off stores no Auto gain for it to come back with', async () =
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -23,
     shortTerm: -23,
     integrated: -23
@@ -8882,6 +8945,7 @@ test('Auto save whose follow-up read fails keeps the rest of the entry', async (
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -23,
     shortTerm: -23,
     integrated: -23
@@ -8912,6 +8976,7 @@ test('Auto save whose follow-up read fails leaves a tab that has moved on alone'
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -23,
     shortTerm: -23,
     integrated: -23
@@ -8951,6 +9016,7 @@ test('Auto save remains successful when only the follow-up storage read fails', 
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -23,
     shortTerm: -23,
     integrated: -23
@@ -17665,6 +17731,7 @@ test('a reading with no integrated value behind it moves and stores nothing', as
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -18,
     shortTerm: -18,
     integrated: null,
@@ -17681,6 +17748,7 @@ test('a settings change persists the Auto gain only where Auto is following', as
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -18,
     shortTerm: -18,
     integrated: -24,
@@ -18095,6 +18163,7 @@ test('a row the Auto gain creates carries the channel it was measured on', async
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -18,
     shortTerm: -18,
     integrated: -24,

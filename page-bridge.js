@@ -289,7 +289,10 @@
       momentary,
       shortTerm,
       integrated: integrated.lufs,
-      integratedWindows: integrated.windows
+      integratedWindows: integrated.windows,
+      // The element the measurement taps plays to the viewer: it is neither
+      // paused nor muted, at any volume.
+      playing: !!attachedVideo && !attachedVideo.paused && !attachedVideo.muted
     }, '*');
   }
 

@@ -569,7 +569,9 @@
           if (currentAutoApplyLoudness) {
             applyAutoGain();
           }
-          throttledSaveIntegrated();
+          // Only a tab whose player is playing saves the channel's level, so
+          // a paused or muted tab on the same channel does not write over it.
+          if (data.playing === true) throttledSaveIntegrated();
         }
         break;
       case 'owner':

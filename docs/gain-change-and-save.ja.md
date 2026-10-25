@@ -350,7 +350,7 @@ sequenceDiagram
   worklet->>bridge: ms と samples の port メッセージ、100 ms のブロックごとに 1 回
   bridge->>bridge: onBlockMs: normalizeForVolume、rereadAdState
   bridge->>bridge: CM 中・境界のスキップ中・最初のゲーティング窓の前は Integrated をそのまま、それ以外は updateIntegratedLufs
-  bridge-->>content: lufs と epoch、momentary、shortTerm、integrated、integratedWindows
+  bridge-->>content: lufs と epoch、momentary、shortTerm、integrated、integratedWindows、playing
   alt measurementResetPending、audioUnavailable、または measurementEpoch より古い epoch
     content->>content: 知らせを捨てる
   else 受け取る
@@ -362,15 +362,17 @@ sequenceDiagram
           content->>bridge: setGain autoGainToPlay()
         end
       end
-      content->>content: throttledSaveIntegrated
-      opt lastSavedAt から 5000 ms 以上たった
-        content->>sw: saveMeasurement と lufs、reference、windows、Auto がオンの間は autoGain = calcGain(integrated, targetLufs)
-        alt 保存できた
-          sw-->>content: ok true
-          content->>content: measurementSaved
-        else 断られた
-          sw-->>content: ok false、reason
-          content->>content: measurementSaveFailed: lastSavedAt = 0
+      opt playing が true
+        content->>content: throttledSaveIntegrated
+        opt lastSavedAt から 5000 ms 以上たった
+          content->>sw: saveMeasurement と lufs、reference、windows、Auto がオンの間は autoGain = calcGain(integrated, targetLufs)
+          alt 保存できた
+            sw-->>content: ok true
+            content->>content: measurementSaved
+          else 断られた
+            sw-->>content: ok false、reason
+            content->>content: measurementSaveFailed: lastSavedAt = 0
+          end
         end
       end
     end
@@ -379,8 +381,9 @@ sequenceDiagram
 
 図のもと: `audio-worklet.js` の `KMeanSquareProcessor.process`。`page-bridge.js` の `onBlockMs`、`normalizeForVolume`、`updateIntegratedLufs`、`integratedLufs`、`postLufs`。`content.js` の `handleBridgeMessage` の `lufs`、`applyAutoGain`、`autoGainToPlay`、`throttledSaveIntegrated`、`saveLastIntegrated`、`measurementSaved`、`measurementSaveFailed`。
 
-- 2 つの間引きは別々に働く。`applyAutoGain` を通るとき、Auto のもとでゲインが変わるのは 1000 ms (`DISPLAY_UPDATE_INTERVAL_MS`) に 1 回まで。`chrome.storage.onChanged` が始める読み直し (場面 10 と 12) は、この間引きを通らずに `autoGainToPlay` のゲインをかける。計測結果と今かかっている Auto のゲインを書くのは、Auto のオン・オフに関係なく、タブごとに 5000 ms に 1 回まで。`lastSavedAt` は保存を送るときに入り、保存の失敗・SPA 遷移・測定値のリセットで 0 に戻るので、次のブロックでまた送る。`sendResetMeasurement` は `lastAutoGainUpdateAt` を `-Infinity` に、`autoRaiseFrom` を null に戻すので、リセット後に最初に届いた有限の Integrated はすぐに、そのままかかる。
+- 2 つの間引きは別々に働く。`applyAutoGain` を通るとき、Auto のもとでゲインが変わるのは 1000 ms (`DISPLAY_UPDATE_INTERVAL_MS`) に 1 回まで。`chrome.storage.onChanged` が始める読み直し (場面 10 と 12) は、この間引きを通らずに `autoGainToPlay` のゲインをかける。計測結果と今かかっている Auto のゲインを書くのは、Auto のオン・オフに関係なく、タブごとに 5000 ms に 1 回までで、`playing` が true の `lufs` からだけ。`lastSavedAt` は保存を送るときに入り、保存の失敗・SPA 遷移・測定値のリセットで 0 に戻るので、次のブロックでまた送る。`sendResetMeasurement` は `lastAutoGainUpdateAt` を `-Infinity` に、`autoRaiseFrom` を null に戻すので、リセット後に最初に届いた有限の Integrated はすぐに、そのままかかる。
 - Auto がかけるゲインは `autoGainToPlay` が決める。もとは `calcGain(integrated, targetLufs)`。ブロックの short-term のラウドネスが Integrated より 6 dB (`AUTO_RISE_DB`) 以上大きいときは、Integrated が 3 dB (`AUTO_RISE_AHEAD_DB`) 大きいものとしてゲインを求める。ただし `adActive` が true の間と、最後の CM が終わってから 3 秒 (`SHORT_TERM_MS`、`adEndedAt`) の間は、そうしない。`currentGain` 以下のゲインはすぐにかかる。それより大きいゲインは、計測したレベルが最後にゲインを決めてから (`autoRaiseFrom`) 30 秒 (`AUTO_RAISE_PERIOD_MS`) ごとに 1.5 dB (`AUTO_RAISE_DB`) まで、`currentGain` から上げた値で止める。`autoRaiseFrom` が null のとき (測定値のリセット、設定の変更、保存された Auto の切り替えのあと) と、`currentGain` が 0 のときは、そのままかかる。呼ぶたびに `autoRaiseFrom` を今にする。
+- `postLufs` は、つないだ要素が止まっておらずミュートでもないとき `playing` を立てる。音量 0 やゲイン 0 でも true のまま。そのため、同じチャンネル・同じ種別の 2 つのタブのうち、止まっているかミュートのタブは行に何も書かない。そのタブの Auto は自分の計測に合わせ続ける。
 - 書く `autoGain` は `calcGain(integrated, targetLufs)`、つまり Integrated が求めるゲインで、`autoGainToPlay` が残したゲインではない。CM ゲインの倍率は入らない。
 - CM の間、bridge はそれまでの Integrated を知らせ続けるので、Auto は CM の間も同じゲインを保つ。
 - クリップや種別 `none` のページにはチャンネル ID が無いので、そこでの `lufs` は何もかけず、何も保存しない。
@@ -736,8 +739,8 @@ sequenceDiagram
 | 「チャンネルに適用」 | Suggested のゲイン | `saveGain` | `popup.js` の `applyMeasured` |
 | `saveGain` が断られる | 保存済みのゲインへ戻る | なし | `content.js` の `setGain`、`reapplyForCurrentChannel` |
 | popup で Auto を切り替える | 決め直す | `saveAuto`、計算できたときは `autoGain` つき | `content.js` の `setAutoApplyLoudness`、`saveChannelAutoApply` |
-| Auto がオンで `lufs` | `autoGainToPlay`、1000 ms に 1 回まで | `autoGain` つきの `saveMeasurement`、5000 ms に 1 回まで | `applyAutoGain`、`throttledSaveIntegrated` |
-| Auto がオフで `lufs` | 変わらない | `saveMeasurement`、5000 ms に 1 回まで | `throttledSaveIntegrated` |
+| Auto がオンで `lufs` | `autoGainToPlay`、1000 ms に 1 回まで | `autoGain` つきの `saveMeasurement`、5000 ms に 1 回まで、`playing` が true の間 | `applyAutoGain`、`throttledSaveIntegrated` |
+| Auto がオフで `lufs` | 変わらない | `saveMeasurement`、5000 ms に 1 回まで、`playing` が true の間 | `throttledSaveIntegrated` |
 | `lufs` を捨てる | 変わらない | なし | `handleBridgeMessage` の `lufs` |
 | 測定値のリセット | その時点では変わらない | `clearMeasurement` | `content.js` の `resetMeasurement` |
 | SPA 遷移 | 新しい URL について決め直す。クリップや種別 `none` では 1.0 | なし | `onNavigate` |

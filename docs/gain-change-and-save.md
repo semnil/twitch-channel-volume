@@ -350,7 +350,7 @@ sequenceDiagram
   worklet->>bridge: port message with ms and samples, once per 100 ms block
   bridge->>bridge: onBlockMs: normalizeForVolume, rereadAdState
   bridge->>bridge: Integrated held during an ad, a boundary skip or before the first gating window, otherwise updateIntegratedLufs
-  bridge-->>content: lufs with epoch, momentary, shortTerm, integrated, integratedWindows
+  bridge-->>content: lufs with epoch, momentary, shortTerm, integrated, integratedWindows, playing
   alt measurementResetPending, audioUnavailable, or epoch older than measurementEpoch
     content->>content: notification discarded
   else taken
@@ -362,15 +362,17 @@ sequenceDiagram
           content->>bridge: setGain autoGainToPlay()
         end
       end
-      content->>content: throttledSaveIntegrated
-      opt 5000 ms or more since lastSavedAt
-        content->>sw: saveMeasurement with lufs, reference, windows, and autoGain = calcGain(integrated, targetLufs) while Auto is on
-        alt saved
-          sw-->>content: ok true
-          content->>content: measurementSaved
-        else rejected
-          sw-->>content: ok false, reason
-          content->>content: measurementSaveFailed: lastSavedAt = 0
+      opt playing is true
+        content->>content: throttledSaveIntegrated
+        opt 5000 ms or more since lastSavedAt
+          content->>sw: saveMeasurement with lufs, reference, windows, and autoGain = calcGain(integrated, targetLufs) while Auto is on
+          alt saved
+            sw-->>content: ok true
+            content->>content: measurementSaved
+          else rejected
+            sw-->>content: ok false, reason
+            content->>content: measurementSaveFailed: lastSavedAt = 0
+          end
         end
       end
     end
@@ -379,8 +381,9 @@ sequenceDiagram
 
 Drawn from: `audio-worklet.js` `KMeanSquareProcessor.process`; `page-bridge.js` `onBlockMs`, `normalizeForVolume`, `updateIntegratedLufs`, `integratedLufs`, `postLufs`; `content.js` the `lufs` case of `handleBridgeMessage`, `applyAutoGain`, `autoGainToPlay`, `throttledSaveIntegrated`, `saveLastIntegrated`, `measurementSaved`, `measurementSaveFailed`.
 
-- The two gates are separate. Through `applyAutoGain` the gain under Auto changes at most once per 1000 ms (`DISPLAY_UPDATE_INTERVAL_MS`); the reapply that `chrome.storage.onChanged` starts (scenarios 10 and 12) applies `autoGainToPlay` without this gate. The measurement and the Auto gain in force are written at most once per 5000 ms per tab, with Auto on or off. `lastSavedAt` is set when a save is sent, and is put back to 0 by a failed save, by SPA navigation and by a measurement reset, so the next block sends again. `sendResetMeasurement` puts `lastAutoGainUpdateAt` back to `-Infinity` and `autoRaiseFrom` to null, so the first finite Integrated value after a reset is applied at once and as it stands.
+- The two gates are separate. Through `applyAutoGain` the gain under Auto changes at most once per 1000 ms (`DISPLAY_UPDATE_INTERVAL_MS`); the reapply that `chrome.storage.onChanged` starts (scenarios 10 and 12) applies `autoGainToPlay` without this gate. The measurement and the Auto gain in force are written at most once per 5000 ms per tab, with Auto on or off, and only from a `lufs` whose `playing` is true. `lastSavedAt` is set when a save is sent, and is put back to 0 by a failed save, by SPA navigation and by a measurement reset, so the next block sends again. `sendResetMeasurement` puts `lastAutoGainUpdateAt` back to `-Infinity` and `autoRaiseFrom` to null, so the first finite Integrated value after a reset is applied at once and as it stands.
 - `autoGainToPlay` gives the gain Auto plays. It starts from `calcGain(integrated, targetLufs)`. Where the block's short-term loudness is 6 dB (`AUTO_RISE_DB`) or more over the Integrated value, it works the gain out as if the Integrated value were 3 dB (`AUTO_RISE_AHEAD_DB`) louder, except while `adActive` is true and for 3 s (`SHORT_TERM_MS`) after the last ad ended (`adEndedAt`). A gain at or below `currentGain` plays at once; one above it plays no higher than `currentGain` raised by 1.5 dB (`AUTO_RAISE_DB`) for every 30 s (`AUTO_RAISE_PERIOD_MS`) since a measured level last set the gain (`autoRaiseFrom`). Where `autoRaiseFrom` is null (after a measurement reset, a settings change or a saved Auto toggle), and where `currentGain` is 0, the gain plays as it stands. Each call sets `autoRaiseFrom` to now.
+- `postLufs` sets `playing` when the attached element is neither paused nor muted. A volume of 0 or a gain of 0 leaves it true. Of two tabs on one channel and kind, a paused or muted one therefore writes nothing to the row, while Auto in it goes on following its own measurement.
 - The `autoGain` written is `calcGain(integrated, targetLufs)`, the gain the Integrated value asks for, not the one `autoGainToPlay` left playing; the ad offset is not part of it.
 - While an ad is active the bridge reports the Integrated value it already had, so Auto keeps the same gain through the break.
 - A clip or a page of kind `none` has no channel id, so `lufs` there applies nothing and saves nothing.
@@ -736,8 +739,8 @@ Drawn from: `content.js` `listenForResumeGesture`, `requestAudioContextResume`, 
 | "Apply to channel" | Set to the Suggested gain | `saveGain` | `popup.js` `applyMeasured` |
 | `saveGain` rejected | Back to the stored gain | none | `content.js` `setGain` case, `reapplyForCurrentChannel` |
 | Auto switched in the popup | Resolved again | `saveAuto`, with `autoGain` when computed | `content.js` `setAutoApplyLoudness` case, `saveChannelAutoApply` |
-| `lufs` with Auto on | `autoGainToPlay`, at most once per 1000 ms | `saveMeasurement` with `autoGain`, at most once per 5000 ms | `applyAutoGain`, `throttledSaveIntegrated` |
-| `lufs` with Auto off | Unchanged | `saveMeasurement`, at most once per 5000 ms | `throttledSaveIntegrated` |
+| `lufs` with Auto on | `autoGainToPlay`, at most once per 1000 ms | `saveMeasurement` with `autoGain`, at most once per 5000 ms, while `playing` is true | `applyAutoGain`, `throttledSaveIntegrated` |
+| `lufs` with Auto off | Unchanged | `saveMeasurement`, at most once per 5000 ms, while `playing` is true | `throttledSaveIntegrated` |
 | `lufs` discarded | Unchanged | none | `lufs` case of `handleBridgeMessage` |
 | Measurement reset | Unchanged at that moment | `clearMeasurement` | `content.js` `resetMeasurement` case |
 | SPA navigation | Resolved for the new URL, 1.0 on a clip or kind `none` | none | `onNavigate` |
