@@ -107,6 +107,8 @@ sequenceDiagram
   store->>store: aliases updated, the ones leading to a row that is gone and clip-owner aliases removed
   alt the store or the storage area threw
     sw-->>sender: ok false, reason
+  else the three keys come out holding what was read (sameStoredValue)
+    sw-->>sender: ok true, nothing written
   else written
     store->>storage: set channelVolumes, channelVolumeAliases, channelVolumeSequence
     par
@@ -117,7 +119,7 @@ sequenceDiagram
   end
 ```
 
-Drawn from: `background.js` `onMessage` listener, `namedFailure`; `channel-store.js` `createChannelVolumesWriter`, `resolveMutation`, `mutationNeedsSequence`, `applyChannelVolumesMutation`, `normalizeKnownChannelEntries`, `aliasesLeadingTo`; `content.js` `sendChannelMutation`; `options.js` `mutateChannelVolumes`.
+Drawn from: `background.js` `onMessage` listener, `namedFailure`; `channel-store.js` `createChannelVolumesWriter`, `sameStoredValue`, `resolveMutation`, `mutationNeedsSequence`, `applyChannelVolumesMutation`, `normalizeKnownChannelEntries`, `aliasesLeadingTo`; `content.js` `sendChannelMutation`; `options.js` `mutateChannelVolumes`.
 
 | `operation` | Sent by | Fields sent | What it writes on the row | Sequence |
 |---|---|---|---|---|
@@ -133,7 +135,7 @@ Drawn from: `background.js` `onMessage` listener, `namedFailure`; `channel-store
 
 - `resolveMutation` resolves `channelId` through the stored aliases. When it was resolved, the `channel` metadata the sender sent is dropped, and the value lands on the canonical row.
 - After each mutation except `clearChannels`, `normalizeKnownChannelEntries` merges a `login:<login>` row into the one numeric row whose login matches and sets its `url` to `https://www.twitch.tv/<login>`, and `withoutClipFields` drops the fields an earlier version kept for clips (a row left holding no value is deleted). `cloneEntry` expands the legacy `gain` / `autoApplyLoudness` on each row it copies. `knownLoginTargets` adds the alias `login:<login>` to that numeric id. A row the mutation leaves gone without moving it onto another id (a deleted channel, a row a clip was the whole of) takes every alias that leads to it, directly or through another alias (`aliasesLeadingTo`).
-- `storage.set` writes the three keys in one call whenever the mutation reaches it, including `normalizeChannels` and a `mergeChannelIds` whose `fromId` has no row.
+- `storage.set` writes the three keys in one call. It is not called when all three come out holding the data that was read, compared field by field whatever order the keys are in (`sameStoredValue`): `normalizeChannels` on a store that is already normal, and a `mergeChannelIds` whose alias is already stored and whose rows are already merged, write nothing. A mutation that takes a sequence number changes the sequence and the row's field version, so a `saveGain` of the gain on file and a `saveMeasurement` of a level that holds are written.
 - Within one tab, content's `sendChannelMutation` chains its mutations on `channelMutationQueue`, so the SW receives them in the order the tab sent them. In the SW, `queue = task.catch(() => {})` keeps a failed task from blocking the next one.
 
 | `reason` in the answer | Raised by | SW log |
@@ -158,6 +160,8 @@ sequenceDiagram
   store->>store: applySettingsMutation: validateSettingsPatch, merged into the stored value, withoutRemovedSettings
   alt invalid or the storage area threw
     sw-->>options: ok false, reason
+  else every field comes out as read, and as sync holds it (sameStoredSettings)
+    sw-->>options: ok true, settings, nothing written
   else written
     store->>storage: sync.set autoLoudnessSettings
     par
@@ -168,9 +172,10 @@ sequenceDiagram
   end
 ```
 
-Drawn from: `background.js` `onMessage` listener; `settings-area.js` `readStoredSettings`; `settings-store.js` `createSettingsWriter`, `applySettingsMutation`, `validateSettingsPatch`, `withoutRemovedSettings`; `options.js` `mutateSettings`.
+Drawn from: `background.js` `onMessage` listener; `settings-area.js` `readStoredSettings`; `settings-store.js` `createSettingsWriter`, `sameStoredSettings`, `applySettingsMutation`, `validateSettingsPatch`, `withoutRemovedSettings`; `options.js` `mutateSettings`.
 
 - `validateSettingsPatch` accepts `targetLufs` from −30 to −6, `adGainDb` from −24 to 6, `displayUnit` `%` or `dB`, and booleans for `showGainOverlay` and the two Auto defaults. Anything else is `invalid-mutation` (`[TCV] settings mutation rejected as invalid`); a rejection without a reason answers `settings-update-failed` (`[TCV] settings mutation failed`).
+- A patch that leaves every field as sync holds it, the unit button already chosen among them, writes nothing. Settings read from the copy in local are written to sync, which does not hold them.
 
 ## Scenarios
 
@@ -236,7 +241,7 @@ sequenceDiagram
   end
   chrome->>sw: runtime.onInstalled
   sw->>cstore: writeChannelVolumes normalizeChannels
-  cstore->>storage: get, normalizeKnownChannelEntries, set
+  cstore->>storage: get, normalizeKnownChannelEntries, set where it changed the store
 ```
 
 Drawn from: `background.js` the `moveToSync` call at its top level and the `onInstalled` listener; `channel-store.js` `normalizeKnownChannelEntries`, `withoutClipFields`, `cloneEntry`, `expandLegacyGain`, `expandLegacyAuto`; `settings-store.js` `moveSettingsToSync`, `withoutRemovedSettings`; `settings-area.js` `isStoredSettingsObject`; `options.js` `loadAll`; `utils.js` `extractGainForKind`, `resolveAutoApplySetting`.
@@ -517,7 +522,7 @@ Drawn from: `page-bridge.js` the `window.fetch` wrapper, `extractOwnerFromGraphQ
 - A Live page takes an owner with `source: 'user'` whose `contentId` is the login in the URL; a VOD page one with `source: 'video'` whose `contentId` is the video id. A clip page takes none. The `userId` has to be a string of digits.
 - Write: `mergeChannelIds`. For each gain / Auto / Auto gain / LUFS field, a field held by one side is taken from that side, and a field held by both goes to the side with the higher field version, the user-id row keeping its value on a tie. For `lastLufs`, a removal recorded by `clearMeasurement` counts as held. `lastLufsRef` and `lastLufsWindows` go with the `lastLufs` value they describe, `autoGainRef` with `autoGain<Kind>`, `lastMeasuredAt` is the later of the two, and `name` / `login` / `url` come from the owner event. The alias from the provisional id to the user id is stored.
 - While `currentChannel.id` equals `migratingChannelId`, the `onChanged` listener of content does not re-read the row (scenario 12), so the merge's own write does not apply the provisional row's gain in between.
-- When the stored aliases already mapped the provisional id to the user id, the measurement target is unchanged and no second seed is sent.
+- When the stored aliases already mapped the provisional id to the user id, the measurement target is unchanged and no second seed is sent. The `mergeChannelIds` of an owner event repeated for the same content then changes nothing in a store that is already normal, and writes nothing (see "Single writer for per-channel values").
 - When the read is overtaken by a reapply that `chrome.storage.onChanged` started (scenario 12), that reapply sends the seeded reset, since `seededResetPending` is still set.
 - Failure: `[TCV] provisional channel migration failed` (warning). The tab keeps the provisional id, and an owner event that arrives later runs `acceptOwner` again.
 
@@ -604,7 +609,7 @@ sequenceDiagram
 
 Drawn from: `options.js` the listeners of `targetLufs` (with `endTargetKeyHold` and the `window` `blur` listener), `adGainDb`, the two default Auto toggles, `#unitToggle` and `overlayToggle`, `updateSettings`, `mutateSettings`, `reloadSettingsAfterFailure`, the `storage.onChanged` listener; `content.js` the `storage.onChanged` listener, `reapplyForCurrentChannel`, `saveChannelAutoGain`; `page-bridge.js` `setAdGainOffset`; `popup.js` the `storage.onChanged` listener.
 
-- The Target LUFS and Ad gain sliders send on `change`; their `input` only updates the label. While a key is held on the Target LUFS slider (from its `keydown` to its `keyup`), its `change` sends nothing; the `keyup`, or a `blur` of the slider or of the page's `window` before it, sends the slider's value once when it moved, and after such a `blur`, until the next `pointerdown` or a `keydown` that is not a repeat, the slider's `input` does nothing and its `change` puts the thumb back to the value written at the `blur`. The Live / VOD default toggles and the overlay toggle send on `change`, the unit buttons on `click`. Each sends the one field it controls. The controls are disabled until the first load has completed (`settingsReady`).
+- The Target LUFS and Ad gain sliders send on `change`; their `input` only updates the label. While a key is held on the Target LUFS slider (from its `keydown` to its `keyup`), its `change` sends nothing; the `keyup`, or a `blur` of the slider or of the page's `window` before it, sends the slider's value once when it moved, and after such a `blur`, until the next `pointerdown` or a `keydown` that is not a repeat, the slider's `input` does nothing and its `change` puts the thumb back to the value written at the `blur`. The Live / VOD default toggles and the overlay toggle send on `change`, the unit buttons on `click`. Each sends the one field it controls, and a field sent with the value on file is not written (see "Single writer for settings"). The controls are disabled until the first load has completed (`settingsReady`).
 - In each Twitch tab: a new `targetLufs` changes the gain at once under Auto with a finite Integrated value (through `reapplyForCurrentChannel`). A new `adGainDb` changes the node during an ad, and the ad-element nodes in the same step (`setAdGainOffset` runs `syncAdElementGains`). A new Auto default changes Auto for a channel whose row has neither an Auto choice nor a manual gain for the kind, without writing `autoApplyLoudness<Kind>`. `showGainOverlay` changes the overlay only.
 - The listener re-reads the row and checks the `saveAutoGain` condition for any change of `autoLoudnessSettings`, whichever field changed. `saveAutoGain` is sent only from a tab whose last taken `lufs` had `playing` true (`lastLufsPlaying`, the condition `saveMeasurement` goes by, scenario 5); a paused or muted tab applies the gain and saves nothing.
 - content, the popup and the options page take `autoLoudnessSettings` from the `sync` area alone. In local the key changes only when the move removes it, and that change carries no settings.
@@ -753,8 +758,8 @@ Drawn from: `content.js` `listenForResumeGesture`, `requestAudioContextResume`, 
 | Tab startup | Set to the gain resolved from the stored row, 1.0 without a channel | none | `content.js` startup block, `reapplyForCurrentChannel` |
 | AudioContext built | The new node starts at the effective gain of the held `baselineGain` | none | `page-bridge.js` `createContext` |
 | Service worker start | Not sent by the SW | none; the settings an earlier version kept in local are moved to sync | `background.js` `moveToSync`, `settings-store.js` `moveSettingsToSync` |
-| Install or update | Not sent by the SW | `normalizeChannels`; no settings are written | `background.js` `onInstalled` |
-| Options page opened | Not sent by options | `normalizeChannels` | `options.js` `loadAll` |
+| Install or update | Not sent by the SW | `normalizeChannels`, written only where it changes the store; no settings are written | `background.js` `onInstalled` |
+| Options page opened | Not sent by options | `normalizeChannels`, written only where it changes the store | `options.js` `loadAll` |
 | Popup slider `input` | Unchanged, labels only | none | `popup.js` `input` listener |
 | Popup `blur` while the slider is held | Unchanged; the rest of the drag is not sent, and its `change` puts the thumb back | none | `popup.js` `window` `blur` listener |
 | Popup slider `change`, preset click | Set to the chosen gain | `saveGain` | `popup.js` `setGain`, `content.js` `setGain` case, `saveChannelGain` |

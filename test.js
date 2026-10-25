@@ -10875,6 +10875,156 @@ function createBackgroundHarness({
   };
 }
 
+// A storage area that counts the writes that reach it.
+function countingStorageArea(initial) {
+  const area = {
+    stored: structuredClone(initial),
+    sets: 0,
+    async get(keys) { return readStoredKeys(area.stored, keys); },
+    async set(update) {
+      area.sets += 1;
+      area.stored = { ...area.stored, ...structuredClone(update) };
+    }
+  };
+  return area;
+}
+
+test('the channel store leaves out a write that would store what is on file, and only that', async () => {
+  const channel = { name: 'Some', login: 'some', url: 'https://www.twitch.tv/some' };
+  const area = countingStorageArea({
+    channelVolumes: { 123: { ...channel, gainLive: 0.5 } },
+    channelVolumeAliases: { 'vod-owner:100': '123', 'login:some': '123' },
+    channelVolumeSequence: 3
+  });
+  const write = channelStore.createChannelVolumesWriter(area, 'channelVolumes', () => 100);
+
+  // The owner event of a VOD the alias already names, as the page repeats it.
+  const owner = { operation: 'mergeChannelIds', fromId: 'vod-owner:100', toId: '123', kind: 'vod', channel };
+  await write(owner);
+  await write(owner);
+  assert.equal(area.sets, 0, 'a repeated owner event');
+  await write({ operation: 'normalizeChannels' });
+  assert.equal(area.sets, 0, 'normalizeChannels on a store that is already normal');
+
+  // Control: an owner event that names a new VOD stores its alias.
+  await write({ ...owner, fromId: 'vod-owner:200' });
+  assert.equal(area.sets, 1);
+  assert.equal(area.stored.channelVolumeAliases['vod-owner:200'], '123');
+
+  // A save of the gain on file, and a measurement that holds, still advance
+  // their versions and are written.
+  await write({ operation: 'saveGain', channelId: '123', kind: 'live', gain: 0.5, channel });
+  assert.equal(area.sets, 2, 'a gain of the value on file');
+  const measurement = {
+    operation: 'saveMeasurement', channelId: '123', kind: 'live', lufs: -20,
+    reference: u.LUFS_REFERENCE_VOLUME_1, windows: 300, channel
+  };
+  await write(measurement);
+  await write(measurement);
+  assert.equal(area.sets, 4, 'a measurement that holds');
+  assert.equal(area.stored.channelVolumeSequence, 6);
+
+  // Control: normalizeChannels where there is a row to fold in.
+  const legacy = countingStorageArea({
+    channelVolumes: { 'login:some': { name: 'Some', gainLive: 0.7 }, 123: { ...channel } }
+  });
+  const normalize = channelStore.createChannelVolumesWriter(legacy, 'channelVolumes', () => 100);
+  await normalize({ operation: 'normalizeChannels' });
+  assert.equal(legacy.sets, 1);
+  assert.equal(legacy.stored.channelVolumes['login:some'], undefined);
+  await normalize({ operation: 'normalizeChannels' });
+  assert.equal(legacy.sets, 1, 'and none once it is normal');
+
+  // Control: normalizeChannels that changes one text field of one row, to text
+  // of the same length.
+  const linked = countingStorageArea({
+    channelVolumes: { 123: { name: 'Some', login: 'abcdefgh', url: 'https://www.twitch.tv/videos/1' } },
+    channelVolumeAliases: { 'login:abcdefgh': '123' },
+    channelVolumeSequence: 1
+  });
+  await channelStore.createChannelVolumesWriter(linked, 'channelVolumes', () => 100)({ operation: 'normalizeChannels' });
+  assert.equal(linked.sets, 1, 'a row whose url is put right');
+  assert.equal(linked.stored.channelVolumes['123'].url, 'https://www.twitch.tv/abcdefgh');
+
+  // Control: an alias map stored in a shape the store does not read is
+  // written over with the empty map it reads in its place.
+  for (const aliases of [null, 5, []]) {
+    const odd = countingStorageArea({
+      channelVolumes: { 'vod-owner:9': { name: '9', gainVod: 0.5 } },
+      channelVolumeAliases: aliases,
+      channelVolumeSequence: 1
+    });
+    await channelStore.createChannelVolumesWriter(odd, 'channelVolumes', () => 100)({ operation: 'normalizeChannels' });
+    assert.equal(odd.sets, 1, `aliases stored as ${JSON.stringify(aliases)}`);
+    assert.deepEqual(odd.stored.channelVolumeAliases, {});
+  }
+});
+
+// The settings in sync and in local, with the writes that reach sync counted.
+function countingSettingsAreas({ sync = {}, local = {} } = {}) {
+  const areas = { sync: structuredClone(sync), local: structuredClone(local), syncSets: 0 };
+  areas.storage = {
+    sync: {
+      async get(keys) { return readStoredKeys(areas.sync, keys); },
+      async set(update) {
+        areas.syncSets += 1;
+        areas.sync = { ...areas.sync, ...structuredClone(update) };
+      }
+    },
+    local: { async get(keys) { return readStoredKeys(areas.local, keys); } }
+  };
+  return areas;
+}
+
+test('the settings store leaves out a patch of the value sync holds', async () => {
+  const stored = {
+    targetLufs: -18, adGainDb: -6, displayUnit: '%', showGainOverlay: true,
+    autoApplyLoudnessLiveDefault: false, autoApplyLoudnessVodDefault: false
+  };
+  const areas = countingSettingsAreas({ sync: { autoLoudnessSettings: stored } });
+  const write = settingsStore.createSettingsWriter(areas.storage);
+  const patch = (fields) => write({ operation: 'patchSettings', patch: fields });
+
+  // The unit button already chosen sends the unit on file.
+  await patch({ displayUnit: '%' });
+  await patch({ targetLufs: -18 });
+  assert.equal(areas.syncSets, 0);
+
+  await patch({ targetLufs: -20 });
+  assert.equal(areas.syncSets, 1);
+  assert.equal(areas.sync.autoLoudnessSettings.targetLufs, -20);
+
+  // Settings read from the copy an earlier version left in local are not in
+  // sync, so the same values are written there.
+  const notMoved = countingSettingsAreas({ local: { autoLoudnessSettings: stored } });
+  await settingsStore.createSettingsWriter(notMoved.storage)({ operation: 'patchSettings', patch: { displayUnit: '%' } });
+  assert.equal(notMoved.syncSets, 1, 'settings read from local');
+  assert.deepEqual(notMoved.sync.autoLoudnessSettings, stored);
+
+  // A store that drops a field written by an earlier version writes.
+  const legacy = countingSettingsAreas({ sync: { autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessClipDefault: true } } });
+  await settingsStore.createSettingsWriter(legacy.storage)({ operation: 'patchSettings', patch: { targetLufs: -18 } });
+  assert.equal(legacy.syncSets, 1);
+  assert.deepEqual(legacy.sync.autoLoudnessSettings, { targetLufs: -18 });
+
+  // Settings that are not there, or not an object, are written.
+  const empty = countingSettingsAreas();
+  await settingsStore.createSettingsWriter(empty.storage)({ operation: 'patchSettings', patch: { targetLufs: -18 } });
+  assert.equal(empty.syncSets, 1, 'nothing stored');
+  const odd = countingSettingsAreas({ sync: { autoLoudnessSettings: null } });
+  await settingsStore.createSettingsWriter(odd.storage)({ operation: 'patchSettings', patch: { targetLufs: -18 } });
+  assert.equal(odd.syncSets, 1, 'null stored');
+  assert.deepEqual(odd.sync.autoLoudnessSettings, { targetLufs: -18 });
+  // Sync holding something that is not settings, with the copy in local.
+  const oddOverLocal = countingSettingsAreas({
+    sync: { autoLoudnessSettings: null },
+    local: { autoLoudnessSettings: stored }
+  });
+  await settingsStore.createSettingsWriter(oddOverLocal.storage)({ operation: 'patchSettings', patch: { displayUnit: '%' } });
+  assert.equal(oddOverLocal.syncSets, 1, 'null in sync, settings in local');
+  assert.deepEqual(oddOverLocal.sync.autoLoudnessSettings, stored);
+});
+
 test('background mutation listener keeps async response open and reports failures', async () => {
   const harness = createBackgroundHarness();
   const send = (mutation, type) => harness.send(mutation, type);

@@ -71,6 +71,17 @@ function validSequence(sequence) {
   return Number.isSafeInteger(sequence) && sequence > 0;
 }
 
+// Whether two stored values hold the same data, whatever order their keys
+// were written in.
+function sameStoredValue(a, b) {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((key) =>
+    Object.prototype.hasOwnProperty.call(b, key) && sameStoredValue(a[key], b[key]));
+}
+
 function copyMetadata(entry, channel) {
   if (!channel || typeof channel !== 'object') return;
   for (const field of ['name', 'login', 'url']) {
@@ -647,6 +658,12 @@ function createChannelVolumesWriter(
       // Nothing is kept for a clip now, so the name points at nothing.
       for (const id of Object.keys(aliases)) {
         if (id.startsWith(CLIP_PROVISIONAL_PREFIX)) delete aliases[id];
+      }
+      // A write that would store what is on file already is left out.
+      if (sameStoredValue(next, data[storageKey]) &&
+          sameStoredValue(aliases, data[aliasesKey]) &&
+          sequence === data[sequenceKey]) {
+        return next;
       }
       await storageArea.set({
         [storageKey]: next,

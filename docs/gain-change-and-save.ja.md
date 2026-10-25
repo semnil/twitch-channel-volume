@@ -107,6 +107,8 @@ sequenceDiagram
   store->>store: 別名を更新し、無くなった行へつながる別名と clip-owner の別名を消す
   alt 書き手か storage が例外を投げた
     sw-->>sender: ok false、reason
+  else 3 つのキーが読んだときと同じ中身になる (sameStoredValue)
+    sw-->>sender: ok true、何も書かない
   else 書き込めた
     store->>storage: set channelVolumes、channelVolumeAliases、channelVolumeSequence
     par
@@ -117,7 +119,7 @@ sequenceDiagram
   end
 ```
 
-図のもと: `background.js` の `onMessage` リスナー、`namedFailure`。`channel-store.js` の `createChannelVolumesWriter`、`resolveMutation`、`mutationNeedsSequence`、`applyChannelVolumesMutation`、`normalizeKnownChannelEntries`、`aliasesLeadingTo`。`content.js` の `sendChannelMutation`。`options.js` の `mutateChannelVolumes`。
+図のもと: `background.js` の `onMessage` リスナー、`namedFailure`。`channel-store.js` の `createChannelVolumesWriter`、`sameStoredValue`、`resolveMutation`、`mutationNeedsSequence`、`applyChannelVolumesMutation`、`normalizeKnownChannelEntries`、`aliasesLeadingTo`。`content.js` の `sendChannelMutation`。`options.js` の `mutateChannelVolumes`。
 
 | `operation` | 送るもの | 送る項目 | 行に書くもの | 通し番号 |
 |---|---|---|---|---|
@@ -133,7 +135,7 @@ sequenceDiagram
 
 - `resolveMutation` は、保存された別名をたどって `channelId` を直す。直したときは送り手が付けた `channel` の情報 (名前など) を捨て、値は正式な ID の行に入る。
 - `clearChannels` 以外の操作のあとで、`normalizeKnownChannelEntries` は `login:<login>` の行を、同じ login を持つ数字の行 (1 つだけあるとき) へまとめ、その `url` を `https://www.twitch.tv/<login>` にする。`withoutClipFields` は以前の版がクリップ用に持っていた項目を落とし、値が何も残らない行は消す。`cloneEntry` は写した行の古い形の `gain` / `autoApplyLoudness` を種別ごとの項目へ広げる。`knownLoginTargets` は `login:<login>` からその数字の ID への別名を足す。操作が、別の ID へ移さずに無くした行 (消したチャンネル、クリップだけの行) は、直接またはほかの別名を経てそこへつながる別名を、すべて一緒に消す (`aliasesLeadingTo`)。
-- 操作が `storage.set` まで届けば、3 つのキーを 1 回の呼び出しで書く。`normalizeChannels` や、`fromId` の行が無い `mergeChannelIds` でも書く。
+- `storage.set` は 3 つのキーを 1 回の呼び出しで書く。3 つとも読んだときと同じ中身になるとき (キーの順番によらず項目ごとに比べる。`sameStoredValue`) は呼ばない。すでに整った状態での `normalizeChannels` と、別名がもう保存され行もまとまっている `mergeChannelIds` は何も書かない。通し番号を取る操作は通し番号と行の項目の版番号を変えるので、保存値と同じゲインの `saveGain` も、レベルが変わらない `saveMeasurement` も書く。
 - 1 つのタブの中では、content の `sendChannelMutation` が操作を `channelMutationQueue` につなげて順に送るので、SW はタブが送った順に受け取る。SW の中では `queue = task.catch(() => {})` によって、失敗した処理が次の処理を止めない。
 
 | 答えの `reason` | 出どころ | SW のログ |
@@ -158,6 +160,8 @@ sequenceDiagram
   store->>store: applySettingsMutation: validateSettingsPatch、保存値へ重ねる、withoutRemovedSettings
   alt 不正な入力か storage が例外を投げた
     sw-->>options: ok false、reason
+  else どの項目も読んだときのままで、sync が持つ値と同じ (sameStoredSettings)
+    sw-->>options: ok true、settings、何も書かない
   else 書き込めた
     store->>storage: sync.set autoLoudnessSettings
     par
@@ -168,9 +172,10 @@ sequenceDiagram
   end
 ```
 
-図のもと: `background.js` の `onMessage` リスナー。`settings-area.js` の `readStoredSettings`。`settings-store.js` の `createSettingsWriter`、`applySettingsMutation`、`validateSettingsPatch`、`withoutRemovedSettings`。`options.js` の `mutateSettings`。
+図のもと: `background.js` の `onMessage` リスナー。`settings-area.js` の `readStoredSettings`。`settings-store.js` の `createSettingsWriter`、`sameStoredSettings`、`applySettingsMutation`、`validateSettingsPatch`、`withoutRemovedSettings`。`options.js` の `mutateSettings`。
 
 - `validateSettingsPatch` が受け付けるのは、−30〜−6 の `targetLufs`、−24〜6 の `adGainDb`、`%` か `dB` の `displayUnit`、真偽値の `showGainOverlay` と 2 つの Auto 既定値。それ以外は `invalid-mutation` (`[TCV] settings mutation rejected as invalid`)。reason の付いていない失敗は `settings-update-failed` (`[TCV] settings mutation failed`) で答える。
+- どの項目も sync が持つ値のままにする patch (すでに選ばれている表示単位のボタンも含む) は、何も書かない。local の写しから読んだ設定は、sync が持っていないので sync へ書く。
 
 ## 場面ごとの流れ
 
@@ -236,7 +241,7 @@ sequenceDiagram
   end
   chrome->>sw: runtime.onInstalled
   sw->>cstore: writeChannelVolumes normalizeChannels
-  cstore->>storage: get、normalizeKnownChannelEntries、set
+  cstore->>storage: get、normalizeKnownChannelEntries、保存値が変わるときだけ set
 ```
 
 図のもと: `background.js` の最上位での `moveToSync` の呼び出しと `onInstalled` リスナー。`channel-store.js` の `normalizeKnownChannelEntries`、`withoutClipFields`、`cloneEntry`、`expandLegacyGain`、`expandLegacyAuto`。`settings-store.js` の `moveSettingsToSync`、`withoutRemovedSettings`。`settings-area.js` の `isStoredSettingsObject`。`options.js` の `loadAll`。`utils.js` の `extractGainForKind`、`resolveAutoApplySetting`。
@@ -517,7 +522,7 @@ sequenceDiagram
 - Live のページが取る owner は、`source: 'user'` で、`contentId` が URL の login のもの。VOD のページが取るのは、`source: 'video'` で、`contentId` が動画 ID のもの。クリップのページは何も取らない。`userId` は数字だけの文字列でなければならない。
 - 書き込み: `mergeChannelIds`。ゲイン・Auto・Auto のゲイン・LUFS の各項目は、片方だけが持っていればその値を取り、両方が持っていれば版番号の大きい方を取る。同じ番号なら、ユーザー ID の行の値を残す。`lastLufs` では、`clearMeasurement` が記録した「消した」という状態も、持っているものとして数える。`lastLufsRef` と `lastLufsWindows` は説明している `lastLufs` の値と一緒に、`autoGainRef` は `autoGain<Kind>` と一緒に動く。`lastMeasuredAt` は 2 つのうち新しい方、`name` / `login` / `url` は owner のイベントから取る。仮 ID からユーザー ID への別名を保存する。
 - `currentChannel.id` が `migratingChannelId` と同じ間、content の `onChanged` リスナーは行を読み直さない (場面 12)。そのため、まとめる書き込みそのものによって、途中で仮 ID の行のゲインがかかることはない。
-- 保存された別名がすでに仮 ID をユーザー ID へ結んでいたときは、計測の対象が変わらないので、2 回目の種は送らない。
+- 保存された別名がすでに仮 ID をユーザー ID へ結んでいたときは、計測の対象が変わらないので、2 回目の種は送らない。同じコンテンツについて繰り返された owner のイベントの `mergeChannelIds` は、すでに整った状態の保存値を何も変えず、何も書かない (「チャンネルごとの値を書く単一の書き手」を参照)。
 - 読み直しが `chrome.storage.onChanged` の始めた読み直し (場面 12) に追い越されたときは、`seededResetPending` がまだ立っているので、追い越した読み直しが種つきのリセットを送る。
 - 失敗: `[TCV] provisional channel migration failed` (warning)。タブは仮 ID のままで、あとで届いた owner のイベントがもう一度 `acceptOwner` を動かす。
 
@@ -604,7 +609,7 @@ sequenceDiagram
 
 図のもと: `options.js` の `targetLufs` (`endTargetKeyHold` と `window` の `blur` リスナーを含む)・`adGainDb`・2 つの Auto 既定値のトグル・`#unitToggle`・`overlayToggle` のリスナー、`updateSettings`、`mutateSettings`、`reloadSettingsAfterFailure`、`storage.onChanged` リスナー。`content.js` の `storage.onChanged` リスナー、`reapplyForCurrentChannel`、`saveChannelAutoGain`。`page-bridge.js` の `setAdGainOffset`。`popup.js` の `storage.onChanged` リスナー。
 
-- 「Target LUFS」と「CM Gain」のスライダーは `change` で送り、`input` ではラベルを変えるだけ。「Target LUFS」のスライダーでキーを押し続けている間 (`keydown` からその `keyup` まで) は `change` で何も送らない。`keyup`、またはその前のスライダーかページの `window` の `blur` で、値が動いていればスライダーの値を 1 回送る。そのような `blur` のあとは、次の `pointerdown` か、繰り返しでない `keydown` まで、スライダーの `input` は何もせず、`change` はつまみを `blur` の時点で書いた値へ戻す。Live / VOD の既定値のトグルとゲイン表示のトグルは `change` で、表示単位のボタンは `click` で送る。どれも自分が受け持つ項目 1 つだけを送る。最初の読み込みが終わるまでは押せない (`settingsReady`)。
+- 「Target LUFS」と「CM Gain」のスライダーは `change` で送り、`input` ではラベルを変えるだけ。「Target LUFS」のスライダーでキーを押し続けている間 (`keydown` からその `keyup` まで) は `change` で何も送らない。`keyup`、またはその前のスライダーかページの `window` の `blur` で、値が動いていればスライダーの値を 1 回送る。そのような `blur` のあとは、次の `pointerdown` か、繰り返しでない `keydown` まで、スライダーの `input` は何もせず、`change` はつまみを `blur` の時点で書いた値へ戻す。Live / VOD の既定値のトグルとゲイン表示のトグルは `change` で、表示単位のボタンは `click` で送る。どれも自分が受け持つ項目 1 つだけを送り、保存値と同じ値を送った項目は書かない (「設定を書く単一の書き手」を参照)。最初の読み込みが終わるまでは押せない (`settingsReady`)。
 - それぞれの Twitch のタブで: 新しい `targetLufs` は、Auto がオンで Integrated が有限ならすぐにゲインを変える (`reapplyForCurrentChannel` を通る)。新しい `adGainDb` は、CM 中ならノードを変え、CM 要素のノードも同じ手順の中で変わる (`setAdGainOffset` が `syncAdElementGains` を動かす)。新しい Auto 既定値は、その種別の Auto の選択も手動ゲインも行に無いチャンネルについて Auto を切り替えるが、`autoApplyLoudness<Kind>` は書かない。`showGainOverlay` はオーバーレイだけを変える。
 - このリスナーは、`autoLoudnessSettings` が変われば、どの項目が変わったかに関係なく、行を読み直して `saveAutoGain` の条件を調べる。`saveAutoGain` を送るのは、最後に受け取った `lufs` の `playing` が true のタブだけ (`lastLufsPlaying`。`saveMeasurement` と同じ条件、場面 5)。止まっているかミュートのタブは、ゲインはかけるが何も保存しない。
 - content・popup・設定ページは、`autoLoudnessSettings` を `sync` の変更からだけ取り込む。local でこのキーが変わるのは移し替えが消すときだけで、その変更は設定を運ばない。
@@ -753,8 +758,8 @@ sequenceDiagram
 | タブの起動 | 保存された行から決まるゲイン。チャンネルが無ければ 1.0 | なし | `content.js` の起動の処理、`reapplyForCurrentChannel` |
 | AudioContext を作る | 新しいノードは、持っていた `baselineGain` から決まる実際のゲインで始まる | なし | `page-bridge.js` の `createContext` |
 | Service Worker の起動 | SW は送らない | なし。以前の版が local に置いた設定を sync へ移す | `background.js` の `moveToSync`、`settings-store.js` の `moveSettingsToSync` |
-| インストール・更新 | SW は送らない | `normalizeChannels`。設定は書かない | `background.js` の `onInstalled` |
-| 設定ページを開く | options は送らない | `normalizeChannels` | `options.js` の `loadAll` |
+| インストール・更新 | SW は送らない | `normalizeChannels`。保存値が変わるときだけ書く。設定は書かない | `background.js` の `onInstalled` |
+| 設定ページを開く | options は送らない | `normalizeChannels`。保存値が変わるときだけ書く | `options.js` の `loadAll` |
 | popup のスライダーの `input` | 変わらない、表示だけ | なし | `popup.js` の `input` リスナー |
 | スライダーを押さえたまま popup が `blur` する | 変わらない。残りのドラッグは送らず、その `change` でつまみを戻す | なし | `popup.js` の `window` の `blur` リスナー |
 | popup のスライダーの `change`、プリセットのクリック | 選んだゲイン | `saveGain` | `popup.js` の `setGain`、`content.js` の `setGain`、`saveChannelGain` |
