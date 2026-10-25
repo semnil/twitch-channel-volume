@@ -59,7 +59,7 @@ content chooses the baseline gain in `resolvePreferredGain` (`utils.js`) from th
 
 `reapplyForCurrentChannel` reads the row (`loadChannelEntry`) and then applies the gain `resolvePreferredGain` resolves, or, with Auto on and a finite Integrated value, the gain `autoGainToPlay` gives (scenario 5). When a newer read, a navigation or a channel change has started while it was reading (`preferenceRevision`, or a different `currentChannel`), it returns false and applies nothing; the diagrams below draw that as `opt the read was not overtaken`. On a page with no channel id or of kind `none` it reads nothing, applies 1.0 and returns true.
 
-Startup and SPA navigation set `seededResetPending` before their read. While it is set, the reapply that applies its gain, whichever event started it, then sends the reset seeded from the row it read and clears the mark (`sendPendingSeededReset`).
+Startup, SPA navigation and an owner event that moves the measurement target (scenario 8) set `seededResetPending` before their read. While it is set, the reapply that applies its gain, whichever event started it, then sends the reset seeded from the row it read and clears the mark (`sendPendingSeededReset`).
 
 Every path below that changes the gain ends in this common step:
 
@@ -489,24 +489,28 @@ sequenceDiagram
       content->>content: migratingChannelId cleared, owner not taken
     else the URL still names the same content
       content->>content: pendingOwner, resolveChannel: currentChannel.id = userId, migratingChannelId cleared
+      opt canonical id or kind differs from the seeded measurement target
+        content->>content: seededResetPending = true
+      end
       content->>content: reapplyForCurrentChannel: the merged row is read
       opt the read was not overtaken
         content->>bridge: setGain (applyGain)
-        opt canonical id or kind differs from the seeded measurement target
-          content->>bridge: resetMeasurement with the next epoch, seeded from the merged row
+        opt seededResetPending
+          content->>bridge: resetMeasurement with the next epoch, seeded from the merged row, seededResetPending = false
         end
       end
     end
   end
 ```
 
-Drawn from: `page-bridge.js` the `window.fetch` wrapper, `extractOwnerFromGraphQL`, `postOwner`; `content.js` the `owner` case of `handleBridgeMessage`, `acceptOwner`, `migrateChannelId`, `resolveChannel`, `reapplyForCurrentChannel`, `currentMeasurementTarget`, `resetMeasurementForCurrentChannel`; `utils.js` `ownerMatchesTwitchContent`, `provisionalChannelIdForContent`; `channel-store.js` `mergeProvisionalEntry`, `resolveMutation`.
+Drawn from: `page-bridge.js` the `window.fetch` wrapper, `extractOwnerFromGraphQL`, `postOwner`; `content.js` the `owner` case of `handleBridgeMessage`, `acceptOwner`, `migrateChannelId`, `resolveChannel`, `reapplyForCurrentChannel`, `currentMeasurementTarget`, `sendPendingSeededReset`, `resetMeasurementForCurrentChannel`; `utils.js` `ownerMatchesTwitchContent`, `provisionalChannelIdForContent`; `channel-store.js` `mergeProvisionalEntry`, `resolveMutation`.
 
 - The bridge names the content from the answer alone: `data.user` with its `login` as `contentId`, and `data.video.owner` with `data.video.id`. A `data.video.owner` whose answer carries no `data.video.id` posts no owner.
 - A Live page takes an owner with `source: 'user'` whose `contentId` is the login in the URL; a VOD page one with `source: 'video'` whose `contentId` is the video id. A clip page takes none. The `userId` has to be a string of digits.
 - Write: `mergeChannelIds`. For each gain / Auto / Auto gain / LUFS field, a field held by one side is taken from that side, and a field held by both goes to the side with the higher field version, the user-id row keeping its value on a tie. For `lastLufs`, a removal recorded by `clearMeasurement` counts as held. `lastLufsRef` and `lastLufsWindows` go with the `lastLufs` value they describe, `autoGainRef` with `autoGain<Kind>`, `lastMeasuredAt` is the later of the two, and `name` / `login` / `url` come from the owner event. The alias from the provisional id to the user id is stored.
 - While `currentChannel.id` equals `migratingChannelId`, the `onChanged` listener of content does not re-read the row (scenario 12), so the merge's own write does not apply the provisional row's gain in between.
 - When the stored aliases already mapped the provisional id to the user id, the measurement target is unchanged and no second seed is sent.
+- When the read is overtaken by a reapply that `chrome.storage.onChanged` started (scenario 12), that reapply sends the seeded reset, since `seededResetPending` is still set.
 - Failure: `[TCV] provisional channel migration failed` (warning). The tab keeps the provisional id, and an owner event that arrives later runs `acceptOwner` again.
 
 ### 9. Ad breaks

@@ -99,64 +99,62 @@ before its first await, so the resume that follows has it.
 The store helpers' opening checks. `sendChannelMutation` opens with the same
 runtime check, and every caller of these already holds `currentChannel.id`.
 
-- `content.js:174` a guard body is dropped ×1 — if (!channelId || !isContextValid() || !Number.isFinite(lufs)) {
-- `content.js:174` || becomes && ×2 — ||
-- `content.js:193` a guard body is dropped ×1 — if (!channelId || !isContextValid() || !Number.isFinite(autoGain)) {
-- `content.js:193` || becomes && ×2 — ||
-- `content.js:217` a guard is dropped ×1 — if (!fromId || !toId || fromId === toId) return Promise.resolve();
-- `content.js:217` || becomes && ×2 — ||
+- `content.js:175` a guard body is dropped ×1 — if (!channelId || !isContextValid() || !Number.isFinite(lufs)) {
+- `content.js:175` || becomes && ×2 — ||
+- `content.js:194` a guard body is dropped ×1 — if (!channelId || !isContextValid() || !Number.isFinite(autoGain)) {
+- `content.js:194` || becomes && ×2 — ||
+- `content.js:218` a guard is dropped ×1 — if (!fromId || !toId || fromId === toId) return Promise.resolve();
+- `content.js:218` || becomes && ×2 — ||
 
 The url `channelMetadata` puts on a mutation. Measured against the store: a
 merge whose channel names only the login comes back holding `name` and `url` all
 the same, because the store fills both from the login it was given.
 
-- `content.js:388` || becomes && ×1 — ||
+- `content.js:389` || becomes && ×1 — ||
 
 `acceptOwner`'s provisional-id check. A provisional id is `login:<name>` or
 `vod-owner:<id>` and a confirmed one is numeric, so the second clause is never
 false; the first is only false on a clip, which `ownerMatchesTwitchContent`
 refuses at the top of `acceptOwner`.
 
-- `content.js:394` && becomes || ×1 — &&
-- `content.js:394` a guard is always taken ×1 — if (provisionalId && provisionalId !== confirmedId) {
+- `content.js:395` && becomes || ×1 — &&
+- `content.js:395` a guard is always taken ×1 — if (provisionalId && provisionalId !== confirmedId) {
 
 The three dropped awaits on `resolveChannel`. It holds no await of its own, so
 its promise is already settled when it is returned.
 
-- `content.js:416` an await is dropped ×1 — await
-- `content.js:713` an await is dropped ×1 — await
-- `content.js:1016` an await is dropped ×1 — await
+- `content.js:417` an await is dropped ×1 — await
+- `content.js:712` an await is dropped ×1 — await
+- `content.js:1015` an await is dropped ×1 — await
 
 `reapplyForCurrentChannel`'s "no channel here" exit and its staleness check. The
 path below the exit loads nothing for an empty id, resolves the gain to 1.0 with
 no entry and applies that, which is what the body does; and the revision beside
 the staleness check is bumped by every channel change, so it answers first.
 
-- `content.js:460` a guard body is dropped ×1 — if (!ch.id || ch.kind === 'none') {
-- `content.js:460` || becomes && ×1 — ||
-- `content.js:471` || becomes && ×1 — ||
+- `content.js:459` a guard body is dropped ×1 — if (!ch.id || ch.kind === 'none') {
+- `content.js:459` || becomes && ×1 — ||
+- `content.js:470` || becomes && ×1 — ||
 
-The `true` that exit returns. Of the callers, only an owner event and a
-settings change read what the reapply returns: an owner event's reapply has the
-channel the owner named and never takes the exit, and the settings change's
-Auto save stops at `currentAutoApplyLoudness`, which the exit has just set to
-false.
+The `true` that exit returns. Of the callers, only a settings change reads
+what the reapply returns, and its Auto save stops at
+`currentAutoApplyLoudness`, which the exit has just set to false.
 
-- `content.js:466` true becomes false ×1 — return true;
+- `content.js:465` true becomes false ×1 — return true;
 
 `handleBridgeMessage`'s runtime check. Each case reaches a guard of its own —
 the storage helpers above — and the rest only post to the page.
 
-- `content.js:506` a guard is dropped ×1 — if (!isContextValid()) return;
+- `content.js:505` a guard is dropped ×1 — if (!isContextValid()) return;
 
 The cached entry an Auto save and a measurement reset rewrite. What the mutants
 differ on is the other kind's `autoGainRef` and `lastLufs`, and `lastMeasuredAt`
 — content.js reads `lastLufs` only at `currentChannel.kind`, `lastMeasuredAt`
 nowhere, and the entry is reloaded before another kind is read.
 
-- `content.js:903` || becomes && ×1 — ||
-- `content.js:955` a guard is always taken ×1 — if (currentChannelEntry) {
-- `content.js:957` || becomes && ×1 — ||
+- `content.js:902` || becomes && ×1 — ||
+- `content.js:954` a guard is always taken ×1 — if (currentChannelEntry) {
+- `content.js:956` || becomes && ×1 — ||
 
 ## channel-store.js
 

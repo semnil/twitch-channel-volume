@@ -59,7 +59,7 @@ content は、今のチャンネルの行をもとに `resolvePreferredGain` (`u
 
 `reapplyForCurrentChannel` は行を読み (`loadChannelEntry`)、そのあとで `resolvePreferredGain` が決めたゲインをかける。Auto がオンで Integrated が有限なら、代わりに `autoGainToPlay` のゲインをかける (場面 5)。読んでいる間に、あとからの読み直し・遷移・チャンネルの変化が始まっていたら (`preferenceRevision`、または `currentChannel` が変わっていたら)、false を返して何もかけない。下の図ではこれを `opt 読み直しが追い越されていない` と書く。チャンネル ID が無いページや種別 `none` のページでは、何も読まずに 1.0 をかけて true を返す。
 
-起動と SPA 遷移は、読む前に `seededResetPending` (種つきのリセットがまだ、という印) を立てる。印が立っている間は、ゲインをかけた読み直しが、どのきっかけで始まったものでも、続けて読んだ行を種にしたリセットを送り、印を下ろす (`sendPendingSeededReset`)。
+起動と SPA 遷移、それに計測の対象を変える owner のイベント (場面 8) は、読む前に `seededResetPending` (種つきのリセットがまだ、という印) を立てる。印が立っている間は、ゲインをかけた読み直しが、どのきっかけで始まったものでも、続けて読んだ行を種にしたリセットを送り、印を下ろす (`sendPendingSeededReset`)。
 
 ゲインを変える下の流れは、どれも最後にこの共通の手順を通る。
 
@@ -489,24 +489,28 @@ sequenceDiagram
       content->>content: migratingChannelId を消し、owner は取らない
     else URL がまだ同じものを指している
       content->>content: pendingOwner、resolveChannel: currentChannel.id = userId、migratingChannelId を消す
+      opt 正式な ID か種別が、種を入れた計測の対象と違う
+        content->>content: seededResetPending = true
+      end
       content->>content: reapplyForCurrentChannel: まとめたあとの行を読む
       opt 読み直しが追い越されていない
         content->>bridge: setGain (applyGain)
-        opt 正式な ID か種別が、種を入れた計測の対象と違う
-          content->>bridge: 次の epoch で resetMeasurement、まとめたあとの行を種にする
+        opt seededResetPending
+          content->>bridge: 次の epoch で resetMeasurement、まとめたあとの行を種にする、seededResetPending = false
         end
       end
     end
   end
 ```
 
-図のもと: `page-bridge.js` の `window.fetch` の包み、`extractOwnerFromGraphQL`、`postOwner`。`content.js` の `handleBridgeMessage` の `owner`、`acceptOwner`、`migrateChannelId`、`resolveChannel`、`reapplyForCurrentChannel`、`currentMeasurementTarget`、`resetMeasurementForCurrentChannel`。`utils.js` の `ownerMatchesTwitchContent`、`provisionalChannelIdForContent`。`channel-store.js` の `mergeProvisionalEntry`、`resolveMutation`。
+図のもと: `page-bridge.js` の `window.fetch` の包み、`extractOwnerFromGraphQL`、`postOwner`。`content.js` の `handleBridgeMessage` の `owner`、`acceptOwner`、`migrateChannelId`、`resolveChannel`、`reapplyForCurrentChannel`、`currentMeasurementTarget`、`sendPendingSeededReset`、`resetMeasurementForCurrentChannel`。`utils.js` の `ownerMatchesTwitchContent`、`provisionalChannelIdForContent`。`channel-store.js` の `mergeProvisionalEntry`、`resolveMutation`。
 
 - bridge は、どのコンテンツのものかを応答だけから決める。`data.user` は `login` を、`data.video.owner` は `data.video.id` を `contentId` にする。`data.video.id` の無い応答の `data.video.owner` からは、owner を送らない。
 - Live のページが取る owner は、`source: 'user'` で、`contentId` が URL の login のもの。VOD のページが取るのは、`source: 'video'` で、`contentId` が動画 ID のもの。クリップのページは何も取らない。`userId` は数字だけの文字列でなければならない。
 - 書き込み: `mergeChannelIds`。ゲイン・Auto・Auto のゲイン・LUFS の各項目は、片方だけが持っていればその値を取り、両方が持っていれば版番号の大きい方を取る。同じ番号なら、ユーザー ID の行の値を残す。`lastLufs` では、`clearMeasurement` が記録した「消した」という状態も、持っているものとして数える。`lastLufsRef` と `lastLufsWindows` は説明している `lastLufs` の値と一緒に、`autoGainRef` は `autoGain<Kind>` と一緒に動く。`lastMeasuredAt` は 2 つのうち新しい方、`name` / `login` / `url` は owner のイベントから取る。仮 ID からユーザー ID への別名を保存する。
 - `currentChannel.id` が `migratingChannelId` と同じ間、content の `onChanged` リスナーは行を読み直さない (場面 12)。そのため、まとめる書き込みそのものによって、途中で仮 ID の行のゲインがかかることはない。
 - 保存された別名がすでに仮 ID をユーザー ID へ結んでいたときは、計測の対象が変わらないので、2 回目の種は送らない。
+- 読み直しが `chrome.storage.onChanged` の始めた読み直し (場面 12) に追い越されたときは、`seededResetPending` がまだ立っているので、追い越した読み直しが種つきのリセットを送る。
 - 失敗: `[TCV] provisional channel migration failed` (warning)。タブは仮 ID のままで、あとで届いた owner のイベントがもう一度 `acceptOwner` を動かす。
 
 ### 9. CM 区間

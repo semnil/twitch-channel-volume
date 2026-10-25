@@ -55,9 +55,10 @@
   let measurementEpoch = 0;
   let currentCanonicalChannelId = '';
   let seededMeasurementTarget = '';
-  // Set at startup and on a route change: the measurement is owed a reset
-  // seeded from the row, and whichever read of the row wins sends it, a read
-  // a write reaching chrome.storage.onChanged started included.
+  // Set at startup, on a route change and where an owner moves what is being
+  // measured: the measurement is owed a reset seeded from the row, and
+  // whichever read of the row wins sends it, a read a write reaching
+  // chrome.storage.onChanged started included.
   let seededResetPending = false;
   let lastAutoGainUpdateAt = -Infinity;
   // When a measured level last set the gain Auto plays; null from a
@@ -417,10 +418,8 @@
     } finally {
       migratingChannelId = '';
     }
-    if (await reapplyForCurrentChannel() &&
-        currentMeasurementTarget() !== seededMeasurementTarget) {
-      resetMeasurementForCurrentChannel();
-    }
+    if (currentMeasurementTarget() !== seededMeasurementTarget) seededResetPending = true;
+    await reapplyForCurrentChannel();
   }
 
   async function resolveChannel(seed) {

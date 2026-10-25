@@ -7402,6 +7402,40 @@ test('content seeds the measurement once the owner ID resolves', async () => {
   assert.equal(state.channel.id, '777');
 });
 
+// The read an owner event makes can be overtaken like the one startup makes,
+// and the seed the owner moved the measurement to is owed all the same.
+test('content seeds the measurement an owner moved from the read that won', async () => {
+  const harness = createContentHarness({
+    href: 'https://www.twitch.tv/videos/100',
+    channelVolumes: { '777': { name: 'Streamer', ...measured({ vod: -16 }, 900) } }
+  });
+  await flushTasks();
+  harness.commands.length = 0;
+
+  harness.deferNextStorageGet();
+  const owner = harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '777',
+    login: 'streamer',
+    displayName: 'Streamer',
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '100'
+  });
+  await flushTasks();
+  await harness.dispatchStorage({
+    [u.CHANNEL_VOLUMES_KEY]: { newValue: structuredClone(harness.stored[u.CHANNEL_VOLUMES_KEY]) }
+  }, 'local');
+  await harness.releaseStorageGet();
+  await owner;
+
+  const resets = harness.commands.filter((command) => command.cmd === 'resetMeasurement')
+    .map((command) => [command.initialIntegratedLufs, command.initialIntegratedWindows]);
+  assert.deepEqual(resets, [[-16, 900]]);
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).channel.id, '777');
+});
+
 test('content keeps the running measurement when the owner resolves the same channel', async () => {
   const harness = createContentHarness({
     href: 'https://www.twitch.tv/streamer',
