@@ -256,8 +256,15 @@ sequenceDiagram
   participant content as content.js
   participant bridge as page-bridge.js
   participant sw as Service Worker
-  popup->>popup: スライダーの input: Current の表示と値のラベルだけ
-  popup->>content: tabs.sendMessage setGain と appliesTo、gain (スライダーの change かプリセットのクリック)
+  popup->>popup: スライダーの input: Current の表示と値のラベル
+  opt スライダーでキーを押し続けている
+    popup->>content: input ごとに previewGain と appliesTo、gain
+    opt 下の setGain と同じ理由で断る
+      content-->>popup: ok false、reason
+    end
+    content->>bridge: setGain (applyGain)、保存はしない
+  end
+  popup->>content: tabs.sendMessage setGain と appliesTo、gain (スライダーの change、キーを押し続けた操作の終わり、またはプリセットのクリック)
   alt チャンネルが無い、または appliesTo が currentGestureState() と違う
     content-->>popup: ok false、state moved
   else autoMutationPending、Auto がオン、または audioUnavailable
@@ -283,9 +290,10 @@ sequenceDiagram
   popup->>content: getState (refresh)
 ```
 
-図のもと: `popup.js` の `manualSlider` の `input` / `change` / `pointerdown` / `pointerup` / `pointercancel` / `keydown` リスナー、`window` の `blur` リスナー、プリセットの `click` リスナー、`setGain`、`applyMeasured`、`syncInteractionDisabledState`、`renderState`。`content.js` の `runtime.onMessage` リスナーの `setGain`、`applyGain`、`saveChannelGain`、`reapplyForCurrentChannel`。
+図のもと: `popup.js` の `manualSlider` の `input` / `change` / `pointerdown` / `pointerup` / `pointercancel` / `keydown` / `keyup` / `blur` リスナー、`window` の `blur` リスナー、`endSliderKeyHold`、`endSliderGesture`、`previewGain`、プリセットの `click` リスナー、`setGain`、`applyMeasured`、`syncInteractionDisabledState`、`renderState`。`content.js` の `runtime.onMessage` リスナーの `previewGain` と `setGain`、`gainGestureRefusal`、`applyGain`、`saveChannelGain`、`reapplyForCurrentChannel`。
 
-- `input` (スライダーを動かしている間) は Current の表示と値のラベルを変えるだけで、何も送らない。`change` で `setGain` を 1 回送る。プリセットのボタンはスライダーを動かし、同じ 2 つの表示を変えて、`setGain` を 1 回送る。これらの送信をためたりまとめたりする仕組みはほかに無い。
+- `input` (スライダーを動かしている間) は Current の表示と値のラベルを変えるだけで、何も送らない。`change` で `setGain` を 1 回送る。プリセットのボタンはスライダーを動かし、同じ 2 つの表示を変えて、`setGain` を 1 回送る。
+- スライダーでキーを押し続けている間 (`keydown` からその `keyup` まで) は、音には出すが保存はしない。`input` ごとに `previewGain` も送る。content は `setGain` を断るときと同じ理由で断り (`gainGestureRefusal`)、そうでなければ保存せずにかける。繰り返しごとに出る `change` は何も送らない。`keyup`、またはその前のスライダーか popup の `window` の `blur` で、押し続けている間に `input` があったときだけ、スライダーの値で `setGain` を 1 回送る。押し続けている間の `blur` は、ドラッグと同じく (下) そこで操作も終える。popup は `previewGain` については何も知らせない。押し続けた操作を終える `setGain` が断られたときは、下と同じく知らせる。
 - スライダーは、操作を始めたとき (`pointerdown`、`keydown`、または最初の `input`) に写しておいた `appliesTo` を送る。プリセットと「チャンネルに適用」ボタンは、最後に描いた状態の `appliesTo` を送る。
 - スライダーをポインターで押さえている間 (`pointerdown` から `pointerup` / `pointercancel` まで) に popup の `window` が `blur` すると、そこで操作を終える。`blur` より先に届いた `change` は `setGain` を送ってある。そのあとは次の `pointerdown` か、繰り返しでない `keydown` まで、スライダーの `input` は何もせず、`change` は離したときのものも含めて何も送らず、つまみを `blur` の時点のスライダーの値へ戻す。
 - 「チャンネルに適用」(`applyMeasured`) は `resume` を送ってから、最後の `getState` から計算した Suggested のゲイン `suggestedGain(lufs.integrated, targetLufs)` で `setGain` を送る。このボタンが押せるのは、Auto がオフで、有限の Integrated があり、チャンネルがあり、音声が使えるとき。表示は「$VALUE$ をチャンネルに適用」で、$VALUE$ に表示単位でのゲインが入る。
@@ -594,9 +602,9 @@ sequenceDiagram
   end
 ```
 
-図のもと: `options.js` の `targetLufs`・`adGainDb`・2 つの Auto 既定値のトグル・`#unitToggle`・`overlayToggle` のリスナー、`updateSettings`、`mutateSettings`、`reloadSettingsAfterFailure`、`storage.onChanged` リスナー。`content.js` の `storage.onChanged` リスナー、`reapplyForCurrentChannel`、`saveChannelAutoGain`。`page-bridge.js` の `setAdGainOffset`。`popup.js` の `storage.onChanged` リスナー。
+図のもと: `options.js` の `targetLufs` (`endTargetKeyHold` と `window` の `blur` リスナーを含む)・`adGainDb`・2 つの Auto 既定値のトグル・`#unitToggle`・`overlayToggle` のリスナー、`updateSettings`、`mutateSettings`、`reloadSettingsAfterFailure`、`storage.onChanged` リスナー。`content.js` の `storage.onChanged` リスナー、`reapplyForCurrentChannel`、`saveChannelAutoGain`。`page-bridge.js` の `setAdGainOffset`。`popup.js` の `storage.onChanged` リスナー。
 
-- 「Target LUFS」と「CM Gain」のスライダーは `change` で送り、`input` ではラベルを変えるだけ。Live / VOD の既定値のトグルとゲイン表示のトグルは `change` で、表示単位のボタンは `click` で送る。どれも自分が受け持つ項目 1 つだけを送る。最初の読み込みが終わるまでは押せない (`settingsReady`)。
+- 「Target LUFS」と「CM Gain」のスライダーは `change` で送り、`input` ではラベルを変えるだけ。「Target LUFS」のスライダーでキーを押し続けている間 (`keydown` からその `keyup` まで) は `change` で何も送らない。`keyup`、またはその前のスライダーかページの `window` の `blur` で、値が動いていればスライダーの値を 1 回送る。そのような `blur` のあとは、次の `pointerdown` か、繰り返しでない `keydown` まで、スライダーの `input` は何もせず、`change` はつまみを `blur` の時点で書いた値へ戻す。Live / VOD の既定値のトグルとゲイン表示のトグルは `change` で、表示単位のボタンは `click` で送る。どれも自分が受け持つ項目 1 つだけを送る。最初の読み込みが終わるまでは押せない (`settingsReady`)。
 - それぞれの Twitch のタブで: 新しい `targetLufs` は、Auto がオンで Integrated が有限ならすぐにゲインを変える (`reapplyForCurrentChannel` を通る)。新しい `adGainDb` は、CM 中ならノードを変え、CM 要素のノードも同じ手順の中で変わる (`setAdGainOffset` が `syncAdElementGains` を動かす)。新しい Auto 既定値は、その種別の Auto の選択も手動ゲインも行に無いチャンネルについて Auto を切り替えるが、`autoApplyLoudness<Kind>` は書かない。`showGainOverlay` はオーバーレイだけを変える。
 - このリスナーは、`autoLoudnessSettings` が変われば、どの項目が変わったかに関係なく、行を読み直して `saveAutoGain` の条件を調べる。`saveAutoGain` を送るのは、最後に受け取った `lufs` の `playing` が true のタブだけ (`lastLufsPlaying`。`saveMeasurement` と同じ条件、場面 5)。止まっているかミュートのタブは、ゲインはかけるが何も保存しない。
 - content・popup・設定ページは、`autoLoudnessSettings` を `sync` の変更からだけ取り込む。local でこのキーが変わるのは移し替えが消すときだけで、その変更は設定を運ばない。
@@ -750,6 +758,7 @@ sequenceDiagram
 | popup のスライダーの `input` | 変わらない、表示だけ | なし | `popup.js` の `input` リスナー |
 | スライダーを押さえたまま popup が `blur` する | 変わらない。残りのドラッグは送らず、その `change` でつまみを戻す | なし | `popup.js` の `window` の `blur` リスナー |
 | popup のスライダーの `change`、プリセットのクリック | 選んだゲイン | `saveGain` | `popup.js` の `setGain`、`content.js` の `setGain`、`saveChannelGain` |
+| popup のスライダーでキーを押し続ける | 動いた先の値ごと (`previewGain`) | `keyup` か `blur` で `saveGain` を 1 回 | `popup.js` の `keydown` / `keyup` リスナー、`endSliderKeyHold`、`content.js` の `previewGain` |
 | 「チャンネルに適用」 | Suggested のゲイン | `saveGain` | `popup.js` の `applyMeasured` |
 | `saveGain` が断られる | 保存済みのゲインへ戻る | なし | `content.js` の `setGain`、`reapplyForCurrentChannel` |
 | popup で Auto を切り替える | 決め直す | `saveAuto`、計算できたときは `autoGain` つき | `content.js` の `setAutoApplyLoudness`、`saveChannelAutoApply` |
@@ -775,7 +784,7 @@ sequenceDiagram
 
 - **値の変わらない書き込み** (「チャンネルごとの値を書く単一の書き手」「2. インストール・更新と、以前の版が保存した値」「12. 書き込みがほかの画面へ届く」を参照): このリポジトリの `background.js`・`channel-store.js`・`settings-store.js` を service worker で動かすと、保存済みと同じ値の `set` では、service worker・2 つの拡張機能のページ・content script のどこにも `onChanged` が届かなかった (場合ごとに 10 回中 0 回。値が変わる書き込みは 10 回中 10 回)。すでに整った状態での `normalizeChannels` でも届かなかった (10 回中 0 回)。`saveGain` は、`changes` に `channelVolumeSequence` と `channelVolumes` を載せ、変わらない `channelVolumeAliases` は載せなかった (200 回中 200 回)。
 - **1 回のチャンネル書き込みの知らせと返事** (「チャンネルごとの値を書く単一の書き手」を参照): `saveGain` の書き込み 200 回中 200 回で、`onChanged` が `sendMessage` の返事より先に content script に届いた。そこの図では、この 2 つを 1 つの `par` のまとまりに描いている。返事が遅れた時間は、中央値で 0.1 ms、最大で 2.9 ms だった。
-- **popup のスライダーのキーボード操作** (「3. popup で手動ゲインを設定する」を参照): `manualSlider` と同じ `min="0" max="600" step="5"` の range 入力で、値が動くキーを 1 回押すと `input` と `change` が 1 回ずつ出た (矢印キーで 5、PageUp / PageDown で 60 動く)。端でキーを押すと、どちらも出なかった。キーを押し続けると、値が動いた繰り返しごとに `change` が 1 回出た。マウスで 10 回動かすドラッグでは、`input` が 10 回、`change` が 1 回だった。`change` 1 回で `setGain` が 1 回送られ、その後に `saveGain` が続く。
+- **popup のスライダーのキーボード操作** (「3. popup で手動ゲインを設定する」を参照): `manualSlider` と同じ `min="0" max="600" step="5"` の range 入力で、値が動くキーを 1 回押すと `input` と `change` が 1 回ずつ出た (矢印キーで 5、PageUp / PageDown で 60 動く)。端でキーを押すと、どちらも出なかった。キーを押し続けると、値が動いた繰り返しごとに `change` が 1 回出た。マウスで 10 回動かすドラッグでは、`input` が 10 回、`change` が 1 回だった。ドラッグの `change` 1 回で `setGain` が 1 回送られ、その後に `saveGain` が続く。キーを押し続けたときは、`input` ごとに `previewGain` を送り、離したところで `setGain` を 1 回送る。
 - **AudioContext が止まっている間の音** (「14. AudioContext の停止と再開」を参照): テスト用のページで、ユーザーの操作より前に作った AudioContext に `createMediaElementSource` でつないだ要素を、`resume()` を呼ばずに信頼されたクリックから再生すると、タブは音を出さなかった (`audible` は 45 回の読み取り中 0 回)。AudioContext は `suspended` のままで、要素の `currentTime` も 0 のままだった。`resume()` の後は 45 回中 45 回、音が出た。Web Audio を通さない要素と、動いている AudioContext につないだ要素は、どちらも 45 回中 45 回、音が出た。この項目は `--mute-audio` を付けずに、作った音で測った。
 - **拡張機能を読み込み直した後の content script** (「13. video 要素へのつなぎ込み」を参照): このリポジトリの `content_scripts` と同じ形で、`twitch.tv` の道筋に置いた仮のページを使うと、`chrome.runtime.reload()` の後、開いていたタブでは MAIN world と ISOLATED world のどちらのスクリプトも動き直さなかった (6 回中 0 回)。ページを読み込み直すと、両方が動いた (6 回中 6 回)。戻る・進むで bfcache (ページを丸ごと保存しておく仕組み) から戻した 3 回中 3 回で、どちらも動き直さなかった。拡張機能を読み込み直したときに bfcache に入っていたページは、そこから戻されずに新しく読み込まれ、両方が動いた (3 回中 3 回)。
 - **つないだ要素が止まっている間の計測ブロック** (「5. 計測ブロック・自動追従・LUFS キャッシュの保存」と「9. CM 区間」を参照): クライアント側の CM が 2 つ目の `<video>` で約 30 秒流れ、つないだ要素が止まっていた Twitch の VOD では、ブロックは毎秒 10 個のまま届き続けた (まる 27 秒で 302 個、そのうち 297 個は二乗平均が 0)。このリポジトリの `audio-worklet.js` をテスト用のページで動かすと、止まった要素や終わった要素でも、二乗平均 0 のブロックが毎秒約 10 個届いた。どちらも `--mute-audio` を付けて測り、その条件でも本編の再生中のブロックは 0 ではなかった (155 回中 155 回)。

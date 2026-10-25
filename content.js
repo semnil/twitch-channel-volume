@@ -804,6 +804,17 @@
 
   // ── Popup / options message API ───────────────────────────────────
 
+  // Why a gain the popup sends is not applied, or '' where it is.
+  function gainGestureRefusal(req) {
+    if (!currentChannel.id || req.appliesTo !== currentGestureState()) return 'state moved';
+    // A gain saved here would be applied on a later visit without the viewer
+    // ever hearing what they set.
+    if (audioUnavailable) return 'audio unavailable';
+    if (autoMutationPending) return 'auto update pending';
+    if (currentAutoApplyLoudness) return 'auto apply enabled';
+    return '';
+  }
+
   chrome.runtime.onMessage?.addListener((req, _sender, sendResponse) => {
     if (!req || typeof req !== 'object') return;
     switch (req.cmd) {
@@ -827,20 +838,22 @@
           autoApplyLoudnessVod: resolveAutoApplyForKind(currentChannelEntry, 'vod')
         });
         return;
-      case 'setGain':
-        if (!currentChannel.id || req.appliesTo !== currentGestureState()) {
-          sendResponse({ ok: false, reason: 'state moved' });
+      case 'previewGain': {
+        // A key held on the popup's slider: the gain is heard, and the setGain
+        // that ends the hold saves it.
+        const refusal = gainGestureRefusal(req);
+        if (refusal) {
+          sendResponse({ ok: false, reason: refusal });
           return;
         }
-        if (autoMutationPending || currentAutoApplyLoudness || audioUnavailable) {
-          // A gain saved here would be applied on a later visit without the
-          // viewer ever hearing what they set.
-          sendResponse({
-            ok: false,
-            reason: audioUnavailable
-              ? 'audio unavailable'
-              : (autoMutationPending ? 'auto update pending' : 'auto apply enabled')
-          });
+        applyGain(req.gain);
+        sendResponse({ ok: true });
+        return;
+      }
+      case 'setGain': {
+        const refusal = gainGestureRefusal(req);
+        if (refusal) {
+          sendResponse({ ok: false, reason: refusal });
           return;
         }
         applyGain(req.gain);
@@ -871,6 +884,7 @@
           sendResponse({ ok: false, reason: 'storage update failed' });
         });
         return true;
+      }
       case 'setAutoApplyLoudness': {
         if (!currentChannel.id || req.appliesTo !== currentGestureState()) {
           sendResponse({ ok: false, reason: 'state moved' });

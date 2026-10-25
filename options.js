@@ -253,10 +253,48 @@
     }
   }
 
+  // A key held on the Target LUFS slider moves the label alone, and the changes
+  // its repeats fire write nothing. The value is written once, where the key is
+  // let go or focus leaves the slider or the page; after a loss of focus the
+  // slider's input does nothing and its change puts the thumb back to the value
+  // written then, until a key or the pointer is pressed on it again.
+  let targetKeyHeld = false;
+  let targetKeyMoved = false;
+  let targetGestureEnded = false;
+  let targetValueAtEnd = '';
+  // Whether a key was held.
+  function endTargetKeyHold() {
+    if (!targetKeyHeld) return false;
+    targetKeyHeld = false;
+    const moved = targetKeyMoved;
+    targetKeyMoved = false;
+    if (moved) void updateSettings({ targetLufs: Number($('targetLufs').value) });
+    return true;
+  }
+  const endTargetGestureOnBlur = () => {
+    if (!endTargetKeyHold()) return;
+    targetGestureEnded = true;
+    targetValueAtEnd = $('targetLufs').value;
+  };
+  $('targetLufs').addEventListener('pointerdown', () => { targetGestureEnded = false; });
+  $('targetLufs').addEventListener('keydown', (e) => {
+    if (!e.repeat) targetGestureEnded = false;
+    targetKeyHeld = true;
+  });
+  $('targetLufs').addEventListener('keyup', endTargetKeyHold);
+  $('targetLufs').addEventListener('blur', endTargetGestureOnBlur);
+  window.addEventListener('blur', endTargetGestureOnBlur);
   $('targetLufs').addEventListener('input', (e) => {
+    if (targetGestureEnded) return;
+    if (targetKeyHeld) targetKeyMoved = true;
     $('targetLufsValue').textContent = e.target.value + ' LUFS';
   });
   $('targetLufs').addEventListener('change', (e) => {
+    if (targetGestureEnded) {
+      e.target.value = targetValueAtEnd;
+      return;
+    }
+    if (targetKeyHeld) return;
     void updateSettings({ targetLufs: Number(e.target.value) });
   });
   $('adGainDb').addEventListener('input', (e) => {

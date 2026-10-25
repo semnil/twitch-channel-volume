@@ -125,7 +125,7 @@ its promise is already settled when it is returned.
 
 - `content.js:421` an await is dropped ×1 — await
 - `content.js:717` an await is dropped ×1 — await
-- `content.js:1028` an await is dropped ×1 — await
+- `content.js:1042` an await is dropped ×1 — await
 
 `reapplyForCurrentChannel`'s "no channel here" exit and its staleness check. The
 path below the exit loads nothing for an empty id, resolves the gain to 1.0 with
@@ -152,9 +152,9 @@ differ on is the other kind's `autoGainRef` and `lastLufs`, and `lastMeasuredAt`
 — content.js reads `lastLufs` only at `currentChannel.kind`, `lastMeasuredAt`
 nowhere, and the entry is reloaded before another kind is read.
 
-- `content.js:915` || becomes && ×1 — ||
-- `content.js:967` a guard is always taken ×1 — if (currentChannelEntry) {
-- `content.js:969` || becomes && ×1 — ||
+- `content.js:929` || becomes && ×1 — ||
+- `content.js:981` a guard is always taken ×1 — if (currentChannelEntry) {
+- `content.js:983` || becomes && ×1 — ||
 
 ## channel-store.js
 
@@ -199,7 +199,7 @@ its check guards finds no targets.
 `setAutoApplyLoudness`'s gain check. The branch above it throws on `!res?.ok`,
 so a response that reaches this line carries the gain content.js answers with.
 
-- `popup.js:371` a guard is always taken ×1 — if (Number.isFinite(res.gain)) {
+- `popup.js:381` a guard is always taken ×1 — if (Number.isFinite(res.gain)) {
 
 The `await refresh()` ending `applyMeasured`, `setGain` and
 `setAutoApplyLoudness`. All three are called from click handlers that discard
@@ -207,7 +207,13 @@ the promise, so nothing observes when they settle.
 
 - `popup.js:325` an await is dropped ×1 — await
 - `popup.js:343` an await is dropped ×1 — await
-- `popup.js:375` an await is dropped ×1 — await
+- `popup.js:385` an await is dropped ×1 — await
+
+`previewGain`'s missing-tab exit. Without it `tab.id` throws inside the `try`,
+and the `catch` drops that as it drops a failed send: nothing is sent and
+nothing is named either way.
+
+- `popup.js:351` a guard is dropped ×1 — if (!tab) return;
 
 ## utils.js
 
@@ -229,8 +235,8 @@ The default-Auto toggle's and the unit buttons' readiness checks.
 `updateSettings` opens with the same one, so the mutant reaches it and stops
 there.
 
-- `options.js:274` a guard is dropped ×1 — if (!settingsReady) return;
-- `options.js:287` a guard is dropped ×1 — if (!settingsReady) return;
+- `options.js:312` a guard is dropped ×1 — if (!settingsReady) return;
+- `options.js:325` a guard is dropped ×1 — if (!settingsReady) return;
 
 ## tools/mutation/bail.mjs
 
