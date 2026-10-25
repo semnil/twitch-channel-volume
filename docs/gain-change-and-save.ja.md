@@ -597,7 +597,7 @@ sequenceDiagram
       end
       opt 最後の読み直しが追い越されていない
         content->>bridge: setGain (applyGain)
-        opt Auto がオンで、Integrated が有限で、それを取った lufs の playing が true
+        opt targetLufs か Auto の既定値が変わり、Auto がオンで、Integrated が有限で、それを取った lufs の playing が true
           content->>sw: autoGain = calcGain(integrated, targetLufs) で saveAutoGain
         end
       end
@@ -611,7 +611,7 @@ sequenceDiagram
 
 - 「Target LUFS」と「CM Gain」のスライダーは `change` で送り、`input` ではラベルを変えるだけ。「Target LUFS」のスライダーでキーを押し続けている間 (`keydown` からその `keyup` まで) は `change` で何も送らない。`keyup`、またはその前のスライダーかページの `window` の `blur` で、値が動いていればスライダーの値を 1 回送る。そのような `blur` のあとは、次の `pointerdown` か、繰り返しでない `keydown` まで、スライダーの `input` は何もせず、`change` はつまみを `blur` の時点で書いた値へ戻す。Live / VOD の既定値のトグルとゲイン表示のトグルは `change` で、表示単位のボタンは `click` で送る。どれも自分が受け持つ項目 1 つだけを送り、保存値と同じ値を送った項目は書かない (「設定を書く単一の書き手」を参照)。最初の読み込みが終わるまでは押せない (`settingsReady`)。
 - それぞれの Twitch のタブで: 新しい `targetLufs` は、Auto がオンで Integrated が有限ならすぐにゲインを変える (`reapplyForCurrentChannel` を通る)。新しい `adGainDb` は、CM 中ならノードを変え、CM 要素のノードも同じ手順の中で変わる (`setAdGainOffset` が `syncAdElementGains` を動かす)。新しい Auto 既定値は、その種別の Auto の選択も手動ゲインも行に無いチャンネルについて Auto を切り替えるが、`autoApplyLoudness<Kind>` は書かない。`showGainOverlay` はオーバーレイだけを変える。
-- このリスナーは、`autoLoudnessSettings` が変われば、どの項目が変わったかに関係なく、行を読み直して `saveAutoGain` の条件を調べる。`saveAutoGain` を送るのは、最後に受け取った `lufs` の `playing` が true のタブだけ (`lastLufsPlaying`。`saveMeasurement` と同じ条件、場面 5)。止まっているかミュートのタブは、ゲインはかけるが何も保存しない。
+- このリスナーは、`autoLoudnessSettings` が変われば、どの項目が変わったかに関係なく、行を読み直してゲインをかける。`saveAutoGain` を送るのは、`targetLufs`・`autoApplyLoudnessLiveDefault`・`autoApplyLoudnessVodDefault` のどれかが、タブの持っていた値と違うときだけで、しかも最後に受け取った `lufs` の `playing` が true のタブだけ (`lastLufsPlaying`。`saveMeasurement` と同じ条件、場面 5)。`displayUnit`・`showGainOverlay`・`adGainDb` の変更では何も保存せず、止まっているかミュートのタブは、ゲインはかけるが何も保存しない。
 - content・popup・設定ページは、`autoLoudnessSettings` を `sync` の変更からだけ取り込む。local でこのキーが変わるのは移し替えが消すときだけで、その変更は設定を運ばない。
 - その読み直しが追い越されたとき (`onChanged` に届いたチャンネルの書き込みが始めた読み直し、owner のイベント、遷移による) は、それが返ったあとで、そのときのチャンネルと行についてもう 1 回読み直し、そこでかけたゲインを `saveAutoGain` で送る。もう 1 回も追い越されたときは、3 回目はしない。
 - popup は `displayUnit` を取り込み、`sliderSynced` を消して、`getState` を読み直す。ほかに開いている設定ページは設定を描き直す。
@@ -775,7 +775,7 @@ sequenceDiagram
 | 持ち主の ID がわかる | まとめたあとの行から決め直す | `mergeChannelIds`、別名を保存 | `acceptOwner`、`migrateChannelId` |
 | CM の始まり・終わり | `baselineGain * adGainOffset` と `baselineGain` の間で切り替わる | なし | `updateAdState`、`applyEffectiveGain` |
 | クライアント側の CM 要素が鳴る | その要素のノードが `baselineGain * adGainOffset * (本編の音量 / その要素の音量)`、終われば 1 | なし | `syncAdElementGains` |
-| 設定の項目が変わる | 決め直す。`adGainDb` が変われば CM ゲインの倍率も変える | Auto がオンで、Integrated が有限で、最後の `lufs` の `playing` が true なら `saveAutoGain` | `content.js` の `storage.onChanged` リスナー |
+| 設定の項目が変わる | 決め直す。`adGainDb` が変われば CM ゲインの倍率も変える | `targetLufs` か Auto の既定値が変わり、Auto がオンで、Integrated が有限で、最後の `lufs` の `playing` が true なら `saveAutoGain` | `content.js` の `storage.onChanged` リスナー |
 | チャンネルの削除・全削除 | 行なしで決め直す | `deleteChannel` / `clearChannels` | `options.js` の `removeChannel`、`clearAll` |
 | `channelVolumes` か別名が変わる | 決め直す | なし | `content.js` の `storage.onChanged` リスナー |
 | つなぎ込み・つなぎ直し | 値は保つ。要素はノードを通って鳴る | なし | `page-bridge.js` の `attach`、`clearStaleAttachment` |

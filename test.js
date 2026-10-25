@@ -2550,6 +2550,8 @@ function createContentHarness({
   const documentListeners = {};
   const storageListeners = [];
   const commands = [];
+  // Every channel mutation the script sends, answered or not.
+  const mutations = [];
   const warnings = [];
   const infos = [];
   let runtimeMessageListener;
@@ -2726,6 +2728,7 @@ function createContentHarness({
         if (runtimeThrows || !runtimeId) throw new Error('Extension context invalidated.');
         const mutation = message?.mutation;
         if (mutation) {
+          mutations.push(structuredClone(mutation));
           if (channelMutationDeferred &&
               mutation.operation === deferChannelMutationOperation) {
             channelMutationDeferred = false;
@@ -2827,6 +2830,7 @@ function createContentHarness({
     },
     mutate() { for (const callback of observerCallbacks) callback([]); },
     commands,
+    mutations,
     stored,
     synced,
     async releaseSettingsRead() {
@@ -5713,6 +5717,38 @@ test('content saves the Auto gain for a new target when its read of the row was 
   assert.ok(Math.abs(stored() - u.calcGain(-24, -22)) < 1e-12, `the row holds ${stored()}`);
   await harness.releaseStorageGet();
   assert.ok(Math.abs(stored() - u.calcGain(-24, -22)) < 1e-12, `the row holds ${stored()}`);
+});
+
+// The Auto gain on file is calcGain of the measurement against the target, for
+// a channel whose Auto is on; the target and the Auto defaults are what move it.
+test('content saves the Auto gain on a settings change only where the target or an Auto default moved', async () => {
+  const harness = createMeasuringHarness({ settings: { autoApplyLoudnessLiveDefault: true } });
+  await claimChannel(harness);
+  await measureOn(harness, -24);
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).autoApplyLoudness, true);
+  const autoGainSaves = () => harness.mutations
+    .filter((mutation) => mutation.operation === 'saveAutoGain')
+    .map((mutation) => mutation.autoGain);
+  const change = async (patch) => {
+    harness.synced[u.SETTINGS_KEY] = { ...harness.synced[u.SETTINGS_KEY], ...patch };
+    harness.commands.length = 0;
+    await harness.dispatchStorage({
+      [u.SETTINGS_KEY]: { newValue: structuredClone(harness.synced[u.SETTINGS_KEY]) }
+    }, 'sync');
+  };
+
+  for (const patch of [{ displayUnit: 'dB' }, { showGainOverlay: false }, { adGainDb: -9 }]) {
+    await change(patch);
+    assert.deepEqual(autoGainSaves(), [], JSON.stringify(patch));
+    // The gain is resolved again all the same.
+    assert.ok(harness.commands.some((command) => command.cmd === 'setGain'), JSON.stringify(patch));
+  }
+
+  await change({ targetLufs: -20 });
+  assert.equal(autoGainSaves().length, 1, 'the target');
+  assert.ok(Math.abs(autoGainSaves()[0] - u.calcGain(-24, -20)) < 1e-12);
+  await change({ autoApplyLoudnessVodDefault: true });
+  assert.equal(autoGainSaves().length, 2, 'an Auto default');
 });
 
 // The measurement save is the one call the page makes to the extension on its

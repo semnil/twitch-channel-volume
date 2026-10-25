@@ -759,6 +759,8 @@
     if (areaName === 'sync' && changes[SETTINGS_KEY]) {
       settingsRevision++;
       const next = changes[SETTINGS_KEY].newValue || {};
+      const autoInputs = () => [targetLufs, defaultAutoApplyLoudnessLive, defaultAutoApplyLoudnessVod];
+      const previousAutoInputs = autoInputs();
       targetLufs = next.targetLufs ?? DEFAULT_TARGET_LUFS;
       defaultAutoApplyLoudnessLive =
         next.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
@@ -772,6 +774,9 @@
       showGainOverlay = next.showGainOverlay ?? true;
       updateGainOverlay();
       autoRaiseFrom = null;
+      // The Auto gain on file follows the target and the Auto defaults, and
+      // no other setting.
+      const autoInputsChanged = autoInputs().some((value, i) => value !== previousAutoInputs[i]);
       reapplyForCurrentChannel()
         // A read that was overtaken applied nothing, and the Auto save went
         // with it; the reapply is made once more against the channel and the
@@ -780,8 +785,8 @@
         .then((applied) => {
           // A tab whose player is not playing applies the gain and saves
           // nothing, as it saves no measurement.
-          if (!applied || !currentAutoApplyLoudness || !lastLufsPlaying ||
-              !Number.isFinite(lastLufs.integrated)) {
+          if (!autoInputsChanged || !applied || !currentAutoApplyLoudness ||
+              !lastLufsPlaying || !Number.isFinite(lastLufs.integrated)) {
             return;
           }
           return saveChannelAutoGain(

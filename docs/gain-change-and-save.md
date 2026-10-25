@@ -597,7 +597,7 @@ sequenceDiagram
       end
       opt the last read was not overtaken
         content->>bridge: setGain (applyGain)
-        opt Auto on, Integrated finite, and playing true in the lufs it was taken from
+        opt targetLufs or an Auto default changed, Auto on, Integrated finite, and playing true in the lufs it was taken from
           content->>sw: saveAutoGain with autoGain = calcGain(integrated, targetLufs)
         end
       end
@@ -611,7 +611,7 @@ Drawn from: `options.js` the listeners of `targetLufs` (with `endTargetKeyHold` 
 
 - The Target LUFS and Ad gain sliders send on `change`; their `input` only updates the label. While a key is held on the Target LUFS slider (from its `keydown` to its `keyup`), its `change` sends nothing; the `keyup`, or a `blur` of the slider or of the page's `window` before it, sends the slider's value once when it moved, and after such a `blur`, until the next `pointerdown` or a `keydown` that is not a repeat, the slider's `input` does nothing and its `change` puts the thumb back to the value written at the `blur`. The Live / VOD default toggles and the overlay toggle send on `change`, the unit buttons on `click`. Each sends the one field it controls, and a field sent with the value on file is not written (see "Single writer for settings"). The controls are disabled until the first load has completed (`settingsReady`).
 - In each Twitch tab: a new `targetLufs` changes the gain at once under Auto with a finite Integrated value (through `reapplyForCurrentChannel`). A new `adGainDb` changes the node during an ad, and the ad-element nodes in the same step (`setAdGainOffset` runs `syncAdElementGains`). A new Auto default changes Auto for a channel whose row has neither an Auto choice nor a manual gain for the kind, without writing `autoApplyLoudness<Kind>`. `showGainOverlay` changes the overlay only.
-- The listener re-reads the row and checks the `saveAutoGain` condition for any change of `autoLoudnessSettings`, whichever field changed. `saveAutoGain` is sent only from a tab whose last taken `lufs` had `playing` true (`lastLufsPlaying`, the condition `saveMeasurement` goes by, scenario 5); a paused or muted tab applies the gain and saves nothing.
+- The listener re-reads the row and applies the gain for any change of `autoLoudnessSettings`, whichever field changed. It sends `saveAutoGain` only when `targetLufs`, `autoApplyLoudnessLiveDefault` or `autoApplyLoudnessVodDefault` differs from the value the tab held, and only from a tab whose last taken `lufs` had `playing` true (`lastLufsPlaying`, the condition `saveMeasurement` goes by, scenario 5); a change of `displayUnit`, `showGainOverlay` or `adGainDb` saves nothing, and a paused or muted tab applies the gain and saves nothing.
 - content, the popup and the options page take `autoLoudnessSettings` from the `sync` area alone. In local the key changes only when the move removes it, and that change carries no settings.
 - When that read is overtaken (by the read a channel write reaching `onChanged` starts, by an owner event or by a navigation), the listener reapplies once more after it returns, against the channel and the row as they stand then, and the gain that reapply applies is the one `saveAutoGain` carries. A reapply overtaken again is not made a third time.
 - The popup takes `displayUnit`, clears `sliderSynced` and reads `getState` again. Another open options page re-renders the settings.
@@ -775,7 +775,7 @@ Drawn from: `content.js` `listenForResumeGesture`, `requestAudioContextResume`, 
 | Owner id arrives | Resolved from the merged row | `mergeChannelIds`, alias stored | `acceptOwner`, `migrateChannelId` |
 | Ad starts or ends | Switches between `baselineGain * adGainOffset` and `baselineGain` | none | `updateAdState`, `applyEffectiveGain` |
 | Client-side ad element plays | Its own node at `baselineGain * adGainOffset * (main volume / its volume)`, 1 afterwards | none | `syncAdElementGains` |
-| Settings field changed | Resolved again, and the ad offset updated when `adGainDb` changed | `saveAutoGain` when Auto is on, Integrated is finite and the last `lufs` had `playing` true | `content.js` `storage.onChanged` listener |
+| Settings field changed | Resolved again, and the ad offset updated when `adGainDb` changed | `saveAutoGain` when `targetLufs` or an Auto default changed, Auto is on, Integrated is finite and the last `lufs` had `playing` true | `content.js` `storage.onChanged` listener |
 | Channel deleted or all cleared | Resolved without the row | `deleteChannel` / `clearChannels` | `options.js` `removeChannel`, `clearAll` |
 | `channelVolumes` or aliases changed | Resolved again | none | `content.js` `storage.onChanged` listener |
 | Attach or re-attach | Value kept, the element plays through the node | none | `page-bridge.js` `attach`, `clearStaleAttachment` |
