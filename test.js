@@ -3283,6 +3283,7 @@ function createPopupHarness({
   const warnings = [];
   const infos = [];
   const intervals = [];
+  const windowListeners = {};
   let resolveAutoSave;
   let currentState = {
     channel: { id: '123', name: 'somechannel', kind: 'live', url: 'https://www.twitch.tv/somechannel' },
@@ -3428,7 +3429,10 @@ function createPopupHarness({
     },
     requestAnimationFrame(callback) { callback(); },
     setInterval(callback) { return intervals.push(callback); },
-    structuredClone
+    structuredClone,
+    window: {
+      addEventListener(type, listener) { (windowListeners[type] ||= []).push(listener); }
+    }
   });
   loadScriptsInto(context, ['settings-area.js', 'popup.js']);
 
@@ -3523,9 +3527,17 @@ function createPopupHarness({
     },
     // A disabled control receives no event: the browser does not dispatch one,
     // so what keeps a gesture out is the disabling, not a guard in the handler.
-    async fire(id, type) {
+    // `fields` are what the event carries besides its target, a key's repeat.
+    async fire(id, type, fields = {}) {
       if (element(id).disabled) { await flushTasks(8); return; }
-      for (const listener of element(id).listeners[type] || []) await listener({ target: element(id) });
+      for (const listener of element(id).listeners[type] || []) {
+        await listener({ target: element(id), ...fields });
+      }
+      await flushTasks(8);
+    },
+    // The popup loses focus: another window or application comes to the front.
+    async blurWindow() {
+      for (const listener of windowListeners.blur || []) await listener({ type: 'blur' });
       await flushTasks(8);
     },
     async firePreset(index, type) {
@@ -7814,6 +7826,78 @@ test('a slider released with the tab where it was saves the gain', async () => {
   const sent = popup.sent.filter((request) => request.cmd === 'setGain');
   assert.equal(sent.length, 1);
   assert.ok(Math.abs(content.stored[u.CHANNEL_VOLUMES_KEY]['login:streamer_a'].gainLive - 0.25) < 1e-9);
+});
+
+// When the popup loses focus in the middle of a drag, Chrome fires a change
+// with the value the slider holds, then the blur, and the slider goes on
+// following the pointer until it is let go.
+test('a drag the popup loses focus in is saved at the blur, and nothing it does after is sent', async () => {
+  const popup = createPopupHarness();
+  await flushTasks(8);
+  const gainsSent = () => popup.sent
+    .filter((request) => request.cmd === 'setGain')
+    .map((request) => request.gain);
+  const move = async (percent) => {
+    popup.el('manualSlider').value = String(percent);
+    await popup.fire('manualSlider', 'input');
+  };
+
+  await popup.fire('manualSlider', 'pointerdown');
+  await move(45);
+  await popup.fire('manualSlider', 'change');
+  await popup.blurWindow();
+  assert.deepEqual(gainsSent(), [0.45], 'the change ahead of the blur');
+
+  await move(155);
+  await popup.fire('manualSlider', 'pointerup');
+  await popup.fire('manualSlider', 'change');
+  assert.deepEqual(gainsSent(), [0.45], 'the rest of the drag and its release');
+  assert.equal(popup.el('manualValue').textContent, '45%', 'the label stays where the save left it');
+
+  // A key's repeat is the hold already under way; a key pressed begins again.
+  await popup.fire('manualSlider', 'keydown', { repeat: true });
+  await move(160);
+  await popup.fire('manualSlider', 'change');
+  assert.deepEqual(gainsSent(), [0.45]);
+  await popup.fire('manualSlider', 'keydown', { repeat: false });
+  await move(165);
+  await popup.fire('manualSlider', 'change');
+  assert.deepEqual(gainsSent(), [0.45, 1.65]);
+
+  await popup.blurWindow();
+  await popup.fire('manualSlider', 'pointerdown');
+  await move(200);
+  await popup.fire('manualSlider', 'pointerup');
+  await popup.fire('manualSlider', 'change');
+  assert.deepEqual(gainsSent(), [0.45, 1.65, 2], 'a blur with no pointer held ends nothing');
+});
+
+test('a drag the popup lost focus in writes nothing to the channel the tab moves to', async () => {
+  const content = createContentHarness({ href: 'https://www.twitch.tv/streamer_a' });
+  await flushTasks();
+  const popup = createPopupHarness({ connectTo: content, tabUrl: 'https://www.twitch.tv/streamer_a' });
+  await flushTasks(8);
+
+  await popup.fire('manualSlider', 'pointerdown');
+  popup.el('manualSlider').value = '45';
+  await popup.fire('manualSlider', 'input');
+  await popup.fire('manualSlider', 'change');
+  await popup.blurWindow();
+  const stored = () => content.stored[u.CHANNEL_VOLUMES_KEY];
+  assert.equal(stored()['login:streamer_a']?.gainLive, 0.45);
+
+  // The tab moves on while the pointer is still held, the display's tick draws
+  // the new channel, and the drag goes on to its release.
+  await content.navigate('https://www.twitch.tv/streamer_b');
+  await popup.poll();
+  popup.el('manualSlider').value = '155';
+  await popup.fire('manualSlider', 'input');
+  await popup.fire('manualSlider', 'pointerup');
+  await popup.fire('manualSlider', 'change');
+
+  assert.equal(stored()['login:streamer_b'], undefined);
+  assert.equal(stored()['login:streamer_a']?.gainLive, 0.45);
+  assert.equal(popup.sent.filter((request) => request.cmd === 'setGain').length, 1);
 });
 
 // An Auto switch answers with the gain the page settled on, which is not the

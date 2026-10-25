@@ -283,10 +283,11 @@ sequenceDiagram
   popup->>content: getState (refresh)
 ```
 
-Drawn from: `popup.js` the `manualSlider` `input` / `change` / `pointerdown` / `keydown` listeners, the preset `click` listener, `setGain`, `applyMeasured`, `syncInteractionDisabledState`, `renderState`; `content.js` the `setGain` case of the `runtime.onMessage` listener, `applyGain`, `saveChannelGain`, `reapplyForCurrentChannel`.
+Drawn from: `popup.js` the `manualSlider` `input` / `change` / `pointerdown` / `pointerup` / `pointercancel` / `keydown` listeners, the `window` `blur` listener, the preset `click` listener, `setGain`, `applyMeasured`, `syncInteractionDisabledState`, `renderState`; `content.js` the `setGain` case of the `runtime.onMessage` listener, `applyGain`, `saveChannelGain`, `reapplyForCurrentChannel`.
 
 - `input` (while the slider moves) updates the Current card and the value label and sends nothing. `change` sends one `setGain`. A preset button moves the slider, updates the same two labels and sends one `setGain`. Nothing else holds or merges these sends.
 - The slider sends the `appliesTo` copied when the gesture began (`pointerdown`, `keydown`, or the first `input`); a preset and the "Apply to channel" button send the `appliesTo` of the last state drawn.
+- A `blur` of the popup's `window` while the pointer is held on the slider (between its `pointerdown` and its `pointerup` / `pointercancel`) ends the gesture: a `change` that arrived ahead of the `blur` has sent its `setGain`, and the slider's `input` and `change` that follow do nothing, the `change` at the release included, until the next `pointerdown` or a `keydown` that is not a repeat.
 - "Apply to channel" (`applyMeasured`) sends `resume` and then `setGain` with the Suggested gain, `suggestedGain(lufs.integrated, targetLufs)` from the last `getState`. The button is enabled with Auto off, a finite Integrated value, a channel and audio available, and its label is "Apply $VALUE$ to channel" with the gain in the display unit.
 - The popup disables the slider and the presets while Auto is on, an Auto save is pending, `audioUnavailable` is true, or the page has no Live / VOD channel.
 - Write: `saveGain` sets `gain<Kind>` of the canonical row.
@@ -730,6 +731,7 @@ Drawn from: `content.js` `listenForResumeGesture`, `requestAudioContextResume`, 
 | Install or update | Not sent by the SW | `normalizeChannels`; no settings are written | `background.js` `onInstalled` |
 | Options page opened | Not sent by options | `normalizeChannels` | `options.js` `loadAll` |
 | Popup slider `input` | Unchanged, labels only | none | `popup.js` `input` listener |
+| Popup `blur` while the slider is held | Unchanged; the rest of the drag is not sent | none | `popup.js` `window` `blur` listener |
 | Popup slider `change`, preset click | Set to the chosen gain | `saveGain` | `popup.js` `setGain`, `content.js` `setGain` case, `saveChannelGain` |
 | "Apply to channel" | Set to the Suggested gain | `saveGain` | `popup.js` `applyMeasured` |
 | `saveGain` rejected | Back to the stored gain | none | `content.js` `setGain` case, `reapplyForCurrentChannel` |
