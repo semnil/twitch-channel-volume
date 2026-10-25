@@ -7504,6 +7504,27 @@ test('content seeds the measurement an owner moved from the read that won', asyn
   assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).channel.id, '777');
 });
 
+test('content names an owner whose row it could not read as a failed bridge message', async () => {
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/videos/100' });
+  await flushTasks();
+  harness.failNextStorageGet();
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '777',
+    login: 'streamer',
+    displayName: 'Streamer',
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '100'
+  });
+  await flushTasks();
+
+  const [named] = loggedWarning(harness, '[TCV] failed to handle a bridge message');
+  assert.equal(named.event, 'owner');
+  assert.match(String(named.error), /injected storage read failure/);
+});
+
 test('content keeps the running measurement when the owner resolves the same channel', async () => {
   const harness = createContentHarness({
     href: 'https://www.twitch.tv/streamer',
@@ -8035,6 +8056,12 @@ test('a drag the popup loses focus in is saved at the blur, and nothing it does 
   await popup.fire('manualSlider', 'pointerup');
   await popup.fire('manualSlider', 'change');
   assert.deepEqual(gainsSent(), [0.45, 1.65, 2], 'a blur with no pointer held ends nothing');
+
+  // Not even for an input and a change that arrive without a press.
+  await popup.blurWindow();
+  await move(210);
+  await popup.fire('manualSlider', 'change');
+  assert.deepEqual(gainsSent(), [0.45, 1.65, 2, 2.1]);
 });
 
 test('a drag the popup lost focus in writes nothing to the channel the tab moves to', async () => {
