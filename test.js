@@ -15869,6 +15869,82 @@ test('page bridge carries a gain change to the ad element where no block arrives
   assert.ok(Math.abs(node.gain.value - 1) < 1e-9, `gain ${node.gain.value}`);
 });
 
+test('page bridge follows what the ad element plays at where no block arrives', async () => {
+  const harness = createPageBridgeHarness({ workletLoadFails: true });
+  await harness.dispatchCommand('init');
+  await harness.dispatchCommand('attach');
+  assert.equal(harness.messages.find((message) => message.event === 'attached')?.measuring, false);
+  await harness.dispatchCommand('setAdGain', { value: 0.5 });
+
+  harness.setPaused(true);
+  const adVideo = harness.addVideo({ volume: 1 });
+  await harness.dispatchCommand('setAdActive', { active: true });
+  const node = harness.gainNodes.at(-1);
+  // 1 (channel) x 0.5 (ad) x 1/1 (the player's volume against the element's).
+  assert.ok(Math.abs(node.gain.value - 0.5) < 1e-9, `gain ${node.gain.value}`);
+
+  // The viewer turns the player down during the break.
+  harness.setVolume(0.5);
+  await harness.runTimers();
+  assert.ok(Math.abs(node.gain.value - 0.25) < 1e-9, `gain ${node.gain.value}`);
+
+  // The ad element moves its own volume.
+  adVideo.volume = 0.25;
+  await harness.runTimers();
+  assert.ok(Math.abs(node.gain.value - 1) < 1e-9, `gain ${node.gain.value}`);
+
+  // The next creative plays in an element of its own.
+  const next = harness.addVideo({ volume: 1 });
+  await harness.runTimers();
+  assert.ok(harness.sourcedElements.includes(next));
+});
+
+test('page bridge opens and closes a cued break where no block arrives', async () => {
+  const harness = createPageBridgeHarness({ workletLoadFails: true });
+  await harness.dispatchCommand('init');
+  await harness.dispatchCommand('attach');
+  await harness.dispatchCommand('setAdGain', { value: 0.5 });
+  const ads = () => harness.messages.filter((message) => message.event === 'ad').map((message) => message.active);
+
+  // The cue arrives within its lead, ahead of the break's first audio.
+  harness.setPlayhead(99.5);
+  harness.emitPlayerCue({
+    rollType: 'midroll', startTime: 100, endTime: 115.2, duration: 15.2,
+    podPosition: 0, podCount: 1
+  });
+  await harness.runTimers();
+  assert.deepEqual(ads(), []);
+
+  harness.setPlayhead(100.1);
+  await harness.runTimers();
+  assert.deepEqual(ads(), [true]);
+  assert.equal(harness.gainValue(), 0.5);
+
+  harness.setPlayhead(115.3);
+  await harness.runTimers();
+  assert.deepEqual(ads(), [true, false]);
+  assert.equal(harness.gainValue(), 1);
+});
+
+test('page bridge keeps one ad clock for an attachment with no measurement chain', async () => {
+  const measured = createPageBridgeHarness();
+  const idle = measured.timerCount();
+  await measured.startMeasurement();
+  // The blocks are the clock where a measurement chain sends them.
+  assert.equal(measured.timerCount(), idle);
+
+  const unmeasured = createPageBridgeHarness({ workletLoadFails: true });
+  await unmeasured.dispatchCommand('init');
+  await unmeasured.dispatchCommand('attach');
+  assert.equal(unmeasured.timerCount(), idle + 1);
+
+  // The element that replaces the one attached is a new attachment, and it
+  // gets the one clock.
+  await unmeasured.replaceVideo();
+  assert.equal(unmeasured.messages.filter((message) => message.event === 'attached').length, 2);
+  assert.equal(unmeasured.timerCount(), idle + 1);
+});
+
 test('page bridge leaves another element alone while the measured one plays', async () => {
   const harness = createPageBridgeHarness();
   await harness.startMeasurement();

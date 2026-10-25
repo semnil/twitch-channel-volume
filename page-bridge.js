@@ -589,6 +589,8 @@
       forgetCues();
       sourceNode = null;
       workletNode = null;
+      clearInterval(adClock);
+      adClock = null;
       updateAdState();
       // The element that replaces it needs the loop that first attached.
       scheduleAttach();
@@ -694,6 +696,9 @@
     } else {
       console.warn('[TCV] attached without a measurement chain; the worklet module is not loaded');
     }
+    // With no measurement chain to send blocks, the attachment re-reads the ad
+    // state on a timer of the block's period.
+    if (!workletNode) adClock = setInterval(rereadAdState, BLOCK_SEC * 1000);
     postAttached();
   }
 
@@ -705,6 +710,14 @@
     const volume = attachedVideo?.volume;
     if (!Number.isFinite(volume) || volume <= 0 || volume >= 1) return ms;
     return ms / (volume * volume);
+  }
+
+  // Re-reads the ad state while the attachment has no measurement chain.
+  let adClock = null;
+
+  function rereadAdState() {
+    updateAdState();
+    if (adActive || adElementChains.length) syncAdElementGains();
   }
 
   function onBlockMs(ev) {
@@ -724,8 +737,7 @@
     const gateWindow = blocksMeanSquare(blocks, GATE_BLOCKS);
     // The playhead passing the end the cue gave is what ends a break, so the
     // state is re-read on every block.
-    updateAdState();
-    if (adActive || adElementChains.length) syncAdElementGains();
+    rereadAdState();
     // Credit is spent on windows, so a reset that empties the sub-block buffer
     // does not consume it before a window exists.
     if (gateWindow !== null) windowsObserved++;
