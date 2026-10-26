@@ -186,7 +186,7 @@ accounted for, not because the code cannot tell the difference.
 The alias rebuild after a write. `clearChannels` leaves no rows, so the rebuild
 its check guards finds no targets.
 
-- `channel-store.js:616` a guard is always taken ×1 — if (resolvedMutation.operation !== 'clearChannels') {
+- `channel-store.js:632` a guard is always taken ×1 — if (resolvedMutation.operation !== 'clearChannels') {
 
 ## popup.js
 
