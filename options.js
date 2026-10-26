@@ -89,12 +89,17 @@
     }
     const initialSettingsRevision = settingsRevision;
     const initialChannelRevision = channelRevision;
-    const data = await chrome.storage.local.get([SETTINGS_KEY, CHANNEL_VOLUMES_KEY]);
+    // The two are kept in different areas. Either read failing fails the load,
+    // so the page never shows one of them read and the other not.
+    const [settings, data] = await Promise.all([
+      readStoredSettings(chrome.storage, SETTINGS_KEY),
+      chrome.storage.local.get(CHANNEL_VOLUMES_KEY)
+    ]);
     // The page has already been shown as one whose load did not arrive, so what
     // arrives afterwards does not get to fill it in behind that.
     if (loadFailed) return;
     if (initialSettingsRevision === settingsRevision) {
-      renderSettings(data[SETTINGS_KEY] || {});
+      renderSettings(settings || {});
     }
     if (initialChannelRevision === channelRevision) {
       channelVolumes = data[CHANNEL_VOLUMES_KEY] || {};
@@ -200,8 +205,8 @@
   async function reloadSettingsAfterFailure(error) {
     const revision = settingsRevision;
     try {
-      const data = await chrome.storage.local.get(SETTINGS_KEY);
-      if (revision === settingsRevision) renderSettings(data[SETTINGS_KEY] || {});
+      const settings = await readStoredSettings(chrome.storage, SETTINGS_KEY);
+      if (revision === settingsRevision) renderSettings(settings || {});
       renderChannels(channelVolumes);
     } catch (reloadError) {
       console.error('[TCV] failed to reload settings after save failure', reloadError);
@@ -286,19 +291,22 @@
 
   $('clearAllBtn').addEventListener('click', clearAll);
 
-  chrome.storage.onChanged.addListener((changes) => {
+  chrome.storage.onChanged.addListener((changes, areaName) => {
     // The page that could not read its own settings is telling the viewer to
     // reload it. What another tab writes after that would stand on a page whose
     // own read never landed, so none of it is taken. A change that arrived
     // before the failure is already on screen and stays there.
     if (loadFailed) return;
-    if (changes[CHANNEL_VOLUMES_KEY]) {
+    // Chrome sends one event per area. The channel list is kept in local and
+    // the settings in sync; the settings key changes in local only when the
+    // worker moves it out, and that removal carries no value to render.
+    if (areaName === 'local' && changes[CHANNEL_VOLUMES_KEY]) {
       channelRevision++;
       channelVolumes = changes[CHANNEL_VOLUMES_KEY].newValue || {};
       channelsRead = true;
       renderChannels(channelVolumes);
     }
-    if (changes[SETTINGS_KEY]) {
+    if (areaName === 'sync' && changes[SETTINGS_KEY]) {
       settingsRevision++;
       renderSettings(changes[SETTINGS_KEY].newValue || {});
       renderChannels(channelVolumes);

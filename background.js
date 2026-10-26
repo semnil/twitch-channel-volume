@@ -1,7 +1,10 @@
 // background.js — Service worker. Owns the single serialized writer for the
-// aggregate channelVolumes key and initializes default settings on install.
+// aggregate channelVolumes key (local) and for the settings (sync). Nothing is
+// written to the settings on install: a reader that finds none takes the
+// defaults, and a computer newly set up would otherwise write them into sync
+// before Chrome has brought it the settings the profile already holds.
 
-importScripts('channel-store.js', 'settings-store.js');
+importScripts('settings-area.js', 'channel-store.js', 'settings-store.js');
 
 const channelStore = globalThis.TCVChannelStore;
 const settingsStore = globalThis.TCVSettingsStore;
@@ -9,7 +12,13 @@ const writeChannelVolumes = channelStore.createChannelVolumesWriter(
   chrome.storage.local,
   'channelVolumes'
 );
-const writeSettings = settingsStore.createSettingsWriter(chrome.storage.local);
+const writeSettings = settingsStore.createSettingsWriter(chrome.storage);
+
+// Asked at every start rather than on install alone, so a move that failed is
+// made again at the next start. Once local holds no settings it is one read.
+writeSettings.moveToSync().catch((error) => {
+  console.error('[TCV] failed to move the settings to sync', error);
+});
 
 // The stores name the rejections they raise themselves. A rejection with no
 // name came from the storage area, and only that one is worth retrying.
@@ -60,18 +69,5 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 chrome.runtime.onInstalled.addListener(() => {
   writeChannelVolumes({ operation: 'normalizeChannels' }).catch((error) => {
     console.error('[TCV] stored channel normalization failed', error);
-  });
-  writeSettings({
-    operation: 'initializeSettings',
-    defaults: {
-      targetLufs: -18,
-      adGainDb: -6,
-      displayUnit: '%',
-      showGainOverlay: true,
-      autoApplyLoudnessLiveDefault: false,
-      autoApplyLoudnessVodDefault: false
-    }
-  }).catch((error) => {
-    console.error('[TCV] default settings initialization failed', error);
   });
 });

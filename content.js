@@ -65,17 +65,24 @@
 
   // ── Storage helpers ────────────────────────────────────────────────
 
+  // Advanced by every synced settings change. The read below is answered with
+  // what storage held when it went out, so a change that arrived meanwhile is
+  // newer than what it read and is not undone by it.
+  let settingsRevision = 0;
+
   async function loadSettings() {
     if (!isContextValid()) return;
-    const data = await chrome.storage.local.get(SETTINGS_KEY);
-    const s = data[SETTINGS_KEY] || {};
-    targetLufs = s.targetLufs ?? DEFAULT_TARGET_LUFS;
-    currentAdGainDb = s.adGainDb ?? DEFAULT_AD_GAIN_DB;
-    showGainOverlay = s.showGainOverlay ?? true;
-    defaultAutoApplyLoudnessLive =
-      s.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
-    defaultAutoApplyLoudnessVod =
-      s.autoApplyLoudnessVodDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
+    const revision = settingsRevision;
+    const s = (await readStoredSettings(chrome.storage, SETTINGS_KEY)) || {};
+    if (revision === settingsRevision) {
+      targetLufs = s.targetLufs ?? DEFAULT_TARGET_LUFS;
+      currentAdGainDb = s.adGainDb ?? DEFAULT_AD_GAIN_DB;
+      showGainOverlay = s.showGainOverlay ?? true;
+      defaultAutoApplyLoudnessLive =
+        s.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
+      defaultAutoApplyLoudnessVod =
+        s.autoApplyLoudnessVodDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
+    }
     sendCmd({ cmd: 'setAdGain', value: dbToGain(currentAdGainDb) });
   }
 
@@ -686,8 +693,12 @@
 
   // ── Storage onChanged → cross-tab sync ────────────────────────────
 
-  chrome.storage.onChanged?.addListener((changes) => {
-    if (changes[SETTINGS_KEY]) {
+  // Chrome sends one event per area. The settings are taken from sync alone: in
+  // local the key changes only when the worker moves it out, and that removal
+  // carries no value to take. The channel keys are kept in local alone.
+  chrome.storage.onChanged?.addListener((changes, areaName) => {
+    if (areaName === 'sync' && changes[SETTINGS_KEY]) {
+      settingsRevision++;
       const next = changes[SETTINGS_KEY].newValue || {};
       targetLufs = next.targetLufs ?? DEFAULT_TARGET_LUFS;
       defaultAutoApplyLoudnessLive =
@@ -710,7 +721,8 @@
         console.warn('[TCV] failed to reapply or persist settings', error);
       });
     }
-    if ((changes[CHANNEL_VOLUMES_KEY] || changes[CHANNEL_ALIASES_KEY]) && currentChannel.id) {
+    if (areaName === 'local' && (changes[CHANNEL_VOLUMES_KEY] || changes[CHANNEL_ALIASES_KEY]) &&
+        currentChannel.id) {
       if (currentChannel.id === migratingChannelId) return;
       reapplyForCurrentChannel().catch((error) => {
         console.warn('[TCV] failed to synchronize channel settings', error);
