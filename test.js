@@ -9078,25 +9078,11 @@ test('settings drop the default kept for a kind the extension no longer has', ()
   assert.deepEqual(settingsStore.applySettingsMutation(stored, {
     operation: 'patchSettings', patch: { displayUnit: 'dB' }
   }), { targetLufs: -18, autoApplyLoudnessLiveDefault: true, displayUnit: 'dB' });
-  // The Worker sends this one on every update, so it is the migration point.
-  assert.deepEqual(settingsStore.applySettingsMutation(stored, {
+  // The install-time initialize that used to drop it is gone; nothing names it
+  // any more.
+  assert.throws(() => settingsStore.applySettingsMutation(stored, {
     operation: 'initializeSettings', defaults: { targetLufs: -18 }
-  }), { targetLufs: -18, autoApplyLoudnessLiveDefault: true });
-});
-
-test('every default the worker installs is a field the settings writer accepts', () => {
-  const source = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
-  const literal = /defaults:\s*(\{[\s\S]*?\n {4}\})/.exec(source);
-  assert.ok(literal, 'the install defaults are an object literal in background.js');
-  // eslint-disable-next-line no-new-func
-  const defaults = new Function(`return (${literal[1]});`)();
-  assert.ok(Object.keys(defaults).length > 0);
-  // A key here that the validator table does not carry makes a fresh install
-  // write no settings at all.
-  assert.deepEqual(
-    settingsStore.applySettingsMutation({}, { operation: 'initializeSettings', defaults }),
-    defaults
-  );
+  }), { reason: 'invalid-mutation', message: 'unknown settings mutation' });
 });
 
 test('a newer cleared provisional measurement is not restored during owner merge', () => {
@@ -9827,21 +9813,6 @@ test('the ad gain is a number inside the range the slider offers', () => {
       `adGainDb ${String(value)}`
     );
   }
-});
-
-test('settings initialization preserves existing Auto defaults', () => {
-  const existing = {
-    targetLufs: -16,
-    autoApplyLoudnessLiveDefault: true
-  };
-  const result = settingsStore.applySettingsMutation(existing, {
-    operation: 'initializeSettings',
-    defaults: {
-      targetLufs: -18,
-      autoApplyLoudnessLiveDefault: false
-    }
-  });
-  assert.deepEqual(result, existing);
 });
 
 const BACKGROUND_FIXTURE_SETTINGS = {
@@ -11027,11 +10998,16 @@ test('a settings write made before the move carries the local values into sync',
   assert.equal(await write.moveToSync(), false, 'and the next start finds nothing to move');
 });
 
-test('install-time defaults are written to sync', async () => {
+test('an install writes no settings to either area', async () => {
+  // A computer newly set up starts with sync empty until Chrome brings it what
+  // the profile holds; defaults written then would stand in sync for every
+  // computer. The readers take the defaults where nothing is stored.
   const harness = createBackgroundHarness({ syncSettings: null });
   await harness.install();
-  assert.equal(harness.synced.autoLoudnessSettings.targetLufs, -18);
+  assert.equal(harness.synced.autoLoudnessSettings, undefined);
   assert.equal(harness.stored.autoLoudnessSettings, undefined);
+  assert.equal(harness.writes.some(([, keys]) => keys.includes('autoLoudnessSettings')), false,
+    JSON.stringify(harness.writes));
 });
 
 test('content reads settings an earlier version left in local', async () => {
@@ -11220,16 +11196,17 @@ test('the options page offers no destructive action over a list it has not read'
   assert.match(source, /async function clearAll\(\) \{\s*if \(!settingsReady\) return;/);
 });
 
-test('the options markup ships the defaults the extension installs', () => {
+test('the options markup ships the defaults a page with no settings falls back to', () => {
   // Until the load writes to them, the controls hold what the markup gives
-  // them, and a load that fails leaves them there for good.
+  // them, and a load that fails leaves them there for good. Nothing is stored
+  // on install, so the fallbacks the page renders are the defaults.
   const html = fs.readFileSync(path.join(__dirname, 'options.html'), 'utf8');
-  const background = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
-  const start = background.indexOf("operation: 'initializeSettings'");
-  const installed = background.slice(start, background.indexOf('}', background.indexOf('defaults: {', start)));
-  const installedValue = (field) => {
-    const match = installed.match(new RegExp(`${field}:\\s*([^,\\n]+)`));
-    assert.ok(match, `${field} is still installed`);
+  const options = fs.readFileSync(path.join(__dirname, 'options.js'), 'utf8');
+  const start = options.indexOf('function renderSettings(settings) {');
+  const rendered = options.slice(start, options.indexOf('};', start));
+  const fallback = (field) => {
+    const match = rendered.match(new RegExp(`${field}:\\s*settings\\.${field}\\s*(?:\\?\\?|\\|\\|)\\s*([^,\\n]+)`));
+    assert.ok(match, `${field} still falls back`);
     return match[1].trim();
   };
   const tag = (id) => {
@@ -11238,20 +11215,17 @@ test('the options markup ships the defaults the extension installs', () => {
     return match[0];
   };
 
-  assert.equal(installedValue('targetLufs'), String(u.DEFAULT_TARGET_LUFS));
-  assert.equal(installedValue('adGainDb'), String(u.DEFAULT_AD_GAIN_DB));
-  assert.equal(installedValue('displayUnit'), "'%'");
-  assert.equal(installedValue('showGainOverlay'), 'true');
+  assert.equal(fallback('targetLufs'), 'DEFAULT_TARGET_LUFS');
+  assert.equal(fallback('adGainDb'), 'DEFAULT_AD_GAIN_DB');
+  assert.equal(fallback('displayUnit'), "'%'");
+  assert.equal(fallback('showGainOverlay'), 'true');
   assert.match(tag('targetLufs'), new RegExp(`value="${u.DEFAULT_TARGET_LUFS}"`));
   assert.match(tag('adGainDb'), new RegExp(`value="${u.DEFAULT_AD_GAIN_DB}"`));
   assert.match(tag('overlayToggle'), /\bchecked\b/);
   assert.match(html, /<button data-unit="%" class="active"/);
   for (const kind of ['Live', 'Vod']) {
-    assert.equal(
-      installedValue(`autoApplyLoudness${kind}Default`),
-      String(u.DEFAULT_AUTO_APPLY_LOUDNESS),
-      kind
-    );
+    assert.equal(fallback(`autoApplyLoudness${kind}Default`), 'DEFAULT_AUTO_APPLY_LOUDNESS', kind);
+    assert.equal(u.DEFAULT_AUTO_APPLY_LOUDNESS, false, kind);
     assert.doesNotMatch(tag(`defaultAuto${kind}Toggle`), /\bchecked\b/, kind);
   }
 });

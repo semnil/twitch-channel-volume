@@ -1,6 +1,8 @@
 // background.js — Service worker. Owns the single serialized writer for the
-// aggregate channelVolumes key (local) and for the settings (sync), and
-// initializes default settings on install.
+// aggregate channelVolumes key (local) and for the settings (sync). Nothing is
+// written to the settings on install: a reader that finds none takes the
+// defaults, and a computer newly set up would otherwise write them into sync
+// before Chrome has brought it the settings the profile already holds.
 
 importScripts('settings-area.js', 'channel-store.js', 'settings-store.js');
 
@@ -67,18 +69,5 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 chrome.runtime.onInstalled.addListener(() => {
   writeChannelVolumes({ operation: 'normalizeChannels' }).catch((error) => {
     console.error('[TCV] stored channel normalization failed', error);
-  });
-  writeSettings({
-    operation: 'initializeSettings',
-    defaults: {
-      targetLufs: -18,
-      adGainDb: -6,
-      displayUnit: '%',
-      showGainOverlay: true,
-      autoApplyLoudnessLiveDefault: false,
-      autoApplyLoudnessVodDefault: false
-    }
-  }).catch((error) => {
-    console.error('[TCV] default settings initialization failed', error);
   });
 });
