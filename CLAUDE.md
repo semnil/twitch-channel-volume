@@ -110,7 +110,7 @@ flowchart LR
 - Validates and applies gain / Auto / LUFS / delete / clear mutations
 - Writes and merges a row only under a Twitch user id or a provisional `login:` / `vod-owner:` id (`assertWritableChannelId`, refused as `invalid-mutation`); a key every object inherits, `__proto__` among them, is none of them. `deleteChannel` takes any key, since an earlier version's rows can carry another. A row the store makes is named by the sender's name where that is text and by its id otherwise (`fallbackRowName`)
 - A measurement reset deletes only the lastLufs of the target kind and the lastLufsRef / lastLufsWindows that describe it (autoGainRef stays), and keeps the deletion as a state carrying an update number, so it survives ID merging
-- Persists the alias from a provisional ID to the numeric owner ID and resolves the canonical ID in every mutation. A `clip-owner:<slug>` alias is removed on every write: nothing is kept for a clip for it to point at (name / login / url from the provisional side are not applied when the alias is forwarded)
+- Persists the alias from a provisional ID to the numeric owner ID and resolves the canonical ID in every mutation. A `clip-owner:<slug>` alias is removed on every write: nothing is kept for a clip for it to point at (name / login / url from the provisional side are not applied when the alias is forwarded). A row that a write leaves gone without moving it onto another id — a deleted channel, a row a clip was the whole of — takes every alias that leads to it, directly or through another alias, and clearing the channels removes them all
 - Merges a Live row and a numeric owner row that share a login, and normalises the URL to the channel URL
 - Merges provisional and confirmed IDs by per-field persistent update numbers
 

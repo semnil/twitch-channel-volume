@@ -10200,6 +10200,67 @@ test('the writer forgets every alias when the channels are cleared', async () =>
     `and nothing is left pointing at them (${JSON.stringify(writer.state.channelVolumeAliases)})`);
 });
 
+test('the writer forgets the aliases of a deleted channel', async () => {
+  const writer = createStoreWriter({
+    channelVolumes: {
+      55: { name: 'somechannel', login: 'somechannel', gainVod: 2 },
+      66: { name: 'otherchannel', login: 'otherchannel', gainVod: 1 }
+    },
+    // The name that leads on through another comes first, so it is reached only
+    // once the other is known to lead to the deleted row.
+    channelVolumeAliases: {
+      'vod-owner:101': 'login:somechannel',
+      'login:somechannel': '55',
+      'vod-owner:100': '55',
+      'login:otherchannel': '66',
+      'vod-owner:200': '66'
+    }
+  });
+
+  await writer.write({ operation: 'deleteChannel', channelId: '55' });
+
+  assert.deepEqual(Object.keys(writer.state.channelVolumes), ['66'], 'the row goes');
+  assert.deepEqual(writer.state.channelVolumeAliases,
+    { 'login:otherchannel': '66', 'vod-owner:200': '66' },
+    `with every name that led to it, directly or through another (${JSON.stringify(writer.state.channelVolumeAliases)})`);
+});
+
+test('the writer forgets the aliases of a row a clip was the whole of', async () => {
+  const writer = createStoreWriter({
+    channelVolumes: {
+      55: { name: 'somechannel', login: 'somechannel', gainLive: 2 },
+      999: { name: 'Clip Only', gainClip: 1.4, __fieldVersions: { gainClip: 5 } }
+    },
+    channelVolumeAliases: {
+      'login:somechannel': '55',
+      'login:cliponly': '999',
+      'vod-owner:300': '999'
+    }
+  });
+
+  await writer.write({ operation: 'saveGain', channelId: '55', kind: 'live', gain: 1 });
+
+  assert.deepEqual(Object.keys(writer.state.channelVolumes), ['55'], 'the clip sweep takes the row');
+  assert.deepEqual(writer.state.channelVolumeAliases, { 'login:somechannel': '55' },
+    `with the names that led to it (${JSON.stringify(writer.state.channelVolumeAliases)})`);
+});
+
+test('the writer keeps the names that led to a row a merge moved', async () => {
+  const writer = createStoreWriter({
+    channelVolumes: { 'login:somechannel': { name: 'provisional', login: 'somechannel', gainLive: 2 } },
+    channelVolumeAliases: { 'vod-owner:100': 'login:somechannel' }
+  });
+
+  await writer.write({
+    operation: 'mergeChannelIds', fromId: 'login:somechannel', toId: '55', kind: 'live'
+  });
+
+  assert.deepEqual(writer.state.channelVolumeAliases,
+    { 'vod-owner:100': 'login:somechannel', 'login:somechannel': '55' },
+    `a moved row is still reached through the id it moved from (${JSON.stringify(writer.state.channelVolumeAliases)})`);
+  assert.equal(writer.state.channelVolumes['55'].gainLive, 2);
+});
+
 test('the writer reads an alias map only where there is one to read', async () => {
   for (const aliases of ['not a map', 42, null, undefined, true]) {
     const writer = createStoreWriter({

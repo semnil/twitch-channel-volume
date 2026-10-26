@@ -544,6 +544,22 @@ function resolveStoredAlias(channelId, aliases) {
   throw storedStateInvalid(new TypeError('channel alias cycle detected'));
 }
 
+// Every id whose alias leads to `channelId`, directly or through another alias.
+// The walk ends on the first pass that finds no id it had not found before.
+function aliasesLeadingTo(channelId, aliases) {
+  const leading = new Set([channelId]);
+  for (let found = 0; found < leading.size;) {
+    found = leading.size;
+    for (const [fromId, toId] of Object.entries(aliases)) {
+      if (leading.has(toId)) {
+        leading.add(fromId);
+      }
+    }
+  }
+  leading.delete(channelId);
+  return [...leading];
+}
+
 function resolveMutation(mutation, aliases) {
   const resolved = { ...mutation };
   delete resolved.sequence;
@@ -616,6 +632,15 @@ function createChannelVolumesWriter(
       if (resolvedMutation.operation !== 'clearChannels') {
         for (const { fromId, toId } of knownLoginTargets(next)) {
           aliases[fromId] = toId;
+        }
+      }
+      // A row that is gone, and was not moved onto another id, takes every
+      // name that led to it along: a deleted channel, and a row a clip was the
+      // whole of.
+      for (const id of Object.keys(current)) {
+        if (!Object.prototype.hasOwnProperty.call(next, id) &&
+            !Object.prototype.hasOwnProperty.call(aliases, id)) {
+          for (const fromId of aliasesLeadingTo(id, aliases)) delete aliases[fromId];
         }
       }
       // A clip stood in under a name of its own until the numeric ID arrived.
