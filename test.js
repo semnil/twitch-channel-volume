@@ -2534,6 +2534,9 @@ function createContentHarness({
   channelVolumes,
   deferInitialStorageGet = false,
   failInitialStorageGet = false,
+  // The first settings read made in this area ('sync' or 'local'), answered with
+  // what the area held when it was made and held until the case lets it go.
+  holdSettingsRead = '',
   deferChannelMutationOperation = '',
   failChannelMutationOperation = '',
   // The operation Chrome answers with a rejection rather than a response.
@@ -2700,6 +2703,16 @@ function createContentHarness({
     }
     return readStoredKeys(area, keys);
   }
+  let heldSettingsArea = holdSettingsRead;
+  let releaseHeldSettingsRead = null;
+  function readSettingsArea(name, area, keys) {
+    if (heldSettingsArea !== name || ![].concat(keys).includes(u.SETTINGS_KEY)) {
+      return readArea(area, keys);
+    }
+    heldSettingsArea = '';
+    const snapshot = readArea(area, keys);
+    return new Promise((resolve) => { releaseHeldSettingsRead = () => resolve(snapshot); });
+  }
   const chrome = {
     runtime: {
       get id() {
@@ -2735,8 +2748,8 @@ function createContentHarness({
       onMessage: { addListener(listener) { runtimeMessageListener = listener; } }
     },
     storage: {
-      sync: { get: (keys) => readArea(synced, keys) },
-      local: { get: (keys) => readArea(stored, keys) },
+      sync: { get: (keys) => readSettingsArea('sync', synced, keys) },
+      local: { get: (keys) => readSettingsArea('local', stored, keys) },
       onChanged: {
         addListener(listener) { storageListeners.push(listener); }
       }
@@ -2815,6 +2828,12 @@ function createContentHarness({
     commands,
     stored,
     synced,
+    async releaseSettingsRead() {
+      assert.ok(releaseHeldSettingsRead, 'the settings read is not held');
+      releaseHeldSettingsRead();
+      releaseHeldSettingsRead = null;
+      await flushTasks(8);
+    },
     warnings,
     infos,
     async dispatchMessage(data) {
@@ -3367,13 +3386,15 @@ function createPopupHarness({
     },
     storage: {
       sync: {
+        // Answered with what sync held when the read was made, as Chrome does.
         async get() {
+          const snapshot = { displayUnit };
           if (heldSettingsRead) {
             const holding = heldSettingsRead;
             heldSettingsRead = null;
             await holding;
           }
-          return { [u.SETTINGS_KEY]: { displayUnit } };
+          return { [u.SETTINGS_KEY]: snapshot };
         }
       },
       // The settings are in sync, so the popup has no reason to read local.
@@ -8201,6 +8222,15 @@ test('popup asks the page nothing until it has read the display unit', async () 
   assert.match(harness.el('manualValue').textContent, / dB$/);
 });
 
+test('popup does not undo a synced unit with the read that was out when it came', async () => {
+  const harness = createPopupHarness({ holdSettingsRead: true, displayUnit: '%', state: WATCHING });
+  await flushTasks(8);
+  await harness.changeSettings({ displayUnit: 'dB' });
+  await harness.releaseSettingsRead();
+  await flushTasks(8);
+  assert.match(harness.el('current').textContent, / dB$/);
+});
+
 test('popup stays hidden until the first state is drawn', async () => {
   const harness = createPopupHarness({ holdCommand: 'getState', state: WATCHING });
   await flushTasks(8);
@@ -10894,6 +10924,25 @@ test('the settings are read from sync, and from local only where sync has none',
 
   const neither = settingsAreas();
   assert.equal(await settingsArea.readStoredSettings(neither.storage, u.SETTINGS_KEY), undefined);
+  assert.deepEqual(neither.reads, ['sync', 'local', 'sync']);
+});
+
+test('a settings read made across the move answers with what the move put in sync', async () => {
+  // Sync is read empty; the move then writes sync and clears local before the
+  // local read is made, so local is empty too. The settings are in sync by then.
+  const moved = { targetLufs: -24, adGainDb: -12 };
+  const across = settingsAreas({ local: { [u.SETTINGS_KEY]: moved } });
+  const readLocal = across.storage.local.get;
+  across.storage.local.get = async (keys) => {
+    across.storage.sync = settingsAreas({ sync: { [u.SETTINGS_KEY]: moved } }).storage.sync;
+    const answer = await readLocal({});
+    across.reads.push('local');
+    return answer;
+  };
+  assert.deepEqual(
+    await settingsArea.readStoredSettings(across.storage, u.SETTINGS_KEY),
+    moved
+  );
 });
 
 test('the worker moves settings left in local to sync, and removes them from local', async () => {
@@ -11014,6 +11063,49 @@ test('content reads settings an earlier version left in local', async () => {
   const harness = createContentHarness({ settingsInLocal: true, settings: { targetLufs: -24 } });
   await flushTasks(8);
   assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).targetLufs, -24);
+});
+
+test('content keeps what the move put in sync when its read straddles the move', async () => {
+  // Sync is read empty and that answer is held; the move writes sync and clears
+  // local, and the synced change arrives, before the read goes on to local and
+  // finds it empty. What comes back is not taken for a profile with no settings.
+  const settings = {
+    targetLufs: -24, adGainDb: -12,
+    autoApplyLoudnessLiveDefault: true, autoApplyLoudnessVodDefault: true
+  };
+  const harness = createContentHarness({ settingsInLocal: true, settings, holdSettingsRead: 'sync' });
+  await flushTasks(8);
+  const moved = harness.stored[u.SETTINGS_KEY];
+  harness.synced[u.SETTINGS_KEY] = moved;
+  delete harness.stored[u.SETTINGS_KEY];
+  await harness.dispatchStorage({ [u.SETTINGS_KEY]: { newValue: moved } }, 'sync');
+  await harness.dispatchStorage({ [u.SETTINGS_KEY]: { oldValue: moved } }, 'local');
+  await harness.releaseSettingsRead();
+  await flushTasks(8);
+
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.targetLufs, -24);
+  assert.equal(state.adGainDb, -12);
+  const adGains = harness.commands.filter((command) => command.cmd === 'setAdGain');
+  assert.ok(adGains.length > 0, 'the ad gain is sent');
+  assert.equal(adGains.at(-1).value, u.dbToGain(-12), 'and the last one sent is the synced one');
+  assert.ok(adGains.every((command) => command.value !== u.dbToGain(u.DEFAULT_AD_GAIN_DB)),
+    JSON.stringify(adGains));
+});
+
+test('content does not undo a synced change with the read that was out when it came', async () => {
+  const harness = createContentHarness({ settings: { targetLufs: -20, adGainDb: -6 }, holdSettingsRead: 'sync' });
+  await flushTasks(8);
+  harness.synced[u.SETTINGS_KEY] = { ...harness.synced[u.SETTINGS_KEY], targetLufs: -24, adGainDb: -12 };
+  await harness.dispatchStorage({ [u.SETTINGS_KEY]: { newValue: harness.synced[u.SETTINGS_KEY] } }, 'sync');
+  await harness.releaseSettingsRead();
+  await flushTasks(8);
+
+  const state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.targetLufs, -24, 'the change stands over the older read');
+  assert.equal(state.adGainDb, -12);
+  const adGains = harness.commands.filter((command) => command.cmd === 'setAdGain');
+  assert.equal(adGains.at(-1).value, u.dbToGain(-12));
 });
 
 test('content takes the settings from sync and the channels from local', async () => {

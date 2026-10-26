@@ -13,12 +13,17 @@ function isStoredSettingsObject(value) {
 
 // Sync first. A profile an earlier version wrote holds the settings in local
 // until the service worker moves them, and that copy stands in until then. The
-// move writes sync before it removes local, so one of the two always answers.
+// move writes sync before it removes local, so the two reads can straddle it:
+// sync read empty, then local read after the move cleared it. A local read that
+// finds nothing is followed by a second read of sync, which then holds what the
+// move put there.
 async function readStoredSettings(storage, key) {
   const synced = (await storage.sync.get(key))[key];
   if (isStoredSettingsObject(synced)) return synced;
   const local = (await storage.local.get(key))[key];
-  return isStoredSettingsObject(local) ? local : undefined;
+  if (isStoredSettingsObject(local)) return local;
+  const moved = (await storage.sync.get(key))[key];
+  return isStoredSettingsObject(moved) ? moved : undefined;
 }
 
 const TCV_SETTINGS_AREA = { isStoredSettingsObject, readStoredSettings };

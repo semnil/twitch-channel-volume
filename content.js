@@ -65,16 +65,24 @@
 
   // ── Storage helpers ────────────────────────────────────────────────
 
+  // Advanced by every synced settings change. The read below is answered with
+  // what storage held when it went out, so a change that arrived meanwhile is
+  // newer than what it read and is not undone by it.
+  let settingsRevision = 0;
+
   async function loadSettings() {
     if (!isContextValid()) return;
+    const revision = settingsRevision;
     const s = (await readStoredSettings(chrome.storage, SETTINGS_KEY)) || {};
-    targetLufs = s.targetLufs ?? DEFAULT_TARGET_LUFS;
-    currentAdGainDb = s.adGainDb ?? DEFAULT_AD_GAIN_DB;
-    showGainOverlay = s.showGainOverlay ?? true;
-    defaultAutoApplyLoudnessLive =
-      s.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
-    defaultAutoApplyLoudnessVod =
-      s.autoApplyLoudnessVodDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
+    if (revision === settingsRevision) {
+      targetLufs = s.targetLufs ?? DEFAULT_TARGET_LUFS;
+      currentAdGainDb = s.adGainDb ?? DEFAULT_AD_GAIN_DB;
+      showGainOverlay = s.showGainOverlay ?? true;
+      defaultAutoApplyLoudnessLive =
+        s.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
+      defaultAutoApplyLoudnessVod =
+        s.autoApplyLoudnessVodDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
+    }
     sendCmd({ cmd: 'setAdGain', value: dbToGain(currentAdGainDb) });
   }
 
@@ -690,6 +698,7 @@
   // carries no value to take. The channel keys are kept in local alone.
   chrome.storage.onChanged?.addListener((changes, areaName) => {
     if (areaName === 'sync' && changes[SETTINGS_KEY]) {
+      settingsRevision++;
       const next = changes[SETTINGS_KEY].newValue || {};
       targetLufs = next.targetLufs ?? DEFAULT_TARGET_LUFS;
       defaultAutoApplyLoudnessLive =

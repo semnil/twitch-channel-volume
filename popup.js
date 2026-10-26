@@ -465,15 +465,21 @@
   });
   $('optionsBtn').addEventListener('click', () => chrome.runtime.openOptionsPage());
 
+  // Advanced by every synced settings change, so the first read does not undo
+  // a change that arrived while it was out.
+  let settingsRevision = 0;
+
   async function loadDisplayUnit() {
+    const revision = settingsRevision;
     const s = (await readStoredSettings(chrome.storage, SETTINGS_KEY)) || {};
-    displayUnit = s.displayUnit || '%';
+    if (revision === settingsRevision) displayUnit = s.displayUnit || '%';
   }
 
   // The settings are taken from sync alone; the key changes in local only when
   // the worker moves it out, and that removal carries no value.
   chrome.storage.onChanged?.addListener((changes, areaName) => {
     if (areaName === 'sync' && changes[SETTINGS_KEY]) {
+      settingsRevision++;
       const next = changes[SETTINGS_KEY].newValue || {};
       displayUnit = next.displayUnit || '%';
       sliderSynced = false;
