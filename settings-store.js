@@ -1,5 +1,11 @@
 // settings-store.js — Serialized field-level settings mutations for the service worker.
 
+// The worker loads settings-area.js ahead of this script; the tests load this
+// one as a module, which brings its own.
+const settingsArea = typeof module !== 'undefined' && module.exports
+  ? require('./settings-area.js')
+  : globalThis.TCVSettingsArea;
+
 const SETTINGS_MUTATION_MESSAGE = '__twitch_channel_volume_settings_mutation__';
 const SETTINGS_STORE_KEY = 'autoLoudnessSettings';
 
@@ -67,25 +73,57 @@ function applySettingsMutation(currentValue, mutation) {
   throw invalidSettingsMutation('unknown settings mutation');
 }
 
-function createSettingsWriter(storageArea, storageKey = SETTINGS_STORE_KEY) {
+// An earlier version kept the settings in local. Where local still holds them
+// they go to sync, less the fields withoutRemovedSettings drops, unless sync
+// already holds settings — another computer got there first, and what it
+// uploaded is what every computer reads from now on — and the local copy is
+// removed either way. Sync is written before local is removed, so a reader
+// always finds one of them. Once local holds nothing this is one read, which is
+// why the worker can ask for it at every start.
+async function moveSettingsToSync(storage, storageKey) {
+  const local = (await storage.local.get(storageKey))[storageKey];
+  if (local === undefined) return false;
+  const synced = (await storage.sync.get(storageKey))[storageKey];
+  if (!settingsArea.isStoredSettingsObject(synced) &&
+      settingsArea.isStoredSettingsObject(local)) {
+    await storage.sync.set({ [storageKey]: withoutRemovedSettings(local) });
+  }
+  await storage.local.remove(storageKey);
+  return true;
+}
+
+// `storage` is chrome.storage itself: the writes go to sync, and the read goes
+// through readStoredSettings, so a write made before the move carries the local
+// values with it instead of starting sync from an empty object.
+function createSettingsWriter(storage, storageKey = SETTINGS_STORE_KEY) {
   let queue = Promise.resolve();
 
-  return function enqueueSettingsMutation(mutation) {
-    const task = queue.then(async () => {
-      const data = await storageArea.get(storageKey);
-      const next = applySettingsMutation(data[storageKey], mutation);
-      await storageArea.set({ [storageKey]: next });
-      return next;
-    });
+  function enqueue(work) {
+    const task = queue.then(work);
     queue = task.catch(() => {});
     return task;
-  };
+  }
+
+  function enqueueSettingsMutation(mutation) {
+    return enqueue(async () => {
+      const current = await settingsArea.readStoredSettings(storage, storageKey);
+      const next = applySettingsMutation(current, mutation);
+      await storage.sync.set({ [storageKey]: next });
+      return next;
+    });
+  }
+  // On the same queue as the mutations, so a write and the move cannot read the
+  // two areas in between each other's steps.
+  enqueueSettingsMutation.moveToSync = () =>
+    enqueue(() => moveSettingsToSync(storage, storageKey));
+  return enqueueSettingsMutation;
 }
 
 const TCV_SETTINGS_STORE = {
   SETTINGS_MUTATION_MESSAGE,
   SETTINGS_STORE_KEY,
   applySettingsMutation,
+  moveSettingsToSync,
   createSettingsWriter
 };
 

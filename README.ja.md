@@ -83,6 +83,8 @@ cue が届かない場合 — VOD のクライアントサイド広告 — は�
 - **ゲイン表示**: プレイヤーの音量スライダー横に適用中のゲインを表示する (既定は on)
 - **保存済みチャンネル**: 最後に適用した Auto ゲインの一覧表示。削除・全削除ができる
 
+上記の設定は `chrome.storage.sync` に保存されるため、Chrome の同期がオンなら、同じ Google アカウントで Chrome にログインし、拡張機能を入れたすべてのパソコンで共通になる。保存済みチャンネルとその計測値は、それぞれのパソコンの `chrome.storage.local` に留まる。
+
 ## 開発
 
 ```sh
@@ -124,7 +126,7 @@ python3 pack.py
 
 ## プライバシー
 
-- 外部へのネットワークリクエストを行わない。データはすべてデバイス上の `chrome.storage.local` に留まる
+- 外部へのネットワークリクエストを行わない。保存済みチャンネルと計測値はデバイス上の `chrome.storage.local` に留まる。設定（Target LUFS・CM ゲイン・表示単位・ゲイン表示・Auto の既定値）は `chrome.storage.sync` に保存し、Chrome の同期がオンなら Chrome が他のパソコンへ届ける
 - 音声・映像データそのものは記録も送信もしない — 保存するのは算出した LUFS 値とゲイン設定だけ
 - 詳細は [PRIVACY_POLICY.md](PRIVACY_POLICY.md)（[日本語](PRIVACY_POLICY_JA.md)）を参照
 

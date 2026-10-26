@@ -28,6 +28,12 @@ globalThis.document = {
 const channelStore = require('./channel-store.js');
 const settingsStore = require('./settings-store.js');
 
+function loadScriptsInto(context, filenames) {
+  for (const filename of filenames) {
+    vm.runInContext(fs.readFileSync(path.join(__dirname, filename), 'utf8'), context, { filename });
+  }
+}
+
 function readStoredKeys(stored, keys) {
   const requested = Array.isArray(keys) ? keys : [keys];
   const result = {};
@@ -2520,6 +2526,8 @@ function createContentHarness({
   deferTimers = false,
   // What the settings page has written before this page loaded.
   settings = {},
+  // Where an earlier version kept them, before the worker has moved them.
+  settingsInLocal = false,
   autoApply = false,
   autoGain,
   href = 'https://www.twitch.tv/videos/100',
@@ -2555,14 +2563,19 @@ function createContentHarness({
   let resolveChannelMutation;
   let currentTimeMs = 10_000;
   const location = { href };
-  const stored = {
+  // The two areas Chrome keeps apart: the settings in sync, the channels in local.
+  const storedSettings = {
     [u.SETTINGS_KEY]: {
       targetLufs: -18,
       adGainDb: -6,
       displayUnit: '%',
       showGainOverlay: true,
       ...settings
-    },
+    }
+  };
+  const synced = settingsInLocal ? {} : storedSettings;
+  const stored = {
+    ...(settingsInLocal ? storedSettings : {}),
     [u.CHANNEL_VOLUMES_KEY]: channelVolumes || {
       'vod-owner:100': {
         name: '100',
@@ -2665,6 +2678,28 @@ function createContentHarness({
       if (url) location.href = new URL(url, location.href).href;
     }
   };
+  // The deferrals and the failure a case asks for land on the next read made,
+  // whichever area it is made in.
+  async function readArea(area, keys) {
+    if (runtimeThrows || !runtimeId) throw new Error('Extension context invalidated.');
+    if (initialStorageGetDeferred) {
+      initialStorageGetDeferred = false;
+      return new Promise((resolve) => {
+        resolveInitialStorageGet = () => resolve(readStoredKeys(area, keys));
+      });
+    }
+    if (pendingStorageGetDeferred) {
+      pendingStorageGetDeferred = false;
+      return new Promise((resolve) => {
+        resolvePendingStorageGet = () => resolve(readStoredKeys(area, keys));
+      });
+    }
+    if (failNextStorageGet) {
+      failNextStorageGet = false;
+      throw new Error('injected storage read failure');
+    }
+    return readStoredKeys(area, keys);
+  }
   const chrome = {
     runtime: {
       get id() {
@@ -2700,28 +2735,8 @@ function createContentHarness({
       onMessage: { addListener(listener) { runtimeMessageListener = listener; } }
     },
     storage: {
-      local: {
-        async get(keys) {
-          if (runtimeThrows || !runtimeId) throw new Error('Extension context invalidated.');
-          if (initialStorageGetDeferred) {
-            initialStorageGetDeferred = false;
-            return new Promise((resolve) => {
-              resolveInitialStorageGet = () => resolve(readStoredKeys(stored, keys));
-            });
-          }
-          if (pendingStorageGetDeferred) {
-            pendingStorageGetDeferred = false;
-            return new Promise((resolve) => {
-              resolvePendingStorageGet = () => resolve(readStoredKeys(stored, keys));
-            });
-          }
-          if (failNextStorageGet) {
-            failNextStorageGet = false;
-            throw new Error('injected storage read failure');
-          }
-          return readStoredKeys(stored, keys);
-        }
-      },
+      sync: { get: (keys) => readArea(synced, keys) },
+      local: { get: (keys) => readArea(stored, keys) },
       onChanged: {
         addListener(listener) { storageListeners.push(listener); }
       }
@@ -2752,11 +2767,9 @@ function createContentHarness({
     URL,
     window
   });
-  vm.runInContext(
-    fs.readFileSync(path.join(__dirname, 'content.js'), 'utf8'),
-    context,
-    { filename: 'content.js' }
-  );
+  // In the order the manifest lists them after utils.js, whose names the
+  // context already carries.
+  loadScriptsInto(context, ['settings-area.js', 'content.js']);
 
   return {
     setAdNodePresent(present) {
@@ -2801,6 +2814,7 @@ function createContentHarness({
     mutate() { for (const callback of observerCallbacks) callback([]); },
     commands,
     stored,
+    synced,
     warnings,
     infos,
     async dispatchMessage(data) {
@@ -2824,8 +2838,10 @@ function createContentHarness({
       await flushTasks();
     },
     documentListenerCount(type) { return (documentListeners[type] || []).length; },
-    async dispatchStorage(changes) {
-      for (const listener of storageListeners) listener(changes);
+    // Chrome names the area a change was made in, one event per area.
+    async dispatchStorage(changes, areaName) {
+      assert.ok(areaName === 'local' || areaName === 'sync', `no such area: ${areaName}`);
+      for (const listener of storageListeners) listener(changes, areaName);
       await flushTasks();
     },
     async navigate(href, duringPushState) {
@@ -2967,6 +2983,8 @@ function harnessEsc(value) {
 
 function createOptionsHarness({
   settings = {},
+  // Where an earlier version kept them, before the worker has moved them.
+  settingsInLocal = false,
   channelVolumes = {},
   deferStorage = false,
   failStorage = false,
@@ -3010,8 +3028,13 @@ function createOptionsHarness({
   const warnings = [];
   const alerts = [];
   const errors = [];
+  // The two areas Chrome keeps apart: the settings in sync, the channels in local.
+  const storedSettings = {
+    [u.SETTINGS_KEY]: { targetLufs: -18, adGainDb: -6, displayUnit: '%', showGainOverlay: true, ...settings }
+  };
+  const synced = settingsInLocal ? {} : storedSettings;
   const stored = {
-    [u.SETTINGS_KEY]: { targetLufs: -18, adGainDb: -6, displayUnit: '%', showGainOverlay: true, ...settings },
+    ...(settingsInLocal ? storedSettings : {}),
     [u.CHANNEL_VOLUMES_KEY]: channelVolumes
   };
 
@@ -3066,26 +3089,28 @@ function createOptionsHarness({
   const storageListeners = [];
   const timers = [];
   let resolveStorageGet = null;
-  let reads = 0;
+  let settingsReads = 0;
   let releaseReloadRead = null;
   let releaseHeldMutation = null;
   const storageGate = deferStorage
     ? new Promise((resolve) => { resolveStorageGet = resolve; })
     : Promise.resolve();
 
+  async function readArea(area, keys) {
+    await storageGate;
+    // The load reads the settings once; the read after it is the reload.
+    if (area === synced) settingsReads += 1;
+    if (holdReloadRead && area === synced && settingsReads > 1) {
+      await new Promise((resolve) => { releaseReloadRead = resolve; });
+    }
+    if (failStorage) throw new Error('storage unavailable');
+    return readStoredKeys(area, keys);
+  }
+
   const chrome = {
     storage: {
-      local: {
-        async get(keys) {
-          await storageGate;
-          reads += 1;
-          if (holdReloadRead && reads > 1) {
-            await new Promise((resolve) => { releaseReloadRead = resolve; });
-          }
-          if (failStorage) throw new Error('storage unavailable');
-          return readStoredKeys(stored, keys);
-        }
-      },
+      sync: { get: (keys) => readArea(synced, keys) },
+      local: { get: (keys) => readArea(stored, keys) },
       onChanged: { addListener(listener) { storageListeners.push(listener); } }
     },
     runtime: {
@@ -3131,11 +3156,7 @@ function createOptionsHarness({
     setTimeout(callback, delay) { timers.push({ callback, delay }); return timers.length; },
     structuredClone
   });
-  vm.runInContext(
-    fs.readFileSync(path.join(__dirname, 'options.js'), 'utf8'),
-    context,
-    { filename: 'options.js' }
-  );
+  loadScriptsInto(context, ['settings-area.js', 'options.js']);
 
   return {
     el: element,
@@ -3188,8 +3209,10 @@ function createOptionsHarness({
     fireTimers() {
       for (const timer of timers.splice(0)) timer.callback();
     },
-    fireStorageChanged(changes) {
-      for (const listener of storageListeners) listener(changes);
+    // Chrome names the area a change was made in, one event per area.
+    fireStorageChanged(changes, areaName) {
+      assert.ok(areaName === 'local' || areaName === 'sync', `no such area: ${areaName}`);
+      for (const listener of storageListeners) listener(changes, areaName);
     },
     releaseStorage() {
       assert.ok(resolveStorageGet, 'the storage read is not pending');
@@ -3343,7 +3366,7 @@ function createPopupHarness({
       }
     },
     storage: {
-      local: {
+      sync: {
         async get() {
           if (heldSettingsRead) {
             const holding = heldSettingsRead;
@@ -3352,6 +3375,10 @@ function createPopupHarness({
           }
           return { [u.SETTINGS_KEY]: { displayUnit } };
         }
+      },
+      // The settings are in sync, so the popup has no reason to read local.
+      local: {
+        async get() { throw new Error('the popup read local, where no settings are'); }
       },
       onChanged: { addListener(listener) { settingsListeners.push(listener); } }
     },
@@ -3382,11 +3409,7 @@ function createPopupHarness({
     setInterval(callback) { return intervals.push(callback); },
     structuredClone
   });
-  vm.runInContext(
-    fs.readFileSync(path.join(__dirname, 'popup.js'), 'utf8'),
-    context,
-    { filename: 'popup.js' }
-  );
+  loadScriptsInto(context, ['settings-area.js', 'popup.js']);
 
   return {
     el: element,
@@ -3409,12 +3432,21 @@ function createPopupHarness({
     // A settings change as the options page makes one.
     async changeSettings(next) {
       displayUnit = next.displayUnit ?? displayUnit;
-      for (const listener of settingsListeners) listener({ [u.SETTINGS_KEY]: { newValue: next } });
+      for (const listener of settingsListeners) {
+        listener({ [u.SETTINGS_KEY]: { newValue: next } }, 'sync');
+      }
       await flushTasks(8);
     },
     // A storage change for something the popup does not keep.
-    async changeOther(key) {
-      for (const listener of settingsListeners) listener({ [key]: { newValue: {} } });
+    async changeOther(key, areaName = 'local') {
+      for (const listener of settingsListeners) listener({ [key]: { newValue: {} } }, areaName);
+      await flushTasks(8);
+    },
+    // The worker moving the settings out of local: a removal, with no value.
+    async removeLocalSettings() {
+      for (const listener of settingsListeners) {
+        listener({ [u.SETTINGS_KEY]: { oldValue: { displayUnit } } }, 'local');
+      }
       await flushTasks(8);
     },
     async releaseSettingsRead() {
@@ -5234,21 +5266,21 @@ test('content tells the bridge an ad gain that moved, not one that was set again
 
   await harness.dispatchStorage({
     [u.SETTINGS_KEY]: { newValue: { adGainDb: -12, displayUnit: '%' } }
-  });
+  }, 'sync');
   await flushTasks();
   assert.equal(harness.commands.filter((command) => command.cmd === 'setAdGain').length, 1,
     'a gain that moved is sent');
 
   await harness.dispatchStorage({
     [u.SETTINGS_KEY]: { newValue: { adGainDb: -12, displayUnit: 'dB' } }
-  });
+  }, 'sync');
   await flushTasks();
   assert.equal(harness.commands.filter((command) => command.cmd === 'setAdGain').length, 1,
     'and a write that left it where it was is not');
 
   await harness.dispatchStorage({
     [u.SETTINGS_KEY]: { newValue: { adGainDb: -6, displayUnit: 'dB' } }
-  });
+  }, 'sync');
   await flushTasks();
   assert.equal(harness.commands.filter((command) => command.cmd === 'setAdGain').length, 2,
     'while the next move is');
@@ -5831,13 +5863,13 @@ test('content Auto mode follows LUFS and recalculates when the target changes', 
   assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].gainVod, 0.5);
 
   harness.commands.length = 0;
-  harness.stored[u.SETTINGS_KEY] = {
-    ...harness.stored[u.SETTINGS_KEY],
+  harness.synced[u.SETTINGS_KEY] = {
+    ...harness.synced[u.SETTINGS_KEY],
     targetLufs: -20
   };
   await harness.dispatchStorage({
-    [u.SETTINGS_KEY]: { newValue: structuredClone(harness.stored[u.SETTINGS_KEY]) }
-  });
+    [u.SETTINGS_KEY]: { newValue: structuredClone(harness.synced[u.SETTINGS_KEY]) }
+  }, 'sync');
   gains = harness.commands.filter((command) => command.cmd === 'setGain');
   assert.equal(gains.length, 1);
   assert.ok(Math.abs(gains[0].value - u.calcGain(-23, -20)) < 1e-9);
@@ -7294,7 +7326,7 @@ test('content reseeds from the new media entry only after SPA navigation', async
 
   await harness.dispatchStorage({
     [u.CHANNEL_VOLUMES_KEY]: { newValue: structuredClone(channelVolumes) }
-  });
+  }, 'local');
   assert.equal(
     harness.commands.some((command) => command.cmd === 'resetMeasurement'),
     false
@@ -7330,7 +7362,7 @@ test('content reseeds on a kind change when SPA navigation lost the reapply race
   await flushTasks();
   await harness.dispatchStorage({
     [u.CHANNEL_VOLUMES_KEY]: { newValue: structuredClone(channelVolumes) }
-  });
+  }, 'local');
   await harness.releaseStorageGet();
   await navigation;
 
@@ -9473,7 +9505,7 @@ test('settings writer preserves unrelated fields across concurrent tabs', async 
       autoApplyLoudnessVodDefault: false
     }
   };
-  const storage = {
+  const sync = {
     async get(keys) {
       await new Promise((resolve) => setImmediate(resolve));
       return readStoredKeys(stored, keys);
@@ -9483,7 +9515,10 @@ test('settings writer preserves unrelated fields across concurrent tabs', async 
       stored = { ...stored, ...structuredClone(update) };
     }
   };
-  const write = settingsStore.createSettingsWriter(storage);
+  const local = {
+    async get() { throw new Error('sync holds the settings, so local is not read'); }
+  };
+  const write = settingsStore.createSettingsWriter({ sync, local });
 
   await Promise.all([
     write({ operation: 'patchSettings', patch: { displayUnit: 'dB' } }),
@@ -9623,7 +9658,7 @@ test('options keeps what a change told it over what its own read brings back', a
   const harness = createOptionsHarness({ settings: { targetLufs: -24 }, deferStorage: true });
   await flushTasks(8);
 
-  harness.fireStorageChanged({ [u.SETTINGS_KEY]: { newValue: { targetLufs: -30 } } });
+  harness.fireStorageChanged({ [u.SETTINGS_KEY]: { newValue: { targetLufs: -30 } } }, 'sync');
   await flushTasks(8);
   assert.equal(harness.el('targetLufs').value, '-30', 'the change is on the page');
 
@@ -9809,7 +9844,22 @@ test('settings initialization preserves existing Auto defaults', () => {
   assert.deepEqual(result, existing);
 });
 
-function createBackgroundHarness({ aliases, sequence } = {}) {
+const BACKGROUND_FIXTURE_SETTINGS = {
+  targetLufs: -18,
+  displayUnit: '%',
+  autoApplyLoudnessLiveDefault: true
+};
+
+function createBackgroundHarness({
+  aliases,
+  sequence,
+  // What sync holds when the worker starts; null for nothing.
+  syncSettings = BACKGROUND_FIXTURE_SETTINGS,
+  // What an earlier version left in local; absent unless a case names it.
+  localSettings,
+  // A storage call that fails, as `<area>.<method>`.
+  failingCall = ''
+} = {}) {
   let stored = {
     channelVolumes: {
       'login:fixture_channel': { name: 'Fixture_Channel', gainLive: 0.7 },
@@ -9819,36 +9869,58 @@ function createBackgroundHarness({ aliases, sequence } = {}) {
         url: 'https://www.twitch.tv/videos/111222333'
       }
     },
-    autoLoudnessSettings: {
-      targetLufs: -18,
-      displayUnit: '%',
-      autoApplyLoudnessLiveDefault: true
-    },
+    ...(localSettings === undefined ? {} : { autoLoudnessSettings: structuredClone(localSettings) }),
     ...(aliases ? { [channelStore.CHANNEL_ALIASES_KEY]: aliases } : {}),
     ...(sequence === undefined ? {} : { [channelStore.CHANNEL_SEQUENCE_KEY]: sequence })
   };
+  let synced = syncSettings === null
+    ? {}
+    : { autoLoudnessSettings: structuredClone(syncSettings) };
   let failNextSet = false;
   let messageListener;
   let installedListener;
   const errors = [];
   const warnings = [];
-  const storage = {
-    async get(keys) { return readStoredKeys(stored, keys); },
-    async set(update) {
-      if (failNextSet) {
-        failNextSet = false;
-        throw new Error('injected background failure');
+  // Every write either area took, in order, as `<area>.<method>` and its keys.
+  const writes = [];
+  function refuse(call) {
+    if (call !== failingCall) return;
+    throw new Error(`injected ${call} failure`);
+  }
+  function area(name, read, write) {
+    return {
+      async get(keys) {
+        refuse(`${name}.get`);
+        return readStoredKeys(read(), keys);
+      },
+      async set(update) {
+        refuse(`${name}.set`);
+        if (failNextSet) {
+          failNextSet = false;
+          throw new Error('injected background failure');
+        }
+        writes.push([`${name}.set`, Object.keys(update)]);
+        write({ ...read(), ...structuredClone(update) });
+      },
+      async remove(keys) {
+        refuse(`${name}.remove`);
+        const removed = Array.isArray(keys) ? keys : [keys];
+        writes.push([`${name}.remove`, removed]);
+        const next = { ...read() };
+        for (const key of removed) delete next[key];
+        write(next);
       }
-      stored = { ...stored, ...structuredClone(update) };
-    }
-  };
+    };
+  }
+  const local = area('local', () => stored, (next) => { stored = next; });
+  const sync = area('sync', () => synced, (next) => { synced = next; });
   const context = vm.createContext({
     console: {
       error(...args) { errors.push(args); },
       warn(...args) { warnings.push(args); }
     },
     chrome: {
-      storage: { local: storage },
+      storage: { local, sync },
       runtime: {
         onMessage: { addListener(listener) { messageListener = listener; } },
         onInstalled: { addListener(listener) { installedListener = listener; } }
@@ -9869,8 +9941,10 @@ function createBackgroundHarness({ aliases, sequence } = {}) {
 
   return {
     get stored() { return stored; },
+    get synced() { return synced; },
     errors,
     warnings,
+    writes,
     failNextSet() { failNextSet = true; },
     async install() {
       installedListener();
@@ -9932,7 +10006,7 @@ test('background mutation listener keeps async response open and reports failure
   }, settingsStore.SETTINGS_MUTATION_MESSAGE);
   assert.equal(settingsResponse.ok, true);
   assert.equal(settingsResponse.settings.displayUnit, 'dB');
-  assert.equal(stored().autoLoudnessSettings.autoApplyLoudnessLiveDefault, true);
+  assert.equal(harness.synced.autoLoudnessSettings.autoApplyLoudnessLiveDefault, true);
 
   harness.failNextSet();
   const settingsFailureResponse = await send({
@@ -9940,7 +10014,7 @@ test('background mutation listener keeps async response open and reports failure
   }, settingsStore.SETTINGS_MUTATION_MESSAGE);
   assert.equal(settingsFailureResponse.ok, false);
   assert.equal(settingsFailureResponse.reason, 'settings-update-failed');
-  assert.equal(stored().autoLoudnessSettings.autoApplyLoudnessLiveDefault, true);
+  assert.equal(harness.synced.autoLoudnessSettings.autoApplyLoudnessLiveDefault, true);
 });
 
 test('background tells a refused mutation from a failed write', async () => {
@@ -10800,6 +10874,244 @@ test('background names a message type it does not handle', async () => {
   );
 });
 
+// ── The settings in sync, the channels in local ──────────────────────
+
+const settingsArea = require('./settings-area.js');
+
+function settingsAreas({ sync = {}, local = {} } = {}) {
+  const reads = [];
+  const area = (name, held) => ({
+    async get(keys) {
+      reads.push(name);
+      return readStoredKeys(held, keys);
+    }
+  });
+  return { reads, storage: { sync: area('sync', sync), local: area('local', local) } };
+}
+
+test('the settings are read from sync, and from local only where sync has none', async () => {
+  const fromSync = settingsAreas({
+    sync: { [u.SETTINGS_KEY]: { targetLufs: -20 } },
+    local: { [u.SETTINGS_KEY]: { targetLufs: -24 } }
+  });
+  assert.deepEqual(
+    await settingsArea.readStoredSettings(fromSync.storage, u.SETTINGS_KEY),
+    { targetLufs: -20 }
+  );
+  assert.deepEqual(fromSync.reads, ['sync'], 'a copy left in local is not read once sync answers');
+
+  // A profile whose settings the worker has not moved yet.
+  const notMoved = settingsAreas({ local: { [u.SETTINGS_KEY]: { targetLufs: -24 } } });
+  assert.deepEqual(
+    await settingsArea.readStoredSettings(notMoved.storage, u.SETTINGS_KEY),
+    { targetLufs: -24 }
+  );
+  assert.deepEqual(notMoved.reads, ['sync', 'local']);
+
+  // A value in sync that is no settings object does not hide the copy in local.
+  for (const value of [null, 'loud', 3, ['targetLufs']]) {
+    const unusable = settingsAreas({
+      sync: { [u.SETTINGS_KEY]: value },
+      local: { [u.SETTINGS_KEY]: { targetLufs: -24 } }
+    });
+    assert.deepEqual(
+      await settingsArea.readStoredSettings(unusable.storage, u.SETTINGS_KEY),
+      { targetLufs: -24 },
+      `sync holding ${JSON.stringify(value)}`
+    );
+  }
+
+  const neither = settingsAreas();
+  assert.equal(await settingsArea.readStoredSettings(neither.storage, u.SETTINGS_KEY), undefined);
+});
+
+test('the worker moves settings left in local to sync, and removes them from local', async () => {
+  const left = { targetLufs: -24, adGainDb: -12, displayUnit: 'dB' };
+  const harness = createBackgroundHarness({
+    syncSettings: null,
+    // A setting for a kind the extension no longer has is not carried over.
+    localSettings: { ...left, autoApplyLoudnessClipDefault: true }
+  });
+  await flushTasks(8);
+
+  assert.deepEqual(harness.synced.autoLoudnessSettings, left);
+  assert.equal(harness.stored.autoLoudnessSettings, undefined);
+  assert.ok(harness.stored.channelVolumes['123456789'], 'the channels stay where they were');
+  // Sync first, so a reader in between still finds one of the two.
+  assert.deepEqual(harness.writes, [
+    ['sync.set', [u.SETTINGS_KEY]],
+    ['local.remove', [u.SETTINGS_KEY]]
+  ]);
+  assert.deepEqual(harness.errors, []);
+});
+
+test('the worker keeps what sync holds over a copy left in local', async () => {
+  // Another computer moved its settings first; that is what every one reads.
+  const harness = createBackgroundHarness({
+    syncSettings: { targetLufs: -20, displayUnit: '%' },
+    localSettings: { targetLufs: -24, displayUnit: 'dB' }
+  });
+  await flushTasks(8);
+
+  assert.deepEqual(harness.synced.autoLoudnessSettings, { targetLufs: -20, displayUnit: '%' });
+  assert.equal(harness.stored.autoLoudnessSettings, undefined);
+  assert.deepEqual(harness.writes, [['local.remove', [u.SETTINGS_KEY]]]);
+});
+
+test('the worker writes nothing where local holds no settings', async () => {
+  for (const syncSettings of [null, BACKGROUND_FIXTURE_SETTINGS]) {
+    const harness = createBackgroundHarness({ syncSettings });
+    await flushTasks(8);
+    assert.deepEqual(harness.writes, [], `sync holding ${JSON.stringify(syncSettings)}`);
+    assert.deepEqual(harness.errors, []);
+  }
+});
+
+test('a move that cannot write sync leaves the settings in local', async () => {
+  const left = { targetLufs: -24 };
+  const harness = createBackgroundHarness({
+    syncSettings: null,
+    localSettings: left,
+    failingCall: 'sync.set'
+  });
+  await flushTasks(8);
+
+  assert.deepEqual(harness.stored.autoLoudnessSettings, left,
+    'what the readers fall back on is still there');
+  assert.deepEqual(harness.writes, []);
+  assert.equal(harness.errors.at(-1)?.[0], '[TCV] failed to move the settings to sync');
+});
+
+test('a settings write lands in sync and carries what local held', async () => {
+  // Sent while the move is still out: the queue runs the move first, and the
+  // write reads what the move left.
+  const harness = createBackgroundHarness({
+    syncSettings: null,
+    localSettings: { targetLufs: -24, adGainDb: -12 }
+  });
+  const response = await harness.send(
+    { operation: 'patchSettings', patch: { displayUnit: 'dB' } },
+    settingsStore.SETTINGS_MUTATION_MESSAGE
+  );
+
+  assert.equal(response.ok, true);
+  assert.deepEqual(harness.synced.autoLoudnessSettings,
+    { targetLufs: -24, adGainDb: -12, displayUnit: 'dB' });
+  assert.equal(harness.stored.autoLoudnessSettings, undefined);
+  assert.ok(harness.writes.every(([call]) => call !== 'local.set'),
+    `no settings write goes to local (${JSON.stringify(harness.writes)})`);
+});
+
+test('a settings write made before the move carries the local values into sync', async () => {
+  let synced = {};
+  let local = { [u.SETTINGS_KEY]: { targetLufs: -24, adGainDb: -12 } };
+  const write = settingsStore.createSettingsWriter({
+    sync: {
+      async get(keys) { return readStoredKeys(synced, keys); },
+      async set(update) { synced = { ...synced, ...structuredClone(update) }; }
+    },
+    local: {
+      async get(keys) { return readStoredKeys(local, keys); },
+      async set() { throw new Error('no settings write goes to local'); },
+      async remove(key) { local = { ...local }; delete local[key]; }
+    }
+  });
+
+  await write({ operation: 'patchSettings', patch: { displayUnit: 'dB' } });
+  assert.deepEqual(synced[u.SETTINGS_KEY], { targetLufs: -24, adGainDb: -12, displayUnit: 'dB' });
+
+  // The move that follows finds sync holding them, and only drops local's copy.
+  assert.equal(await write.moveToSync(), true);
+  assert.deepEqual(synced[u.SETTINGS_KEY], { targetLufs: -24, adGainDb: -12, displayUnit: 'dB' });
+  assert.equal(local[u.SETTINGS_KEY], undefined);
+  assert.equal(await write.moveToSync(), false, 'and the next start finds nothing to move');
+});
+
+test('install-time defaults are written to sync', async () => {
+  const harness = createBackgroundHarness({ syncSettings: null });
+  await harness.install();
+  assert.equal(harness.synced.autoLoudnessSettings.targetLufs, -18);
+  assert.equal(harness.stored.autoLoudnessSettings, undefined);
+});
+
+test('content reads settings an earlier version left in local', async () => {
+  const harness = createContentHarness({ settingsInLocal: true, settings: { targetLufs: -24 } });
+  await flushTasks(8);
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).targetLufs, -24);
+});
+
+test('content takes the settings from sync and the channels from local', async () => {
+  const harness = createContentHarness({ settings: { targetLufs: -24, adGainDb: -12 } });
+  await flushTasks(8);
+
+  // The worker's move takes the key out of local: a removal, with no value. Read
+  // as a change, it would put every setting back to its default.
+  await harness.dispatchStorage({
+    [u.SETTINGS_KEY]: { oldValue: { targetLufs: -24, adGainDb: -12 } }
+  }, 'local');
+  let state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.targetLufs, -24);
+  assert.equal(state.adGainDb, -12);
+
+  await harness.dispatchStorage({
+    [u.SETTINGS_KEY]: { newValue: { targetLufs: -20, adGainDb: -12 } }
+  }, 'sync');
+  state = await harness.dispatchRuntime({ cmd: 'getState' });
+  assert.equal(state.targetLufs, -20, 'a change made in sync is taken');
+
+  // The channels are not kept in sync, so nothing there is read back as them.
+  harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].gainVod = 2;
+  await harness.dispatchStorage({
+    [u.CHANNEL_VOLUMES_KEY]: { newValue: harness.stored[u.CHANNEL_VOLUMES_KEY] }
+  }, 'sync');
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).gain, 0.5);
+  await harness.dispatchStorage({
+    [u.CHANNEL_VOLUMES_KEY]: { newValue: harness.stored[u.CHANNEL_VOLUMES_KEY] }
+  }, 'local');
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).gain, 2);
+});
+
+test('options reads settings an earlier version left in local', async () => {
+  const harness = createOptionsHarness({ settingsInLocal: true, settings: { targetLufs: -24 } });
+  await flushTasks(8);
+  assert.equal(harness.el('targetLufs').value, '-24');
+  assert.equal(harness.el('settingsError').className.includes('hidden'), true);
+});
+
+test('options takes the settings from sync and the channels from local', async () => {
+  const harness = createOptionsHarness({
+    settings: { targetLufs: -24 },
+    channelVolumes: { 456: { name: 'kept', login: 'kept', gainLive: 2 } }
+  });
+  await flushTasks(8);
+
+  harness.fireStorageChanged({ [u.SETTINGS_KEY]: { oldValue: { targetLufs: -24 } } }, 'local');
+  await flushTasks(8);
+  assert.equal(harness.el('targetLufs').value, '-24',
+    'the move taking the key out of local does not put the defaults on the page');
+
+  harness.fireStorageChanged({ [u.SETTINGS_KEY]: { newValue: { targetLufs: -20 } } }, 'sync');
+  await flushTasks(8);
+  assert.equal(harness.el('targetLufs').value, '-20');
+
+  harness.fireStorageChanged({ [u.CHANNEL_VOLUMES_KEY]: { newValue: {} } }, 'sync');
+  await flushTasks(8);
+  assert.ok(harness.el('channelsBody').textContent.includes('kept'),
+    'a channel list is read from local alone');
+});
+
+test('popup takes the unit from sync, not from the move out of local', async () => {
+  const harness = createPopupHarness({ displayUnit: 'dB', state: { gain: 2 } });
+  await flushTasks(8);
+  const inDb = u.formatGain(2, 'dB');
+
+  await harness.removeLocalSettings();
+  assert.equal(harness.el('manualValue').textContent, inDb.text + inDb.unit);
+
+  await harness.changeOther(u.SETTINGS_KEY, 'local');
+  assert.equal(harness.el('manualValue').textContent, inDb.text + inDb.unit);
+});
+
 test('options disables settings until load and saves only field mutations', () => {
   const html = fs.readFileSync(path.join(__dirname, 'options.html'), 'utf8');
   for (const id of [
@@ -11007,7 +11319,7 @@ test('the failed-read message describes the read, not the values on screen', asy
   // fails, so the screen can hold a stored value under the failure message.
   const harness = createOptionsHarness({ deferStorage: true, failStorage: true });
   await flushTasks(8);
-  harness.fireStorageChanged({ [u.SETTINGS_KEY]: { newValue: { targetLufs: -24 } } });
+  harness.fireStorageChanged({ [u.SETTINGS_KEY]: { newValue: { targetLufs: -24 } } }, 'sync');
   await flushTasks(4);
   harness.releaseStorage();
   await flushTasks(8);
@@ -11034,7 +11346,7 @@ test('a channel change that lands during the read is what the page shows', async
     [u.CHANNEL_VOLUMES_KEY]: {
       newValue: { 456: { name: 'freshchannel', login: 'freshchannel', gainLive: 2 } }
     }
-  });
+  }, 'local');
   await flushTasks(4);
   assert.ok(harness.el('channelsBody').textContent.includes('freshchannel'));
   assert.equal(harness.el('select:.channel-table').style.display, '');
@@ -11054,7 +11366,7 @@ test('a channel change that arrived before the read failed stays on the page', a
     [u.CHANNEL_VOLUMES_KEY]: {
       newValue: { 456: { name: 'freshchannel', login: 'freshchannel', gainLive: 2 } }
     }
-  });
+  }, 'local');
   await flushTasks(4);
   harness.releaseStorage();
   await flushTasks(8);
@@ -11106,7 +11418,7 @@ test('a page that could not read keeps what another tab writes off its screen', 
 
   harness.fireStorageChanged({
     [u.SETTINGS_KEY]: { newValue: { targetLufs: -24, displayUnit: 'dB', showGainOverlay: false } }
-  });
+  }, 'sync');
   await flushTasks(4);
   // The message asks for the page to be reloaded, so nothing that arrives in
   // the meantime is put on it: a settings write from another tab carries no
@@ -16848,7 +17160,7 @@ test('a settings change persists the Auto gain only where Auto is following', as
   await flushTasks(8);
   await harness.dispatchStorage({
     [u.SETTINGS_KEY]: { newValue: { targetLufs: -14, adGainDb: -6, showGainOverlay: true } }
-  });
+  }, 'sync');
   await flushTasks(8);
   assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].autoGainVod, undefined);
 });
@@ -16860,7 +17172,7 @@ test('a change to the saved channels alone is read back', async () => {
   harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'] = { gainVod: 2 };
   await harness.dispatchStorage({
     [u.CHANNEL_VOLUMES_KEY]: { newValue: harness.stored[u.CHANNEL_VOLUMES_KEY] }
-  });
+  }, 'local');
   await flushTasks(8);
   assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).gain, 2);
 });
@@ -16972,7 +17284,7 @@ test('a saved-channels change arriving mid-merge is not read back onto the row b
   harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'] = { gainVod: 3 };
   await harness.dispatchStorage({
     [u.CHANNEL_VOLUMES_KEY]: { newValue: harness.stored[u.CHANNEL_VOLUMES_KEY] }
-  });
+  }, 'local');
   assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).gain, 0.5);
   harness.releaseChannelMutation();
   await accepted;
@@ -17270,7 +17582,7 @@ test('a row the Auto gain creates carries the channel it was measured on', async
         autoApplyLoudnessVodDefault: true
       }
     }
-  });
+  }, 'sync');
   await flushTasks(8);
   const row = harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'];
   assert.ok(row, 'the Auto gain is stored against the provisional id');

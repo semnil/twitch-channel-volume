@@ -99,56 +99,56 @@ before its first await, so the resume that follows has it.
 The store helpers' opening checks. `sendChannelMutation` opens with the same
 runtime check, and every caller of these already holds `currentChannel.id`.
 
-- `content.js:156` a guard body is dropped ×1 — if (!channelId || !isContextValid() || !Number.isFinite(lufs)) {
-- `content.js:156` || becomes && ×2 — ||
-- `content.js:175` a guard body is dropped ×1 — if (!channelId || !isContextValid() || !Number.isFinite(autoGain)) {
-- `content.js:175` || becomes && ×2 — ||
-- `content.js:199` a guard is dropped ×1 — if (!fromId || !toId || fromId === toId) return Promise.resolve();
-- `content.js:199` || becomes && ×2 — ||
+- `content.js:155` a guard body is dropped ×1 — if (!channelId || !isContextValid() || !Number.isFinite(lufs)) {
+- `content.js:155` || becomes && ×2 — ||
+- `content.js:174` a guard body is dropped ×1 — if (!channelId || !isContextValid() || !Number.isFinite(autoGain)) {
+- `content.js:174` || becomes && ×2 — ||
+- `content.js:198` a guard is dropped ×1 — if (!fromId || !toId || fromId === toId) return Promise.resolve();
+- `content.js:198` || becomes && ×2 — ||
 
 The url `channelMetadata` puts on a mutation. Measured against the store: a
 merge whose channel names only the login comes back holding `name` and `url` all
 the same, because the store fills both from the login it was given.
 
-- `content.js:334` || becomes && ×1 — ||
+- `content.js:333` || becomes && ×1 — ||
 
 `acceptOwner`'s provisional-id check. A provisional id is `login:<name>` or
 `vod-owner:<id>` and a confirmed one is numeric, so the second clause is never
 false; the first is only false on a clip, which `ownerMatchesTwitchContent`
 refuses at the top of `acceptOwner`.
 
-- `content.js:340` && becomes || ×1 — &&
-- `content.js:340` a guard is always taken ×1 — if (provisionalId && provisionalId !== confirmedId) {
+- `content.js:339` && becomes || ×1 — &&
+- `content.js:339` a guard is always taken ×1 — if (provisionalId && provisionalId !== confirmedId) {
 
 The three dropped awaits on `resolveChannel`. It holds no await of its own, so
 its promise is already settled when it is returned.
 
-- `content.js:362` an await is dropped ×1 — await
-- `content.js:652` an await is dropped ×1 — await
-- `content.js:941` an await is dropped ×1 — await
+- `content.js:361` an await is dropped ×1 — await
+- `content.js:651` an await is dropped ×1 — await
+- `content.js:944` an await is dropped ×1 — await
 
 `reapplyForCurrentChannel`'s "no channel here" exit and its staleness check. The
 path below the exit loads nothing for an empty id, resolves the gain to 1.0 with
 no entry and applies that, which is what the body does; and the revision beside
 the staleness check is bumped by every channel change, so it answers first.
 
-- `content.js:406` a guard body is dropped ×1 — if (!ch.id || ch.kind === 'none') {
-- `content.js:406` || becomes && ×1 — ||
-- `content.js:416` || becomes && ×1 — ||
+- `content.js:405` a guard body is dropped ×1 — if (!ch.id || ch.kind === 'none') {
+- `content.js:405` || becomes && ×1 — ||
+- `content.js:415` || becomes && ×1 — ||
 
 `handleBridgeMessage`'s runtime check. Each case reaches a guard of its own —
 the storage helpers above — and the rest only post to the page.
 
-- `content.js:448` a guard is dropped ×1 — if (!isContextValid()) return;
+- `content.js:447` a guard is dropped ×1 — if (!isContextValid()) return;
 
 The cached entry an Auto save and a measurement reset rewrite. What the mutants
 differ on is the other kind's `autoGainRef` and `lastLufs`, and `lastMeasuredAt`
 — content.js reads `lastLufs` only at `currentChannel.kind`, `lastMeasuredAt`
 nowhere, and the entry is reloaded before another kind is read.
 
-- `content.js:828` || becomes && ×1 — ||
-- `content.js:880` a guard is always taken ×1 — if (currentChannelEntry) {
-- `content.js:882` || becomes && ×1 — ||
+- `content.js:831` || becomes && ×1 — ||
+- `content.js:883` a guard is always taken ×1 — if (currentChannelEntry) {
+- `content.js:885` || becomes && ×1 — ||
 
 ## channel-store.js
 
@@ -223,5 +223,5 @@ The default-Auto toggle's and the unit buttons' readiness checks.
 `updateSettings` opens with the same one, so the mutant reaches it and stops
 there.
 
-- `options.js:265` a guard is dropped ×1 — if (!settingsReady) return;
-- `options.js:278` a guard is dropped ×1 — if (!settingsReady) return;
+- `options.js:270` a guard is dropped ×1 — if (!settingsReady) return;
+- `options.js:283` a guard is dropped ×1 — if (!settingsReady) return;

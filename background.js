@@ -1,7 +1,8 @@
 // background.js — Service worker. Owns the single serialized writer for the
-// aggregate channelVolumes key and initializes default settings on install.
+// aggregate channelVolumes key (local) and for the settings (sync), and
+// initializes default settings on install.
 
-importScripts('channel-store.js', 'settings-store.js');
+importScripts('settings-area.js', 'channel-store.js', 'settings-store.js');
 
 const channelStore = globalThis.TCVChannelStore;
 const settingsStore = globalThis.TCVSettingsStore;
@@ -9,7 +10,13 @@ const writeChannelVolumes = channelStore.createChannelVolumesWriter(
   chrome.storage.local,
   'channelVolumes'
 );
-const writeSettings = settingsStore.createSettingsWriter(chrome.storage.local);
+const writeSettings = settingsStore.createSettingsWriter(chrome.storage);
+
+// Asked at every start rather than on install alone, so a move that failed is
+// made again at the next start. Once local holds no settings it is one read.
+writeSettings.moveToSync().catch((error) => {
+  console.error('[TCV] failed to move the settings to sync', error);
+});
 
 // The stores name the rejections they raise themselves. A rejection with no
 // name came from the storage area, and only that one is worth retrying.

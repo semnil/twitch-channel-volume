@@ -84,6 +84,8 @@ Install from the [Chrome Web Store](https://chromewebstore.google.com/detail/twi
 - **Gain overlay**: Shows the applied gain next to the player's volume slider (on by default)
 - **Saved channels**: Table view showing the last applied Auto gain, with delete / clear-all
 
+The settings above are kept in `chrome.storage.sync`, so with Chrome sync on they follow you to every computer where the extension is installed and Chrome is signed in to the same Google account. Saved channels and their measurements stay on each computer in `chrome.storage.local`.
+
 ## Development
 
 ```sh
@@ -126,7 +128,7 @@ A static compressor (like FrankerFaceZ's option) clips loud peaks but does nothi
 
 ## Privacy
 
-- No external network requests; all data stays on your device in `chrome.storage.local`
+- No external network requests. Saved channels and measurements stay on your device in `chrome.storage.local`; the settings (target LUFS, ad gain, display unit, gain overlay, Auto defaults) are kept in `chrome.storage.sync`, which Chrome sync carries to your other computers when it is on
 - Audio/video data itself is never recorded or transmitted — only computed LUFS values and your gain settings are kept
 - See [PRIVACY_POLICY.md](PRIVACY_POLICY.md) ([日本語](PRIVACY_POLICY_JA.md)) for details
 

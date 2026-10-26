@@ -2,7 +2,7 @@
 
 [日本語版はこちら (Japanese)](PRIVACY_POLICY_JA.md)
 
-Last updated: 2026-08-22
+Last updated: 2026-10-26
 
 ## Overview
 
@@ -14,13 +14,13 @@ Twitch Channel Volume is a Chrome extension that remembers and auto-applies volu
 
 - **What**: Twitch channel identifiers (the numeric owner ID / broadcaster ID once the page has provided it; the login name or video ID until then), display names, page URLs, the gain values you set per kind (Live / VOD), whether auto-follow is switched on for that channel in each of them, and a cache of the most recent loudness measurement with the time it was taken, the number of measurement windows behind it, and a note that it is expressed as if the player's own volume were at full. Alongside these, the extension keeps the mapping from a provisional identifier to the numeric one and a counter that orders field updates.
 - **Purpose**: Used to automatically apply your preferred volume when you open a stream or VOD from a saved channel.
-- **Storage**: Saved locally in `chrome.storage.local` on your device. Never transmitted to any external server.
+- **Storage**: Saved locally in `chrome.storage.local` on your device. Not synced to your other devices, and never transmitted to any external server.
 
 ### Extension Preferences
 
 - **What**: Target LUFS level, ad-break gain (dB), display unit (% or dB), gain overlay toggle, and the auto-follow default for each kind (Live / VOD).
-- **Purpose**: Customize the extension's behavior according to your preferences.
-- **Storage**: Saved locally in `chrome.storage.local` on your device.
+- **Purpose**: Customize the extension's behavior according to your preferences, the same way on every computer you use it on.
+- **Storage**: Saved in `chrome.storage.sync`. When Chrome sync is turned on, Chrome stores these preferences with your Google account and carries them to the other computers where you use the extension while signed in to Chrome with the same Google account; with Chrome sync off they stay on this device. They name no channel and no page you visited. The extension developer does not receive them.
 
 ### Loudness Measurement of Playing Audio
 
@@ -44,19 +44,19 @@ Twitch Channel Volume is a Chrome extension that remembers and auto-applies volu
 
 ## Where Data Is Sent
 
-Nowhere. This extension makes **no external network requests**. GraphQL responses are only read from the traffic that the Twitch page itself issues; the extension does not initiate any new outbound transmission. All data remains on your device.
+Nowhere the extension sends it. This extension makes **no external network requests**. GraphQL responses are only read from the traffic that the Twitch page itself issues; the extension does not initiate any new outbound transmission. All data remains on your device, except the extension preferences described above, which Chrome sync — not the extension — carries between your own devices when you have it turned on.
 
 ## Data Storage and Security
 
-- All settings are stored in `chrome.storage.local`, which is accessible only to this extension.
-- No data is synced across devices or stored in the cloud.
-- Uninstalling the extension removes all locally stored data.
+- Channel volume settings and loudness measurements are stored in `chrome.storage.local`, which is accessible only to this extension. They are not synced across devices or stored in the cloud.
+- The extension preferences are stored in `chrome.storage.sync`, which is also accessible only to this extension. With Chrome sync turned on, Google stores them with your Google account under [Google's Privacy Policy](https://policies.google.com/privacy) and syncs them to your other devices; the extension developer has no access to them.
+- Uninstalling the extension removes the data it stored on that device.
 
 ## Permissions
 
 | Permission | Reason |
 |---|---|
-| **storage** | Save channel volume settings and user preferences locally |
+| **storage** | Save channel volume settings locally, and user preferences in Chrome's synced storage |
 | **host_permissions** (`twitch.tv`) | Inject content scripts on Twitch pages to measure the playing audio and control volume via the Web Audio API |
 
 ## Remote Code
