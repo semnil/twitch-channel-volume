@@ -30,7 +30,7 @@ Drawn from the extension's own colours and strings by `gen_screenshots.py`; the 
 ## Features
 
 - **Real-time LUFS metering**: Momentary (400 ms), Short-term (3 s), Integrated (BS.1770 absolute and relative gates with indexed updates)
-- **Per-channel LUFS auto-follow**: Optional Live / VOD controls continuously follow the measured Integrated LUFS and Target LUFS
+- **Per-channel LUFS auto-follow**: Optional Live / VOD controls continuously follow the measured Integrated LUFS and Target LUFS. A gain lower than the one playing applies at once, and a higher one rises by no more than 1.5 dB every 30 s. While the short-term (3 s) loudness stands 6 dB or more over the Integrated value — a stream that has just turned louder than its measurement so far — the gain is worked out as if the Integrated value were 3 dB louder
 - **Measurement reset**: Discards the current media kind's measurement history and restarts it from zero. The stored value tracks the restarted measurement from its first block onward; saved gains are unchanged
 - **Per-channel manual gain**: Save gain per Live / VOD kind; applied automatically on revisit and used while Auto is waiting for measurement
 - **Global Auto defaults**: Independent Live / VOD defaults apply only when a channel kind has neither an explicit Auto choice nor a manual gain
@@ -69,7 +69,7 @@ Install from the [Chrome Web Store](https://chromewebstore.google.com/detail/twi
 
 1. Open a Twitch stream or VOD
 2. Click the extension icon and enable **Auto-follow LUFS** for the current kind
-3. The gain follows the current Integrated LUFS toward Target LUFS as measurement stabilizes
+3. The gain follows the current Integrated LUFS toward Target LUFS as measurement stabilizes: down at once, up by no more than 1.5 dB every 30 s
 4. Use **Reset measurement** to discard the current kind's measurement history and restart it from zero
 5. Alternatively, leave Auto off and click **Apply to channel** to save the current suggested gain
 6. Use the manual slider (0–600 %) while Auto is off
@@ -82,7 +82,7 @@ Install from the [Chrome Web Store](https://chromewebstore.google.com/detail/twi
 - **CM Gain**: Extra gain applied during ad breaks (default −6 dB)
 - **Display unit**: % or dB
 - **Gain overlay**: Shows the applied gain next to the player's volume slider (on by default)
-- **Saved channels**: Table view showing the last applied Auto gain, with delete / clear-all
+- **Saved channels**: Table view showing the Auto gain the last stored measurement asks for, with delete / clear-all
 
 The settings above are kept in `chrome.storage.sync`, so with Chrome sync on they follow you to every computer where the extension is installed and Chrome is signed in to the same Google account. Saved channels and their measurements stay on each computer in `chrome.storage.local`.
 

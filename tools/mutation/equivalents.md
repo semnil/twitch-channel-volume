@@ -99,56 +99,56 @@ before its first await, so the resume that follows has it.
 The store helpers' opening checks. `sendChannelMutation` opens with the same
 runtime check, and every caller of these already holds `currentChannel.id`.
 
-- `content.js:163` a guard body is dropped ×1 — if (!channelId || !isContextValid() || !Number.isFinite(lufs)) {
-- `content.js:163` || becomes && ×2 — ||
-- `content.js:182` a guard body is dropped ×1 — if (!channelId || !isContextValid() || !Number.isFinite(autoGain)) {
-- `content.js:182` || becomes && ×2 — ||
-- `content.js:206` a guard is dropped ×1 — if (!fromId || !toId || fromId === toId) return Promise.resolve();
-- `content.js:206` || becomes && ×2 — ||
+- `content.js:170` a guard body is dropped ×1 — if (!channelId || !isContextValid() || !Number.isFinite(lufs)) {
+- `content.js:170` || becomes && ×2 — ||
+- `content.js:189` a guard body is dropped ×1 — if (!channelId || !isContextValid() || !Number.isFinite(autoGain)) {
+- `content.js:189` || becomes && ×2 — ||
+- `content.js:213` a guard is dropped ×1 — if (!fromId || !toId || fromId === toId) return Promise.resolve();
+- `content.js:213` || becomes && ×2 — ||
 
 The url `channelMetadata` puts on a mutation. Measured against the store: a
 merge whose channel names only the login comes back holding `name` and `url` all
 the same, because the store fills both from the login it was given.
 
-- `content.js:341` || becomes && ×1 — ||
+- `content.js:378` || becomes && ×1 — ||
 
 `acceptOwner`'s provisional-id check. A provisional id is `login:<name>` or
 `vod-owner:<id>` and a confirmed one is numeric, so the second clause is never
 false; the first is only false on a clip, which `ownerMatchesTwitchContent`
 refuses at the top of `acceptOwner`.
 
-- `content.js:347` && becomes || ×1 — &&
-- `content.js:347` a guard is always taken ×1 — if (provisionalId && provisionalId !== confirmedId) {
+- `content.js:384` && becomes || ×1 — &&
+- `content.js:384` a guard is always taken ×1 — if (provisionalId && provisionalId !== confirmedId) {
 
 The three dropped awaits on `resolveChannel`. It holds no await of its own, so
 its promise is already settled when it is returned.
 
-- `content.js:369` an await is dropped ×1 — await
-- `content.js:659` an await is dropped ×1 — await
-- `content.js:953` an await is dropped ×1 — await
+- `content.js:406` an await is dropped ×1 — await
+- `content.js:699` an await is dropped ×1 — await
+- `content.js:1001` an await is dropped ×1 — await
 
 `reapplyForCurrentChannel`'s "no channel here" exit and its staleness check. The
 path below the exit loads nothing for an empty id, resolves the gain to 1.0 with
 no entry and applies that, which is what the body does; and the revision beside
 the staleness check is bumped by every channel change, so it answers first.
 
-- `content.js:413` a guard body is dropped ×1 — if (!ch.id || ch.kind === 'none') {
-- `content.js:413` || becomes && ×1 — ||
-- `content.js:423` || becomes && ×1 — ||
+- `content.js:450` a guard body is dropped ×1 — if (!ch.id || ch.kind === 'none') {
+- `content.js:450` || becomes && ×1 — ||
+- `content.js:460` || becomes && ×1 — ||
 
 `handleBridgeMessage`'s runtime check. Each case reaches a guard of its own —
 the storage helpers above — and the rest only post to the page.
 
-- `content.js:455` a guard is dropped ×1 — if (!isContextValid()) return;
+- `content.js:494` a guard is dropped ×1 — if (!isContextValid()) return;
 
 The cached entry an Auto save and a measurement reset rewrite. What the mutants
 differ on is the other kind's `autoGainRef` and `lastLufs`, and `lastMeasuredAt`
 — content.js reads `lastLufs` only at `currentChannel.kind`, `lastMeasuredAt`
 nowhere, and the entry is reloaded before another kind is read.
 
-- `content.js:840` || becomes && ×1 — ||
-- `content.js:892` a guard is always taken ×1 — if (currentChannelEntry) {
-- `content.js:894` || becomes && ×1 — ||
+- `content.js:888` || becomes && ×1 — ||
+- `content.js:940` a guard is always taken ×1 — if (currentChannelEntry) {
+- `content.js:942` || becomes && ×1 — ||
 
 ## channel-store.js
 
