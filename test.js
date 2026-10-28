@@ -5942,11 +5942,16 @@ function lufsPost(integrated, shortTerm = integrated) {
   return { type: '__twitch_channel_volume__', event: 'lufs', momentary: shortTerm, shortTerm, integrated };
 }
 
+// A gain in dB, unrounded: gainToDb rounds to the 0.1 dB the screen shows.
+function gainDb(gain) {
+  return 20 * Math.log10(gain);
+}
+
 // The gain content.js last asked the bridge to play, in dB.
 function playedDb(harness) {
   const gains = harness.commands.filter((command) => command.cmd === 'setGain');
   assert.ok(gains.length, 'no gain was played');
-  return u.gainToDb(gains.at(-1).value);
+  return gainDb(gains.at(-1).value);
 }
 
 function assertDb(actual, expected, what) {
@@ -5982,7 +5987,7 @@ test('an Auto gain below the one playing plays at once, and one above it rises 1
 
   // What is stored for Auto is the gain the level asks for.
   await flushTasks();
-  assertDb(u.gainToDb(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].autoGainVod), 8,
+  assertDb(gainDb(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].autoGainVod), 8,
     'the stored Auto gain');
 
   // A clock that steps backwards lets nothing up and takes nothing down.
@@ -6083,7 +6088,7 @@ test('a short-term loudness 6 dB over the Integrated value plays the gain for 3 
   harness.advanceTime(5000);
   await harness.dispatchMessage(lufsPost(-23, -17));
   await flushTasks();
-  assertDb(u.gainToDb(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].autoGainVod), 5,
+  assertDb(gainDb(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].autoGainVod), 5,
     'the stored Auto gain');
 });
 
@@ -6133,7 +6138,7 @@ test('a settings change stores the gain the level asks for, whatever plays by th
   harness.advanceTime(1000);
   await harness.releaseStorageGet();
   assertDb(playedDb(harness), 0, 'the reapply that came after it');
-  assertDb(u.gainToDb(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].autoGainVod), 3,
+  assertDb(gainDb(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].autoGainVod), 3,
     'the stored Auto gain');
 });
 
