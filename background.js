@@ -1,8 +1,9 @@
 // background.js — Service worker. Owns the single serialized writer for the
 // aggregate channelVolumes key (local) and for the settings (sync). Nothing is
 // written to the settings on install: a reader that finds none takes the
-// defaults, and a computer newly set up would otherwise write them into sync
-// before Chrome has brought it the settings the profile already holds.
+// defaults, and with Chrome sync on, a Chrome the user has newly signed in to
+// would otherwise write them into sync before Chrome sync has brought it the
+// settings the account already holds.
 
 importScripts('settings-area.js', 'channel-store.js', 'settings-store.js');
 

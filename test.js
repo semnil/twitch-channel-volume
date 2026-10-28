@@ -11632,7 +11632,8 @@ test('the worker moves settings left in local to sync, and removes them from loc
 });
 
 test('the worker keeps what sync holds over a copy left in local', async () => {
-  // Another computer moved its settings first; that is what every one reads.
+  // With Chrome sync on, another Chrome the user is signed in to moved its
+  // settings first; that is what each of them reads.
   const harness = createBackgroundHarness({
     syncSettings: { targetLufs: -20, displayUnit: '%' },
     localSettings: { targetLufs: -24, displayUnit: 'dB' }
@@ -11714,9 +11715,10 @@ test('a settings write made before the move carries the local values into sync',
 });
 
 test('an install writes no settings to either area', async () => {
-  // A computer newly set up starts with sync empty until Chrome brings it what
-  // the profile holds; defaults written then would stand in sync for every
-  // computer. The readers take the defaults where nothing is stored.
+  // With Chrome sync on, a Chrome the user has newly signed in to starts with
+  // sync empty until Chrome sync brings it what the account holds; defaults
+  // written then would stand in sync for every Chrome the user is signed in
+  // to. The readers take the defaults where nothing is stored.
   const harness = createBackgroundHarness({ syncSettings: null });
   await harness.install();
   assert.equal(harness.synced.autoLoudnessSettings, undefined);

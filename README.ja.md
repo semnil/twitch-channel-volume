@@ -126,7 +126,7 @@ python3 pack.py
 
 ## プライバシー
 
-- 外部へのネットワークリクエストを行わない。保存済みチャンネルと計測値はデバイス上の `chrome.storage.local` に留まる。設定（Target LUFS・CM ゲイン・表示単位・ゲイン表示・Auto の既定値）は `chrome.storage.sync` に保存し、Chrome の同期がオンなら Chrome が他のパソコンへ届ける
+- 外部へのネットワークリクエストを行わない。保存済みチャンネルと計測値はデバイス上の `chrome.storage.local` に留まる。設定（Target LUFS・CM ゲイン・表示単位・ゲイン表示・Auto の既定値）は `chrome.storage.sync` に保存し、Chrome の同期がオンなら、同じ Google アカウントで Chrome にログインしている他のパソコンへ Chrome が届ける
 - 音声・映像データそのものは記録も送信もしない — 保存するのは算出した LUFS 値とゲイン設定だけ
 - 詳細は [PRIVACY_POLICY.md](PRIVACY_POLICY.md)（[日本語](PRIVACY_POLICY_JA.md)）を参照
 

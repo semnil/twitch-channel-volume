@@ -19,7 +19,7 @@ Twitch Channel Volume is a Chrome extension that remembers and auto-applies volu
 ### Extension Preferences
 
 - **What**: Target LUFS level, ad-break gain (dB), display unit (% or dB), gain overlay toggle, and the auto-follow default for each kind (Live / VOD).
-- **Purpose**: Customize the extension's behavior according to your preferences, the same way on every computer you use it on.
+- **Purpose**: Customize the extension's behavior according to your preferences, and, when Chrome sync is turned on, keep it the same on every computer where you use the extension while signed in to Chrome with the same Google account.
 - **Storage**: Saved in `chrome.storage.sync`. When Chrome sync is turned on, Chrome stores these preferences with your Google account and carries them to the other computers where you use the extension while signed in to Chrome with the same Google account; with Chrome sync off they stay on this device. They name no channel and no page you visited. The extension developer does not receive them.
 
 ### Loudness Measurement of Playing Audio
@@ -44,12 +44,12 @@ Twitch Channel Volume is a Chrome extension that remembers and auto-applies volu
 
 ## Where Data Is Sent
 
-Nowhere the extension sends it. This extension makes **no external network requests**. GraphQL responses are only read from the traffic that the Twitch page itself issues; the extension does not initiate any new outbound transmission. All data remains on your device, except the extension preferences described above, which Chrome sync — not the extension — carries between your own devices when you have it turned on.
+Nowhere the extension sends it. This extension makes **no external network requests**. GraphQL responses are only read from the traffic that the Twitch page itself issues; the extension does not initiate any new outbound transmission. All data remains on your device, except the extension preferences described above, which Chrome sync — not the extension — carries between the computers where you are signed in to Chrome with the same Google account, when you have it turned on.
 
 ## Data Storage and Security
 
 - Channel volume settings and loudness measurements are stored in `chrome.storage.local`, which is accessible only to this extension. They are not synced across devices or stored in the cloud.
-- The extension preferences are stored in `chrome.storage.sync`, which is also accessible only to this extension. With Chrome sync turned on, Google stores them with your Google account under [Google's Privacy Policy](https://policies.google.com/privacy) and syncs them to your other devices; the extension developer has no access to them.
+- The extension preferences are stored in `chrome.storage.sync`, which is also accessible only to this extension. With Chrome sync turned on, Google stores them with your Google account under [Google's Privacy Policy](https://policies.google.com/privacy) and syncs them to the other computers where you are signed in to Chrome with the same Google account; the extension developer has no access to them.
 - Uninstalling the extension removes the data it stored on that device.
 
 ## Permissions

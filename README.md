@@ -128,7 +128,7 @@ A static compressor (like FrankerFaceZ's option) clips loud peaks but does nothi
 
 ## Privacy
 
-- No external network requests. Saved channels and measurements stay on your device in `chrome.storage.local`; the settings (target LUFS, ad gain, display unit, gain overlay, Auto defaults) are kept in `chrome.storage.sync`, which Chrome sync carries to your other computers when it is on
+- No external network requests. Saved channels and measurements stay on your device in `chrome.storage.local`; the settings (target LUFS, ad gain, display unit, gain overlay, Auto defaults) are kept in `chrome.storage.sync`, which Chrome sync, when you have it turned on, carries to the other computers where you are signed in to Chrome with the same Google account
 - Audio/video data itself is never recorded or transmitted — only computed LUFS values and your gain settings are kept
 - See [PRIVACY_POLICY.md](PRIVACY_POLICY.md) ([日本語](PRIVACY_POLICY_JA.md)) for details
 
