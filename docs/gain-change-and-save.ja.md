@@ -45,7 +45,7 @@
 | `channelVolumeAliases` | `{ [仮 ID]: ユーザー ID }` | `channel-store.js` の `createChannelVolumesWriter` |
 | `channelVolumeSequence` | 整数 | `channel-store.js` の `createChannelVolumesWriter` |
 
-`autoLoudnessSettings` は `chrome.storage.sync` に置く。Chrome の同期をオンにしていれば、同じ Google アカウントでサインインしたすべてのコンピューターへ運ばれる。ほかの 3 つのキーは `chrome.storage.local` に置く。以前の版が書いたプロファイルでは、SW が移すまで設定は local にある (場面 2)。設定を読むものは、設定の書き手も含めてすべて `readStoredSettings` (`settings-area.js`) を通る。sync の設定のオブジェクト、sync に無ければ local の写し、どちらにも無ければ何も返さない。local を読んで何も無かったときは、sync をもう一度読む。
+`autoLoudnessSettings` は `chrome.storage.sync` に、ほかの 3 つのキーは `chrome.storage.local` に置く。sync は、利用者が Chrome の同期を有効にしていれば、その利用者がサインインしているすべての Chrome と同期され、無効なら local と同じに振る舞う ([`chrome.storage`](https://developer.chrome.com/docs/extensions/reference/api/storage))。以前の版が書いたプロファイルでは、SW が移すまで設定は local にある (場面 2)。設定を読むものは、設定の書き手も含めてすべて `readStoredSettings` (`settings-area.js`) を通る。sync の設定のオブジェクト、sync に無ければ local の写し、どちらにも無ければ何も返さない。local を読んで何も無かったときは、sync をもう一度読む。
 
 `lastLufsRef[kind]` と `autoGainRef[kind]` には、プレイヤーの音量の分を割り戻して測った値のときに `volume1` (`LUFS_REFERENCE_VOLUME_1`) が入る。`lastLufsWindows[kind]` は、保存した LUFS が何個のゲーティング窓から出た値かを表す。下の表の `<Kind>` は `Live` か `Vod` のこと。
 
