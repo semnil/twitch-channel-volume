@@ -6142,6 +6142,75 @@ test('a settings change stores the gain the level asks for, whatever plays by th
     'the stored Auto gain');
 });
 
+test('an Auto toggle that is not saved leaves the rise and the cut as they were', async () => {
+  const harness = createContentHarness({
+    autoApply: true,
+    autoGain: 0.8,
+    failChannelMutationOperation: 'saveAuto'
+  });
+  await flushTasks();
+  await harness.dispatchMessage(lufsPost(-23));
+  harness.advanceTime(1000);
+  await harness.dispatchMessage(lufsPost(-23, -17));
+  assertDb(playedDb(harness), 2, 'the cut');
+  harness.advanceTime(1000);
+  await harness.dispatchMessage(lufsPost(-23));
+  assertDb(playedDb(harness), 2.05, 'a second on the way back');
+
+  // Auto stays on where the toggle's write fails, and goes on rising from
+  // where it was.
+  assert.equal((await harness.dispatchGesture({ cmd: 'setAutoApplyLoudness', enabled: false }))?.ok, false);
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).autoApplyLoudness, true);
+  harness.advanceTime(1000);
+  await harness.dispatchMessage(lufsPost(-23));
+  assertDb(playedDb(harness), 2.1, 'a second after the failed toggle');
+
+  // A toggle refused while the short-term is over the Integrated value keeps
+  // the cut.
+  harness.advanceTime(1000);
+  await harness.dispatchMessage(lufsPost(-23, -17));
+  assertDb(playedDb(harness), 2, 'the cut again');
+  harness.rejectChannelMutations('saveAuto');
+  assert.equal((await harness.dispatchGesture({ cmd: 'setAutoApplyLoudness', enabled: false }))?.ok, false);
+  harness.advanceTime(1000);
+  await harness.dispatchMessage(lufsPost(-23, -17));
+  assertDb(playedDb(harness), 2, 'the cut after the refused toggle');
+  assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].autoApplyLoudnessVod, true);
+});
+
+test('an Auto toggle saved after a route change leaves the new media\'s rise alone', async () => {
+  const autoOn = (name) => ({
+    name,
+    gainVod: 0.5,
+    autoApplyLoudnessVod: true,
+    autoGainVod: 0.8,
+    autoGainRef: { vod: u.LUFS_REFERENCE_VOLUME_1 }
+  });
+  const harness = createContentHarness({
+    channelVolumes: { 'vod-owner:100': autoOn('100'), 'vod-owner:200': autoOn('200') },
+    deferChannelMutationOperation: 'saveAuto'
+  });
+  await flushTasks();
+  await harness.dispatchMessage(lufsPost(-23));
+  const answer = harness.dispatchGesture({ cmd: 'setAutoApplyLoudness', enabled: false });
+  await flushTasks();
+
+  await harness.navigate('https://www.twitch.tv/videos/200');
+  harness.advanceTime(1000);
+  await harness.dispatchMessage(lufsPost(-23));
+  assertDb(playedDb(harness), 5, 'the first gain of the new media');
+  harness.advanceTime(1000);
+  await harness.dispatchMessage(lufsPost(-23, -17));
+  assertDb(playedDb(harness), 2, 'the cut on the new media');
+
+  // The write for the media left behind lands; the reapply it starts is the
+  // new media's, held to that media's cut.
+  harness.releaseChannelMutation();
+  await flushTasks(8);
+  await answer;
+  assertDb(playedDb(harness), 2, 'the reapply after the old toggle landed');
+});
+
 test('content manual mode does not follow incoming LUFS measurements', async () => {
   const harness = createContentHarness({ autoApply: false });
   await flushTasks();

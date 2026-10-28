@@ -57,7 +57,7 @@
   let seededMeasurementTarget = '';
   let lastAutoGainUpdateAt = -Infinity;
   // When a measured level last set the gain Auto plays; null from a
-  // measurement reset, a settings change or an Auto toggle until the next
+  // measurement reset, a settings change or a saved Auto toggle until the next
   // measured gain, which then plays as it stands.
   let autoRaiseFrom = null;
   // When the last ad ended. For the span of the short-term loudness after it,
@@ -861,7 +861,6 @@
           ? calcGain(lastLufs.integrated, targetLufs)
           : undefined;
         autoMutationPending = true;
-        autoRaiseFrom = null;
         saveChannelAutoApply(
           currentChannel.id,
           currentChannel.name,
@@ -870,6 +869,9 @@
           currentChannel.url,
           autoGain
         ).then(async () => {
+          // A toggle that was saved for the state on screen plays its gain as
+          // it stands; one that was not saved leaves Auto as it was going.
+          if (req.appliesTo === currentGestureState()) autoRaiseFrom = null;
           try {
             await reapplyForCurrentChannel();
           } catch (error) {
