@@ -2557,6 +2557,8 @@ function createContentHarness({
   let runtimeMessageListener;
   let runtimeId = runtimeInvalid ? '' : 'test-extension';
   const deferredTimers = [];
+  const clearedTimers = new Set();
+  let lastTimerId = 0;
   let failNextStorageGet = failInitialStorageGet;
   let initialStorageGetDeferred = deferInitialStorageGet;
   let channelMutationDeferred = !!deferChannelMutationOperation;
@@ -2774,12 +2776,18 @@ function createContentHarness({
     MutationObserver,
     queueMicrotask,
     setInterval() { return 1; },
-    setTimeout(callback) {
+    setTimeout(callback, delay) {
       // Held, a case can ask what the script does while a fallback it armed is
       // still out — the wait for the bridge above all.
-      if (deferTimers) { deferredTimers.push(callback); return 1; }
-      queueMicrotask(callback);
-      return 1;
+      const id = ++lastTimerId;
+      if (deferTimers) { deferredTimers.push({ id, callback, delay }); return id; }
+      queueMicrotask(() => { if (!clearedTimers.has(id)) callback(); });
+      return id;
+    },
+    clearTimeout(id) {
+      clearedTimers.add(id);
+      const at = deferredTimers.findIndex((timer) => timer.id === id);
+      if (at >= 0) deferredTimers.splice(at, 1);
     },
     URL,
     window
@@ -2904,9 +2912,11 @@ function createContentHarness({
       runtimeId = '';
     },
     async runDeferredTimers() {
-      for (const callback of deferredTimers.splice(0)) callback();
+      for (const { callback } of deferredTimers.splice(0)) callback();
       await flushTasks(8);
     },
+    // How long each timer still held was armed for.
+    heldTimerDelays() { return deferredTimers.map((timer) => timer.delay); },
     advanceTime(ms) {
       currentTimeMs += ms;
     },
@@ -3304,6 +3314,7 @@ function createPopupHarness({
   const infos = [];
   const intervals = [];
   const windowListeners = {};
+  const timeouts = [];
   let resolveAutoSave;
   let currentState = {
     channel: { id: '123', name: 'somechannel', kind: 'live', url: 'https://www.twitch.tv/somechannel' },
@@ -3449,6 +3460,8 @@ function createPopupHarness({
     },
     requestAnimationFrame(callback) { callback(); },
     setInterval(callback) { return intervals.push(callback); },
+    // Held until a case runs them.
+    setTimeout(callback) { timeouts.push(callback); return timeouts.length; },
     structuredClone,
     window: {
       addEventListener(type, listener) { (windowListeners[type] ||= []).push(listener); }
@@ -3558,6 +3571,12 @@ function createPopupHarness({
     // The popup loses focus: another window or application comes to the front.
     async blurWindow() {
       for (const listener of windowListeners.blur || []) await listener({ type: 'blur' });
+      await flushTasks(8);
+    },
+    // The timeouts the popup has armed, run once each; one a callback arms
+    // waits for the next call.
+    async runTimeouts() {
+      for (const callback of timeouts.splice(0)) callback();
       await flushTasks(8);
     },
     async firePreset(index, type) {
@@ -8276,6 +8295,51 @@ test('a key held when focus leaves the slider or the popup is saved there, and w
   assert.deepEqual(idle.sent.filter((request) => request.cmd === 'setGain').map((request) => request.gain), [1.7]);
 });
 
+test('a key held on the slider after a preview sends it again each second until the hold ends', async () => {
+  const gains = (popup, cmd) => popup.sent.filter((request) => request.cmd === cmd).map((request) => request.gain);
+  const popup = createPopupHarness({ state: { appliesTo: '123|live|' } });
+  await flushTasks(8);
+
+  await holdSliderKey(popup, 155, true);
+  await holdSliderKey(popup, 160);
+  assert.deepEqual(gains(popup, 'previewGain'), [1.55, 1.6]);
+  // One a second, of the value the slider holds, however many repeats came.
+  await popup.runTimeouts();
+  assert.deepEqual(gains(popup, 'previewGain'), [1.55, 1.6, 1.6], 'the key still held');
+  await popup.runTimeouts();
+  assert.deepEqual(gains(popup, 'previewGain'), [1.55, 1.6, 1.6, 1.6]);
+  assert.deepEqual(popup.sent.filter((request) => request.cmd === 'previewGain').map((request) => request.appliesTo),
+    ['123|live|', '123|live|', '123|live|', '123|live|']);
+
+  await popup.fire('manualSlider', 'keyup');
+  assert.deepEqual(gains(popup, 'setGain'), [1.6]);
+  // A key pressed again before the second is up has moved nothing yet.
+  await popup.fire('manualSlider', 'keydown', { repeat: false });
+  await popup.runTimeouts();
+  await popup.fire('manualSlider', 'keyup');
+  await popup.runTimeouts();
+  assert.deepEqual(gains(popup, 'previewGain'), [1.55, 1.6, 1.6, 1.6],
+    'nothing after the key is let go, nor for a press that moves nothing');
+
+  // A hold the popup's focus ends sends nothing more, and neither does a key
+  // pressed that moves nothing.
+  for (const leave of ['the popup', 'the slider', 'nothing moved']) {
+    const left = createPopupHarness();
+    await flushTasks(8);
+    if (leave === 'nothing moved') {
+      await left.fire('manualSlider', 'keydown', { repeat: false });
+    } else {
+      await holdSliderKey(left, 160, true);
+      if (leave === 'the popup') await left.blurWindow();
+      else await left.fire('manualSlider', 'blur');
+    }
+    const sent = gains(left, 'previewGain').length;
+    await left.runTimeouts();
+    await left.runTimeouts();
+    assert.equal(gains(left, 'previewGain').length, sent, leave);
+  }
+});
+
 test('a preview that does not arrive is dropped, and the save that ends the hold names the failure', async () => {
   const popup = createPopupHarness();
   await flushTasks(8);
@@ -8294,7 +8358,7 @@ test('a preview that does not arrive is dropped, and the save that ends the hold
 });
 
 test('content applies a previewed gain without saving it, and refuses it where it refuses a gain', async () => {
-  const harness = createContentHarness({ href: 'https://www.twitch.tv/somechannel' });
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/somechannel', deferTimers: true });
   await flushTasks();
   const before = JSON.stringify(harness.stored);
   harness.commands.length = 0;
@@ -8316,6 +8380,117 @@ test('content applies a previewed gain without saving it, and refuses it where i
   assert.deepEqual(await answer(harness.dispatchGesture({ cmd: 'previewGain', gain: 3 })),
     { ok: false, reason: 'auto apply enabled' });
   assert.deepEqual(harness.commands.filter((command) => command.cmd === 'setGain'), []);
+});
+
+// A preview lasts until the gesture that made it ends: the save that ends the
+// hold, or 2 s with no preview sent again.
+test('content holds a preview against storage changes until its gesture ends', async () => {
+  const row = { name: 'somechannel', gainLive: 0.5 };
+  const harness = createContentHarness({
+    href: 'https://www.twitch.tv/somechannel',
+    deferTimers: true,
+    channelVolumes: { 'login:somechannel': row }
+  });
+  await flushTasks();
+  const gainsSet = () => harness.commands.filter((command) => command.cmd === 'setGain')
+    .map((command) => command.value);
+  const playing = async () => (await harness.dispatchRuntime({ cmd: 'getState' })).gain;
+  const writeRow = (patch) => {
+    harness.stored[u.CHANNEL_VOLUMES_KEY]['login:somechannel'] = { ...row, ...patch };
+    return harness.dispatchStorage({
+      [u.CHANNEL_VOLUMES_KEY]: { newValue: structuredClone(harness.stored[u.CHANNEL_VOLUMES_KEY]) }
+    }, 'local');
+  };
+  const writeSettings = (patch) => {
+    harness.synced[u.SETTINGS_KEY] = { ...(harness.synced[u.SETTINGS_KEY] || {}), ...patch };
+    return harness.dispatchStorage({
+      [u.SETTINGS_KEY]: { newValue: structuredClone(harness.synced[u.SETTINGS_KEY]) }
+    }, 'sync');
+  };
+  assert.equal(await playing(), 0.5);
+
+  // A refused save with no preview held puts nothing back.
+  harness.commands.length = 0;
+  assert.equal((await harness.dispatchRuntime({ cmd: 'setGain', appliesTo: 'login:other|live|', gain: 2 }))?.reason,
+    'state moved');
+  await flushTasks(8);
+  assert.deepEqual(gainsSet(), []);
+
+  const previewWaits = () => harness.heldTimerDelays().filter((delay) => delay === 2000).length;
+  harness.commands.length = 0;
+  assert.equal((await harness.dispatchGesture({ cmd: 'previewGain', gain: 1.9 }))?.ok, true);
+  assert.equal(previewWaits(), 1);
+  // A preview sent again starts the one wait again.
+  assert.equal((await harness.dispatchGesture({ cmd: 'previewGain', gain: 2 }))?.ok, true);
+  assert.equal(previewWaits(), 1);
+  await writeRow({ gainLive: 0.7 });
+  await writeSettings({ displayUnit: 'dB' });
+  assert.deepEqual(gainsSet(), [1.9, 2], 'another tab\'s write and a settings change leave the preview playing');
+  assert.equal(await playing(), 2);
+
+  // The 2 s pass with no preview sent again: what storage holds then plays.
+  await harness.runDeferredTimers();
+  assert.deepEqual(gainsSet(), [1.9, 2, 0.7]);
+  // Control: with no preview, a write plays at once.
+  await writeRow({ gainLive: 0.6 });
+  assert.deepEqual(gainsSet(), [1.9, 2, 0.7, 0.6]);
+
+  // The save that ends the hold ends the preview: a write after it plays, and
+  // the wait the preview armed is let go.
+  harness.commands.length = 0;
+  await harness.dispatchGesture({ cmd: 'previewGain', gain: 2 });
+  assert.equal((await harness.dispatchGesture({ cmd: 'setGain', gain: 2 }))?.ok, true);
+  assert.equal(previewWaits(), 0);
+  await writeRow({ gainLive: 0.8 });
+  assert.deepEqual(gainsSet(), [2, 2, 0.8]);
+
+  // A save refused after a preview puts back what storage holds.
+  harness.commands.length = 0;
+  await harness.dispatchGesture({ cmd: 'previewGain', gain: 2 });
+  await writeRow({ gainLive: 0.9 });
+  assert.deepEqual(
+    { ...(await harness.dispatchRuntime({ cmd: 'setGain', appliesTo: 'login:other|live|', gain: 2 })) },
+    { ok: false, reason: 'state moved' }
+  );
+  await flushTasks(8);
+  assert.deepEqual(gainsSet(), [2, 0.9]);
+});
+
+// What a change held back from the gain reads and saves goes ahead: a channel
+// turned to Auto elsewhere refuses the save that ends the hold, and the Auto
+// gain a new target gives is saved, though neither plays over the preview.
+test('content saves and reads what a change brings while a preview holds the gain', async () => {
+  const harness = createMeasuringHarness({ deferTimers: true });
+  await claimChannel(harness);
+  await measureOn(harness, -24);
+  const autoGainSaves = () => harness.mutations
+    .filter((mutation) => mutation.operation === 'saveAutoGain')
+    .map((mutation) => mutation.autoGain);
+  const gainsSet = () => harness.commands.filter((command) => command.cmd === 'setGain')
+    .map((command) => command.value);
+
+  harness.commands.length = 0;
+  assert.equal((await harness.dispatchGesture({ cmd: 'previewGain', gain: 2 }))?.ok, true);
+  harness.synced[u.SETTINGS_KEY] = {
+    ...(harness.synced[u.SETTINGS_KEY] || {}), targetLufs: -20, autoApplyLoudnessLiveDefault: true
+  };
+  await harness.dispatchStorage({
+    [u.SETTINGS_KEY]: { newValue: structuredClone(harness.synced[u.SETTINGS_KEY]) }
+  }, 'sync');
+  assert.equal(autoGainSaves().length, 1, 'the Auto gain the new target gives is saved');
+  assert.ok(Math.abs(autoGainSaves()[0] - u.calcGain(-24, -20)) < 1e-12);
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).autoApplyLoudness, true);
+  // A measurement arriving meanwhile plays no Auto gain over the preview.
+  await measureOn(harness, -24);
+  assert.deepEqual(gainsSet(), [2], 'nothing plays over the preview');
+
+  assert.deepEqual(
+    { ...(await harness.dispatchGesture({ cmd: 'setGain', gain: 2 })) },
+    { ok: false, reason: 'auto apply enabled' }
+  );
+  await flushTasks(8);
+  assert.equal(gainsSet().length, 2);
+  assert.ok(Math.abs(gainsSet()[1] - u.calcGain(-24, -20)) < 1e-12, `the Auto gain plays (${gainsSet()[1]})`);
 });
 
 test('options writes a Target LUFS held on a key once, where the key is let go or focus leaves', async () => {

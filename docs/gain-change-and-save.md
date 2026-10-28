@@ -59,6 +59,8 @@ content chooses the baseline gain in `resolvePreferredGain` (`utils.js`) from th
 
 `reapplyForCurrentChannel` reads the row (`loadChannelEntry`) and then applies the gain `resolvePreferredGain` resolves, or, with Auto on and a finite Integrated value, the gain `autoGainToPlay` gives (scenario 5). When a newer read, a navigation or a channel change has started while it was reading (`preferenceRevision`, or a different `currentChannel`), it returns false and applies nothing; the diagrams below draw that as `opt the read was not overtaken`. On a page with no channel id or of kind `none` it reads nothing, applies 1.0 and returns true.
 
+While content holds a `previewGain` for the state on screen (scenario 3; `previewHoldsGain`: the preview's `appliesTo` equals `currentGestureState()`), `reapplyForCurrentChannel` reads the row and takes its Auto choice but applies no gain, and `applyAutoGain` applies nothing, so the previewed gain keeps playing. What the same paths save is saved. Scenarios 5, 10 and 12 draw this hold; the other diagrams leave it out.
+
 Startup, SPA navigation and an owner event that moves the measurement target (scenario 8) set `seededResetPending` before their read. While it is set, the reapply that applies its gain, whichever event started it, then sends the reset seeded from the row it read and clears the mark (`sendPendingSeededReset`).
 
 Every path below that changes the gain ends in this common step:
@@ -268,11 +270,25 @@ sequenceDiagram
       content-->>popup: ok false, reason
     end
     content->>bridge: setGain (applyGain), nothing saved
+    content->>content: startPreview: the gain is held, and the wait of 2000 ms starts again
+    opt the key is still held 1000 ms after a previewGain
+      popup->>content: previewGain again with the slider's value (keepPreviewAlive)
+    end
+    opt 2000 ms pass with no previewGain and no setGain
+      content->>content: endIdlePreview, reapplyForCurrentChannel
+    end
   end
   popup->>content: tabs.sendMessage setGain with appliesTo and gain (slider change, the end of a key hold, or preset click)
+  content->>content: endPreview
   alt no channel, or appliesTo differs from currentGestureState()
+    opt a preview was held
+      content->>content: reapplyForCurrentChannel (putBackStoredGain)
+    end
     content-->>popup: ok false, state moved
   else autoMutationPending, Auto on, or audioUnavailable
+    opt a preview was held
+      content->>content: reapplyForCurrentChannel (putBackStoredGain)
+    end
     content-->>popup: ok false, auto update pending / auto apply enabled / audio unavailable
   else accepted
     content->>bridge: setGain (applyGain)
@@ -295,10 +311,11 @@ sequenceDiagram
   popup->>content: getState (refresh)
 ```
 
-Drawn from: `popup.js` the `manualSlider` `input` / `change` / `pointerdown` / `pointerup` / `pointercancel` / `keydown` / `keyup` / `blur` listeners, the `window` `blur` listener, `endSliderKeyHold`, `endSliderGesture`, `previewGain`, the preset `click` listener, `setGain`, `applyMeasured`, `syncInteractionDisabledState`, `renderState`; `content.js` the `previewGain` and `setGain` cases of the `runtime.onMessage` listener, `gainGestureRefusal`, `applyGain`, `saveChannelGain`, `reapplyForCurrentChannel`.
+Drawn from: `popup.js` the `manualSlider` `input` / `change` / `pointerdown` / `pointerup` / `pointercancel` / `keydown` / `keyup` / `blur` listeners, the `window` `blur` listener, `endSliderKeyHold`, `endSliderGesture`, `keepPreviewAlive`, `previewGain`, the preset `click` listener, `setGain`, `applyMeasured`, `syncInteractionDisabledState`, `renderState`; `content.js` the `previewGain` and `setGain` cases of the `runtime.onMessage` listener, `startPreview`, `endPreview`, `endIdlePreview`, `putBackStoredGain`, `previewHoldsGain`, `gainGestureRefusal`, `applyGain`, `saveChannelGain`, `reapplyForCurrentChannel`.
 
 - `input` (while the slider moves) updates the Current card and the value label and sends nothing. `change` sends one `setGain`. A preset button moves the slider, updates the same two labels and sends one `setGain`.
 - A key held on the slider, from its `keydown` to its `keyup`, is heard and not saved: each `input` also sends `previewGain`, which content refuses where it refuses `setGain` (`gainGestureRefusal`) and otherwise applies without a save, and the `change` each repeat fires sends nothing. The `keyup`, or a `blur` of the slider or of the popup's `window` before it, sends one `setGain` with the slider's value when an `input` arrived during the hold. A `blur` during the hold also ends the gesture the way it ends a drag (below). The popup reports nothing for a `previewGain`; the `setGain` that ends the hold reports a refusal as below.
+- While the key stays held after a `previewGain`, the popup sends it again with the slider's value every 1000 ms (`PREVIEW_KEEP_ALIVE_MS`, `keepPreviewAlive`) until the hold ends. content holds each `previewGain` it accepts (`startPreview`): the gain a write, a settings change or a measurement would apply is not applied (see "How the applied gain is decided"). The hold lasts until the `setGain` that ends the key hold arrives (`endPreview`), or until 2000 ms (`PREVIEW_IDLE_MS`) pass after the last `previewGain`, as when the popup closes with the key down (`endIdlePreview`). A preview ended that second way, and a `setGain` refused after a preview, reapply the row (`putBackStoredGain`). A preview whose `appliesTo` no longer equals `currentGestureState()` holds nothing.
 - The slider sends the `appliesTo` copied when the gesture began (`pointerdown`, `keydown`, or the first `input`); a preset and the "Apply to channel" button send the `appliesTo` of the last state drawn.
 - A `blur` of the popup's `window` while the pointer is held on the slider (between its `pointerdown` and its `pointerup` / `pointercancel`) ends the gesture: a `change` that arrived ahead of the `blur` has sent its `setGain`, and until the next `pointerdown` or a `keydown` that is not a repeat the slider's `input` does nothing and its `change`, the one at the release included, sends nothing and puts the thumb back to the value the slider held at the `blur`.
 - "Apply to channel" (`applyMeasured`) sends `resume` and then `setGain` with the Suggested gain, `suggestedGain(lufs.integrated, targetLufs)` from the last `getState`. The button is enabled with Auto off, a finite Integrated value, a channel and audio available, and its label is "Apply $VALUE$ to channel" with the gain in the display unit.
@@ -371,7 +388,7 @@ sequenceDiagram
     opt Integrated finite and the page has a channel id
       opt Auto on
         content->>content: applyAutoGain
-        opt 1000 ms or more since the last apply
+        opt no previewGain held (scenario 3), and 1000 ms or more since the last apply
           content->>bridge: setGain autoGainToPlay()
         end
       end
@@ -392,7 +409,7 @@ sequenceDiagram
   end
 ```
 
-Drawn from: `audio-worklet.js` `KMeanSquareProcessor.process`; `page-bridge.js` `onBlockMs`, `normalizeForVolume`, `updateIntegratedLufs`, `integratedLufs`, `postLufs`; `content.js` the `lufs` case of `handleBridgeMessage`, `applyAutoGain`, `autoGainToPlay`, `throttledSaveIntegrated`, `saveLastIntegrated`, `measurementSaved`, `measurementSaveFailed`.
+Drawn from: `audio-worklet.js` `KMeanSquareProcessor.process`; `page-bridge.js` `onBlockMs`, `normalizeForVolume`, `updateIntegratedLufs`, `integratedLufs`, `postLufs`; `content.js` the `lufs` case of `handleBridgeMessage`, `applyAutoGain`, `previewHoldsGain`, `autoGainToPlay`, `throttledSaveIntegrated`, `saveLastIntegrated`, `measurementSaved`, `measurementSaveFailed`.
 
 - The two gates are separate. Through `applyAutoGain` the gain under Auto changes at most once per 1000 ms (`DISPLAY_UPDATE_INTERVAL_MS`); the reapply that `chrome.storage.onChanged` starts (scenarios 10 and 12) applies `autoGainToPlay` without this gate. The measurement and the Auto gain in force are written at most once per 5000 ms per tab, with Auto on or off, and only from a `lufs` whose `playing` is true. `lastSavedAt` is set when a save is sent, and is put back to 0 by a failed save, by SPA navigation and by a measurement reset, so the next block sends again. `sendResetMeasurement` puts `lastAutoGainUpdateAt` back to `-Infinity` and `autoRaiseFrom` to null, so the first finite Integrated value after a reset is applied at once and as it stands.
 - `autoGainToPlay` gives the gain Auto plays. It starts from `calcGain(integrated, targetLufs)`. Where the block's short-term loudness is 6 dB (`AUTO_RISE_DB`) or more over the Integrated value, it works the gain out as if the Integrated value were 3 dB (`AUTO_RISE_AHEAD_DB`) louder, except while `adActive` is true and for 3 s (`SHORT_TERM_MS`) after the last ad ended (`adEndedAt`). A gain at or below `currentGain` plays at once; one above it plays no higher than `currentGain` raised by 1.5 dB (`AUTO_RAISE_DB`) for every 30 s (`AUTO_RAISE_PERIOD_MS`) since a measured level last set the gain (`autoRaiseFrom`). Where `autoRaiseFrom` is null (after a measurement reset, a settings change or a saved Auto toggle), and where `currentGain` is 0, the gain plays as it stands. Each call sets `autoRaiseFrom` to now.
@@ -596,7 +613,9 @@ sequenceDiagram
         content->>content: reapplyForCurrentChannel once more
       end
       opt the last read was not overtaken
-        content->>bridge: setGain (applyGain)
+        opt no previewGain held (scenario 3)
+          content->>bridge: setGain (applyGain)
+        end
         opt targetLufs or an Auto default changed, Auto on, Integrated finite, and playing true in the lufs it was taken from
           content->>sw: saveAutoGain with autoGain = calcGain(integrated, targetLufs)
         end
@@ -607,11 +626,11 @@ sequenceDiagram
   end
 ```
 
-Drawn from: `options.js` the listeners of `targetLufs` (with `endTargetKeyHold` and the `window` `blur` listener), `adGainDb`, the two default Auto toggles, `#unitToggle` and `overlayToggle`, `updateSettings`, `mutateSettings`, `reloadSettingsAfterFailure`, the `storage.onChanged` listener; `content.js` the `storage.onChanged` listener, `reapplyForCurrentChannel`, `saveChannelAutoGain`; `page-bridge.js` `setAdGainOffset`; `popup.js` the `storage.onChanged` listener.
+Drawn from: `options.js` the listeners of `targetLufs` (with `endTargetKeyHold` and the `window` `blur` listener), `adGainDb`, the two default Auto toggles, `#unitToggle` and `overlayToggle`, `updateSettings`, `mutateSettings`, `reloadSettingsAfterFailure`, the `storage.onChanged` listener; `content.js` the `storage.onChanged` listener, `reapplyForCurrentChannel`, `previewHoldsGain`, `saveChannelAutoGain`; `page-bridge.js` `setAdGainOffset`; `popup.js` the `storage.onChanged` listener.
 
 - The Target LUFS and Ad gain sliders send on `change`; their `input` only updates the label. While a key is held on the Target LUFS slider (from its `keydown` to its `keyup`), its `change` sends nothing; the `keyup`, or a `blur` of the slider or of the page's `window` before it, sends the slider's value once when it moved, and after such a `blur`, until the next `pointerdown` or a `keydown` that is not a repeat, the slider's `input` does nothing and its `change` puts the thumb back to the value written at the `blur`. The Live / VOD default toggles and the overlay toggle send on `change`, the unit buttons on `click`. Each sends the one field it controls, and a field sent with the value on file is not written (see "Single writer for settings"). The controls are disabled until the first load has completed (`settingsReady`).
 - In each Twitch tab: a new `targetLufs` changes the gain at once under Auto with a finite Integrated value (through `reapplyForCurrentChannel`). A new `adGainDb` changes the node during an ad, and the ad-element nodes in the same step (`setAdGainOffset` runs `syncAdElementGains`). A new Auto default changes Auto for a channel whose row has neither an Auto choice nor a manual gain for the kind, without writing `autoApplyLoudness<Kind>`. `showGainOverlay` changes the overlay only.
-- The listener re-reads the row and applies the gain for any change of `autoLoudnessSettings`, whichever field changed. It sends `saveAutoGain` only when `targetLufs`, `autoApplyLoudnessLiveDefault` or `autoApplyLoudnessVodDefault` differs from the value the tab held, and only from a tab whose last taken `lufs` had `playing` true (`lastLufsPlaying`, the condition `saveMeasurement` goes by, scenario 5); a change of `displayUnit`, `showGainOverlay` or `adGainDb` saves nothing, and a paused or muted tab applies the gain and saves nothing.
+- The listener re-reads the row and applies the gain for any change of `autoLoudnessSettings`, whichever field changed. It sends `saveAutoGain` only when `targetLufs`, `autoApplyLoudnessLiveDefault` or `autoApplyLoudnessVodDefault` differs from the value the tab held, and only from a tab whose last taken `lufs` had `playing` true (`lastLufsPlaying`, the condition `saveMeasurement` goes by, scenario 5); a change of `displayUnit`, `showGainOverlay` or `adGainDb` saves nothing, and a paused or muted tab applies the gain and saves nothing. While the tab holds a `previewGain` (scenario 3), the reapply applies no gain, and `saveAutoGain` is sent as above.
 - content, the popup and the options page take `autoLoudnessSettings` from the `sync` area alone. In local the key changes only when the move removes it, and that change carries no settings.
 - When that read is overtaken (by the read a channel write reaching `onChanged` starts, by an owner event or by a navigation), the listener reapplies once more after it returns, against the channel and the row as they stand then, and the gain that reapply applies is the one `saveAutoGain` carries. A reapply overtaken again is not made a third time.
 - The popup takes `displayUnit`, clears `sliderSynced` and reads `getState` again. Another open options page re-renders the settings.
@@ -677,7 +696,9 @@ sequenceDiagram
     content->>storage: get (loadChannelEntry)
     opt the read was not overtaken
       content->>content: resolvePreferredGain
-      content->>bridge: setGain (applyGain)
+      opt no previewGain held (scenario 3)
+        content->>bridge: setGain (applyGain)
+      end
       opt seededResetPending, set by startup or navigation
         content->>bridge: resetMeasurement with the next epoch, seeded from the row, seededResetPending = false
       end
@@ -686,9 +707,9 @@ sequenceDiagram
   Note over popup: no listener for channelVolumes,<br>getState is read every 1000 ms
 ```
 
-Drawn from: `content.js` the `storage.onChanged` listener, `reapplyForCurrentChannel`, `loadChannelEntry`, `sendPendingSeededReset`; `popup.js` the `storage.onChanged` listener and the `setInterval(refresh, DISPLAY_UPDATE_INTERVAL_MS)` call.
+Drawn from: `content.js` the `storage.onChanged` listener, `reapplyForCurrentChannel`, `loadChannelEntry`, `previewHoldsGain`, `sendPendingSeededReset`; `popup.js` the `storage.onChanged` listener and the `setInterval(refresh, DISPLAY_UPDATE_INTERVAL_MS)` call.
 
-- The listener does not look at which row changed: a tab on any channel re-reads its own row and sends `setGain`. The value changes where the resolved gain differs from `currentGain`.
+- The listener does not look at which row changed: a tab on any channel re-reads its own row and sends `setGain`. The value changes where the resolved gain differs from `currentGain`. A tab that holds a `previewGain` (scenario 3) sends none, and puts back the gain storage holds when the preview ends with no save or a refused one.
 - With Auto on and a finite Integrated value, this path applies the gain `autoGainToPlay` gives and does not go through the 1000 ms gate of `applyAutoGain`.
 - Each write that reaches the listener starts its own read, and a read overtaken by a later one applies nothing.
 - Saves: none.
@@ -763,7 +784,7 @@ Drawn from: `content.js` `listenForResumeGesture`, `requestAudioContextResume`, 
 | Popup slider `input` | Unchanged, labels only | none | `popup.js` `input` listener |
 | Popup `blur` while the slider is held | Unchanged; the rest of the drag is not sent, and its `change` puts the thumb back | none | `popup.js` `window` `blur` listener |
 | Popup slider `change`, preset click | Set to the chosen gain | `saveGain` | `popup.js` `setGain`, `content.js` `setGain` case, `saveChannelGain` |
-| Key held on the popup slider | Set to each value it moves to (`previewGain`) | `saveGain` once, at the `keyup` or a `blur` | `popup.js` `keydown` / `keyup` listeners, `endSliderKeyHold`, `content.js` `previewGain` case |
+| Key held on the popup slider | Set to each value it moves to (`previewGain`), which writes, settings changes and Auto do not replace until the hold ends (scenario 3) | `saveGain` once, at the `keyup` or a `blur` | `popup.js` `keydown` / `keyup` listeners, `endSliderKeyHold`, `keepPreviewAlive`, `content.js` `previewGain` case, `startPreview`, `endIdlePreview` |
 | "Apply to channel" | Set to the Suggested gain | `saveGain` | `popup.js` `applyMeasured` |
 | `saveGain` rejected | Back to the stored gain | none | `content.js` `setGain` case, `reapplyForCurrentChannel` |
 | Auto switched in the popup | Resolved again | `saveAuto`, with `autoGain` when computed | `content.js` `setAutoApplyLoudness` case, `saveChannelAutoApply` |

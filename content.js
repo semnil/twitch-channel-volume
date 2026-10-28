@@ -326,6 +326,7 @@
   }
 
   function applyAutoGain() {
+    if (previewHoldsGain()) return;
     const now = Date.now();
     const elapsed = now - lastAutoGainUpdateAt;
     if (elapsed >= 0 && elapsed < DISPLAY_UPDATE_INTERVAL_MS) return;
@@ -482,9 +483,11 @@
       targetLufs
     );
     currentAutoApplyLoudness = preferred.autoApply;
-    applyGain(preferred.autoApply && Number.isFinite(lastLufs.integrated)
-      ? autoGainToPlay()
-      : preferred.gain);
+    if (!previewHoldsGain()) {
+      applyGain(preferred.autoApply && Number.isFinite(lastLufs.integrated)
+        ? autoGainToPlay()
+        : preferred.gain);
+    }
     sendPendingSeededReset();
     return true;
   }
@@ -750,6 +753,46 @@
   const adObserver = new MutationObserver(() => checkAdDom());
   adObserver.observe(document.documentElement, { subtree: true, childList: true });
 
+  // ── Popup slider preview ───────────────────────────────────────────
+
+  // While a key held on the popup's slider previews a gain, the gain a reapply
+  // of the row resolves and the Auto gain a measurement plays are held back
+  // rather than applied; what the reapply reads and saves goes ahead. The
+  // preview lasts until its gesture ends: the setGain that ends the hold
+  // arrives, or PREVIEW_IDLE_MS pass after the last previewGain, which the
+  // popup sends again while the key is held. A preview that ends with no save,
+  // and a save refused after a preview, put back what storage holds then. A
+  // preview whose state has moved holds nothing back.
+  const PREVIEW_IDLE_MS = 2000;
+  let preview = null;
+
+  function startPreview(appliesTo) {
+    if (preview) clearTimeout(preview.timer);
+    preview = { appliesTo, timer: setTimeout(endIdlePreview, PREVIEW_IDLE_MS) };
+  }
+
+  // Whether a preview was in progress.
+  function endPreview() {
+    if (!preview) return false;
+    clearTimeout(preview.timer);
+    preview = null;
+    return true;
+  }
+
+  function putBackStoredGain() {
+    reapplyForCurrentChannel().catch((error) => {
+      console.warn('[TCV] failed to put back the stored gain after a preview', error);
+    });
+  }
+
+  function endIdlePreview() {
+    if (endPreview()) putBackStoredGain();
+  }
+
+  function previewHoldsGain() {
+    return !!preview && preview.appliesTo === currentGestureState();
+  }
+
   // ── Storage onChanged → cross-tab sync ────────────────────────────
 
   // Chrome sends one event per area. The settings are taken from sync alone: in
@@ -852,12 +895,16 @@
           return;
         }
         applyGain(req.gain);
+        startPreview(req.appliesTo);
         sendResponse({ ok: true });
         return;
       }
       case 'setGain': {
+        // The save ends the preview, whatever becomes of it.
+        const previewed = endPreview();
         const refusal = gainGestureRefusal(req);
         if (refusal) {
+          if (previewed) putBackStoredGain();
           sendResponse({ ok: false, reason: refusal });
           return;
         }

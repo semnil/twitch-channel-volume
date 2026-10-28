@@ -478,6 +478,21 @@
     if (!event.repeat) beginSliderGesture();
     sliderKeyHeld = true;
   });
+  // While the key is still held after a preview it has not saved, the
+  // preview is sent again every PREVIEW_KEEP_ALIVE_MS, so the tab keeps it
+  // for as long as the key is held and ends it once the sending stops.
+  const PREVIEW_KEEP_ALIVE_MS = 1000;
+  let keepAliveSet = false;
+  const keepPreviewAlive = () => {
+    if (keepAliveSet) return;
+    keepAliveSet = true;
+    setTimeout(() => {
+      keepAliveSet = false;
+      if (!sliderKeyHeld || !sliderKeyMoved) return;
+      previewGain(Number($('manualSlider').value), sliderAppliesTo);
+      keepPreviewAlive();
+    }, PREVIEW_KEEP_ALIVE_MS);
+  };
   // Whether a key was held.
   const endSliderKeyHold = () => {
     if (!sliderKeyHeld) return false;
@@ -511,6 +526,7 @@
     if (sliderKeyHeld) {
       sliderKeyMoved = true;
       previewGain(Number(e.target.value), sliderAppliesTo);
+      keepPreviewAlive();
     }
   });
   $('manualSlider').addEventListener('change', (e) => {
