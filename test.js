@@ -10173,6 +10173,26 @@ test('settings mutations reject unknown fields and invalid values', () => {
   }), /must not be empty/);
 });
 
+test('settings mutations take each setting at a value it can hold', () => {
+  const valid = {
+    targetLufs: -24,
+    adGainDb: -12,
+    displayUnit: 'dB',
+    showGainOverlay: false,
+    autoApplyLoudnessLiveDefault: true,
+    autoApplyLoudnessVodDefault: false
+  };
+  for (const [field, value] of Object.entries(valid)) {
+    const next = settingsStore.applySettingsMutation({}, {
+      operation: 'patchSettings', patch: { [field]: value }
+    });
+    assert.equal(next[field], value, field);
+  }
+  assert.throws(() => settingsStore.applySettingsMutation({}, {
+    operation: 'patchSettings', patch: { showGainOverlay: 'off' }
+  }), /invalid settings value/);
+});
+
 test('options puts a refused settings save back, and names why', async () => {
   // The control is drawn at the new value before the write is asked for, so a
   // refusal has to put the page back on what is stored rather than leave the
@@ -11696,6 +11716,20 @@ test('a move that cannot write sync leaves the settings in local', async () => {
   assert.deepEqual(harness.stored.autoLoudnessSettings, left,
     'what the readers fall back on is still there');
   assert.deepEqual(harness.writes, []);
+  assert.equal(harness.errors.at(-1)?.[0], '[TCV] failed to move the settings to sync');
+});
+
+test('a move that cannot remove the copy in local is named as a failed move', async () => {
+  const left = { targetLufs: -24 };
+  const harness = createBackgroundHarness({
+    syncSettings: null,
+    localSettings: left,
+    failingCall: 'local.remove'
+  });
+  await flushTasks(8);
+
+  assert.deepEqual(harness.synced.autoLoudnessSettings, left, 'sync holds what was moved');
+  assert.deepEqual(harness.stored.autoLoudnessSettings, left, 'and local still holds its copy');
   assert.equal(harness.errors.at(-1)?.[0], '[TCV] failed to move the settings to sync');
 });
 
