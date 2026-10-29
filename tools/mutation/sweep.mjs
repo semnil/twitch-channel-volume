@@ -323,6 +323,24 @@ if (range) {
   console.error(`lines ${first}-${last}: ${mutants.length} of ${before} mutants`);
 }
 
+// One of n sweeps that share the mutants between them, each in a tree of its
+// own: MUTATE_SHARD=<k>/<n> keeps every nth mutant, starting from the kth, of
+// what is left after MUTATE_LINES, so the n shards together run every mutant
+// once. Each shard runs its own control and baseline.
+const shard = process.env.MUTATE_SHARD;
+if (shard) {
+  const [k, n] = shard.split('/').map(Number);
+  if (!/^\d+\/\d+$/.test(shard) || !(k < n)) {
+    console.error(`MUTATE_SHARD wants <k>/<n> with 0 <= k < n, got ${shard}`);
+    finish(2);
+  }
+  const before = mutants.length;
+  for (let i = mutants.length - 1; i >= 0; i--) {
+    if (i % n !== k) mutants.splice(i, 1);
+  }
+  console.error(`shard ${k}/${n}: ${mutants.length} of ${before} mutants`);
+}
+
 // Sizing a run before committing to it: how many suite runs it is going to be.
 // This writes nothing and runs nothing, so it says nothing about power either.
 if (process.env.MUTATE_COUNT) {

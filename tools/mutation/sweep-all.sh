@@ -22,7 +22,7 @@ for file in "$@"; do
   # whether it gave the tree back. Filtering to the survivor lines alone hides
   # the runs that never got as far as having survivors.
   printf '%s\n' "$out" \
-    | grep -a -E "mutants,|^SURVIVED|^HUNG|^lines |does not read|does not execute|not green|is back as it was|holds a mutant|uncommitted changes|MUTATE_LINES wants|not there|not in the tree|cannot read|moved away|could not be written|could not be read|could not take its marker off" \
+    | grep -a -E "mutants,|^SURVIVED|^HUNG|^lines |^shard |does not read|does not execute|not green|is back as it was|holds a mutant|uncommitted changes|MUTATE_LINES wants|MUTATE_SHARD wants|not there|not in the tree|cannot read|moved away|could not be written|could not be read|could not take its marker off" \
     >> "$report"
   if [ "$status" -ne 0 ]; then
     echo "===== $file stopped (exit $status) =====" >> "$report"
