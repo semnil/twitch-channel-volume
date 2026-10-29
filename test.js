@@ -18213,7 +18213,7 @@ function sweepBox(source) {
   // that sweep asked for rather than what the case asks for.
   const boxEnv = (extra) => {
     const env = { ...process.env, ...extra };
-    for (const knob of ['MUTATE_LINES', 'MUTATE_COUNT', 'MUTATE_CONFIRM', 'MUTATE_OPTIONAL']) {
+    for (const knob of ['MUTATE_LINES', 'MUTATE_COUNT', 'MUTATE_CONFIRM', 'MUTATE_OPTIONAL', 'MUTATE_SHARD']) {
       if (!extra || !(knob in extra)) delete env[knob];
     }
     return env;
@@ -18252,6 +18252,34 @@ test('a sweep that cannot start leaves the tree it was going to write to alone',
     assert.equal(after.status, 0, after.stderr);
     assert.match(after.stdout, /src\.js is back as it was/);
     assert.equal(box.locked(), false);
+  } finally {
+    box.remove();
+  }
+});
+
+test('shards share a sweep between trees, and a shard that cannot be one is refused', () => {
+  // Between them the shards run each mutant once, and a shard that cannot be
+  // one is refused before anything runs. The box's suite passes every mutant,
+  // so what a run lists standing is what it ran, in the order it ran them.
+  const box = sweepBox('function pick(a, b) {\n  if (!a) return b;\n  return a;\n}\nmodule.exports = { pick };\n');
+  try {
+    const standing = (run) => run.stdout.split('\n').filter((line) => line.startsWith('SURVIVED'));
+    const whole = box.sweep('src.js', 'node', 'suite.js');
+    assert.equal(whole.status, 0, whole.stderr);
+    assert.equal(standing(whole).length, 2, `the whole sweep runs both mutants (${standing(whole).join(' | ')})`);
+    for (const k of [0, 1]) {
+      const half = box.sweepWith({ MUTATE_SHARD: `${k}/2` }, 'src.js', 'node', 'suite.js');
+      assert.equal(half.status, 0, half.stderr);
+      assert.match(half.stderr, new RegExp(`shard ${k}/2: 1 of 2 mutants`));
+      assert.deepEqual(standing(half), [standing(whole)[k]], `shard ${k}/2 runs mutant ${k} of the whole sweep's order`);
+    }
+    for (const wrong of ['2/2', '-1/2']) {
+      const refused = box.sweepWith({ MUTATE_SHARD: wrong }, 'src.js', 'node', 'suite.js');
+      assert.equal(refused.status, 2, refused.stderr);
+      assert.ok(refused.stderr.includes(`MUTATE_SHARD wants <k>/<n> with 0 <= k < n, got ${wrong}`), refused.stderr);
+      assert.equal(refused.stdout, '', `a shard of ${wrong} runs nothing`);
+      assert.equal(box.locked(), false, `a shard of ${wrong} leaves the tree unmarked`);
+    }
   } finally {
     box.remove();
   }
