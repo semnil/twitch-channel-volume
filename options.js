@@ -22,7 +22,7 @@
       if (text && text !== key) el.textContent = text;
     });
     const language = msg('pageLanguage');
-    if (language && language !== 'pageLanguage') document.documentElement.lang = language;
+    if (language !== 'pageLanguage') document.documentElement.lang = language;
   }
 
   let displayUnit = '%';
