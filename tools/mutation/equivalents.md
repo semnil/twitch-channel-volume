@@ -225,3 +225,11 @@ there.
 
 - `options.js:270` a guard is dropped ×1 — if (!settingsReady) return;
 - `options.js:283` a guard is dropped ×1 — if (!settingsReady) return;
+
+## tools/mutation/bail.mjs
+
+The refusal on Windows. On macOS and Linux the platform is never `win32`, so
+there a check that is never taken is the check as it stands; on Windows the
+suite asks for the refusal itself.
+
+- `tools/mutation/bail.mjs:33` a guard body is dropped ×1 — if (process.platform === 'win32') {

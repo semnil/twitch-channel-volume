@@ -212,7 +212,7 @@ flowchart LR
 | `tools/verify-version.sh` | Holds a release tag to the manifest: `version_name` where the manifest has one (which has to be `version`, or `version` followed by `-`), `version` otherwise. Run only where a release is being made |
 | `tools/fonts/` | The M PLUS 1p faces used for drawing (Regular / Bold) and OFL.txt. Taken from `ofl/mplus1p` in google/fonts (commit `66a36c8`). Kept in the repository so that CI and each machine produce the same pixels |
 | `test.js` | Unit tests (`node test.js`) — utils and the stores, plus content.js / page-bridge.js / audio-worklet.js / popup.js / options.js / background.js run in a VM harness. The harnesses keep `chrome.storage.sync` and `chrome.storage.local` apart and name the area of every change they fire, as Chrome does |
-| `tools/mutation/` | What holds the suite to more than being green. `sweep.mjs` turns a source into mutants by rule, runs a suite against each and reports the ones that live through it; `MUTATE_SHARD=<k>/<n>` hands it every nth of those mutants from the kth, so n sweeps in n worktrees run them between them at the same time, each with its own control and baseline. `sweep-all.sh` walks a list of sources into one report and stops the run where a sweep stopped rather than leaving an empty section; `fast-suite.sh` is `node test.js` without the packaging surface, whose slow cases shell out to python; it excludes on the case name, so it is used with `MUTATE_CONFIRM="node test.js"` and never on its own. `equivalents.md` names every mutant the suite lets through and what was measured about each, and `sweep.mjs --verify` — which `test.js` runs — asks whether each entry still names a site the code has. `sweep.mjs` is the same file in the sibling extensions; a change to it belongs in all three |
+| `tools/mutation/` | What holds the suite to more than being green. `sweep.mjs` turns a source into mutants by rule, runs a suite against each and reports the ones that live through it; `MUTATE_SHARD=<k>/<n>` hands it every nth of those mutants from the kth, so n sweeps in n worktrees run them between them at the same time, each with its own control and baseline. `sweep-all.sh` walks a list of sources into one report and stops the run where a sweep stopped rather than leaving an empty section; `fast-suite.sh` is `node test.js` without the packaging surface, whose slow cases shell out to python; it excludes on the case name, so it is used with `MUTATE_CONFIRM="node test.js"` and never on its own. `bail.mjs` runs a suite and ends the run at the first line the suite prints that matches a pattern — for this repository's suite the line node:test prints for a failed test, `✖ <name>` from the spec reporter or `not ok <n> - <name>` from the TAP reporter, whichever the Node running it writes to a pipe, and `test.js` asks it of that Node through a mirror of it, `BAIL_PATTERN` — with exit 1, so a mutant the suite kills costs the time to its first failure rather than the whole run; a run no line matches ends as the suite ended, and a run a signal took ends by that signal. node:test writes a test's line only once the event loop runs again, so a failure followed by tests that hold the loop (a `spawnSync`, a synchronous loop) reaches `bail.mjs` with the first test after them that waits on something. A signal that reaches the run (Ctrl-C, the sweep's timeout) is passed to the suite's process group, and once the suite itself has ended what is left of the group is killed and the run no longer waits on its output, so something the suite started that outlives the signal and holds the output does not keep the sweep waiting. It stops the suite's whole process group, which runs none of the suite's own clean-up, and refuses to run on Windows, which has no process groups. A run it stops as failed is one the suite would have ended with a failure too, except where the suite, after printing that line, would have exited 0 or never ended: the sweep counts those as standing without it and as killed with it. `equivalents.md` names every mutant the suite lets through and what was measured about each, and `sweep.mjs --verify` — which `test.js` runs — asks whether each entry still names a site the code has. `sweep.mjs` is the same file in the sibling extensions; a change to it belongs in all three |
 
 ## Key design decisions
 
@@ -305,19 +305,20 @@ node test.js
 # MUTATE_LINES=<first>-<last> sweeps a region, MUTATE_COUNT=1 sizes a run
 # without making one, MUTATE_CONFIRM=<shell line> re-judges the survivors alone
 # against a second suite, and MUTATE_OPTIONAL=1 adds the optional-chaining rule.
+# bail.mjs ends each run at the suite's first failed test.
 MUTATE_CONFIRM="node test.js" node tools/mutation/sweep.mjs <worktree> content.js \
-  sh tools/mutation/fast-suite.sh
+  node tools/mutation/bail.mjs '^(✖|not ok) ' sh tools/mutation/fast-suite.sh
 
 # The same sweep in two worktrees at once, half of the mutants each
 MUTATE_SHARD=0/2 MUTATE_CONFIRM="node test.js" node tools/mutation/sweep.mjs <worktree-a> content.js \
-  sh tools/mutation/fast-suite.sh
+  node tools/mutation/bail.mjs '^(✖|not ok) ' sh tools/mutation/fast-suite.sh
 MUTATE_SHARD=1/2 MUTATE_CONFIRM="node test.js" node tools/mutation/sweep.mjs <worktree-b> content.js \
-  sh tools/mutation/fast-suite.sh
+  node tools/mutation/bail.mjs '^(✖|not ok) ' sh tools/mutation/fast-suite.sh
 
 # Every source, one at a time, into one report (MUTATE_SHARD passes through to
 # each sweep, so two of these in two worktrees split every file between them)
 MUTATE_CONFIRM="node test.js" sh tools/mutation/sweep-all.sh <worktree> <report> \
-  "sh tools/mutation/fast-suite.sh" utils.js content.js page-bridge.js
+  "node tools/mutation/bail.mjs '^(✖|not ok) ' sh tools/mutation/fast-suite.sh" utils.js content.js page-bridge.js
 
 # Ask whether equivalents.md still names sites the code has (no suite is run)
 node tools/mutation/sweep.mjs --verify
