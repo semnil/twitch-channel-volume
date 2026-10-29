@@ -3014,6 +3014,8 @@ function createOptionsHarness({
   // The read the failure path makes, held so a case can ask what the page is
   // doing while it is out. The load's own read is not held.
   holdReloadRead = false,
+  // That read failing, where the load's own read does not.
+  failReloadRead = false,
   // A mutation whose answer is held, for the same reason.
   holdMutation = '',
   // Keys the page carries that the locale does not declare.
@@ -3122,7 +3124,9 @@ function createOptionsHarness({
     if (holdReloadRead && area === synced && settingsReads > 1) {
       await new Promise((resolve) => { releaseReloadRead = resolve; });
     }
-    if (failStorage) throw new Error('storage unavailable');
+    if (failStorage || (failReloadRead && area === synced && settingsReads > 1)) {
+      throw new Error('storage unavailable');
+    }
     return readStoredKeys(area, keys);
   }
 
@@ -10188,6 +10192,32 @@ test('options puts a refused settings save back, and names why', async () => {
   assert.equal(named.length, 1, `the failure is named once (${harness.errors.length} logged)`);
   assert.equal(String(named[0]?.[1]?.message), 'settings-update-failed',
     'carrying the reason the worker gave');
+});
+
+// Where the read after a failed save fails too, the page still shows the
+// value nothing saved, and says to reload rather than that it was put back.
+test('options asks for a reload where a failed save could not read back what is saved', async () => {
+  const refuseMutation = { [u.SETTINGS_MUTATION_MESSAGE]: 'settings-update-failed' };
+  const errorLine = async (harness) => {
+    await flushTasks(8);
+    harness.el('targetLufs').value = '-24';
+    await harness.fire('targetLufs', 'change');
+    assert.equal(harness.el('settingsError').classList.contains('hidden'), false);
+    return harness.el('settingsError').textContent;
+  };
+
+  const unread = createOptionsHarness({ settings: { targetLufs: -18 }, refuseMutation, failReloadRead: true });
+  assert.equal(await errorLine(unread), unread.message('settingsLoadFailed'));
+  assert.equal(unread.el('targetLufs').value, '-24', 'the control is where the viewer left it');
+  assert.equal(unread.errors.filter((args) =>
+    String(args[0]).includes('failed to reload settings after save failure')).length, 1);
+  assert.equal(unread.errors.filter((args) =>
+    String(args[0]).includes('failed to save settings field')).length, 1);
+
+  // Control: a re-read that works puts the value back and says so.
+  const reread = createOptionsHarness({ settings: { targetLufs: -18 }, refuseMutation });
+  assert.equal(await errorLine(reread), reread.message('settingsSaveFailed'));
+  assert.equal(reread.el('targetLufs').value, '-18');
 });
 
 test('options draws back what is on file, not what the defaults would be', async () => {

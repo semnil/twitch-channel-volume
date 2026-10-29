@@ -561,7 +561,12 @@ sequenceDiagram
   options->>sw: patchSettings with the changed field
   alt rejected
     sw-->>options: ok false, reason
-    options->>options: reloadSettingsAfterFailure, settingsSaveFailed shown
+    options->>options: reloadSettingsAfterFailure
+    alt the settings were read again
+      options->>options: settingsSaveFailed shown
+    else the read failed as well
+      options->>options: settingsLoadFailed shown
+    end
   else written
     sw->>storage: sync.set autoLoudnessSettings
     par
@@ -597,7 +602,7 @@ Drawn from: `options.js` the listeners of `targetLufs`, `adGainDb`, the two defa
 - content, the popup and the options page take `autoLoudnessSettings` from the `sync` area alone. In local the key changes only when the move removes it, and that change carries no settings.
 - When that read is overtaken (by the read a channel write reaching `onChanged` starts, by an owner event or by a navigation), the listener reapplies once more after it returns, against the channel and the row as they stand then, and the gain that reapply applies is the one `saveAutoGain` carries. A reapply overtaken again is not made a third time.
 - The popup takes `displayUnit`, clears `sliderSynced` and reads `getState` again. Another open options page re-renders the settings.
-- Failure: the options page reads the stored settings again, shows `settingsSaveFailed` ("Could not save the setting. The saved value was restored.") and logs `[TCV] failed to save settings field`. In content, a failure of the read or of `saveAutoGain` is logged as `[TCV] failed to reapply or persist settings`.
+- Failure: the options page reads the stored settings again, shows `settingsSaveFailed` ("Could not save the setting. The saved value was restored.") and logs `[TCV] failed to save settings field`. Where that read fails as well, the controls stay as they were drawn, and the page shows `settingsLoadFailed` ("Could not load the saved settings. Please reload the page.") instead and also logs `[TCV] failed to reload settings after save failure`. In content, a failure of the read or of `saveAutoGain` is logged as `[TCV] failed to reapply or persist settings`.
 
 ### 11. Delete and clear all on the options page
 

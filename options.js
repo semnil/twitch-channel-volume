@@ -202,16 +202,20 @@
     if (!response?.ok) throw new Error(response?.reason || 'settings mutation failed');
   }
 
+  // The page says the saved value was put back, or, where the re-read failed
+  // as well, asks for a reload.
   async function reloadSettingsAfterFailure(error) {
     const revision = settingsRevision;
+    let errorKey = 'settingsSaveFailed';
     try {
       const settings = await readStoredSettings(chrome.storage, SETTINGS_KEY);
       if (revision === settingsRevision) renderSettings(settings || {});
       renderChannels(channelVolumes);
     } catch (reloadError) {
+      errorKey = 'settingsLoadFailed';
       console.error('[TCV] failed to reload settings after save failure', reloadError);
     }
-    showSettingsError(true);
+    showSettingsError(true, errorKey);
     console.error('[TCV] failed to save settings field', error);
   }
 
