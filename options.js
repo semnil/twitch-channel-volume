@@ -54,6 +54,11 @@
     });
   }
 
+  // Whether a key or the pointer is held on a settings slider, by field, set by
+  // holdSettingsSlider. renderSettings takes the setting all the same and
+  // leaves such a slider and its label on the value the gesture moved to.
+  const settingsSliderHeld = {};
+
   function renderSettings(settings) {
     currentSettings = {
       targetLufs: settings.targetLufs ?? DEFAULT_TARGET_LUFS,
@@ -65,12 +70,16 @@
       autoApplyLoudnessVodDefault:
         settings.autoApplyLoudnessVodDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS
     };
-    const target = currentSettings.targetLufs;
-    $('targetLufs').value = String(target);
-    $('targetLufsValue').textContent = target + ' LUFS';
-    const adDb = currentSettings.adGainDb;
-    $('adGainDb').value = String(adDb);
-    $('adGainValue').textContent = (adDb > 0 ? '+' : '') + adDb + ' dB';
+    if (!settingsSliderHeld.targetLufs?.()) {
+      const target = currentSettings.targetLufs;
+      $('targetLufs').value = String(target);
+      $('targetLufsValue').textContent = target + ' LUFS';
+    }
+    if (!settingsSliderHeld.adGainDb?.()) {
+      const adDb = currentSettings.adGainDb;
+      $('adGainDb').value = String(adDb);
+      $('adGainValue').textContent = (adDb > 0 ? '+' : '') + adDb + ' dB';
+    }
     displayUnit = currentSettings.displayUnit;
     setActiveUnit(displayUnit);
     for (const kind of ['live', 'vod']) {
@@ -259,17 +268,26 @@
   // no part. A key or the pointer held on the slider when focus leaves the slider or
   // the page ends the gesture there; a key's value is written then, and a
   // drag's by the change Chrome fires ahead of the blur. After that the
-  // slider's input does nothing and its change puts the thumb back to the value
-  // the slider held then, until the pointer or a key that moves the value is
-  // pressed on it again.
+  // slider's input does nothing and its change puts the thumb back to the
+  // setting the page holds (the value written, or the one a failed write put
+  // back), until the pointer or a key that moves the value is pressed on it
+  // again. A settings change that arrives during a gesture is
+  // left off the slider (settingsSliderHeld); a gesture that writes nothing at
+  // its end (a key that moved nothing, a drag let go of where it began, a press
+  // a blur ended) draws the setting there.
   function holdSettingsSlider(field, drawLabel) {
     const slider = $(field);
     const keys = createSliderKeys();
     let keyHeld = false;
     let keyMoved = false;
     let pointerHeld = false;
+    let pointerStart = null;
     let gestureEnded = false;
-    let valueAtEnd = '';
+    settingsSliderHeld[field] = () => keyHeld || pointerHeld;
+    const drawSetting = () => {
+      slider.value = String(currentSettings[field]);
+      drawLabel(currentSettings[field]);
+    };
     // Whether a key was held.
     const endKeyHold = () => {
       if (!keyHeld) return false;
@@ -277,19 +295,27 @@
       const moved = keyMoved;
       keyMoved = false;
       if (moved) void updateSettings({ [field]: Number(slider.value) });
+      else drawSetting();
       return true;
     };
     const endGestureOnBlur = () => {
       keys.clear();
       if (!endKeyHold() && !pointerHeld) return;
+      drawSetting();
+      pointerHeld = false;
       gestureEnded = true;
-      valueAtEnd = slider.value;
     };
     slider.addEventListener('pointerdown', () => {
       pointerHeld = true;
+      pointerStart = Number(slider.value);
       gestureEnded = false;
     });
-    const releasePointer = () => { pointerHeld = false; };
+    // A release on the value the press began on fires no change after it, and
+    // draws the setting, which a settings change during the press may have moved.
+    const releasePointer = () => {
+      if (pointerHeld && Number(slider.value) === pointerStart) drawSetting();
+      pointerHeld = false;
+    };
     slider.addEventListener('pointerup', releasePointer);
     slider.addEventListener('pointercancel', releasePointer);
     slider.addEventListener('keydown', (e) => {
@@ -309,7 +335,7 @@
     });
     slider.addEventListener('change', (e) => {
       if (gestureEnded) {
-        e.target.value = valueAtEnd;
+        drawSetting();
         return;
       }
       if (keyHeld) return;

@@ -8185,6 +8185,45 @@ test('a drag the popup loses focus in is saved at the blur, and nothing it does 
   assert.deepEqual(gainsSent(), [0.45, 1.65, 2, 2.1]);
 });
 
+// A Tab pressed in the middle of a drag takes focus off the slider: Chrome
+// fires a change with the value the slider holds, then the slider's blur, and
+// the slider goes on following the pointer until it is let go.
+test('a drag the slider loses focus in is saved at the blur, and nothing it does after is sent', async () => {
+  const popup = createPopupHarness();
+  await flushTasks(8);
+  const gainsSent = () => popup.sent
+    .filter((request) => request.cmd === 'setGain')
+    .map((request) => request.gain);
+  const move = async (percent) => {
+    popup.el('manualSlider').value = String(percent);
+    await popup.fire('manualSlider', 'input');
+  };
+
+  await popup.fire('manualSlider', 'pointerdown');
+  await move(170);
+  await move(225);
+  await popup.fire('manualSlider', 'keydown', { key: 'Tab', repeat: false });
+  await popup.fire('manualSlider', 'change');
+  await popup.fire('manualSlider', 'blur');
+  await popup.fire('manualSlider', 'keyup', { key: 'Tab', repeat: false });
+  assert.deepEqual(gainsSent(), [2.25], 'the change ahead of the blur');
+
+  for (const percent of [325, 375, 430]) await move(percent);
+  await popup.fire('manualSlider', 'pointerup');
+  await popup.fire('manualSlider', 'change');
+  assert.deepEqual(gainsSent(), [2.25], 'the rest of the drag and its release');
+  assert.equal(popup.el('manualValue').textContent, '225%', 'the label stays where the save left it');
+  assert.equal(popup.el('manualSlider').value, '225', 'and the release puts the thumb back there');
+
+  // A blur of the slider with nothing pressed ends nothing.
+  await popup.fire('manualSlider', 'blur');
+  await popup.fire('manualSlider', 'pointerdown');
+  await move(240);
+  await popup.fire('manualSlider', 'pointerup');
+  await popup.fire('manualSlider', 'change');
+  assert.deepEqual(gainsSent(), [2.25, 2.4], 'a blur with nothing pressed ends nothing');
+});
+
 test('a drag the popup lost focus in writes nothing to the channel the tab moves to', async () => {
   const content = createContentHarness({ href: 'https://www.twitch.tv/streamer_a' });
   await flushTasks();
@@ -8730,6 +8769,70 @@ test('options writes nothing for a Tab on a settings slider with no drag, and wh
     await harness.fire(field, 'pointerup');
     await harness.fire(field, 'change');
     assert.deepEqual(settingsWrites(harness, field), [-20], field);
+  }
+});
+
+// The change notification of one write can land while the next press is
+// held, and Chrome sends a drag's pointerup ahead of its change.
+test('options leaves a held settings slider to its gesture when a settings change arrives', async () => {
+  for (const { field, label, drawn } of SETTINGS_SLIDERS) {
+    const harness = createOptionsHarness();
+    await flushTasks(8);
+    const shown = () => `${harness.el(field).value} / ${harness.el(label).textContent}`;
+    const notify = async (value) => {
+      harness.fireStorageChanged({ [u.SETTINGS_KEY]: { newValue: { targetLufs: -18, adGainDb: -6, [field]: value } } }, 'sync');
+      await flushTasks(8);
+    };
+    await harness.fire(field, 'keydown', sliderKey('ArrowRight'));
+    await moveSettingsSlider(harness, field, -9);
+    await harness.fire(field, 'change');
+    await harness.fire(field, 'keyup', sliderKey('ArrowRight'));
+    await harness.fire(field, 'keydown', sliderKey('ArrowRight'));
+    await moveSettingsSlider(harness, field, -8);
+    await harness.fire(field, 'change');
+    await notify(-9);
+    assert.equal(shown(), `-8 / ${drawn(-8)}`, `${field}: a notification during a hold leaves the slider where it was moved`);
+    await harness.fire(field, 'keyup', sliderKey('ArrowRight'));
+    assert.deepEqual(settingsWrites(harness, field), [-9, -8], `${field}: and the release writes the value it moved to`);
+
+    await harness.fire(field, 'pointerdown');
+    await moveSettingsSlider(harness, field, -7);
+    await notify(-8);
+    assert.equal(shown(), `-7 / ${drawn(-7)}`, `${field}: a notification during a drag leaves the slider under the pointer`);
+    await harness.fire(field, 'pointerup');
+    await harness.fire(field, 'change');
+    assert.deepEqual(settingsWrites(harness, field), [-9, -8, -7], `${field}: a drag whose pointerup comes ahead of its change writes the drag`);
+
+    await harness.fire(field, 'pointerdown');
+    await notify(-14);
+    await harness.fire(field, 'pointerup');
+    assert.equal(shown(), `-14 / ${drawn(-14)}`, `${field}: a pointer let go of with nothing moved draws the setting that arrived`);
+    await harness.fire(field, 'keydown', sliderKey('ArrowRight'));
+    await notify(-15);
+    await harness.fire(field, 'keyup', sliderKey('ArrowRight'));
+    assert.equal(shown(), `-15 / ${drawn(-15)}`, `${field}: and so does a key let go of with nothing moved`);
+    await harness.fire(field, 'pointerdown');
+    await notify(-16);
+    await harness.blurWindow();
+    assert.equal(shown(), `-16 / ${drawn(-16)}`, `${field}: a press that moved nothing draws the setting at the blur that ends it`);
+    await harness.fire(field, 'pointerup');
+    assert.equal(shown(), `-16 / ${drawn(-16)}`, `${field}: and a press that moved nothing and ends at a blur`);
+    // A drag that comes back to where it began fires no change at its release,
+    // let go of or ended by a blur.
+    await harness.fire(field, 'pointerdown');
+    await moveSettingsSlider(harness, field, -12);
+    await notify(-17);
+    await moveSettingsSlider(harness, field, -16);
+    await harness.fire(field, 'pointerup');
+    assert.equal(shown(), `-17 / ${drawn(-17)}`, `${field}: a drag let go of where it began draws the setting that arrived`);
+    await harness.fire(field, 'pointerdown');
+    await moveSettingsSlider(harness, field, -13);
+    await notify(-18);
+    await moveSettingsSlider(harness, field, -17);
+    await harness.blurWindow();
+    await harness.fire(field, 'pointerup');
+    assert.equal(shown(), `-18 / ${drawn(-18)}`, `${field}: and so does one a blur ends where it began`);
+    assert.deepEqual(settingsWrites(harness, field), [-9, -8, -7], `${field}: none of which writes`);
   }
 });
 
@@ -10828,6 +10931,37 @@ test('settings mutations take each setting at a value it can hold', () => {
   assert.throws(() => settingsStore.applySettingsMutation({}, {
     operation: 'patchSettings', patch: { showGainOverlay: 'off' }
   }), /invalid settings value/);
+});
+
+test('options puts a drag a blur ended back where its save is refused, and keeps it there', async () => {
+  // A Tab in the middle of a drag: Chrome fires the change ahead of the
+  // slider's blur in one task, so the read the refusal makes lands after the
+  // blur; the pointer is let go of after it, with the change of the release.
+  for (const { field, label, drawn } of SETTINGS_SLIDERS) {
+    const harness = createOptionsHarness({
+      settings: { targetLufs: -18, adGainDb: -6 },
+      refuseMutation: { [u.SETTINGS_MUTATION_MESSAGE]: 'settings-update-failed' },
+      holdReloadRead: true
+    });
+    await flushTasks(8);
+    const stored = field === 'targetLufs' ? -18 : -6;
+    const shown = () => `${harness.el(field).value} / ${harness.el(label).textContent}`;
+    await harness.fire(field, 'pointerdown');
+    await moveSettingsSlider(harness, field, -14);
+    await harness.fire(field, 'keydown', sliderKey('Tab'));
+    await harness.fire(field, 'change');
+    await harness.fire(field, 'blur');
+    await harness.releaseReloadRead();
+    await flushTasks(8);
+    assert.equal(shown(), `${stored} / ${drawn(stored)}`, `${field}: the refused save puts the slider back to what is on file`);
+    await harness.fire(field, 'keyup', sliderKey('Tab'));
+    await moveSettingsSlider(harness, field, -12);
+    await harness.fire(field, 'pointerup');
+    harness.el(field).value = '-12';
+    await harness.fire(field, 'change');
+    await flushTasks(8);
+    assert.equal(shown(), `${stored} / ${drawn(stored)}`, `${field}: and the release after the blur leaves it there`);
+  }
 });
 
 test('options puts a refused settings save back, and names why', async () => {

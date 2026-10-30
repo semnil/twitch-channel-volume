@@ -444,7 +444,8 @@
   // one before it is over. Taking the copy here rather than on every movement
   // keeps a drag on the state it began on.
   //
-  // A drag the popup loses focus in ends there. Chrome commits the value the
+  // A drag the slider or the popup loses focus in ends there, a Tab that takes
+  // focus off the slider among them. Chrome commits the value the
   // slider holds with a change ahead of the blur, and what the drag does after
   // it, the change at the release included, is not sent: such a change puts
   // the thumb back to the value the slider held at the blur. The next press of
@@ -514,14 +515,12 @@
   $('manualSlider').addEventListener('keyup', (event) => {
     if (sliderKeys.release(event)) endSliderKeyHold();
   });
-  $('manualSlider').addEventListener('blur', () => {
-    sliderKeys.clear();
-    if (endSliderKeyHold()) endSliderGesture();
-  });
-  window.addEventListener('blur', () => {
+  const endSliderGestureOnBlur = () => {
     sliderKeys.clear();
     if (endSliderKeyHold() || sliderPointerHeld) endSliderGesture();
-  });
+  };
+  $('manualSlider').addEventListener('blur', endSliderGestureOnBlur);
+  window.addEventListener('blur', endSliderGestureOnBlur);
 
   $('manualSlider').addEventListener('input', (e) => {
     if (sliderGestureEnded) return;
