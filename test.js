@@ -8772,6 +8772,55 @@ test('options writes nothing for a Tab on a settings slider with no drag, and wh
   }
 });
 
+// The change notification of one write can land while the next press is
+// held, and Chrome sends a drag's pointerup ahead of its change.
+test('options leaves a held settings slider to its gesture when a settings change arrives', async () => {
+  for (const { field, label, drawn } of SETTINGS_SLIDERS) {
+    const harness = createOptionsHarness();
+    await flushTasks(8);
+    const shown = () => `${harness.el(field).value} / ${harness.el(label).textContent}`;
+    const notify = async (value) => {
+      harness.fireStorageChanged({ [u.SETTINGS_KEY]: { newValue: { targetLufs: -18, adGainDb: -6, [field]: value } } }, 'sync');
+      await flushTasks(8);
+    };
+    await harness.fire(field, 'keydown', sliderKey('ArrowRight'));
+    await moveSettingsSlider(harness, field, -9);
+    await harness.fire(field, 'change');
+    await harness.fire(field, 'keyup', sliderKey('ArrowRight'));
+    await harness.fire(field, 'keydown', sliderKey('ArrowRight'));
+    await moveSettingsSlider(harness, field, -8);
+    await harness.fire(field, 'change');
+    await notify(-9);
+    assert.equal(shown(), `-8 / ${drawn(-8)}`, `${field}: a notification during a hold leaves the slider where it was moved`);
+    await harness.fire(field, 'keyup', sliderKey('ArrowRight'));
+    assert.deepEqual(settingsWrites(harness, field), [-9, -8], `${field}: and the release writes the value it moved to`);
+
+    await harness.fire(field, 'pointerdown');
+    await moveSettingsSlider(harness, field, -7);
+    await notify(-8);
+    assert.equal(shown(), `-7 / ${drawn(-7)}`, `${field}: a notification during a drag leaves the slider under the pointer`);
+    await harness.fire(field, 'pointerup');
+    await harness.fire(field, 'change');
+    assert.deepEqual(settingsWrites(harness, field), [-9, -8, -7], `${field}: a drag whose pointerup comes ahead of its change writes the drag`);
+
+    await harness.fire(field, 'pointerdown');
+    await notify(-14);
+    await harness.fire(field, 'pointerup');
+    assert.equal(shown(), `-14 / ${drawn(-14)}`, `${field}: a pointer let go of with nothing moved draws the setting that arrived`);
+    await harness.fire(field, 'keydown', sliderKey('ArrowRight'));
+    await notify(-15);
+    await harness.fire(field, 'keyup', sliderKey('ArrowRight'));
+    assert.equal(shown(), `-15 / ${drawn(-15)}`, `${field}: and so does a key let go of with nothing moved`);
+    await harness.fire(field, 'pointerdown');
+    await notify(-16);
+    await harness.blurWindow();
+    assert.equal(shown(), `-16 / ${drawn(-16)}`, `${field}: a press that moved nothing draws the setting at the blur that ends it`);
+    await harness.fire(field, 'pointerup');
+    assert.equal(shown(), `-16 / ${drawn(-16)}`, `${field}: and a press that moved nothing and ends at a blur`);
+    assert.deepEqual(settingsWrites(harness, field), [-9, -8, -7], `${field}: none of which writes`);
+  }
+});
+
 // An Auto switch answers with the gain the page settled on, which is not the
 // gain it saved: switching off saves nothing and puts the manual gain back.
 // The slider carries that answer, and with Auto off the poll that follows will
