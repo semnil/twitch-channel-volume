@@ -43,6 +43,20 @@ jobs:
 
       - name: Run Unit Tests ✅
         run: node test.js
+        env:
+          NODE_V8_COVERAGE: ${{ runner.temp }}/v8-coverage
+
+      - name: Make The Coverage Report 📊
+        run: node tools/coverage/v8-to-lcov.mjs "$RUNNER_TEMP/v8-coverage" "$RUNNER_TEMP/coverage.lcov" $(python3 -B pack.py --list | grep '\.js$')
+
+      - name: Upload Coverage ☂️
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        timeout-minutes: 5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ${{ runner.temp }}/coverage.lcov
+          disable_search: true
+          fail_ci_if_error: true
 
       - name: Check Screenshots 📸
         id: screenshots
