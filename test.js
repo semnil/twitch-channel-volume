@@ -8817,6 +8817,21 @@ test('options leaves a held settings slider to its gesture when a settings chang
     assert.equal(shown(), `-16 / ${drawn(-16)}`, `${field}: a press that moved nothing draws the setting at the blur that ends it`);
     await harness.fire(field, 'pointerup');
     assert.equal(shown(), `-16 / ${drawn(-16)}`, `${field}: and a press that moved nothing and ends at a blur`);
+    // A drag that comes back to where it began fires no change at its release,
+    // let go of or ended by a blur.
+    await harness.fire(field, 'pointerdown');
+    await moveSettingsSlider(harness, field, -12);
+    await notify(-17);
+    await moveSettingsSlider(harness, field, -16);
+    await harness.fire(field, 'pointerup');
+    assert.equal(shown(), `-17 / ${drawn(-17)}`, `${field}: a drag let go of where it began draws the setting that arrived`);
+    await harness.fire(field, 'pointerdown');
+    await moveSettingsSlider(harness, field, -13);
+    await notify(-18);
+    await moveSettingsSlider(harness, field, -17);
+    await harness.blurWindow();
+    await harness.fire(field, 'pointerup');
+    assert.equal(shown(), `-18 / ${drawn(-18)}`, `${field}: and so does one a blur ends where it began`);
     assert.deepEqual(settingsWrites(harness, field), [-9, -8, -7], `${field}: none of which writes`);
   }
 });

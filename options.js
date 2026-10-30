@@ -272,15 +272,16 @@
   // setting the page holds (the value written, or the one a failed write put
   // back), until the pointer or a key that moves the value is pressed on it
   // again. A settings change that arrives during a gesture is
-  // left off the slider (settingsSliderHeld); a gesture that moved nothing
-  // draws the setting at its end and writes nothing.
+  // left off the slider (settingsSliderHeld); a gesture that writes nothing at
+  // its end (a key that moved nothing, a drag let go of where it began, a press
+  // a blur ended) draws the setting there.
   function holdSettingsSlider(field, drawLabel) {
     const slider = $(field);
     const keys = createSliderKeys();
     let keyHeld = false;
     let keyMoved = false;
     let pointerHeld = false;
-    let pointerMoved = false;
+    let pointerStart = null;
     let gestureEnded = false;
     settingsSliderHeld[field] = () => keyHeld || pointerHeld;
     const drawSetting = () => {
@@ -300,19 +301,19 @@
     const endGestureOnBlur = () => {
       keys.clear();
       if (!endKeyHold() && !pointerHeld) return;
-      if (!pointerMoved) drawSetting();
+      drawSetting();
       pointerHeld = false;
       gestureEnded = true;
     };
     slider.addEventListener('pointerdown', () => {
       pointerHeld = true;
-      pointerMoved = false;
+      pointerStart = Number(slider.value);
       gestureEnded = false;
     });
-    // A release with no change after it (the pointer moved nothing) draws the
-    // setting, which a settings change during the press may have moved.
+    // A release on the value the press began on fires no change after it, and
+    // draws the setting, which a settings change during the press may have moved.
     const releasePointer = () => {
-      if (pointerHeld && !pointerMoved) drawSetting();
+      if (pointerHeld && Number(slider.value) === pointerStart) drawSetting();
       pointerHeld = false;
     };
     slider.addEventListener('pointerup', releasePointer);
@@ -330,7 +331,6 @@
     slider.addEventListener('input', (e) => {
       if (gestureEnded) return;
       if (keyHeld) keyMoved = true;
-      if (pointerHeld) pointerMoved = true;
       drawLabel(Number(e.target.value));
     });
     slider.addEventListener('change', (e) => {
