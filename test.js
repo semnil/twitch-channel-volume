@@ -5588,6 +5588,53 @@ test('page bridge says the player is playing while it is neither paused nor mute
   assert.deepEqual(playing(), [true], 'at a gain of 0');
 });
 
+// Only a tab whose player is playing saves the Auto gain a settings change
+// gives, as only it saves the measurement; a paused or muted tab on the same
+// channel applies the gain and writes nothing to the row.
+test('content saves the Auto gain a settings change gives only from a tab whose player is playing', async () => {
+  for (const playing of [false, true]) {
+    const harness = createMeasuringHarness({ settings: { autoApplyLoudnessLiveDefault: true } });
+    await claimChannel(harness);
+    await measureOn(harness, -24);
+    await harness.dispatchMessage({
+      type: '__twitch_channel_volume__',
+      event: 'lufs', playing, momentary: -30, shortTerm: -30, integrated: -30
+    });
+    await flushTasks();
+    const row = () => harness.stored[u.CHANNEL_VOLUMES_KEY]['123456789'];
+    // Every channel write the harness applies replaces the rows it keeps.
+    let rows = harness.stored[u.CHANNEL_VOLUMES_KEY];
+    let writeCount = 0;
+    Object.defineProperty(harness.stored, u.CHANNEL_VOLUMES_KEY, {
+      configurable: true,
+      enumerable: true,
+      get: () => rows,
+      set: (next) => { writeCount += 1; rows = next; }
+    });
+    const writes = () => writeCount;
+    const before = { autoGain: row()?.autoGainLive, writes: writes() };
+    assert.ok(Number.isFinite(before.autoGain), 'the measurement was saved while playing');
+
+    harness.commands.length = 0;
+    harness.synced[u.SETTINGS_KEY] = { ...harness.synced[u.SETTINGS_KEY], targetLufs: -20 };
+    await harness.dispatchStorage({
+      [u.SETTINGS_KEY]: { newValue: structuredClone(harness.synced[u.SETTINGS_KEY]) }
+    }, 'sync');
+    await flushTasks(8);
+
+    assert.ok(harness.commands.some((command) => command.cmd === 'setGain'),
+      `the gain is resolved again (playing ${playing})`);
+    if (playing) {
+      assert.equal(writes(), before.writes + 1, 'a playing tab writes once');
+      assert.ok(Math.abs(row().autoGainLive - u.calcGain(-30, -20)) < 1e-12,
+        `the row holds ${row().autoGainLive}`);
+    } else {
+      assert.equal(writes(), before.writes, 'a tab not playing writes nothing');
+      assert.equal(row().autoGainLive, before.autoGain);
+    }
+  }
+});
+
 // A settings change that turns an Auto default on, whose read of the row comes
 // back overtaken before the read that overtook it: Auto is on for the channel
 // only once a read has taken the change, and the Auto gain is owed all the same.

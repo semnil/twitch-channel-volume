@@ -32,6 +32,10 @@
   }
   let currentAutoApplyLoudness = false;
   let lastLufs;
+  // Whether the player was playing — neither paused nor muted — at the lufs
+  // notification lastLufs was taken from. Only a playing tab saves the
+  // channel's level or the Auto gain a settings change gives.
+  let lastLufsPlaying;
   // How many gating windows lastLufs.integrated stands on. Saved with it so the
   // next session continues that measurement instead of restarting it.
   let integratedWindows;
@@ -564,13 +568,14 @@
         };
         integratedWindows = Number.isSafeInteger(data.integratedWindows) &&
           data.integratedWindows > 0 ? data.integratedWindows : 0;
+        lastLufsPlaying = data.playing === true;
         if (Number.isFinite(lastLufs.integrated) && currentChannel.id) {
           if (currentAutoApplyLoudness) {
             applyAutoGain();
           }
           // Only a tab whose player is playing saves the channel's level, so
           // a paused or muted tab on the same channel does not write over it.
-          if (data.playing === true) throttledSaveIntegrated();
+          if (lastLufsPlaying) throttledSaveIntegrated();
         }
         break;
       case 'owner':
@@ -773,7 +778,10 @@
         // row as they stand then.
         .then((applied) => applied || reapplyForCurrentChannel())
         .then((applied) => {
-          if (!applied || !currentAutoApplyLoudness || !Number.isFinite(lastLufs.integrated)) {
+          // A tab whose player is not playing applies the gain and saves
+          // nothing, as it saves no measurement.
+          if (!applied || !currentAutoApplyLoudness || !lastLufsPlaying ||
+              !Number.isFinite(lastLufs.integrated)) {
             return;
           }
           return saveChannelAutoGain(
