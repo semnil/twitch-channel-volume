@@ -1116,11 +1116,13 @@ test('a release is built from a commit that passed what CI runs', () => {
     return next === -1 ? rest : rest.slice(0, next + 1);
   };
   // A step run only where something already failed is a way of looking at the
-  // failure, not a check the tree has to pass.
+  // failure, not a check the tree has to pass; nor is the coverage report, which
+  // turns what the tests ran into what CI uploads.
   const checksOf = (job) => job.split(/\n {6}- /).slice(1)
     .filter((step) => !/^\s*if: failure\(\)/m.test(step))
     .map((step) => step.match(/^\s*run: (.+)$/m)).filter(Boolean)
-    .map((match) => match[1].trim());
+    .map((match) => match[1].trim())
+    .filter((run) => !run.startsWith('node tools/coverage/'));
   const ci = checksOf(jobIn('ci.yaml', 'test'));
   const build = jobIn('release.yaml', 'build');
   // The step, not the line inside it: the pack runs in a script now, so a
@@ -1133,6 +1135,14 @@ test('a release is built from a commit that passed what CI runs', () => {
     const at = build.indexOf(`run: ${check}`);
     assert.ok(at > -1, `the release build runs what CI runs: ${check}`);
     assert.ok(at < packs, `the release build runs ${check} before it packs`);
+  }
+  // A failed upload ends the job, so every check runs ahead of it, and an upload
+  // that fails never hides whether the tree passes the checks.
+  const testJob = jobIn('ci.yaml', 'test');
+  const uploads = testJob.indexOf('uses: codecov/codecov-action@');
+  assert.ok(uploads > -1, 'the CI job uploads coverage');
+  for (const check of ci) {
+    assert.ok(testJob.indexOf(`run: ${check}`) < uploads, `CI runs ${check} before it uploads coverage`);
   }
 });
 
@@ -19954,4 +19964,61 @@ test('the mutants the suite lets through are still the ones named', (t) => {
   );
   assert.equal(run.status, 0, run.stderr.trim() || run.stdout.trim());
   assert.match(run.stdout, /every one of them still a site the code has/);
+});
+
+// ── The coverage report CI uploads ─────────────────────────────────────────
+
+test('v8-to-lcov counts what the source ran, and no other script', () => {
+  // tools/coverage/v8-to-lcov.mjs makes the lcov report from the coverage V8
+  // writes. A box of its own runs a source under NODE_V8_COVERAGE beside two
+  // scripts the report does not count — a copy of the source at another path,
+  // and an edited copy under its name — each of which calls the function the
+  // source itself never calls.
+  const box = fs.mkdtempSync(path.join(os.tmpdir(), 'tcv-coverage-'));
+  const write = (name, text) => fs.writeFileSync(path.join(box, name), text);
+  const source = '// a comment\nfunction pick(a, b) {\n  if (!a) return b;\n  return a;\n}\n'
+    + 'function never() {\n  return 0;\n}\npick(1, 2);\n';
+  write('src.js', source);
+  write('unused.js', 'const x = 1;\n\n// none\nx;\n');
+  fs.mkdirSync(path.join(box, 'other'));
+  write('other/src.js', source.replace('pick(1, 2);', 'never(   );'));
+  write('run.cjs', [
+    "const text = require('fs').readFileSync('src.js', 'utf8');",
+    "require('vm').runInNewContext(text, {}, { filename: 'src.js' });",
+    "require('vm').runInNewContext(text + 'never();\\n', {}, { filename: 'src.js' });",
+    "require('./other/src.js');"
+  ].join('\n'));
+  const v8Dir = path.join(box, 'v8');
+  try {
+    const ran = spawnSync('node', ['run.cjs'],
+      { cwd: box, encoding: 'utf8', env: { ...process.env, NODE_V8_COVERAGE: v8Dir } });
+    assert.equal(ran.status, 0, ran.stderr);
+    const converted = spawnSync('node',
+      [path.join(__dirname, 'tools/coverage/v8-to-lcov.mjs'), v8Dir, 'out.info', 'src.js', 'unused.js'],
+      { cwd: box, encoding: 'utf8' });
+    assert.equal(converted.status, 0, converted.stderr);
+
+    const files = {};
+    let at = null;
+    for (const row of fs.readFileSync(path.join(box, 'out.info'), 'utf8').split('\n')) {
+      if (row.startsWith('SF:')) files[at = row.slice(3)] = { lines: [], run: [], partly: [] };
+      else if (row.startsWith('DA:')) {
+        const [line, count] = row.slice(3).split(',').map(Number);
+        files[at].lines.push(line);
+        if (count > 0) files[at].run.push(line);
+      } else if (row.startsWith('BRDA:') && row.endsWith(',-')) {
+        files[at].partly.push(Number(row.slice(5).split(',')[0]));
+      }
+    }
+    assert.deepEqual(files['src.js'].lines, [2, 3, 4, 5, 6, 7, 8, 9],
+      'every line of code is reported and the comment is not');
+    assert.deepEqual(files['src.js'].run, [2, 3, 4, 5, 9],
+      'what the source ran is counted, and the copies that call never() are not');
+    assert.deepEqual(files['src.js'].partly, [3],
+      'a line part of which did not run is reported as partly run');
+    assert.deepEqual(files['unused.js'], { lines: [1, 4], run: [], partly: [] },
+      'a source nothing loaded is reported with every line unrun');
+  } finally {
+    fs.rmSync(box, { recursive: true, force: true });
+  }
 });
