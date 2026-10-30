@@ -18,7 +18,8 @@
 // what is left of its group is killed, its output is waited on no longer, and
 // this process ends by the same signal, whatever the suite did with it: a run
 // a signal took is not a verdict, and the sweep reading it has to see the
-// signal rather than an exit status.
+// signal rather than an exit status. A suite still running 5 s after the
+// signal was passed to it is killed with the rest of its group.
 //
 // What the suite prints is passed through as it was printed, up to the stop,
 // and to a reader that is still there. A suite stopped this way runs none of
@@ -51,6 +52,10 @@ let bailed = false;
 let stopping = null;
 let ended = false;
 const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+// How long a suite a signal was passed to has to end before its group is
+// killed.
+const GRACE_MS = 5000;
+let grace = null;
 
 function stopGroup(signal) {
   try { process.kill(-child.pid, signal); } catch (err) { if (err.code !== 'ESRCH') throw err; }
@@ -64,12 +69,16 @@ for (const signal of SIGNALS) {
   process.on(signal, () => {
     stopping = stopping || signal;
     if (ended) letGo();
-    else if (child.pid) stopGroup(signal);
+    else if (child.pid) {
+      stopGroup(signal);
+      grace = grace || setTimeout(letGo, GRACE_MS);
+    }
     console.error(`bail.mjs: ${signal} passed on to the suite`);
   });
 }
 child.on('exit', () => {
   ended = true;
+  clearTimeout(grace);
   if (stopping) letGo();
 });
 // What is written for a reader that has gone away is lost, and the run goes on

@@ -32,8 +32,8 @@ jobs:
         with:
           python-version: '3.12'
 
-      # Before the tests: the ones that hand the generator trees it has to turn
-      # down skip themselves where it cannot draw, and a skip proves nothing.
+      # Before the tests: the ones that need Pillow skip themselves where it is
+      # missing, and a skip holds nothing.
       - name: Install Pillow 🖼️
         run: pip install pillow==12.2.0
         timeout-minutes: 5
@@ -41,13 +41,29 @@ jobs:
       - name: Check Python Syntax 🐍
         run: python3 -B -c "import ast,pathlib; [ast.parse(p.read_text()) for p in pathlib.Path('.').glob('*.py')]"
 
+      - name: Check The Shared Files 🔗
+        timeout-minutes: 5
+        run: bash tools/check-shared.sh
+
       - name: Run Unit Tests ✅
         run: node test.js
         env:
           NODE_V8_COVERAGE: ${{ runner.temp }}/v8-coverage
 
+      # The steps below run in the extensions that carry the file they run.
+      - name: Run Navigation Tests ✅
+        if: hashFiles('test-navigation.js') != ''
+        run: node test-navigation.js
+        env:
+          NODE_V8_COVERAGE: ${{ runner.temp }}/v8-coverage
+
+      - name: Run Screenshot Path Tests ✅
+        if: hashFiles('test-screenshots.py') != ''
+        run: python3 test-screenshots.py
+
       - name: Check Screenshots 📸
         id: screenshots
+        if: hashFiles('gen_screenshots.py') != ''
         timeout-minutes: 5
         run: python3 gen_screenshots.py --check
 
@@ -68,6 +84,8 @@ jobs:
       - name: Make The Coverage Report 📊
         run: node tools/coverage/v8-to-lcov.mjs "$RUNNER_TEMP/v8-coverage" "$RUNNER_TEMP/coverage.lcov" $(python3 -B pack.py --list | grep '\.js$')
 
+      # A public repository uploads without a token; a private one holds it as
+      # the CODECOV_TOKEN secret. An unset secret reads as an empty token.
       - name: Upload Coverage ☂️
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         timeout-minutes: 5
@@ -75,3 +93,5 @@ jobs:
           files: ${{ runner.temp }}/coverage.lcov
           disable_search: true
           fail_ci_if_error: true
+          token: ${{ secrets.CODECOV_TOKEN }}
+

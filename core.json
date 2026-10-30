@@ -1,0 +1,25 @@
+{
+  "core": {
+    "groups": [
+      "base",
+      "release",
+      "auto-merge",
+      "public"
+    ],
+    "commit": "a4402a64a44a7256362d1a94a2070eeb9905c07d"
+  },
+  "package": "twitch-channel-volume",
+  "icon": {
+    "background": [
+      24,
+      24,
+      27
+    ],
+    "accent": [
+      145,
+      70,
+      255
+    ],
+    "letter": "T"
+  }
+}
