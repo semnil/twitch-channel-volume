@@ -2550,11 +2550,15 @@ function createContentHarness({
   const documentListeners = {};
   const storageListeners = [];
   const commands = [];
+  // Every channel mutation the script sends, answered or not.
+  const mutations = [];
   const warnings = [];
   const infos = [];
   let runtimeMessageListener;
   let runtimeId = runtimeInvalid ? '' : 'test-extension';
   const deferredTimers = [];
+  const clearedTimers = new Set();
+  let lastTimerId = 0;
   let failNextStorageGet = failInitialStorageGet;
   let initialStorageGetDeferred = deferInitialStorageGet;
   let channelMutationDeferred = !!deferChannelMutationOperation;
@@ -2726,6 +2730,7 @@ function createContentHarness({
         if (runtimeThrows || !runtimeId) throw new Error('Extension context invalidated.');
         const mutation = message?.mutation;
         if (mutation) {
+          mutations.push(structuredClone(mutation));
           if (channelMutationDeferred &&
               mutation.operation === deferChannelMutationOperation) {
             channelMutationDeferred = false;
@@ -2771,12 +2776,18 @@ function createContentHarness({
     MutationObserver,
     queueMicrotask,
     setInterval() { return 1; },
-    setTimeout(callback) {
+    setTimeout(callback, delay) {
       // Held, a case can ask what the script does while a fallback it armed is
       // still out — the wait for the bridge above all.
-      if (deferTimers) { deferredTimers.push(callback); return 1; }
-      queueMicrotask(callback);
-      return 1;
+      const id = ++lastTimerId;
+      if (deferTimers) { deferredTimers.push({ id, callback, delay }); return id; }
+      queueMicrotask(() => { if (!clearedTimers.has(id)) callback(); });
+      return id;
+    },
+    clearTimeout(id) {
+      clearedTimers.add(id);
+      const at = deferredTimers.findIndex((timer) => timer.id === id);
+      if (at >= 0) deferredTimers.splice(at, 1);
     },
     URL,
     window
@@ -2827,6 +2838,7 @@ function createContentHarness({
     },
     mutate() { for (const callback of observerCallbacks) callback([]); },
     commands,
+    mutations,
     stored,
     synced,
     async releaseSettingsRead() {
@@ -2900,9 +2912,11 @@ function createContentHarness({
       runtimeId = '';
     },
     async runDeferredTimers() {
-      for (const callback of deferredTimers.splice(0)) callback();
+      for (const { callback } of deferredTimers.splice(0)) callback();
       await flushTasks(8);
     },
+    // How long each timer still held was armed for.
+    heldTimerDelays() { return deferredTimers.map((timer) => timer.delay); },
     advanceTime(ms) {
       currentTimeMs += ms;
     },
@@ -3108,6 +3122,7 @@ function createOptionsHarness({
   };
 
   const storageListeners = [];
+  const windowListeners = {};
   const timers = [];
   let resolveStorageGet = null;
   let settingsReads = 0;
@@ -3177,7 +3192,10 @@ function createOptionsHarness({
     // Held, not run: the page arms one to end a load that never answers, and
     // a stub that fires it at once ends every load in the suite.
     setTimeout(callback, delay) { timers.push({ callback, delay }); return timers.length; },
-    structuredClone
+    structuredClone,
+    window: {
+      addEventListener(type, listener) { (windowListeners[type] ||= []).push(listener); }
+    }
   });
   loadScriptsInto(context, ['settings-area.js', 'options.js']);
 
@@ -3192,8 +3210,16 @@ function createOptionsHarness({
     errors,
     alerts,
     timers,
-    async fire(id, type) {
-      for (const listener of element(id).listeners[type] || []) await listener({ target: element(id) });
+    // `fields` are what the event carries besides its target, a key's repeat.
+    async fire(id, type, fields = {}) {
+      for (const listener of element(id).listeners[type] || []) {
+        await listener({ target: element(id), ...fields });
+      }
+      await flushTasks(8);
+    },
+    // The page loses focus: another window or application comes to the front.
+    async blurWindow() {
+      for (const listener of windowListeners.blur || []) await listener({ type: 'blur' });
       await flushTasks(8);
     },
     // Started, not awaited: a case can ask what the page looks like while the
@@ -3288,6 +3314,7 @@ function createPopupHarness({
   const infos = [];
   const intervals = [];
   const windowListeners = {};
+  const timeouts = [];
   let resolveAutoSave;
   let currentState = {
     channel: { id: '123', name: 'somechannel', kind: 'live', url: 'https://www.twitch.tv/somechannel' },
@@ -3433,6 +3460,8 @@ function createPopupHarness({
     },
     requestAnimationFrame(callback) { callback(); },
     setInterval(callback) { return intervals.push(callback); },
+    // Held until a case runs them.
+    setTimeout(callback) { timeouts.push(callback); return timeouts.length; },
     structuredClone,
     window: {
       addEventListener(type, listener) { (windowListeners[type] ||= []).push(listener); }
@@ -3542,6 +3571,12 @@ function createPopupHarness({
     // The popup loses focus: another window or application comes to the front.
     async blurWindow() {
       for (const listener of windowListeners.blur || []) await listener({ type: 'blur' });
+      await flushTasks(8);
+    },
+    // The timeouts the popup has armed, run once each; one a callback arms
+    // waits for the next call.
+    async runTimeouts() {
+      for (const callback of timeouts.splice(0)) callback();
       await flushTasks(8);
     },
     async firePreset(index, type) {
@@ -5701,6 +5736,38 @@ test('content saves the Auto gain for a new target when its read of the row was 
   assert.ok(Math.abs(stored() - u.calcGain(-24, -22)) < 1e-12, `the row holds ${stored()}`);
   await harness.releaseStorageGet();
   assert.ok(Math.abs(stored() - u.calcGain(-24, -22)) < 1e-12, `the row holds ${stored()}`);
+});
+
+// The Auto gain on file is calcGain of the measurement against the target, for
+// a channel whose Auto is on; the target and the Auto defaults are what move it.
+test('content saves the Auto gain on a settings change only where the target or an Auto default moved', async () => {
+  const harness = createMeasuringHarness({ settings: { autoApplyLoudnessLiveDefault: true } });
+  await claimChannel(harness);
+  await measureOn(harness, -24);
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).autoApplyLoudness, true);
+  const autoGainSaves = () => harness.mutations
+    .filter((mutation) => mutation.operation === 'saveAutoGain')
+    .map((mutation) => mutation.autoGain);
+  const change = async (patch) => {
+    harness.synced[u.SETTINGS_KEY] = { ...harness.synced[u.SETTINGS_KEY], ...patch };
+    harness.commands.length = 0;
+    await harness.dispatchStorage({
+      [u.SETTINGS_KEY]: { newValue: structuredClone(harness.synced[u.SETTINGS_KEY]) }
+    }, 'sync');
+  };
+
+  for (const patch of [{ displayUnit: 'dB' }, { showGainOverlay: false }, { adGainDb: -9 }]) {
+    await change(patch);
+    assert.deepEqual(autoGainSaves(), [], JSON.stringify(patch));
+    // The gain is resolved again all the same.
+    assert.ok(harness.commands.some((command) => command.cmd === 'setGain'), JSON.stringify(patch));
+  }
+
+  await change({ targetLufs: -20 });
+  assert.equal(autoGainSaves().length, 1, 'the target');
+  assert.ok(Math.abs(autoGainSaves()[0] - u.calcGain(-24, -20)) < 1e-12);
+  await change({ autoApplyLoudnessVodDefault: true });
+  assert.equal(autoGainSaves().length, 2, 'an Auto default');
 });
 
 // The measurement save is the one call the page makes to the extension on its
@@ -8091,14 +8158,17 @@ test('a drag the popup loses focus in is saved at the blur, and nothing it does 
   assert.equal(popup.el('manualValue').textContent, '45%', 'the label stays where the save left it');
   assert.equal(popup.el('manualSlider').value, '45', 'and the release puts the thumb back there');
 
-  // A key's repeat is the hold already under way; a key pressed begins again.
-  await popup.fire('manualSlider', 'keydown', { repeat: true });
+  // A key's repeat is the hold already under way; a key pressed begins again,
+  // and is saved where it is let go.
+  await popup.fire('manualSlider', 'keydown', { key: 'ArrowRight', repeat: true });
   await move(160);
   await popup.fire('manualSlider', 'change');
+  await popup.fire('manualSlider', 'keyup', { key: 'ArrowRight' });
   assert.deepEqual(gainsSent(), [0.45]);
-  await popup.fire('manualSlider', 'keydown', { repeat: false });
+  await popup.fire('manualSlider', 'keydown', { key: 'ArrowRight', repeat: false });
   await move(165);
   await popup.fire('manualSlider', 'change');
+  await popup.fire('manualSlider', 'keyup', { key: 'ArrowRight' });
   assert.deepEqual(gainsSent(), [0.45, 1.65]);
 
   await popup.blurWindow();
@@ -8142,6 +8212,525 @@ test('a drag the popup lost focus in writes nothing to the channel the tab moves
   assert.equal(stored()['login:streamer_a']?.gainLive, 0.45);
   assert.equal(popup.sent.filter((request) => request.cmd === 'setGain').length, 1);
   assert.equal(popup.el('manualSlider').value, '45');
+});
+
+// A held key fires an input and a change for every repeat that moves the
+// slider, then a keyup where it is let go.
+async function holdSliderKey(popup, percent, first = false) {
+  await popup.fire('manualSlider', 'keydown', { key: 'ArrowRight', repeat: !first });
+  popup.el('manualSlider').value = String(percent);
+  await popup.fire('manualSlider', 'input');
+  await popup.fire('manualSlider', 'change');
+}
+
+test('a key held on the slider is heard at each repeat and saved once, where it is let go', async () => {
+  const popup = createPopupHarness({ state: { appliesTo: '123|live|' } });
+  await flushTasks(8);
+  const sentOf = (cmd) => popup.sent.filter((request) => request.cmd === cmd);
+  const gains = (cmd) => sentOf(cmd).map((request) => request.gain);
+
+  await holdSliderKey(popup, 155, true);
+  // The display's tick draws another state in the middle of the hold.
+  popup.setState({ appliesTo: '123|live|elsewhere' });
+  await popup.poll();
+  await holdSliderKey(popup, 160);
+  await holdSliderKey(popup, 165);
+  assert.deepEqual(gains('previewGain'), [1.55, 1.6, 1.65], 'each repeat is heard');
+  assert.deepEqual(gains('setGain'), [], 'and none of them is saved');
+
+  await popup.fire('manualSlider', 'keyup', { key: 'ArrowRight' });
+  assert.deepEqual(gains('setGain'), [1.65], 'the value is saved once it is let go');
+  assert.equal(sentOf('setGain')[0].appliesTo, '123|live|', 'against the state the hold began on');
+  assert.deepEqual(sentOf('previewGain').map((request) => request.appliesTo),
+    ['123|live|', '123|live|', '123|live|']);
+
+  // A key that moves nothing saves nothing.
+  await popup.fire('manualSlider', 'keydown', { key: 'ArrowRight', repeat: false });
+  await popup.fire('manualSlider', 'keyup', { key: 'ArrowRight' });
+  assert.deepEqual(gains('setGain'), [1.65]);
+
+  // Control: a drag is saved on its change, and previews nothing.
+  await popup.fire('manualSlider', 'pointerdown');
+  popup.el('manualSlider').value = '200';
+  await popup.fire('manualSlider', 'input');
+  await popup.fire('manualSlider', 'pointerup');
+  await popup.fire('manualSlider', 'change');
+  assert.deepEqual(gains('setGain'), [1.65, 2]);
+  assert.deepEqual(gains('previewGain'), [1.55, 1.6, 1.65]);
+});
+
+test('a key held when focus leaves the slider or the popup is saved there, and what follows is not', async () => {
+  for (const leave of ['the popup', 'the slider']) {
+    const popup = createPopupHarness();
+    await flushTasks(8);
+    const gains = (cmd) => popup.sent.filter((request) => request.cmd === cmd).map((request) => request.gain);
+
+    await holdSliderKey(popup, 155, true);
+    if (leave === 'the popup') await popup.blurWindow();
+    else await popup.fire('manualSlider', 'blur');
+    assert.deepEqual(gains('setGain'), [1.55], leave);
+
+    // Focus comes back with the key still down, and the key is let go.
+    await holdSliderKey(popup, 160);
+    await popup.fire('manualSlider', 'keyup', { key: 'ArrowRight' });
+    assert.deepEqual(gains('setGain'), [1.55], `${leave}: the rest of the hold`);
+    assert.deepEqual(gains('previewGain'), [1.55], `${leave}: the rest of the hold`);
+    assert.equal(popup.el('manualSlider').value, '155', `${leave}: the thumb goes back to the value saved`);
+
+    // The next key pressed begins again.
+    await holdSliderKey(popup, 165, true);
+    await popup.fire('manualSlider', 'keyup', { key: 'ArrowRight' });
+    assert.deepEqual(gains('setGain'), [1.55, 1.65], leave);
+  }
+
+  // A loss of focus with no key held ends nothing: an input and a change that
+  // arrive without a press are sent as before.
+  const idle = createPopupHarness();
+  await flushTasks(8);
+  await idle.blurWindow();
+  await idle.fire('manualSlider', 'blur');
+  idle.el('manualSlider').value = '170';
+  await idle.fire('manualSlider', 'input');
+  await idle.fire('manualSlider', 'change');
+  assert.deepEqual(idle.sent.filter((request) => request.cmd === 'setGain').map((request) => request.gain), [1.7]);
+});
+
+test('a key held on the slider after a preview sends it again each second until the hold ends', async () => {
+  const gains = (popup, cmd) => popup.sent.filter((request) => request.cmd === cmd).map((request) => request.gain);
+  const popup = createPopupHarness({ state: { appliesTo: '123|live|' } });
+  await flushTasks(8);
+
+  await holdSliderKey(popup, 155, true);
+  await holdSliderKey(popup, 160);
+  assert.deepEqual(gains(popup, 'previewGain'), [1.55, 1.6]);
+  // One a second, of the value the slider holds, however many repeats came.
+  await popup.runTimeouts();
+  assert.deepEqual(gains(popup, 'previewGain'), [1.55, 1.6, 1.6], 'the key still held');
+  await popup.runTimeouts();
+  assert.deepEqual(gains(popup, 'previewGain'), [1.55, 1.6, 1.6, 1.6]);
+  assert.deepEqual(popup.sent.filter((request) => request.cmd === 'previewGain').map((request) => request.appliesTo),
+    ['123|live|', '123|live|', '123|live|', '123|live|']);
+
+  await popup.fire('manualSlider', 'keyup', { key: 'ArrowRight' });
+  assert.deepEqual(gains(popup, 'setGain'), [1.6]);
+  // A key pressed again before the second is up has moved nothing yet.
+  await popup.fire('manualSlider', 'keydown', { key: 'ArrowRight', repeat: false });
+  await popup.runTimeouts();
+  await popup.fire('manualSlider', 'keyup', { key: 'ArrowRight' });
+  await popup.runTimeouts();
+  assert.deepEqual(gains(popup, 'previewGain'), [1.55, 1.6, 1.6, 1.6],
+    'nothing after the key is let go, nor for a press that moves nothing');
+
+  // A hold the popup's focus ends sends nothing more, and neither does a key
+  // pressed that moves nothing.
+  for (const leave of ['the popup', 'the slider', 'nothing moved']) {
+    const left = createPopupHarness();
+    await flushTasks(8);
+    if (leave === 'nothing moved') {
+      await left.fire('manualSlider', 'keydown', { key: 'ArrowRight', repeat: false });
+    } else {
+      await holdSliderKey(left, 160, true);
+      if (leave === 'the popup') await left.blurWindow();
+      else await left.fire('manualSlider', 'blur');
+    }
+    const sent = gains(left, 'previewGain').length;
+    await left.runTimeouts();
+    await left.runTimeouts();
+    assert.equal(gains(left, 'previewGain').length, sent, leave);
+  }
+});
+
+// Only the keys that move the value hold the slider: a Tab pressed during a
+// drag leaves the drag to be saved at the change Chrome fires ahead of the
+// blur, and two arrow keys held over each other are one hold, saved where the
+// last is let go.
+const sliderKey = (name, repeat = false) => ({ key: name, repeat });
+const popupGains = (popup, cmd) => popup.sent.filter((request) => request.cmd === cmd).map((request) => request.gain);
+async function movePopupSlider(popup, percent) {
+  popup.el('manualSlider').value = String(percent);
+  await popup.fire('manualSlider', 'input');
+}
+
+test('a Tab pressed during a drag on the slider leaves the drag saved at its change', async () => {
+  const popup = createPopupHarness({ state: { appliesTo: '123|live|' } });
+  await flushTasks(8);
+  await popup.fire('manualSlider', 'pointerdown');
+  await movePopupSlider(popup, 150);
+  await popup.fire('manualSlider', 'keydown', sliderKey('Tab'));
+  await popup.fire('manualSlider', 'change');
+  await popup.fire('manualSlider', 'blur');
+  await popup.fire('manualSlider', 'pointerup');
+  assert.deepEqual(popupGains(popup, 'setGain'), [1.5], 'the drag is saved at its change');
+  assert.deepEqual(popupGains(popup, 'previewGain'), [], 'and previews nothing');
+  assert.equal(popup.el('manualSlider').value, '150');
+  assert.equal(popup.el('manualValue').textContent, '150%', 'what is shown is what was saved');
+});
+
+test('two arrow keys held over each other on the slider are saved once, where the last is let go', async () => {
+  const popup = createPopupHarness({ state: { appliesTo: '123|live|' } });
+  await flushTasks(8);
+  await popup.fire('manualSlider', 'keydown', sliderKey('ArrowRight'));
+  await movePopupSlider(popup, 105);
+  await popup.fire('manualSlider', 'change');
+  await popup.fire('manualSlider', 'keydown', sliderKey('ArrowLeft'));
+  await movePopupSlider(popup, 100);
+  await popup.fire('manualSlider', 'change');
+  await popup.fire('manualSlider', 'keyup', sliderKey('ArrowLeft'));
+  for (const percent of [105, 110, 115]) {
+    await popup.fire('manualSlider', 'keydown', sliderKey('ArrowRight', true));
+    await movePopupSlider(popup, percent);
+    await popup.fire('manualSlider', 'change');
+  }
+  assert.deepEqual(popupGains(popup, 'setGain'), [], 'the arrow still held keeps the hold');
+  await popup.fire('manualSlider', 'keyup', sliderKey('ArrowRight'));
+  assert.deepEqual(popupGains(popup, 'setGain'), [1.15], 'one save, where the last arrow is let go');
+});
+
+test('a Tab on the slider with no drag saves nothing, and what follows is saved as before', async () => {
+  const popup = createPopupHarness({ state: { appliesTo: '123|live|' } });
+  await flushTasks(8);
+  await popup.fire('manualSlider', 'keydown', sliderKey('Tab'));
+  await popup.fire('manualSlider', 'keyup', sliderKey('Tab'));
+  assert.deepEqual(popupGains(popup, 'setGain'), []);
+  await popup.fire('manualSlider', 'pointerdown');
+  await movePopupSlider(popup, 120);
+  await popup.fire('manualSlider', 'pointerup');
+  await popup.fire('manualSlider', 'change');
+  assert.deepEqual(popupGains(popup, 'setGain'), [1.2]);
+});
+
+test('a preview that does not arrive is dropped, and the save that ends the hold names the failure', async () => {
+  const popup = createPopupHarness();
+  await flushTasks(8);
+  const gone = 'Could not establish connection. Receiving end does not exist.';
+  popup.breakSendMessage({ previewGain: gone, setGain: gone });
+
+  await holdSliderKey(popup, 155, true);
+  await holdSliderKey(popup, 160);
+  assert.deepEqual(popup.warnings, [], 'nothing is named for a preview');
+
+  await popup.fire('manualSlider', 'keyup', { key: 'ArrowRight' });
+  const named = popup.warnings.filter((args) => args[0] === '[TCV] gain request failed');
+  assert.equal(named.length, 1);
+  assert.match(String(named[0][1]), /Receiving end does not exist/);
+  assert.equal(popup.el('applyHint').textContent, popup.message('gainSaveFailed'));
+});
+
+test('content applies a previewed gain without saving it, and refuses it where it refuses a gain', async () => {
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/somechannel', deferTimers: true });
+  await flushTasks();
+  const before = JSON.stringify(harness.stored);
+  harness.commands.length = 0;
+  // The answer is made in the script's own realm.
+  const answer = async (reply) => ({ ...(await reply) });
+
+  assert.deepEqual(await answer(harness.dispatchGesture({ cmd: 'previewGain', gain: 2 })), { ok: true });
+  assert.deepEqual(harness.commands.filter((command) => command.cmd === 'setGain')
+    .map((command) => command.value), [2]);
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).gain, 2);
+  assert.equal(JSON.stringify(harness.stored), before, 'nothing is saved');
+
+  assert.deepEqual(
+    await answer(harness.dispatchRuntime({ cmd: 'previewGain', appliesTo: 'login:other|live|', gain: 3 })),
+    { ok: false, reason: 'state moved' }
+  );
+  await harness.dispatchGesture({ cmd: 'setAutoApplyLoudness', enabled: true });
+  harness.commands.length = 0;
+  assert.deepEqual(await answer(harness.dispatchGesture({ cmd: 'previewGain', gain: 3 })),
+    { ok: false, reason: 'auto apply enabled' });
+  assert.deepEqual(harness.commands.filter((command) => command.cmd === 'setGain'), []);
+});
+
+// A preview lasts until the gesture that made it ends: the save that ends the
+// hold, or 2 s with no preview sent again.
+test('content holds a preview against storage changes until its gesture ends', async () => {
+  const row = { name: 'somechannel', gainLive: 0.5 };
+  const harness = createContentHarness({
+    href: 'https://www.twitch.tv/somechannel',
+    deferTimers: true,
+    channelVolumes: { 'login:somechannel': row }
+  });
+  await flushTasks();
+  const gainsSet = () => harness.commands.filter((command) => command.cmd === 'setGain')
+    .map((command) => command.value);
+  const playing = async () => (await harness.dispatchRuntime({ cmd: 'getState' })).gain;
+  const writeRow = (patch) => {
+    harness.stored[u.CHANNEL_VOLUMES_KEY]['login:somechannel'] = { ...row, ...patch };
+    return harness.dispatchStorage({
+      [u.CHANNEL_VOLUMES_KEY]: { newValue: structuredClone(harness.stored[u.CHANNEL_VOLUMES_KEY]) }
+    }, 'local');
+  };
+  const writeSettings = (patch) => {
+    harness.synced[u.SETTINGS_KEY] = { ...(harness.synced[u.SETTINGS_KEY] || {}), ...patch };
+    return harness.dispatchStorage({
+      [u.SETTINGS_KEY]: { newValue: structuredClone(harness.synced[u.SETTINGS_KEY]) }
+    }, 'sync');
+  };
+  assert.equal(await playing(), 0.5);
+
+  // A refused save with no preview held puts nothing back.
+  harness.commands.length = 0;
+  assert.equal((await harness.dispatchRuntime({ cmd: 'setGain', appliesTo: 'login:other|live|', gain: 2 }))?.reason,
+    'state moved');
+  await flushTasks(8);
+  assert.deepEqual(gainsSet(), []);
+
+  const previewWaits = () => harness.heldTimerDelays().filter((delay) => delay === 2000).length;
+  harness.commands.length = 0;
+  assert.equal((await harness.dispatchGesture({ cmd: 'previewGain', gain: 1.9 }))?.ok, true);
+  assert.equal(previewWaits(), 1);
+  // A preview sent again starts the one wait again.
+  assert.equal((await harness.dispatchGesture({ cmd: 'previewGain', gain: 2 }))?.ok, true);
+  assert.equal(previewWaits(), 1);
+  await writeRow({ gainLive: 0.7 });
+  await writeSettings({ displayUnit: 'dB' });
+  assert.deepEqual(gainsSet(), [1.9, 2], 'another tab\'s write and a settings change leave the preview playing');
+  assert.equal(await playing(), 2);
+
+  // The 2 s pass with no preview sent again: what storage holds then plays.
+  await harness.runDeferredTimers();
+  assert.deepEqual(gainsSet(), [1.9, 2, 0.7]);
+  // Control: with no preview, a write plays at once.
+  await writeRow({ gainLive: 0.6 });
+  assert.deepEqual(gainsSet(), [1.9, 2, 0.7, 0.6]);
+
+  // The save that ends the hold ends the preview: a write after it plays, and
+  // the wait the preview armed is let go.
+  harness.commands.length = 0;
+  await harness.dispatchGesture({ cmd: 'previewGain', gain: 2 });
+  assert.equal((await harness.dispatchGesture({ cmd: 'setGain', gain: 2 }))?.ok, true);
+  assert.equal(previewWaits(), 0);
+  await writeRow({ gainLive: 0.8 });
+  assert.deepEqual(gainsSet(), [2, 2, 0.8]);
+
+  // A save refused after a preview puts back what storage holds.
+  harness.commands.length = 0;
+  await harness.dispatchGesture({ cmd: 'previewGain', gain: 2 });
+  await writeRow({ gainLive: 0.9 });
+  assert.deepEqual(
+    { ...(await harness.dispatchRuntime({ cmd: 'setGain', appliesTo: 'login:other|live|', gain: 2 })) },
+    { ok: false, reason: 'state moved' }
+  );
+  await flushTasks(8);
+  assert.deepEqual(gainsSet(), [2, 0.9]);
+});
+
+// What a change held back from the gain reads and saves goes ahead: a channel
+// turned to Auto elsewhere refuses the save that ends the hold, and the Auto
+// gain a new target gives is saved, though neither plays over the preview.
+test('content saves and reads what a change brings while a preview holds the gain', async () => {
+  const harness = createMeasuringHarness({ deferTimers: true });
+  await claimChannel(harness);
+  await measureOn(harness, -24);
+  const autoGainSaves = () => harness.mutations
+    .filter((mutation) => mutation.operation === 'saveAutoGain')
+    .map((mutation) => mutation.autoGain);
+  const gainsSet = () => harness.commands.filter((command) => command.cmd === 'setGain')
+    .map((command) => command.value);
+
+  harness.commands.length = 0;
+  assert.equal((await harness.dispatchGesture({ cmd: 'previewGain', gain: 2 }))?.ok, true);
+  harness.synced[u.SETTINGS_KEY] = {
+    ...(harness.synced[u.SETTINGS_KEY] || {}), targetLufs: -20, autoApplyLoudnessLiveDefault: true
+  };
+  await harness.dispatchStorage({
+    [u.SETTINGS_KEY]: { newValue: structuredClone(harness.synced[u.SETTINGS_KEY]) }
+  }, 'sync');
+  assert.equal(autoGainSaves().length, 1, 'the Auto gain the new target gives is saved');
+  assert.ok(Math.abs(autoGainSaves()[0] - u.calcGain(-24, -20)) < 1e-12);
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).autoApplyLoudness, true);
+  // A measurement arriving meanwhile plays no Auto gain over the preview.
+  await measureOn(harness, -24);
+  assert.deepEqual(gainsSet(), [2], 'nothing plays over the preview');
+
+  assert.deepEqual(
+    { ...(await harness.dispatchGesture({ cmd: 'setGain', gain: 2 })) },
+    { ok: false, reason: 'auto apply enabled' }
+  );
+  await flushTasks(8);
+  assert.equal(gainsSet().length, 2);
+  assert.ok(Math.abs(gainsSet()[1] - u.calcGain(-24, -20)) < 1e-12, `the Auto gain plays (${gainsSet()[1]})`);
+});
+
+// Both settings sliders take a held key the same way.
+const SETTINGS_SLIDERS = [
+  { field: 'targetLufs', label: 'targetLufsValue', drawn: (v) => `${v} LUFS` },
+  { field: 'adGainDb', label: 'adGainValue', drawn: (v) => `${v > 0 ? '+' : ''}${v} dB` }
+];
+
+test('options writes a settings slider held on a key once, where the key is let go or focus leaves', async () => {
+  for (const { field, label, drawn } of SETTINGS_SLIDERS) {
+    const writes = (harness) => harness.sent
+      .filter((message) => message.type === u.SETTINGS_MUTATION_MESSAGE)
+      .map((message) => message.mutation.patch[field]);
+    const hold = async (harness, value, first = false) => {
+      await harness.fire(field, 'keydown', { key: 'ArrowRight', repeat: !first });
+      harness.el(field).value = String(value);
+      await harness.fire(field, 'input');
+      await harness.fire(field, 'change');
+    };
+
+    const harness = createOptionsHarness();
+    await flushTasks(8);
+    await hold(harness, -17, true);
+    await hold(harness, -16);
+    await hold(harness, -15);
+    assert.equal(harness.el(label).textContent, drawn(-15), `${field}: the label follows the key`);
+    assert.deepEqual(writes(harness), [], `${field}: the repeats write nothing`);
+    await harness.fire(field, 'keyup', { key: 'ArrowRight' });
+    assert.deepEqual(writes(harness), [-15], field);
+
+    for (const leave of ['the page', 'the slider']) {
+      const left = createOptionsHarness();
+      await flushTasks(8);
+      await hold(left, -17, true);
+      if (leave === 'the page') await left.blurWindow();
+      else await left.fire(field, 'blur');
+      assert.deepEqual(writes(left), [-17], `${field}, ${leave}`);
+      await hold(left, -16);
+      await left.fire(field, 'keyup', { key: 'ArrowRight' });
+      assert.deepEqual(writes(left), [-17], `${field}, ${leave}: the rest of the hold`);
+      assert.equal(left.el(field).value, '-17', `${field}, ${leave}: the thumb goes back to the value written`);
+      await hold(left, -20, true);
+      await left.fire(field, 'keyup', { key: 'ArrowRight' });
+      assert.deepEqual(writes(left), [-17, -20], `${field}, ${leave}: the next key pressed`);
+    }
+
+    // A loss of focus with no key held ends nothing.
+    const idle = createOptionsHarness();
+    await flushTasks(8);
+    await idle.blurWindow();
+    await idle.fire(field, 'blur');
+    idle.el(field).value = '-22';
+    await idle.fire(field, 'input');
+    await idle.fire(field, 'change');
+    assert.deepEqual(writes(idle), [-22], field);
+
+    // Control: a drag is written on its change.
+    const dragged = createOptionsHarness();
+    await flushTasks(8);
+    await dragged.fire(field, 'pointerdown');
+    dragged.el(field).value = '-24';
+    await dragged.fire(field, 'input');
+    await dragged.fire(field, 'change');
+    assert.deepEqual(writes(dragged), [-24], field);
+  }
+});
+
+// Chrome fires the change of a drag ahead of the blur that takes focus from
+// the page, and that change is written. What the drag does after the blur is
+// not written, and its change puts the thumb back to the value written.
+test('options ends a drag on a settings slider where focus leaves, and writes nothing it does after', async () => {
+  for (const { field, label, drawn } of SETTINGS_SLIDERS) {
+    const writes = (harness) => harness.sent
+      .filter((message) => message.type === u.SETTINGS_MUTATION_MESSAGE)
+      .map((message) => message.mutation.patch[field]);
+    const move = async (harness, value) => {
+      harness.el(field).value = String(value);
+      await harness.fire(field, 'input');
+    };
+
+    for (const leave of ['the page', 'the slider']) {
+      const dragged = createOptionsHarness();
+      await flushTasks(8);
+      await dragged.fire(field, 'pointerdown');
+      await move(dragged, -17);
+      await dragged.fire(field, 'change');
+      if (leave === 'the page') await dragged.blurWindow();
+      else await dragged.fire(field, 'blur');
+      assert.deepEqual(writes(dragged), [-17], `${field}, ${leave}`);
+
+      await move(dragged, -12);
+      await dragged.fire(field, 'pointerup');
+      await dragged.fire(field, 'change');
+      assert.deepEqual(writes(dragged), [-17], `${field}, ${leave}: the rest of the drag`);
+      assert.equal(dragged.el(label).textContent, drawn(-17), `${field}, ${leave}: the label stays`);
+      assert.equal(dragged.el(field).value, '-17', `${field}, ${leave}: the thumb goes back to the value written`);
+
+      // The next press of the pointer begins again.
+      await dragged.fire(field, 'pointerdown');
+      await move(dragged, -20);
+      await dragged.fire(field, 'pointerup');
+      await dragged.fire(field, 'change');
+      assert.deepEqual(writes(dragged), [-17, -20], `${field}, ${leave}: the next drag`);
+    }
+
+    // A loss of focus after the pointer is let go ends nothing.
+    const released = createOptionsHarness();
+    await flushTasks(8);
+    await released.fire(field, 'pointerdown');
+    await move(released, -17);
+    await released.fire(field, 'pointerup');
+    await released.fire(field, 'change');
+    await released.blurWindow();
+    await released.fire(field, 'blur');
+    await move(released, -22);
+    await released.fire(field, 'change');
+    assert.deepEqual(writes(released), [-17, -22], field);
+  }
+});
+
+// The settings sliders take keys as the popup's slider does: only the keys
+// that move the value hold it, and the hold lasts until the last is let go.
+const settingsWrites = (harness, field) => harness.sent
+  .filter((message) => message.type === u.SETTINGS_MUTATION_MESSAGE)
+  .map((message) => message.mutation.patch[field]);
+async function moveSettingsSlider(harness, field, value) {
+  harness.el(field).value = String(value);
+  await harness.fire(field, 'input');
+}
+
+test('options writes a drag on a settings slider during which a Tab is pressed at its change', async () => {
+  for (const { field, label, drawn } of SETTINGS_SLIDERS) {
+    const harness = createOptionsHarness();
+    await flushTasks(8);
+    await harness.fire(field, 'pointerdown');
+    await moveSettingsSlider(harness, field, -17);
+    await harness.fire(field, 'keydown', sliderKey('Tab'));
+    await harness.fire(field, 'change');
+    await harness.fire(field, 'blur');
+    await harness.fire(field, 'pointerup');
+    assert.deepEqual(settingsWrites(harness, field), [-17], `${field}: the drag is written at its change`);
+    assert.equal(harness.el(field).value, '-17', field);
+    assert.equal(harness.el(label).textContent, drawn(-17), `${field}: what is shown is what was written`);
+  }
+});
+
+test('options writes two arrow keys held over each other on a settings slider once, where the last is let go', async () => {
+  for (const { field } of SETTINGS_SLIDERS) {
+    const harness = createOptionsHarness();
+    await flushTasks(8);
+    await harness.fire(field, 'keydown', sliderKey('ArrowRight'));
+    await moveSettingsSlider(harness, field, -17);
+    await harness.fire(field, 'change');
+    await harness.fire(field, 'keydown', sliderKey('ArrowLeft'));
+    await moveSettingsSlider(harness, field, -18);
+    await harness.fire(field, 'change');
+    await harness.fire(field, 'keyup', sliderKey('ArrowLeft'));
+    for (const value of [-17, -16]) {
+      await harness.fire(field, 'keydown', sliderKey('ArrowRight', true));
+      await moveSettingsSlider(harness, field, value);
+      await harness.fire(field, 'change');
+    }
+    assert.deepEqual(settingsWrites(harness, field), [], `${field}: the arrow still held keeps the hold`);
+    await harness.fire(field, 'keyup', sliderKey('ArrowRight'));
+    assert.deepEqual(settingsWrites(harness, field), [-16], `${field}: one write, where the last arrow is let go`);
+  }
+});
+
+test('options writes nothing for a Tab on a settings slider with no drag, and what follows as before', async () => {
+  for (const { field } of SETTINGS_SLIDERS) {
+    const harness = createOptionsHarness();
+    await flushTasks(8);
+    await harness.fire(field, 'keydown', sliderKey('Tab'));
+    await harness.fire(field, 'keyup', sliderKey('Tab'));
+    assert.deepEqual(settingsWrites(harness, field), [], field);
+    await harness.fire(field, 'pointerdown');
+    await moveSettingsSlider(harness, field, -20);
+    await harness.fire(field, 'pointerup');
+    await harness.fire(field, 'change');
+    assert.deepEqual(settingsWrites(harness, field), [-20], field);
+  }
 });
 
 // An Auto switch answers with the gain the page settled on, which is not the
@@ -8924,12 +9513,13 @@ test('a drag that ended without a change does not hold the next one', async () =
   assert.equal(saves.length, 1);
   assert.equal(saves[0].appliesTo, 'B|live|');
 
-  // The keyboard begins one the same way.
+  // The keyboard begins one the same way, and saves where the key is let go.
   harness.sent.length = 0;
   harness.el('manualSlider').value = '50';
-  await harness.fire('manualSlider', 'keydown');
+  await harness.fire('manualSlider', 'keydown', { key: 'ArrowRight' });
   await harness.fire('manualSlider', 'input');
   await harness.fire('manualSlider', 'change');
+  await harness.fire('manualSlider', 'keyup', { key: 'ArrowRight' });
   const byKey = harness.sent.filter((request) => request.cmd === 'setGain');
   assert.equal(byKey.length, 1);
   assert.equal(byKey[0].appliesTo, 'B|live|');
@@ -10678,6 +11268,156 @@ function createBackgroundHarness({
     }
   };
 }
+
+// A storage area that counts the writes that reach it.
+function countingStorageArea(initial) {
+  const area = {
+    stored: structuredClone(initial),
+    sets: 0,
+    async get(keys) { return readStoredKeys(area.stored, keys); },
+    async set(update) {
+      area.sets += 1;
+      area.stored = { ...area.stored, ...structuredClone(update) };
+    }
+  };
+  return area;
+}
+
+test('the channel store leaves out a write that would store what is on file, and only that', async () => {
+  const channel = { name: 'Some', login: 'some', url: 'https://www.twitch.tv/some' };
+  const area = countingStorageArea({
+    channelVolumes: { 123: { ...channel, gainLive: 0.5 } },
+    channelVolumeAliases: { 'vod-owner:100': '123', 'login:some': '123' },
+    channelVolumeSequence: 3
+  });
+  const write = channelStore.createChannelVolumesWriter(area, 'channelVolumes', () => 100);
+
+  // The owner event of a VOD the alias already names, as the page repeats it.
+  const owner = { operation: 'mergeChannelIds', fromId: 'vod-owner:100', toId: '123', kind: 'vod', channel };
+  await write(owner);
+  await write(owner);
+  assert.equal(area.sets, 0, 'a repeated owner event');
+  await write({ operation: 'normalizeChannels' });
+  assert.equal(area.sets, 0, 'normalizeChannels on a store that is already normal');
+
+  // Control: an owner event that names a new VOD stores its alias.
+  await write({ ...owner, fromId: 'vod-owner:200' });
+  assert.equal(area.sets, 1);
+  assert.equal(area.stored.channelVolumeAliases['vod-owner:200'], '123');
+
+  // A save of the gain on file, and a measurement that holds, still advance
+  // their versions and are written.
+  await write({ operation: 'saveGain', channelId: '123', kind: 'live', gain: 0.5, channel });
+  assert.equal(area.sets, 2, 'a gain of the value on file');
+  const measurement = {
+    operation: 'saveMeasurement', channelId: '123', kind: 'live', lufs: -20,
+    reference: u.LUFS_REFERENCE_VOLUME_1, windows: 300, channel
+  };
+  await write(measurement);
+  await write(measurement);
+  assert.equal(area.sets, 4, 'a measurement that holds');
+  assert.equal(area.stored.channelVolumeSequence, 6);
+
+  // Control: normalizeChannels where there is a row to fold in.
+  const legacy = countingStorageArea({
+    channelVolumes: { 'login:some': { name: 'Some', gainLive: 0.7 }, 123: { ...channel } }
+  });
+  const normalize = channelStore.createChannelVolumesWriter(legacy, 'channelVolumes', () => 100);
+  await normalize({ operation: 'normalizeChannels' });
+  assert.equal(legacy.sets, 1);
+  assert.equal(legacy.stored.channelVolumes['login:some'], undefined);
+  await normalize({ operation: 'normalizeChannels' });
+  assert.equal(legacy.sets, 1, 'and none once it is normal');
+
+  // Control: normalizeChannels that changes one text field of one row, to text
+  // of the same length.
+  const linked = countingStorageArea({
+    channelVolumes: { 123: { name: 'Some', login: 'abcdefgh', url: 'https://www.twitch.tv/videos/1' } },
+    channelVolumeAliases: { 'login:abcdefgh': '123' },
+    channelVolumeSequence: 1
+  });
+  await channelStore.createChannelVolumesWriter(linked, 'channelVolumes', () => 100)({ operation: 'normalizeChannels' });
+  assert.equal(linked.sets, 1, 'a row whose url is put right');
+  assert.equal(linked.stored.channelVolumes['123'].url, 'https://www.twitch.tv/abcdefgh');
+
+  // Control: an alias map stored in a shape the store does not read is
+  // written over with the empty map it reads in its place.
+  for (const aliases of [null, 5, []]) {
+    const odd = countingStorageArea({
+      channelVolumes: { 'vod-owner:9': { name: '9', gainVod: 0.5 } },
+      channelVolumeAliases: aliases,
+      channelVolumeSequence: 1
+    });
+    await channelStore.createChannelVolumesWriter(odd, 'channelVolumes', () => 100)({ operation: 'normalizeChannels' });
+    assert.equal(odd.sets, 1, `aliases stored as ${JSON.stringify(aliases)}`);
+    assert.deepEqual(odd.stored.channelVolumeAliases, {});
+  }
+});
+
+// The settings in sync and in local, with the writes that reach sync counted.
+function countingSettingsAreas({ sync = {}, local = {} } = {}) {
+  const areas = { sync: structuredClone(sync), local: structuredClone(local), syncSets: 0 };
+  areas.storage = {
+    sync: {
+      async get(keys) { return readStoredKeys(areas.sync, keys); },
+      async set(update) {
+        areas.syncSets += 1;
+        areas.sync = { ...areas.sync, ...structuredClone(update) };
+      }
+    },
+    local: { async get(keys) { return readStoredKeys(areas.local, keys); } }
+  };
+  return areas;
+}
+
+test('the settings store leaves out a patch of the value sync holds', async () => {
+  const stored = {
+    targetLufs: -18, adGainDb: -6, displayUnit: '%', showGainOverlay: true,
+    autoApplyLoudnessLiveDefault: false, autoApplyLoudnessVodDefault: false
+  };
+  const areas = countingSettingsAreas({ sync: { autoLoudnessSettings: stored } });
+  const write = settingsStore.createSettingsWriter(areas.storage);
+  const patch = (fields) => write({ operation: 'patchSettings', patch: fields });
+
+  // The unit button already chosen sends the unit on file.
+  await patch({ displayUnit: '%' });
+  await patch({ targetLufs: -18 });
+  assert.equal(areas.syncSets, 0);
+
+  await patch({ targetLufs: -20 });
+  assert.equal(areas.syncSets, 1);
+  assert.equal(areas.sync.autoLoudnessSettings.targetLufs, -20);
+
+  // Settings read from the copy an earlier version left in local are not in
+  // sync, so the same values are written there.
+  const notMoved = countingSettingsAreas({ local: { autoLoudnessSettings: stored } });
+  await settingsStore.createSettingsWriter(notMoved.storage)({ operation: 'patchSettings', patch: { displayUnit: '%' } });
+  assert.equal(notMoved.syncSets, 1, 'settings read from local');
+  assert.deepEqual(notMoved.sync.autoLoudnessSettings, stored);
+
+  // A store that drops a field written by an earlier version writes.
+  const legacy = countingSettingsAreas({ sync: { autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessClipDefault: true } } });
+  await settingsStore.createSettingsWriter(legacy.storage)({ operation: 'patchSettings', patch: { targetLufs: -18 } });
+  assert.equal(legacy.syncSets, 1);
+  assert.deepEqual(legacy.sync.autoLoudnessSettings, { targetLufs: -18 });
+
+  // Settings that are not there, or not an object, are written.
+  const empty = countingSettingsAreas();
+  await settingsStore.createSettingsWriter(empty.storage)({ operation: 'patchSettings', patch: { targetLufs: -18 } });
+  assert.equal(empty.syncSets, 1, 'nothing stored');
+  const odd = countingSettingsAreas({ sync: { autoLoudnessSettings: null } });
+  await settingsStore.createSettingsWriter(odd.storage)({ operation: 'patchSettings', patch: { targetLufs: -18 } });
+  assert.equal(odd.syncSets, 1, 'null stored');
+  assert.deepEqual(odd.sync.autoLoudnessSettings, { targetLufs: -18 });
+  // Sync holding something that is not settings, with the copy in local.
+  const oddOverLocal = countingSettingsAreas({
+    sync: { autoLoudnessSettings: null },
+    local: { autoLoudnessSettings: stored }
+  });
+  await settingsStore.createSettingsWriter(oddOverLocal.storage)({ operation: 'patchSettings', patch: { displayUnit: '%' } });
+  assert.equal(oddOverLocal.syncSets, 1, 'null in sync, settings in local');
+  assert.deepEqual(oddOverLocal.sync.autoLoudnessSettings, stored);
+});
 
 test('background mutation listener keeps async response open and reports failures', async () => {
   const harness = createBackgroundHarness();

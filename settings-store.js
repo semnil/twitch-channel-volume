@@ -89,6 +89,16 @@ async function moveSettingsToSync(storage, storageKey) {
   return true;
 }
 
+// Whether the settings to be written are the ones stored, field for field.
+// Every value a write carries is a number, a string or a boolean, or the one
+// it read from the store.
+function sameStoredSettings(next, stored) {
+  if (!stored || typeof stored !== 'object') return false;
+  const fields = Object.keys(next);
+  return fields.length === Object.keys(stored).length && fields.every((field) =>
+    Object.prototype.hasOwnProperty.call(stored, field) && next[field] === stored[field]);
+}
+
 // `storage` is chrome.storage itself: the writes go to sync, and the read goes
 // through readStoredSettings, so a write made before the move carries the local
 // values with it instead of starting sync from an empty object.
@@ -105,7 +115,12 @@ function createSettingsWriter(storage, storageKey = SETTINGS_STORE_KEY) {
     return enqueue(async () => {
       const current = await settingsArea.readStoredSettings(storage, storageKey);
       const next = applySettingsMutation(current, mutation);
-      await storage.sync.set({ [storageKey]: next });
+      // A write that would store in sync what sync holds already is left out.
+      // What was read can be local's copy, which sync does not hold.
+      if (!sameStoredSettings(next, current) ||
+          !sameStoredSettings(next, (await storage.sync.get(storageKey))[storageKey])) {
+        await storage.sync.set({ [storageKey]: next });
+      }
       return next;
     });
   }

@@ -343,6 +343,16 @@
     await refresh();
   }
 
+  // A preview is heard and not saved. Nothing is reported for it: the save
+  // that ends the gesture is refused for the same reason, and reports it.
+  async function previewGain(percent, appliesTo) {
+    try {
+      const tab = await getActiveTab();
+      if (!tab) return;
+      await chrome.tabs.sendMessage(tab.id, { cmd: 'previewGain', appliesTo, gain: percentToGain(percent) });
+    } catch (_) {}
+  }
+
   async function setAutoApplyLoudness() {
     const toggle = $('autoApplyToggle');
     if (audioUnavailable) {
@@ -438,26 +448,79 @@
   // slider holds with a change ahead of the blur, and what the drag does after
   // it, the change at the release included, is not sent: such a change puts
   // the thumb back to the value the slider held at the blur. The next press of
-  // the pointer or of a key begins a gesture again; a key's repeat does not.
+  // the pointer or of a key that moves the value begins a gesture again; a
+  // key's repeat does not.
+  //
+  // A key held on the slider is heard and not saved: each input sends a
+  // preview, and the changes its repeats fire send nothing. Only the keys that
+  // move the value hold it (createSliderKeys); the hold lasts until the last of
+  // them is let go. The value is saved once, there or where focus leaves the
+  // slider or the popup, and a loss of focus ends the gesture as it ends a
+  // drag.
   let sliderPointerHeld = false;
+  const sliderKeys = createSliderKeys();
+  let sliderKeyHeld = false;
+  let sliderKeyMoved = false;
   let sliderGestureEnded = false;
   let sliderValueAtEnd = '';
-  const beginSliderGesture = (event) => {
+  const beginSliderGesture = () => {
     sliderAppliesTo = currentAppliesTo;
-    if (!event.repeat) sliderGestureEnded = false;
+    sliderGestureEnded = false;
   };
-  $('manualSlider').addEventListener('pointerdown', (event) => {
+  const endSliderGesture = () => {
+    sliderGestureEnded = true;
+    sliderValueAtEnd = $('manualSlider').value;
+  };
+  $('manualSlider').addEventListener('pointerdown', () => {
     sliderPointerHeld = true;
-    beginSliderGesture(event);
+    beginSliderGesture();
   });
   const releaseSliderPointer = () => { sliderPointerHeld = false; };
   $('manualSlider').addEventListener('pointerup', releaseSliderPointer);
   $('manualSlider').addEventListener('pointercancel', releaseSliderPointer);
-  $('manualSlider').addEventListener('keydown', beginSliderGesture);
+  $('manualSlider').addEventListener('keydown', (event) => {
+    if (!sliderKeys.press(event)) return;
+    beginSliderGesture();
+    sliderKeyHeld = true;
+  });
+  // While the key is still held after a preview it has not saved, the
+  // preview is sent again every PREVIEW_KEEP_ALIVE_MS, so the tab keeps it
+  // for as long as the key is held and ends it once the sending stops.
+  const PREVIEW_KEEP_ALIVE_MS = 1000;
+  let keepAliveSet = false;
+  const keepPreviewAlive = () => {
+    if (keepAliveSet) return;
+    keepAliveSet = true;
+    setTimeout(() => {
+      keepAliveSet = false;
+      if (!sliderKeyHeld || !sliderKeyMoved) return;
+      previewGain(Number($('manualSlider').value), sliderAppliesTo);
+      keepPreviewAlive();
+    }, PREVIEW_KEEP_ALIVE_MS);
+  };
+  // Whether a key was held.
+  const endSliderKeyHold = () => {
+    if (!sliderKeyHeld) return false;
+    sliderKeyHeld = false;
+    const moved = sliderKeyMoved;
+    sliderKeyMoved = false;
+    if (moved) {
+      const appliesTo = sliderAppliesTo ?? currentAppliesTo;
+      sliderAppliesTo = null;
+      setGain(Number($('manualSlider').value), appliesTo);
+    }
+    return true;
+  };
+  $('manualSlider').addEventListener('keyup', (event) => {
+    if (sliderKeys.release(event)) endSliderKeyHold();
+  });
+  $('manualSlider').addEventListener('blur', () => {
+    sliderKeys.clear();
+    if (endSliderKeyHold()) endSliderGesture();
+  });
   window.addEventListener('blur', () => {
-    if (!sliderPointerHeld) return;
-    sliderGestureEnded = true;
-    sliderValueAtEnd = $('manualSlider').value;
+    sliderKeys.clear();
+    if (endSliderKeyHold() || sliderPointerHeld) endSliderGesture();
   });
 
   $('manualSlider').addEventListener('input', (e) => {
@@ -469,12 +532,18 @@
     const f = formatGain(g, displayUnit);
     setCardValue($('current'), f.text, f.unit, 'current');
     $('manualValue').textContent = f.text + f.unit;
+    if (sliderKeyHeld) {
+      sliderKeyMoved = true;
+      previewGain(Number(e.target.value), sliderAppliesTo);
+      keepPreviewAlive();
+    }
   });
   $('manualSlider').addEventListener('change', (e) => {
     if (sliderGestureEnded) {
       e.target.value = sliderValueAtEnd;
       return;
     }
+    if (sliderKeyHeld) return;
     const appliesTo = sliderAppliesTo ?? currentAppliesTo;
     sliderAppliesTo = null;
     setGain(Number(e.target.value), appliesTo);

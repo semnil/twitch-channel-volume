@@ -59,6 +59,8 @@ content は、今のチャンネルの行をもとに `resolvePreferredGain` (`u
 
 `reapplyForCurrentChannel` は行を読み (`loadChannelEntry`)、そのあとで `resolvePreferredGain` が決めたゲインをかける。Auto がオンで Integrated が有限なら、代わりに `autoGainToPlay` のゲインをかける (場面 5)。読んでいる間に、あとからの読み直し・遷移・チャンネルの変化が始まっていたら (`preferenceRevision`、または `currentChannel` が変わっていたら)、false を返して何もかけない。下の図ではこれを `opt 読み直しが追い越されていない` と書く。チャンネル ID が無いページや種別 `none` のページでは、何も読まずに 1.0 をかけて true を返す。
 
+content が今の状態についての `previewGain` を保っている間 (場面 3。`previewHoldsGain`: プレビューの `appliesTo` が `currentGestureState()` と同じ)、`reapplyForCurrentChannel` は行を読んで Auto の選択を取り込むが、ゲインはかけない。`applyAutoGain` も何もかけない。そのため、プレビューのゲインが鳴り続ける。同じ流れが保存するものは保存する。場面 5・10・12 の図はこの保ち方を書き、ほかの図は書かない。
+
 起動と SPA 遷移、それに計測の対象を変える owner のイベント (場面 8) は、読む前に `seededResetPending` (種つきのリセットがまだ、という印) を立てる。印が立っている間は、ゲインをかけた読み直しが、どのきっかけで始まったものでも、続けて読んだ行を種にしたリセットを送り、印を下ろす (`sendPendingSeededReset`)。
 
 ゲインを変える下の流れは、どれも最後にこの共通の手順を通る。
@@ -107,6 +109,8 @@ sequenceDiagram
   store->>store: 別名を更新し、無くなった行へつながる別名と clip-owner の別名を消す
   alt 書き手か storage が例外を投げた
     sw-->>sender: ok false、reason
+  else 3 つのキーが読んだときと同じ中身になる (sameStoredValue)
+    sw-->>sender: ok true、何も書かない
   else 書き込めた
     store->>storage: set channelVolumes、channelVolumeAliases、channelVolumeSequence
     par
@@ -117,7 +121,7 @@ sequenceDiagram
   end
 ```
 
-図のもと: `background.js` の `onMessage` リスナー、`namedFailure`。`channel-store.js` の `createChannelVolumesWriter`、`resolveMutation`、`mutationNeedsSequence`、`applyChannelVolumesMutation`、`normalizeKnownChannelEntries`、`aliasesLeadingTo`。`content.js` の `sendChannelMutation`。`options.js` の `mutateChannelVolumes`。
+図のもと: `background.js` の `onMessage` リスナー、`namedFailure`。`channel-store.js` の `createChannelVolumesWriter`、`sameStoredValue`、`resolveMutation`、`mutationNeedsSequence`、`applyChannelVolumesMutation`、`normalizeKnownChannelEntries`、`aliasesLeadingTo`。`content.js` の `sendChannelMutation`。`options.js` の `mutateChannelVolumes`。
 
 | `operation` | 送るもの | 送る項目 | 行に書くもの | 通し番号 |
 |---|---|---|---|---|
@@ -133,7 +137,7 @@ sequenceDiagram
 
 - `resolveMutation` は、保存された別名をたどって `channelId` を直す。直したときは送り手が付けた `channel` の情報 (名前など) を捨て、値は正式な ID の行に入る。
 - `clearChannels` 以外の操作のあとで、`normalizeKnownChannelEntries` は `login:<login>` の行を、同じ login を持つ数字の行 (1 つだけあるとき) へまとめ、その `url` を `https://www.twitch.tv/<login>` にする。`withoutClipFields` は以前の版がクリップ用に持っていた項目を落とし、値が何も残らない行は消す。`cloneEntry` は写した行の古い形の `gain` / `autoApplyLoudness` を種別ごとの項目へ広げる。`knownLoginTargets` は `login:<login>` からその数字の ID への別名を足す。操作が、別の ID へ移さずに無くした行 (消したチャンネル、クリップだけの行) は、直接またはほかの別名を経てそこへつながる別名を、すべて一緒に消す (`aliasesLeadingTo`)。
-- 操作が `storage.set` まで届けば、3 つのキーを 1 回の呼び出しで書く。`normalizeChannels` や、`fromId` の行が無い `mergeChannelIds` でも書く。
+- `storage.set` は 3 つのキーを 1 回の呼び出しで書く。3 つとも読んだときと同じ中身になるとき (キーの順番によらず項目ごとに比べる。`sameStoredValue`) は呼ばない。すでに整った状態での `normalizeChannels` と、別名がもう保存され行もまとまっている `mergeChannelIds` は何も書かない。通し番号を取る操作は通し番号と行の項目の版番号を変えるので、保存値と同じゲインの `saveGain` も、レベルが変わらない `saveMeasurement` も書く。
 - 1 つのタブの中では、content の `sendChannelMutation` が操作を `channelMutationQueue` につなげて順に送るので、SW はタブが送った順に受け取る。SW の中では `queue = task.catch(() => {})` によって、失敗した処理が次の処理を止めない。
 
 | 答えの `reason` | 出どころ | SW のログ |
@@ -158,6 +162,8 @@ sequenceDiagram
   store->>store: applySettingsMutation: validateSettingsPatch、保存値へ重ねる、withoutRemovedSettings
   alt 不正な入力か storage が例外を投げた
     sw-->>options: ok false、reason
+  else どの項目も読んだときのままで、sync が持つ値と同じ (sameStoredSettings)
+    sw-->>options: ok true、settings、何も書かない
   else 書き込めた
     store->>storage: sync.set autoLoudnessSettings
     par
@@ -168,9 +174,10 @@ sequenceDiagram
   end
 ```
 
-図のもと: `background.js` の `onMessage` リスナー。`settings-area.js` の `readStoredSettings`。`settings-store.js` の `createSettingsWriter`、`applySettingsMutation`、`validateSettingsPatch`、`withoutRemovedSettings`。`options.js` の `mutateSettings`。
+図のもと: `background.js` の `onMessage` リスナー。`settings-area.js` の `readStoredSettings`。`settings-store.js` の `createSettingsWriter`、`sameStoredSettings`、`applySettingsMutation`、`validateSettingsPatch`、`withoutRemovedSettings`。`options.js` の `mutateSettings`。
 
 - `validateSettingsPatch` が受け付けるのは、−30〜−6 の `targetLufs`、−24〜6 の `adGainDb`、`%` か `dB` の `displayUnit`、真偽値の `showGainOverlay` と 2 つの Auto 既定値。それ以外は `invalid-mutation` (`[TCV] settings mutation rejected as invalid`)。reason の付いていない失敗は `settings-update-failed` (`[TCV] settings mutation failed`) で答える。
+- どの項目も sync が持つ値のままにする patch (すでに選ばれている表示単位のボタンも含む) は、何も書かない。local の写しから読んだ設定は、sync が持っていないので sync へ書く。
 
 ## 場面ごとの流れ
 
@@ -236,7 +243,7 @@ sequenceDiagram
   end
   chrome->>sw: runtime.onInstalled
   sw->>cstore: writeChannelVolumes normalizeChannels
-  cstore->>storage: get、normalizeKnownChannelEntries、set
+  cstore->>storage: get、normalizeKnownChannelEntries、保存値が変わるときだけ set
 ```
 
 図のもと: `background.js` の最上位での `moveToSync` の呼び出しと `onInstalled` リスナー。`channel-store.js` の `normalizeKnownChannelEntries`、`withoutClipFields`、`cloneEntry`、`expandLegacyGain`、`expandLegacyAuto`。`settings-store.js` の `moveSettingsToSync`、`withoutRemovedSettings`。`settings-area.js` の `isStoredSettingsObject`。`options.js` の `loadAll`。`utils.js` の `extractGainForKind`、`resolveAutoApplySetting`。
@@ -256,11 +263,32 @@ sequenceDiagram
   participant content as content.js
   participant bridge as page-bridge.js
   participant sw as Service Worker
-  popup->>popup: スライダーの input: Current の表示と値のラベルだけ
-  popup->>content: tabs.sendMessage setGain と appliesTo、gain (スライダーの change かプリセットのクリック)
+  popup->>popup: スライダーの input: Current の表示と値のラベル
+  opt スライダーでキーを押し続けている
+    popup->>content: input ごとに previewGain と appliesTo、gain
+    opt 下の setGain と同じ理由で断る
+      content-->>popup: ok false、reason
+    end
+    content->>bridge: setGain (applyGain)、保存はしない
+    content->>content: startPreview: ゲインを保ち、2000 ms の待ちを始め直す
+    opt previewGain から 1000 ms たってもキーを押し続けている
+      popup->>content: スライダーの値で previewGain をもう一度 (keepPreviewAlive)
+    end
+    opt previewGain も setGain も無いまま 2000 ms たつ
+      content->>content: endIdlePreview、reapplyForCurrentChannel
+    end
+  end
+  popup->>content: tabs.sendMessage setGain と appliesTo、gain (スライダーの change、キーを押し続けた操作の終わり、またはプリセットのクリック)
+  content->>content: endPreview
   alt チャンネルが無い、または appliesTo が currentGestureState() と違う
+    opt プレビューを保っていた
+      content->>content: reapplyForCurrentChannel (putBackStoredGain)
+    end
     content-->>popup: ok false、state moved
   else autoMutationPending、Auto がオン、または audioUnavailable
+    opt プレビューを保っていた
+      content->>content: reapplyForCurrentChannel (putBackStoredGain)
+    end
     content-->>popup: ok false、auto update pending / auto apply enabled / audio unavailable
   else 受け付けた
     content->>bridge: setGain (applyGain)
@@ -283,11 +311,13 @@ sequenceDiagram
   popup->>content: getState (refresh)
 ```
 
-図のもと: `popup.js` の `manualSlider` の `input` / `change` / `pointerdown` / `pointerup` / `pointercancel` / `keydown` リスナー、`window` の `blur` リスナー、プリセットの `click` リスナー、`setGain`、`applyMeasured`、`syncInteractionDisabledState`、`renderState`。`content.js` の `runtime.onMessage` リスナーの `setGain`、`applyGain`、`saveChannelGain`、`reapplyForCurrentChannel`。
+図のもと: `popup.js` の `manualSlider` の `input` / `change` / `pointerdown` / `pointerup` / `pointercancel` / `keydown` / `keyup` / `blur` リスナー、`window` の `blur` リスナー、`endSliderKeyHold`、`endSliderGesture`、`keepPreviewAlive`、`previewGain`、プリセットの `click` リスナー、`setGain`、`applyMeasured`、`syncInteractionDisabledState`、`renderState`。`content.js` の `runtime.onMessage` リスナーの `previewGain` と `setGain`、`startPreview`、`endPreview`、`endIdlePreview`、`putBackStoredGain`、`previewHoldsGain`、`gainGestureRefusal`、`applyGain`、`saveChannelGain`、`reapplyForCurrentChannel`。
 
-- `input` (スライダーを動かしている間) は Current の表示と値のラベルを変えるだけで、何も送らない。`change` で `setGain` を 1 回送る。プリセットのボタンはスライダーを動かし、同じ 2 つの表示を変えて、`setGain` を 1 回送る。これらの送信をためたりまとめたりする仕組みはほかに無い。
-- スライダーは、操作を始めたとき (`pointerdown`、`keydown`、または最初の `input`) に写しておいた `appliesTo` を送る。プリセットと「チャンネルに適用」ボタンは、最後に描いた状態の `appliesTo` を送る。
-- スライダーをポインターで押さえている間 (`pointerdown` から `pointerup` / `pointercancel` まで) に popup の `window` が `blur` すると、そこで操作を終える。`blur` より先に届いた `change` は `setGain` を送ってある。そのあとは次の `pointerdown` か、繰り返しでない `keydown` まで、スライダーの `input` は何もせず、`change` は離したときのものも含めて何も送らず、つまみを `blur` の時点のスライダーの値へ戻す。
+- `input` (スライダーを動かしている間) は Current の表示と値のラベルを変えるだけで、何も送らない。`change` で `setGain` を 1 回送る。プリセットのボタンはスライダーを動かし、同じ 2 つの表示を変えて、`setGain` を 1 回送る。
+- 値を動かすキー (矢印・PageUp / PageDown・Home / End。`SLIDER_VALUE_KEYS`、`createSliderKeys`) だけが押し続けになり、ほかのキー (Tab や Shift など) は関わらない。スライダーでキーを押し続けている間 (最初のそのキーの `keydown` から、押しているそのキーの最後の 1 つの `keyup` まで) は、音には出すが保存はしない。`input` ごとに `previewGain` も送る。content は `setGain` を断るときと同じ理由で断り (`gainGestureRefusal`)、そうでなければ保存せずにかける。繰り返しごとに出る `change` は何も送らない。`keyup`、またはその前のスライダーか popup の `window` の `blur` で、押し続けている間に `input` があったときだけ、スライダーの値で `setGain` を 1 回送る。押し続けている間の `blur` は、ドラッグと同じく (下) そこで操作も終える。popup は `previewGain` については何も知らせない。押し続けた操作を終える `setGain` が断られたときは、下と同じく知らせる。
+- `previewGain` のあともキーを押し続けていると、popup は押し続けた操作が終わるまで、1000 ms (`PREVIEW_KEEP_ALIVE_MS`) ごとにスライダーの値で `previewGain` をもう一度送る (`keepPreviewAlive`)。content は受け付けた `previewGain` を保ち (`startPreview`)、書き込み・設定の変更・計測がかけるはずのゲインをかけない (「適用するゲインの決まり方」を参照)。保つのは、押し続けた操作を終える `setGain` が届くまで (`endPreview`)、または最後の `previewGain` から 2000 ms (`PREVIEW_IDLE_MS`) たつまで (キーを押したまま popup を閉じたときなど。`endIdlePreview`)。2 つ目の形で終わったとき、およびプレビューのあとの `setGain` が断られたときは、行を読み直してかける (`putBackStoredGain`)。`appliesTo` が `currentGestureState()` と違うプレビューは何も保たない。
+- スライダーは、操作を始めたとき (`pointerdown`、押し続けを始める `keydown`、または最初の `input`) に写しておいた `appliesTo` を送る。プリセットと「チャンネルに適用」ボタンは、最後に描いた状態の `appliesTo` を送る。
+- スライダーをポインターで押さえている間 (`pointerdown` から `pointerup` / `pointercancel` まで) に popup の `window` が `blur` すると、そこで操作を終える。`blur` より先に届いた `change` は `setGain` を送ってある。そのあとは次の `pointerdown` か、値を動かすキーの繰り返しでない `keydown` まで、スライダーの `input` は何もせず、`change` は離したときのものも含めて何も送らず、つまみを `blur` の時点のスライダーの値へ戻す。
 - 「チャンネルに適用」(`applyMeasured`) は `resume` を送ってから、最後の `getState` から計算した Suggested のゲイン `suggestedGain(lufs.integrated, targetLufs)` で `setGain` を送る。このボタンが押せるのは、Auto がオフで、有限の Integrated があり、チャンネルがあり、音声が使えるとき。表示は「$VALUE$ をチャンネルに適用」で、$VALUE$ に表示単位でのゲインが入る。
 - popup は、Auto がオン、Auto の保存待ち、`audioUnavailable` が true、または Live / VOD のチャンネルが無いページのとき、スライダーとプリセットを押せなくする。
 - 書き込み: `saveGain` が正式な行の `gain<Kind>` を書く。
@@ -358,7 +388,7 @@ sequenceDiagram
     opt Integrated が有限で、ページにチャンネル ID がある
       opt Auto がオン
         content->>content: applyAutoGain
-        opt 前にかけてから 1000 ms 以上たった
+        opt previewGain を保っていない (場面 3)、かつ前にかけてから 1000 ms 以上たった
           content->>bridge: setGain autoGainToPlay()
         end
       end
@@ -379,7 +409,7 @@ sequenceDiagram
   end
 ```
 
-図のもと: `audio-worklet.js` の `KMeanSquareProcessor.process`。`page-bridge.js` の `onBlockMs`、`normalizeForVolume`、`updateIntegratedLufs`、`integratedLufs`、`postLufs`。`content.js` の `handleBridgeMessage` の `lufs`、`applyAutoGain`、`autoGainToPlay`、`throttledSaveIntegrated`、`saveLastIntegrated`、`measurementSaved`、`measurementSaveFailed`。
+図のもと: `audio-worklet.js` の `KMeanSquareProcessor.process`。`page-bridge.js` の `onBlockMs`、`normalizeForVolume`、`updateIntegratedLufs`、`integratedLufs`、`postLufs`。`content.js` の `handleBridgeMessage` の `lufs`、`applyAutoGain`、`previewHoldsGain`、`autoGainToPlay`、`throttledSaveIntegrated`、`saveLastIntegrated`、`measurementSaved`、`measurementSaveFailed`。
 
 - 2 つの間引きは別々に働く。`applyAutoGain` を通るとき、Auto のもとでゲインが変わるのは 1000 ms (`DISPLAY_UPDATE_INTERVAL_MS`) に 1 回まで。`chrome.storage.onChanged` が始める読み直し (場面 10 と 12) は、この間引きを通らずに `autoGainToPlay` のゲインをかける。計測結果と今かかっている Auto のゲインを書くのは、Auto のオン・オフに関係なく、タブごとに 5000 ms に 1 回までで、`playing` が true の `lufs` からだけ。`lastSavedAt` は保存を送るときに入り、保存の失敗・SPA 遷移・測定値のリセットで 0 に戻るので、次のブロックでまた送る。`sendResetMeasurement` は `lastAutoGainUpdateAt` を `-Infinity` に、`autoRaiseFrom` を null に戻すので、リセット後に最初に届いた有限の Integrated はすぐに、そのままかかる。
 - Auto がかけるゲインは `autoGainToPlay` が決める。もとは `calcGain(integrated, targetLufs)`。ブロックの short-term のラウドネスが Integrated より 6 dB (`AUTO_RISE_DB`) 以上大きいときは、Integrated が 3 dB (`AUTO_RISE_AHEAD_DB`) 大きいものとしてゲインを求める。ただし `adActive` が true の間と、最後の CM が終わってから 3 秒 (`SHORT_TERM_MS`、`adEndedAt`) の間は、そうしない。`currentGain` 以下のゲインはすぐにかかる。それより大きいゲインは、計測したレベルが最後にゲインを決めてから (`autoRaiseFrom`) 30 秒 (`AUTO_RAISE_PERIOD_MS`) ごとに 1.5 dB (`AUTO_RAISE_DB`) まで、`currentGain` から上げた値で止める。`autoRaiseFrom` が null のとき (測定値のリセット、設定の変更、保存された Auto の切り替えのあと) と、`currentGain` が 0 のときは、そのままかかる。呼ぶたびに `autoRaiseFrom` を今にする。
@@ -509,7 +539,7 @@ sequenceDiagram
 - Live のページが取る owner は、`source: 'user'` で、`contentId` が URL の login のもの。VOD のページが取るのは、`source: 'video'` で、`contentId` が動画 ID のもの。クリップのページは何も取らない。`userId` は数字だけの文字列でなければならない。
 - 書き込み: `mergeChannelIds`。ゲイン・Auto・Auto のゲイン・LUFS の各項目は、片方だけが持っていればその値を取り、両方が持っていれば版番号の大きい方を取る。同じ番号なら、ユーザー ID の行の値を残す。`lastLufs` では、`clearMeasurement` が記録した「消した」という状態も、持っているものとして数える。`lastLufsRef` と `lastLufsWindows` は説明している `lastLufs` の値と一緒に、`autoGainRef` は `autoGain<Kind>` と一緒に動く。`lastMeasuredAt` は 2 つのうち新しい方、`name` / `login` / `url` は owner のイベントから取る。仮 ID からユーザー ID への別名を保存する。
 - `currentChannel.id` が `migratingChannelId` と同じ間、content の `onChanged` リスナーは行を読み直さない (場面 12)。そのため、まとめる書き込みそのものによって、途中で仮 ID の行のゲインがかかることはない。
-- 保存された別名がすでに仮 ID をユーザー ID へ結んでいたときは、計測の対象が変わらないので、2 回目の種は送らない。
+- 保存された別名がすでに仮 ID をユーザー ID へ結んでいたときは、計測の対象が変わらないので、2 回目の種は送らない。同じコンテンツについて繰り返された owner のイベントの `mergeChannelIds` は、すでに整った状態の保存値を何も変えず、何も書かない (「チャンネルごとの値を書く単一の書き手」を参照)。
 - 読み直しが `chrome.storage.onChanged` の始めた読み直し (場面 12) に追い越されたときは、`seededResetPending` がまだ立っているので、追い越した読み直しが種つきのリセットを送る。
 - 失敗: `[TCV] provisional channel migration failed` (warning)。タブは仮 ID のままで、あとで届いた owner のイベントがもう一度 `acceptOwner` を動かす。
 
@@ -583,8 +613,10 @@ sequenceDiagram
         content->>content: もう 1 回 reapplyForCurrentChannel
       end
       opt 最後の読み直しが追い越されていない
-        content->>bridge: setGain (applyGain)
-        opt Auto がオンで、Integrated が有限で、それを取った lufs の playing が true
+        opt previewGain を保っていない (場面 3)
+          content->>bridge: setGain (applyGain)
+        end
+        opt targetLufs か Auto の既定値が変わり、Auto がオンで、Integrated が有限で、それを取った lufs の playing が true
           content->>sw: autoGain = calcGain(integrated, targetLufs) で saveAutoGain
         end
       end
@@ -594,11 +626,11 @@ sequenceDiagram
   end
 ```
 
-図のもと: `options.js` の `targetLufs`・`adGainDb`・2 つの Auto 既定値のトグル・`#unitToggle`・`overlayToggle` のリスナー、`updateSettings`、`mutateSettings`、`reloadSettingsAfterFailure`、`storage.onChanged` リスナー。`content.js` の `storage.onChanged` リスナー、`reapplyForCurrentChannel`、`saveChannelAutoGain`。`page-bridge.js` の `setAdGainOffset`。`popup.js` の `storage.onChanged` リスナー。
+図のもと: `options.js` の `holdSettingsSlider` (`targetLufs` と `adGainDb` のリスナー、`window` の `blur` リスナー)、2 つの Auto 既定値のトグル・`#unitToggle`・`overlayToggle` のリスナー、`updateSettings`、`mutateSettings`、`reloadSettingsAfterFailure`、`storage.onChanged` リスナー。`content.js` の `storage.onChanged` リスナー、`reapplyForCurrentChannel`、`previewHoldsGain`、`saveChannelAutoGain`。`page-bridge.js` の `setAdGainOffset`。`popup.js` の `storage.onChanged` リスナー。
 
-- 「Target LUFS」と「CM Gain」のスライダーは `change` で送り、`input` ではラベルを変えるだけ。Live / VOD の既定値のトグルとゲイン表示のトグルは `change` で、表示単位のボタンは `click` で送る。どれも自分が受け持つ項目 1 つだけを送る。最初の読み込みが終わるまでは押せない (`settingsReady`)。
+- 「Target LUFS」と「CM Gain」のスライダーは `change` で送り、`input` ではラベルを変えるだけ。どちらのスライダーでも、キーを押し続けている間 (最初の値を動かすキーの `keydown` から、押しているそのキーの最後の 1 つの `keyup` まで。値を動かすキーだけを数えるのは popup のスライダーと同じ、場面 3) は `change` で何も送らない。`keyup`、またはその前のスライダーかページの `window` の `blur` で、値が動いていればスライダーの値を 1 回送る。そのような `blur` のあとは、次の `pointerdown` か、値を動かすキーの繰り返しでない `keydown` まで、スライダーの `input` は何もせず、`change` はつまみを `blur` の時点で書いた値へ戻す。ポインタでスライダーを押している間 (`pointerdown` からその `pointerup` / `pointercancel` まで) のスライダーかページの `window` の `blur` も、同じように操作を終える。`blur` より前に Chrome が出す `change` がその値を書いており、次に押すまで、スライダーの `input` は何もせず、`change` はつまみをその値へ戻す。Live / VOD の既定値のトグルとゲイン表示のトグルは `change` で、表示単位のボタンは `click` で送る。どれも自分が受け持つ項目 1 つだけを送り、保存値と同じ値を送った項目は書かない (「設定を書く単一の書き手」を参照)。最初の読み込みが終わるまでは押せない (`settingsReady`)。
 - それぞれの Twitch のタブで: 新しい `targetLufs` は、Auto がオンで Integrated が有限ならすぐにゲインを変える (`reapplyForCurrentChannel` を通る)。新しい `adGainDb` は、CM 中ならノードを変え、CM 要素のノードも同じ手順の中で変わる (`setAdGainOffset` が `syncAdElementGains` を動かす)。新しい Auto 既定値は、その種別の Auto の選択も手動ゲインも行に無いチャンネルについて Auto を切り替えるが、`autoApplyLoudness<Kind>` は書かない。`showGainOverlay` はオーバーレイだけを変える。
-- このリスナーは、`autoLoudnessSettings` が変われば、どの項目が変わったかに関係なく、行を読み直して `saveAutoGain` の条件を調べる。`saveAutoGain` を送るのは、最後に受け取った `lufs` の `playing` が true のタブだけ (`lastLufsPlaying`。`saveMeasurement` と同じ条件、場面 5)。止まっているかミュートのタブは、ゲインはかけるが何も保存しない。
+- このリスナーは、`autoLoudnessSettings` が変われば、どの項目が変わったかに関係なく、行を読み直してゲインをかける。`saveAutoGain` を送るのは、`targetLufs`・`autoApplyLoudnessLiveDefault`・`autoApplyLoudnessVodDefault` のどれかが、タブの持っていた値と違うときだけで、しかも最後に受け取った `lufs` の `playing` が true のタブだけ (`lastLufsPlaying`。`saveMeasurement` と同じ条件、場面 5)。`displayUnit`・`showGainOverlay`・`adGainDb` の変更では何も保存せず、止まっているかミュートのタブは、ゲインはかけるが何も保存しない。タブが `previewGain` を保っている間 (場面 3) は、読み直してもゲインはかけず、`saveAutoGain` は上のとおり送る。
 - content・popup・設定ページは、`autoLoudnessSettings` を `sync` の変更からだけ取り込む。local でこのキーが変わるのは移し替えが消すときだけで、その変更は設定を運ばない。
 - その読み直しが追い越されたとき (`onChanged` に届いたチャンネルの書き込みが始めた読み直し、owner のイベント、遷移による) は、それが返ったあとで、そのときのチャンネルと行についてもう 1 回読み直し、そこでかけたゲインを `saveAutoGain` で送る。もう 1 回も追い越されたときは、3 回目はしない。
 - popup は `displayUnit` を取り込み、`sliderSynced` を消して、`getState` を読み直す。ほかに開いている設定ページは設定を描き直す。
@@ -664,7 +696,9 @@ sequenceDiagram
     content->>storage: get (loadChannelEntry)
     opt 読み直しが追い越されていない
       content->>content: resolvePreferredGain
-      content->>bridge: setGain (applyGain)
+      opt previewGain を保っていない (場面 3)
+        content->>bridge: setGain (applyGain)
+      end
       opt 起動か遷移が立てた seededResetPending
         content->>bridge: 次の epoch で resetMeasurement、行を種にする、seededResetPending = false
       end
@@ -673,9 +707,9 @@ sequenceDiagram
   Note over popup: channelVolumes のリスナーは無く、<br>getState を 1000 ms ごとに読む
 ```
 
-図のもと: `content.js` の `storage.onChanged` リスナー、`reapplyForCurrentChannel`、`loadChannelEntry`、`sendPendingSeededReset`。`popup.js` の `storage.onChanged` リスナーと `setInterval(refresh, DISPLAY_UPDATE_INTERVAL_MS)` の呼び出し。
+図のもと: `content.js` の `storage.onChanged` リスナー、`reapplyForCurrentChannel`、`loadChannelEntry`、`previewHoldsGain`、`sendPendingSeededReset`。`popup.js` の `storage.onChanged` リスナーと `setInterval(refresh, DISPLAY_UPDATE_INTERVAL_MS)` の呼び出し。
 
-- リスナーはどの行が変わったかを見ない。どのチャンネルのタブも自分の行を読み直して `setGain` を送る。値が変わるのは、決まったゲインが `currentGain` と違うときだけ。
+- リスナーはどの行が変わったかを見ない。どのチャンネルのタブも自分の行を読み直して `setGain` を送る。値が変わるのは、決まったゲインが `currentGain` と違うときだけ。`previewGain` を保っているタブ (場面 3) は送らず、プレビューが保存なしか断られた保存で終わったときに、保存されたゲインへ戻す。
 - Auto がオンで Integrated が有限なら、この流れは `autoGainToPlay` のゲインをかけ、`applyAutoGain` の 1000 ms の間引きを通らない。
 - リスナーに届いた書き込みごとに読み直しが始まり、あとの読み直しに追い越された読み直しは何もかけない。
 - 保存: なし。
@@ -745,11 +779,12 @@ sequenceDiagram
 | タブの起動 | 保存された行から決まるゲイン。チャンネルが無ければ 1.0 | なし | `content.js` の起動の処理、`reapplyForCurrentChannel` |
 | AudioContext を作る | 新しいノードは、持っていた `baselineGain` から決まる実際のゲインで始まる | なし | `page-bridge.js` の `createContext` |
 | Service Worker の起動 | SW は送らない | なし。以前の版が local に置いた設定を sync へ移す | `background.js` の `moveToSync`、`settings-store.js` の `moveSettingsToSync` |
-| インストール・更新 | SW は送らない | `normalizeChannels`。設定は書かない | `background.js` の `onInstalled` |
-| 設定ページを開く | options は送らない | `normalizeChannels` | `options.js` の `loadAll` |
+| インストール・更新 | SW は送らない | `normalizeChannels`。保存値が変わるときだけ書く。設定は書かない | `background.js` の `onInstalled` |
+| 設定ページを開く | options は送らない | `normalizeChannels`。保存値が変わるときだけ書く | `options.js` の `loadAll` |
 | popup のスライダーの `input` | 変わらない、表示だけ | なし | `popup.js` の `input` リスナー |
 | スライダーを押さえたまま popup が `blur` する | 変わらない。残りのドラッグは送らず、その `change` でつまみを戻す | なし | `popup.js` の `window` の `blur` リスナー |
 | popup のスライダーの `change`、プリセットのクリック | 選んだゲイン | `saveGain` | `popup.js` の `setGain`、`content.js` の `setGain`、`saveChannelGain` |
+| popup のスライダーでキーを押し続ける | 動いた先の値ごと (`previewGain`)。押し続けた操作が終わるまで、書き込み・設定の変更・Auto はこれを置き換えない (場面 3) | `keyup` か `blur` で `saveGain` を 1 回 | `popup.js` の `keydown` / `keyup` リスナー、`endSliderKeyHold`、`keepPreviewAlive`、`content.js` の `previewGain`、`startPreview`、`endIdlePreview` |
 | 「チャンネルに適用」 | Suggested のゲイン | `saveGain` | `popup.js` の `applyMeasured` |
 | `saveGain` が断られる | 保存済みのゲインへ戻る | なし | `content.js` の `setGain`、`reapplyForCurrentChannel` |
 | popup で Auto を切り替える | 決め直す | `saveAuto`、計算できたときは `autoGain` つき | `content.js` の `setAutoApplyLoudness`、`saveChannelAutoApply` |
@@ -761,7 +796,7 @@ sequenceDiagram
 | 持ち主の ID がわかる | まとめたあとの行から決め直す | `mergeChannelIds`、別名を保存 | `acceptOwner`、`migrateChannelId` |
 | CM の始まり・終わり | `baselineGain * adGainOffset` と `baselineGain` の間で切り替わる | なし | `updateAdState`、`applyEffectiveGain` |
 | クライアント側の CM 要素が鳴る | その要素のノードが `baselineGain * adGainOffset * (本編の音量 / その要素の音量)`、終われば 1 | なし | `syncAdElementGains` |
-| 設定の項目が変わる | 決め直す。`adGainDb` が変われば CM ゲインの倍率も変える | Auto がオンで、Integrated が有限で、最後の `lufs` の `playing` が true なら `saveAutoGain` | `content.js` の `storage.onChanged` リスナー |
+| 設定の項目が変わる | 決め直す。`adGainDb` が変われば CM ゲインの倍率も変える | `targetLufs` か Auto の既定値が変わり、Auto がオンで、Integrated が有限で、最後の `lufs` の `playing` が true なら `saveAutoGain` | `content.js` の `storage.onChanged` リスナー |
 | チャンネルの削除・全削除 | 行なしで決め直す | `deleteChannel` / `clearChannels` | `options.js` の `removeChannel`、`clearAll` |
 | `channelVolumes` か別名が変わる | 決め直す | なし | `content.js` の `storage.onChanged` リスナー |
 | つなぎ込み・つなぎ直し | 値は保つ。要素はノードを通って鳴る | なし | `page-bridge.js` の `attach`、`clearStaleAttachment` |
@@ -775,7 +810,8 @@ sequenceDiagram
 
 - **値の変わらない書き込み** (「チャンネルごとの値を書く単一の書き手」「2. インストール・更新と、以前の版が保存した値」「12. 書き込みがほかの画面へ届く」を参照): このリポジトリの `background.js`・`channel-store.js`・`settings-store.js` を service worker で動かすと、保存済みと同じ値の `set` では、service worker・2 つの拡張機能のページ・content script のどこにも `onChanged` が届かなかった (場合ごとに 10 回中 0 回。値が変わる書き込みは 10 回中 10 回)。すでに整った状態での `normalizeChannels` でも届かなかった (10 回中 0 回)。`saveGain` は、`changes` に `channelVolumeSequence` と `channelVolumes` を載せ、変わらない `channelVolumeAliases` は載せなかった (200 回中 200 回)。
 - **1 回のチャンネル書き込みの知らせと返事** (「チャンネルごとの値を書く単一の書き手」を参照): `saveGain` の書き込み 200 回中 200 回で、`onChanged` が `sendMessage` の返事より先に content script に届いた。そこの図では、この 2 つを 1 つの `par` のまとまりに描いている。返事が遅れた時間は、中央値で 0.1 ms、最大で 2.9 ms だった。
-- **popup のスライダーのキーボード操作** (「3. popup で手動ゲインを設定する」を参照): `manualSlider` と同じ `min="0" max="600" step="5"` の range 入力で、値が動くキーを 1 回押すと `input` と `change` が 1 回ずつ出た (矢印キーで 5、PageUp / PageDown で 60 動く)。端でキーを押すと、どちらも出なかった。キーを押し続けると、値が動いた繰り返しごとに `change` が 1 回出た。マウスで 10 回動かすドラッグでは、`input` が 10 回、`change` が 1 回だった。`change` 1 回で `setGain` が 1 回送られ、その後に `saveGain` が続く。
+- **popup のスライダーのキーボード操作** (「3. popup で手動ゲインを設定する」を参照): `manualSlider` と同じ `min="0" max="600" step="5"` の range 入力で、値が動くキーを 1 回押すと `input` と `change` が 1 回ずつ出た (矢印キーで 5、PageUp / PageDown で 60 動く)。端でキーを押すと、どちらも出なかった。キーを押し続けると、値が動いた繰り返しごとに `change` が 1 回出た。マウスで 10 回動かすドラッグでは、`input` が 10 回、`change` が 1 回だった。ドラッグの `change` 1 回で `setGain` が 1 回送られ、その後に `saveGain` が続く。キーを押し続けたときは、`input` ごとに `previewGain` を送り、離したところで `setGain` を 1 回送る。
+- **設定ページのスライダー** (「10. 設定ページで設定を変える」を参照): 2026-10-30 に Chrome 156.0.8078.76 で、このリポジトリの設定ページに CDP の入力 (`Input.dispatchKeyEvent`・`Input.dispatchMouseEvent`) を送って測った。headless で「CM Gain」のスライダーのキーを押し続けると (押して 1 回と、値が動く繰り返し 10 回)、11 回それぞれで `change` が 1 回出た。画面に出る Chrome (headed) で、どちらかのスライダーのドラッグの途中でウィンドウのフォーカスが外れると、`input` が続いた後、その時点の値で `change` が出て、次にスライダーの `blur`、ウィンドウの `blur` が出た。`blur` の後には `input` も、離したときの `change` も出なかった。フォーカスが外れたままでも、戻っても同じだった (スライダーごとに、それぞれ 1 回)。本物のマウスを押したままアプリを切り替える操作は試していない。
 - **AudioContext が止まっている間の音** (「14. AudioContext の停止と再開」を参照): テスト用のページで、ユーザーの操作より前に作った AudioContext に `createMediaElementSource` でつないだ要素を、`resume()` を呼ばずに信頼されたクリックから再生すると、タブは音を出さなかった (`audible` は 45 回の読み取り中 0 回)。AudioContext は `suspended` のままで、要素の `currentTime` も 0 のままだった。`resume()` の後は 45 回中 45 回、音が出た。Web Audio を通さない要素と、動いている AudioContext につないだ要素は、どちらも 45 回中 45 回、音が出た。この項目は `--mute-audio` を付けずに、作った音で測った。
 - **拡張機能を読み込み直した後の content script** (「13. video 要素へのつなぎ込み」を参照): このリポジトリの `content_scripts` と同じ形で、`twitch.tv` の道筋に置いた仮のページを使うと、`chrome.runtime.reload()` の後、開いていたタブでは MAIN world と ISOLATED world のどちらのスクリプトも動き直さなかった (6 回中 0 回)。ページを読み込み直すと、両方が動いた (6 回中 6 回)。戻る・進むで bfcache (ページを丸ごと保存しておく仕組み) から戻した 3 回中 3 回で、どちらも動き直さなかった。拡張機能を読み込み直したときに bfcache に入っていたページは、そこから戻されずに新しく読み込まれ、両方が動いた (3 回中 3 回)。
 - **つないだ要素が止まっている間の計測ブロック** (「5. 計測ブロック・自動追従・LUFS キャッシュの保存」と「9. CM 区間」を参照): クライアント側の CM が 2 つ目の `<video>` で約 30 秒流れ、つないだ要素が止まっていた Twitch の VOD では、ブロックは毎秒 10 個のまま届き続けた (まる 27 秒で 302 個、そのうち 297 個は二乗平均が 0)。このリポジトリの `audio-worklet.js` をテスト用のページで動かすと、止まった要素や終わった要素でも、二乗平均 0 のブロックが毎秒約 10 個届いた。どちらも `--mute-audio` を付けて測り、その条件でも本編の再生中のブロックは 0 ではなかった (155 回中 155 回)。
