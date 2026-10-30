@@ -1,6 +1,6 @@
 #!/bin/sh
-# The twitch suite without the packaging surface — the store package, the
-# screenshot generator and its --check, the release-tag scripts and the icons.
+# The twitch suite without the packaging surface — the store package and the
+# screenshot generator with its --check.
 # The slow ones there shell out to python, which is what this is for; the rest
 # go with them because what is matched is the case's name.
 #
@@ -11,4 +11,4 @@
 # judged by this file is judged again by MUTATE_CONFIRM="node test.js" before a
 # survivor is written down. Naming a behavioural case with one of these words
 # costs the sweep its power over that case.
-exec node --test --test-skip-pattern="pack\.py|package|screenshot|\bzip\b|python|manifest|\bicons?\b|\btags?\b|\bversion\b|drawing|\bdraws\b|tracked|--check|--out|\bPNG\b|IDAT|faces|\bdirectory\b|backup|\bimages?\b|README|privacy|\bCI\b|reserved names|generator" test.js
+exec node --test --test-skip-pattern="pack\.py|package|screenshot|\bzip\b|python|manifest|drawing|\bdraws\b|tracked|--check|--out|\bPNG\b|IDAT|faces|\bdirectory\b|backup|\bimages?\b|README|privacy|\bCI\b|reserved names|generator" test.js
