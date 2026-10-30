@@ -117,14 +117,13 @@ the package itself leaves out, such as `docs/`.
 
 ## Why not just use a compressor?
 
-A static compressor (like FrankerFaceZ's option) clips loud peaks but does nothing about *median loudness drift* across channels. This extension targets a constant integrated loudness across channels, the way YouTube does for VODs — except Twitch refuses to do it server-side.
+A compressor turns down the loud peaks of the audio it hears, so it narrows the range within one stream but leaves each channel's *median loudness* where it was: one channel stays louder than the next. This extension aims the integrated loudness of every channel at one target, which Twitch does not do on its side.
 
 ## Background
 
-- Twitch does **not** perform loudness normalization on either streams or ads
+- Twitch does **not** perform loudness normalization on streams
 - Loudness varies wildly between channels (often 20 + dB)
-- California SB 576 (enforcement 2026-07-01) may force changes for ads
-- Other major platforms normalize: YouTube (-14 LUFS), Spotify (-14 LUFS), Apple Music (-16 LUFS)
+- Since 2026-07-01, California SB 576 (Business and Professions Code § 22776) has prohibited a video streaming service that serves consumers in California from transmitting the audio of ads louder than the video content they accompany. The extension applies its own ad gain whatever level an ad arrives at
 
 ## Privacy
 
