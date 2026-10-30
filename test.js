@@ -8185,6 +8185,45 @@ test('a drag the popup loses focus in is saved at the blur, and nothing it does 
   assert.deepEqual(gainsSent(), [0.45, 1.65, 2, 2.1]);
 });
 
+// A Tab pressed in the middle of a drag takes focus off the slider: Chrome
+// fires a change with the value the slider holds, then the slider's blur, and
+// the slider goes on following the pointer until it is let go.
+test('a drag the slider loses focus in is saved at the blur, and nothing it does after is sent', async () => {
+  const popup = createPopupHarness();
+  await flushTasks(8);
+  const gainsSent = () => popup.sent
+    .filter((request) => request.cmd === 'setGain')
+    .map((request) => request.gain);
+  const move = async (percent) => {
+    popup.el('manualSlider').value = String(percent);
+    await popup.fire('manualSlider', 'input');
+  };
+
+  await popup.fire('manualSlider', 'pointerdown');
+  await move(170);
+  await move(225);
+  await popup.fire('manualSlider', 'keydown', { key: 'Tab', repeat: false });
+  await popup.fire('manualSlider', 'change');
+  await popup.fire('manualSlider', 'blur');
+  await popup.fire('manualSlider', 'keyup', { key: 'Tab', repeat: false });
+  assert.deepEqual(gainsSent(), [2.25], 'the change ahead of the blur');
+
+  for (const percent of [325, 375, 430]) await move(percent);
+  await popup.fire('manualSlider', 'pointerup');
+  await popup.fire('manualSlider', 'change');
+  assert.deepEqual(gainsSent(), [2.25], 'the rest of the drag and its release');
+  assert.equal(popup.el('manualValue').textContent, '225%', 'the label stays where the save left it');
+  assert.equal(popup.el('manualSlider').value, '225', 'and the release puts the thumb back there');
+
+  // A blur of the slider with nothing pressed ends nothing.
+  await popup.fire('manualSlider', 'blur');
+  await popup.fire('manualSlider', 'pointerdown');
+  await move(240);
+  await popup.fire('manualSlider', 'pointerup');
+  await popup.fire('manualSlider', 'change');
+  assert.deepEqual(gainsSent(), [2.25, 2.4], 'a blur with nothing pressed ends nothing');
+});
+
 test('a drag the popup lost focus in writes nothing to the channel the tab moves to', async () => {
   const content = createContentHarness({ href: 'https://www.twitch.tv/streamer_a' });
   await flushTasks();
