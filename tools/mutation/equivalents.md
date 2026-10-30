@@ -225,9 +225,9 @@ mean is `NaN`, which `meanSquareToLufs` answers `-Infinity` for. Checked against
 agree on every one.
 
 - `utils.js:115` a guard is dropped ×1 — if (!Number.isFinite(measuredLufs)) return 1.0;
-- `utils.js:292` a guard is dropped ×1 — if (valid.length === 0) return -Infinity;
-- `utils.js:295` a guard is dropped ×1 — if (passAbs.length === 0) return -Infinity;
-- `utils.js:300` a guard is dropped ×1 — if (passRel.length === 0) return -Infinity;
+- `utils.js:317` a guard is dropped ×1 — if (valid.length === 0) return -Infinity;
+- `utils.js:320` a guard is dropped ×1 — if (passAbs.length === 0) return -Infinity;
+- `utils.js:325` a guard is dropped ×1 — if (passRel.length === 0) return -Infinity;
 
 ## options.js
 
@@ -235,8 +235,8 @@ The default-Auto toggle's and the unit buttons' readiness checks.
 `updateSettings` opens with the same one, so the mutant reaches it and stops
 there.
 
-- `options.js:323` a guard is dropped ×1 — if (!settingsReady) return;
-- `options.js:336` a guard is dropped ×1 — if (!settingsReady) return;
+- `options.js:330` a guard is dropped ×1 — if (!settingsReady) return;
+- `options.js:343` a guard is dropped ×1 — if (!settingsReady) return;
 
 ## tools/mutation/bail.mjs
 

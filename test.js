@@ -8160,15 +8160,15 @@ test('a drag the popup loses focus in is saved at the blur, and nothing it does 
 
   // A key's repeat is the hold already under way; a key pressed begins again,
   // and is saved where it is let go.
-  await popup.fire('manualSlider', 'keydown', { repeat: true });
+  await popup.fire('manualSlider', 'keydown', { key: 'ArrowRight', repeat: true });
   await move(160);
   await popup.fire('manualSlider', 'change');
-  await popup.fire('manualSlider', 'keyup');
+  await popup.fire('manualSlider', 'keyup', { key: 'ArrowRight' });
   assert.deepEqual(gainsSent(), [0.45]);
-  await popup.fire('manualSlider', 'keydown', { repeat: false });
+  await popup.fire('manualSlider', 'keydown', { key: 'ArrowRight', repeat: false });
   await move(165);
   await popup.fire('manualSlider', 'change');
-  await popup.fire('manualSlider', 'keyup');
+  await popup.fire('manualSlider', 'keyup', { key: 'ArrowRight' });
   assert.deepEqual(gainsSent(), [0.45, 1.65]);
 
   await popup.blurWindow();
@@ -8217,7 +8217,7 @@ test('a drag the popup lost focus in writes nothing to the channel the tab moves
 // A held key fires an input and a change for every repeat that moves the
 // slider, then a keyup where it is let go.
 async function holdSliderKey(popup, percent, first = false) {
-  await popup.fire('manualSlider', 'keydown', { repeat: !first });
+  await popup.fire('manualSlider', 'keydown', { key: 'ArrowRight', repeat: !first });
   popup.el('manualSlider').value = String(percent);
   await popup.fire('manualSlider', 'input');
   await popup.fire('manualSlider', 'change');
@@ -8238,15 +8238,15 @@ test('a key held on the slider is heard at each repeat and saved once, where it 
   assert.deepEqual(gains('previewGain'), [1.55, 1.6, 1.65], 'each repeat is heard');
   assert.deepEqual(gains('setGain'), [], 'and none of them is saved');
 
-  await popup.fire('manualSlider', 'keyup');
+  await popup.fire('manualSlider', 'keyup', { key: 'ArrowRight' });
   assert.deepEqual(gains('setGain'), [1.65], 'the value is saved once it is let go');
   assert.equal(sentOf('setGain')[0].appliesTo, '123|live|', 'against the state the hold began on');
   assert.deepEqual(sentOf('previewGain').map((request) => request.appliesTo),
     ['123|live|', '123|live|', '123|live|']);
 
   // A key that moves nothing saves nothing.
-  await popup.fire('manualSlider', 'keydown', { repeat: false });
-  await popup.fire('manualSlider', 'keyup');
+  await popup.fire('manualSlider', 'keydown', { key: 'ArrowRight', repeat: false });
+  await popup.fire('manualSlider', 'keyup', { key: 'ArrowRight' });
   assert.deepEqual(gains('setGain'), [1.65]);
 
   // Control: a drag is saved on its change, and previews nothing.
@@ -8272,14 +8272,14 @@ test('a key held when focus leaves the slider or the popup is saved there, and w
 
     // Focus comes back with the key still down, and the key is let go.
     await holdSliderKey(popup, 160);
-    await popup.fire('manualSlider', 'keyup');
+    await popup.fire('manualSlider', 'keyup', { key: 'ArrowRight' });
     assert.deepEqual(gains('setGain'), [1.55], `${leave}: the rest of the hold`);
     assert.deepEqual(gains('previewGain'), [1.55], `${leave}: the rest of the hold`);
     assert.equal(popup.el('manualSlider').value, '155', `${leave}: the thumb goes back to the value saved`);
 
     // The next key pressed begins again.
     await holdSliderKey(popup, 165, true);
-    await popup.fire('manualSlider', 'keyup');
+    await popup.fire('manualSlider', 'keyup', { key: 'ArrowRight' });
     assert.deepEqual(gains('setGain'), [1.55, 1.65], leave);
   }
 
@@ -8311,12 +8311,12 @@ test('a key held on the slider after a preview sends it again each second until 
   assert.deepEqual(popup.sent.filter((request) => request.cmd === 'previewGain').map((request) => request.appliesTo),
     ['123|live|', '123|live|', '123|live|', '123|live|']);
 
-  await popup.fire('manualSlider', 'keyup');
+  await popup.fire('manualSlider', 'keyup', { key: 'ArrowRight' });
   assert.deepEqual(gains(popup, 'setGain'), [1.6]);
   // A key pressed again before the second is up has moved nothing yet.
-  await popup.fire('manualSlider', 'keydown', { repeat: false });
+  await popup.fire('manualSlider', 'keydown', { key: 'ArrowRight', repeat: false });
   await popup.runTimeouts();
-  await popup.fire('manualSlider', 'keyup');
+  await popup.fire('manualSlider', 'keyup', { key: 'ArrowRight' });
   await popup.runTimeouts();
   assert.deepEqual(gains(popup, 'previewGain'), [1.55, 1.6, 1.6, 1.6],
     'nothing after the key is let go, nor for a press that moves nothing');
@@ -8327,7 +8327,7 @@ test('a key held on the slider after a preview sends it again each second until 
     const left = createPopupHarness();
     await flushTasks(8);
     if (leave === 'nothing moved') {
-      await left.fire('manualSlider', 'keydown', { repeat: false });
+      await left.fire('manualSlider', 'keydown', { key: 'ArrowRight', repeat: false });
     } else {
       await holdSliderKey(left, 160, true);
       if (leave === 'the popup') await left.blurWindow();
@@ -8340,6 +8340,65 @@ test('a key held on the slider after a preview sends it again each second until 
   }
 });
 
+// Only the keys that move the value hold the slider: a Tab pressed during a
+// drag leaves the drag to be saved at the change Chrome fires ahead of the
+// blur, and two arrow keys held over each other are one hold, saved where the
+// last is let go.
+const sliderKey = (name, repeat = false) => ({ key: name, repeat });
+const popupGains = (popup, cmd) => popup.sent.filter((request) => request.cmd === cmd).map((request) => request.gain);
+async function movePopupSlider(popup, percent) {
+  popup.el('manualSlider').value = String(percent);
+  await popup.fire('manualSlider', 'input');
+}
+
+test('a Tab pressed during a drag on the slider leaves the drag saved at its change', async () => {
+  const popup = createPopupHarness({ state: { appliesTo: '123|live|' } });
+  await flushTasks(8);
+  await popup.fire('manualSlider', 'pointerdown');
+  await movePopupSlider(popup, 150);
+  await popup.fire('manualSlider', 'keydown', sliderKey('Tab'));
+  await popup.fire('manualSlider', 'change');
+  await popup.fire('manualSlider', 'blur');
+  await popup.fire('manualSlider', 'pointerup');
+  assert.deepEqual(popupGains(popup, 'setGain'), [1.5], 'the drag is saved at its change');
+  assert.deepEqual(popupGains(popup, 'previewGain'), [], 'and previews nothing');
+  assert.equal(popup.el('manualSlider').value, '150');
+  assert.equal(popup.el('manualValue').textContent, '150%', 'what is shown is what was saved');
+});
+
+test('two arrow keys held over each other on the slider are saved once, where the last is let go', async () => {
+  const popup = createPopupHarness({ state: { appliesTo: '123|live|' } });
+  await flushTasks(8);
+  await popup.fire('manualSlider', 'keydown', sliderKey('ArrowRight'));
+  await movePopupSlider(popup, 105);
+  await popup.fire('manualSlider', 'change');
+  await popup.fire('manualSlider', 'keydown', sliderKey('ArrowLeft'));
+  await movePopupSlider(popup, 100);
+  await popup.fire('manualSlider', 'change');
+  await popup.fire('manualSlider', 'keyup', sliderKey('ArrowLeft'));
+  for (const percent of [105, 110, 115]) {
+    await popup.fire('manualSlider', 'keydown', sliderKey('ArrowRight', true));
+    await movePopupSlider(popup, percent);
+    await popup.fire('manualSlider', 'change');
+  }
+  assert.deepEqual(popupGains(popup, 'setGain'), [], 'the arrow still held keeps the hold');
+  await popup.fire('manualSlider', 'keyup', sliderKey('ArrowRight'));
+  assert.deepEqual(popupGains(popup, 'setGain'), [1.15], 'one save, where the last arrow is let go');
+});
+
+test('a Tab on the slider with no drag saves nothing, and what follows is saved as before', async () => {
+  const popup = createPopupHarness({ state: { appliesTo: '123|live|' } });
+  await flushTasks(8);
+  await popup.fire('manualSlider', 'keydown', sliderKey('Tab'));
+  await popup.fire('manualSlider', 'keyup', sliderKey('Tab'));
+  assert.deepEqual(popupGains(popup, 'setGain'), []);
+  await popup.fire('manualSlider', 'pointerdown');
+  await movePopupSlider(popup, 120);
+  await popup.fire('manualSlider', 'pointerup');
+  await popup.fire('manualSlider', 'change');
+  assert.deepEqual(popupGains(popup, 'setGain'), [1.2]);
+});
+
 test('a preview that does not arrive is dropped, and the save that ends the hold names the failure', async () => {
   const popup = createPopupHarness();
   await flushTasks(8);
@@ -8350,7 +8409,7 @@ test('a preview that does not arrive is dropped, and the save that ends the hold
   await holdSliderKey(popup, 160);
   assert.deepEqual(popup.warnings, [], 'nothing is named for a preview');
 
-  await popup.fire('manualSlider', 'keyup');
+  await popup.fire('manualSlider', 'keyup', { key: 'ArrowRight' });
   const named = popup.warnings.filter((args) => args[0] === '[TCV] gain request failed');
   assert.equal(named.length, 1);
   assert.match(String(named[0][1]), /Receiving end does not exist/);
@@ -8505,7 +8564,7 @@ test('options writes a settings slider held on a key once, where the key is let 
       .filter((message) => message.type === u.SETTINGS_MUTATION_MESSAGE)
       .map((message) => message.mutation.patch[field]);
     const hold = async (harness, value, first = false) => {
-      await harness.fire(field, 'keydown', { repeat: !first });
+      await harness.fire(field, 'keydown', { key: 'ArrowRight', repeat: !first });
       harness.el(field).value = String(value);
       await harness.fire(field, 'input');
       await harness.fire(field, 'change');
@@ -8518,7 +8577,7 @@ test('options writes a settings slider held on a key once, where the key is let 
     await hold(harness, -15);
     assert.equal(harness.el(label).textContent, drawn(-15), `${field}: the label follows the key`);
     assert.deepEqual(writes(harness), [], `${field}: the repeats write nothing`);
-    await harness.fire(field, 'keyup');
+    await harness.fire(field, 'keyup', { key: 'ArrowRight' });
     assert.deepEqual(writes(harness), [-15], field);
 
     for (const leave of ['the page', 'the slider']) {
@@ -8529,11 +8588,11 @@ test('options writes a settings slider held on a key once, where the key is let 
       else await left.fire(field, 'blur');
       assert.deepEqual(writes(left), [-17], `${field}, ${leave}`);
       await hold(left, -16);
-      await left.fire(field, 'keyup');
+      await left.fire(field, 'keyup', { key: 'ArrowRight' });
       assert.deepEqual(writes(left), [-17], `${field}, ${leave}: the rest of the hold`);
       assert.equal(left.el(field).value, '-17', `${field}, ${leave}: the thumb goes back to the value written`);
       await hold(left, -20, true);
-      await left.fire(field, 'keyup');
+      await left.fire(field, 'keyup', { key: 'ArrowRight' });
       assert.deepEqual(writes(left), [-17, -20], `${field}, ${leave}: the next key pressed`);
     }
 
@@ -8608,6 +8667,69 @@ test('options ends a drag on a settings slider where focus leaves, and writes no
     await move(released, -22);
     await released.fire(field, 'change');
     assert.deepEqual(writes(released), [-17, -22], field);
+  }
+});
+
+// The settings sliders take keys as the popup's slider does: only the keys
+// that move the value hold it, and the hold lasts until the last is let go.
+const settingsWrites = (harness, field) => harness.sent
+  .filter((message) => message.type === u.SETTINGS_MUTATION_MESSAGE)
+  .map((message) => message.mutation.patch[field]);
+async function moveSettingsSlider(harness, field, value) {
+  harness.el(field).value = String(value);
+  await harness.fire(field, 'input');
+}
+
+test('options writes a drag on a settings slider during which a Tab is pressed at its change', async () => {
+  for (const { field, label, drawn } of SETTINGS_SLIDERS) {
+    const harness = createOptionsHarness();
+    await flushTasks(8);
+    await harness.fire(field, 'pointerdown');
+    await moveSettingsSlider(harness, field, -17);
+    await harness.fire(field, 'keydown', sliderKey('Tab'));
+    await harness.fire(field, 'change');
+    await harness.fire(field, 'blur');
+    await harness.fire(field, 'pointerup');
+    assert.deepEqual(settingsWrites(harness, field), [-17], `${field}: the drag is written at its change`);
+    assert.equal(harness.el(field).value, '-17', field);
+    assert.equal(harness.el(label).textContent, drawn(-17), `${field}: what is shown is what was written`);
+  }
+});
+
+test('options writes two arrow keys held over each other on a settings slider once, where the last is let go', async () => {
+  for (const { field } of SETTINGS_SLIDERS) {
+    const harness = createOptionsHarness();
+    await flushTasks(8);
+    await harness.fire(field, 'keydown', sliderKey('ArrowRight'));
+    await moveSettingsSlider(harness, field, -17);
+    await harness.fire(field, 'change');
+    await harness.fire(field, 'keydown', sliderKey('ArrowLeft'));
+    await moveSettingsSlider(harness, field, -18);
+    await harness.fire(field, 'change');
+    await harness.fire(field, 'keyup', sliderKey('ArrowLeft'));
+    for (const value of [-17, -16]) {
+      await harness.fire(field, 'keydown', sliderKey('ArrowRight', true));
+      await moveSettingsSlider(harness, field, value);
+      await harness.fire(field, 'change');
+    }
+    assert.deepEqual(settingsWrites(harness, field), [], `${field}: the arrow still held keeps the hold`);
+    await harness.fire(field, 'keyup', sliderKey('ArrowRight'));
+    assert.deepEqual(settingsWrites(harness, field), [-16], `${field}: one write, where the last arrow is let go`);
+  }
+});
+
+test('options writes nothing for a Tab on a settings slider with no drag, and what follows as before', async () => {
+  for (const { field } of SETTINGS_SLIDERS) {
+    const harness = createOptionsHarness();
+    await flushTasks(8);
+    await harness.fire(field, 'keydown', sliderKey('Tab'));
+    await harness.fire(field, 'keyup', sliderKey('Tab'));
+    assert.deepEqual(settingsWrites(harness, field), [], field);
+    await harness.fire(field, 'pointerdown');
+    await moveSettingsSlider(harness, field, -20);
+    await harness.fire(field, 'pointerup');
+    await harness.fire(field, 'change');
+    assert.deepEqual(settingsWrites(harness, field), [-20], field);
   }
 });
 
@@ -9394,10 +9516,10 @@ test('a drag that ended without a change does not hold the next one', async () =
   // The keyboard begins one the same way, and saves where the key is let go.
   harness.sent.length = 0;
   harness.el('manualSlider').value = '50';
-  await harness.fire('manualSlider', 'keydown');
+  await harness.fire('manualSlider', 'keydown', { key: 'ArrowRight' });
   await harness.fire('manualSlider', 'input');
   await harness.fire('manualSlider', 'change');
-  await harness.fire('manualSlider', 'keyup');
+  await harness.fire('manualSlider', 'keyup', { key: 'ArrowRight' });
   const byKey = harness.sent.filter((request) => request.cmd === 'setGain');
   assert.equal(byKey.length, 1);
   assert.equal(byKey[0].appliesTo, 'B|live|');
