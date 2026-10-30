@@ -3,7 +3,7 @@
     "message": "Twitch Channel Volume"
   },
   "extDescription": {
-    "message": "Per-channel auto volume on Twitch using BS.1770 loudness measurement. Separate gain during ad breaks."
+    "message": "Balance Twitch volume per channel to a target loudness (LUFS) measured from the playing audio (BS.1770). Separate ad-break gain."
   },
   "channelNotDetected": {
     "message": "Channel not detected"

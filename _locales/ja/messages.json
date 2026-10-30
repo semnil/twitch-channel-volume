@@ -3,7 +3,7 @@
     "message": "Twitch Channel Volume"
   },
   "extDescription": {
-    "message": "Twitch チャンネルごとの音量を BS.1770 ラウドネス計測に基づき自動調整。CM 区間は別ゲインで補正"
+    "message": "再生中の音声を BS.1770 で計測し、Twitch の音量をチャンネルごとに目標ラウドネス (LUFS) へ自動調整。CM 区間は別ゲインで補正"
   },
   "channelNotDetected": {
     "message": "チャンネル未検出"
