@@ -1,6 +1,6 @@
 // content.js — ISOLATED world. Bridges page-bridge.js with chrome.storage.
-// Resolves the current channel (Live/VOD), applies the saved gain, and
-// continuously updates per-channel integrated LUFS from measurements.
+// Resolves the current channel (Live/VOD), keeps its integrated LUFS, and applies
+// the saved gain or, with auto-follow on, the one that brings it to Target LUFS.
 
 (() => {
   'use strict';

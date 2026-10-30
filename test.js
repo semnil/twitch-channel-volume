@@ -1,4 +1,4 @@
-// test.js — Pure utility tests. Run with `node test.js`.
+// test.js — The suite (`node test.js`): utils, the stores, every script in a VM harness, packaging and tools.
 
 const assert = require('node:assert/strict');
 const { test } = require('node:test');

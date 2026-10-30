@@ -1,6 +1,6 @@
 # twitch-channel-volume
 
-Chrome extension (MV3) that automatically adjusts the volume of each Twitch channel from a real-time BS.1770 LUFS measurement.
+Chrome extension (MV3) that balances the volume of each Twitch channel to a target loudness (Target LUFS) from a real-time BS.1770 LUFS measurement, and remembers a gain per channel.
 Twitch has no API like YouTube's `loudnessDb`, so the playing `<video>` element is measured directly with the Web Audio API.
 Ad breaks are detected from the cues the player posts to the page, falling back to the ad indicator in the DOM on media that receive no cue. A separate gain is applied to them.
 
@@ -193,7 +193,7 @@ flowchart LR
 | `page-bridge.js` | MAIN world. AudioContext + LUFS + fetch hook (GraphQL) + Worker hook (ad cues) + gain on the ad element |
 | `audio-worklet.js` | K-weighted MS accumulation (100ms blocks) |
 | `content.js` | ISOLATED world. Gain management, channel resolution, storage |
-| `utils.js` | Shared constants and utilities (popup/options/test) |
+| `utils.js` | Shared constants and utilities (content.js/popup/options/test) |
 | `popup.html` / `popup.js` | Popup UI |
 | `options.html` / `options.js` | Settings page |
 | `background.js` | Service worker (single writer for channelVolumes / settings + the move of the settings from local to sync at every start; writes no settings on install) |

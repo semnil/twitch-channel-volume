@@ -1,8 +1,8 @@
 # Twitch Channel Volume
 
-Chrome extension (MV3) that auto-balances per-channel volume on Twitch using real-time **ITU-R BS.1770 LUFS** measurement of the playing audio. Separate gain is applied during ad breaks.
+Chrome extension (MV3) that balances Twitch volume per channel to a target loudness (Target LUFS). It measures the playing audio in real time with **ITU-R BS.1770 LUFS**, and with **Auto-follow LUFS** on, sets the gain to the one that brings the measured loudness to Target LUFS; with it off, it applies the gain saved for the channel. Separate gain is applied during ad breaks.
 
-Twitch does not publish any loudness metadata (no `loudnessDb`-equivalent API, no HLS audio metadata), so the extension measures the playing `<video>` directly via Web Audio API and persists the resulting gain per channel × media kind (Live / VOD). Clips are left alone.
+Twitch does not publish any loudness metadata (no `loudnessDb`-equivalent API, no HLS audio metadata), so the extension measures the playing `<video>` directly via Web Audio API and persists the measurement and the resulting gain per channel × media kind (Live / VOD). Clips are left alone.
 
 The player runs its media engine in a Web Worker and posts a cue for each ad it is about to play, carrying the break's
 bounds in the element's own timeline. The extension wraps the `Worker` constructor to listen for those cues; the worker
@@ -32,7 +32,7 @@ Drawn from the extension's own colours and strings by `gen_screenshots.py`; the 
 - **Real-time LUFS metering**: Momentary (400 ms), Short-term (3 s), Integrated (BS.1770 absolute and relative gates with indexed updates)
 - **Per-channel LUFS auto-follow**: Optional Live / VOD controls continuously follow the measured Integrated LUFS and Target LUFS. A gain lower than the one playing applies at once, and a higher one rises by no more than 1.5 dB every 30 s. While the short-term (3 s) loudness stands 6 dB or more over the Integrated value — a stream that has just turned louder than its measurement so far — the gain is worked out as if the Integrated value were 3 dB louder
 - **Measurement reset**: Discards the current media kind's measurement history and restarts it from zero. The stored value tracks the restarted measurement from its first block onward; saved gains are unchanged
-- **Per-channel manual gain**: Save gain per Live / VOD kind; applied automatically on revisit and used while Auto is waiting for measurement
+- **Per-channel manual gain**: Save gain per Live / VOD kind; applied automatically on revisit while Auto is off. With Auto on, the Auto gain last stored for the channel stands in until a measurement arrives, and the manual gain where no Auto gain is stored
 - **Global Auto defaults**: Independent Live / VOD defaults apply only when a channel kind has neither an explicit Auto choice nor a manual gain
 - **Ad-break handling**: Reads the ad cues the player's media engine posts, and its ad indicator in the DOM. A
   client-side ad plays in its own element at its own volume, and the ad gain reaches that element too
@@ -44,15 +44,15 @@ Drawn from the extension's own colours and strings by `gen_screenshots.py`; the 
 ## How it works
 
 ```
-<video>
-  ├─→ MediaElementSource ─→ GainNode ─→ destination          (playback)
-  └─→ MediaElementSource ─→ K-pre ─→ K-RLB ─→ AudioWorklet   (measurement)
-                                              │
-                                              └─→ port.postMessage
-                                                  (per 100 ms mean-square)
+<video> ─→ MediaElementSource
+             ├─→ GainNode ─→ destination                  (playback)
+             └─→ K-pre ─→ K-RLB ─→ AudioWorklet           (measurement)
+                                    │
+                                    └─→ port.postMessage
+                                        (per 100 ms mean-square)
 ```
 
-The measurement path applies the BS.1770-4 K-weighting (high-shelf pre-filter + RLB high-pass) and accumulates mean-square in an AudioWorklet. The main thread aggregates 400 ms momentary and 3 s short-term LUFS. Integrated LUFS starts from the saved value for the current channel and media kind, weighing it by the number of windows it stands on - at least thirty seconds and at most three minutes - so the level a session ended on still holds while the new measurement fills in. A one-hour ring buffer and balanced energy index preserve the absolute and relative two-stage gate while updating each block in logarithmic time instead of rescanning the retained history.
+The measurement path applies the BS.1770-4 K-weighting (high-shelf pre-filter + RLB high-pass) and accumulates mean-square in an AudioWorklet. The main thread aggregates 400 ms momentary and 3 s short-term LUFS. Integrated LUFS starts from the saved value for the current channel and media kind, weighing it by the number of windows it stands on - at least thirty seconds and at most three minutes - so the level a session ended on still holds while the new measurement fills in. A one-hour ring buffer and balanced energy index preserve the absolute and relative two-stage gate while updating each block in logarithmic time instead of rescanning the retained history. The gain that brings the Integrated value to Target LUFS is Target LUFS − Integrated LUFS in dB, held within 0–600 %; with auto-follow on, the GainNode plays it, subject to the slow rise and the cut described under Features.
 
 ## Install
 
@@ -78,11 +78,11 @@ Install from the [Chrome Web Store](https://chromewebstore.google.com/detail/twi
 ## Settings
 
 - **Target LUFS**: Reference loudness used to compute gain (default −18 LUFS, range −30 to −6)
-- **Auto-follow defaults**: Independent defaults for Live / VOD (both off by default)
-- **CM Gain**: Extra gain applied during ad breaks (default −6 dB)
+- **Auto-follow LUFS for all channels**: Independent defaults for Live / VOD (both off by default)
+- **Ad gain**: Extra gain applied during ad breaks (default −6 dB)
 - **Display unit**: % or dB
-- **Gain overlay**: Shows the applied gain next to the player's volume slider (on by default)
-- **Saved channels**: Table view showing the Auto gain the last stored measurement asks for, with delete / clear-all
+- **Show gain overlay**: Shows the applied gain next to the player's volume slider (on by default)
+- **Saved Channels**: Live / VOD columns showing the saved gain, or, for a kind with Auto on, the Auto gain the last stored measurement asks for, with delete / clear-all
 
 The settings above are kept in `chrome.storage.sync`, so with Chrome sync on they follow you to every computer where the extension is installed and Chrome is signed in to the same Google account. Saved channels and their measurements stay on each computer in `chrome.storage.local`.
 
@@ -117,14 +117,13 @@ the package itself leaves out, such as `docs/`.
 
 ## Why not just use a compressor?
 
-A static compressor (like FrankerFaceZ's option) clips loud peaks but does nothing about *median loudness drift* across channels. This extension targets a constant integrated loudness across channels, the way YouTube does for VODs — except Twitch refuses to do it server-side.
+A compressor turns down the loud peaks of the audio it hears, so it narrows the range within one stream but leaves each channel's *median loudness* where it was: one channel stays louder than the next. This extension aims the integrated loudness of every channel at one target, which Twitch does not do on its side.
 
 ## Background
 
-- Twitch does **not** perform loudness normalization on either streams or ads
+- Twitch does **not** perform loudness normalization on streams
 - Loudness varies wildly between channels (often 20 + dB)
-- California SB 576 (enforcement 2026-07-01) may force changes for ads
-- Other major platforms normalize: YouTube (-14 LUFS), Spotify (-14 LUFS), Apple Music (-16 LUFS)
+- Since 2026-07-01, California SB 576 (Business and Professions Code § 22776) has prohibited a video streaming service that serves consumers in California from transmitting the audio of ads louder than the video content they accompany. The extension applies its own ad gain whatever level an ad arrives at
 
 ## Privacy
 
