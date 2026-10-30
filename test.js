@@ -10918,6 +10918,37 @@ test('settings mutations take each setting at a value it can hold', () => {
   }), /invalid settings value/);
 });
 
+test('options puts a drag a blur ended back where its save is refused, and keeps it there', async () => {
+  // A Tab in the middle of a drag: Chrome fires the change ahead of the
+  // slider's blur in one task, so the read the refusal makes lands after the
+  // blur; the pointer is let go of after it, with the change of the release.
+  for (const { field, label, drawn } of SETTINGS_SLIDERS) {
+    const harness = createOptionsHarness({
+      settings: { targetLufs: -18, adGainDb: -6 },
+      refuseMutation: { [u.SETTINGS_MUTATION_MESSAGE]: 'settings-update-failed' },
+      holdReloadRead: true
+    });
+    await flushTasks(8);
+    const stored = field === 'targetLufs' ? -18 : -6;
+    const shown = () => `${harness.el(field).value} / ${harness.el(label).textContent}`;
+    await harness.fire(field, 'pointerdown');
+    await moveSettingsSlider(harness, field, -14);
+    await harness.fire(field, 'keydown', sliderKey('Tab'));
+    await harness.fire(field, 'change');
+    await harness.fire(field, 'blur');
+    await harness.releaseReloadRead();
+    await flushTasks(8);
+    assert.equal(shown(), `${stored} / ${drawn(stored)}`, `${field}: the refused save puts the slider back to what is on file`);
+    await harness.fire(field, 'keyup', sliderKey('Tab'));
+    await moveSettingsSlider(harness, field, -12);
+    await harness.fire(field, 'pointerup');
+    harness.el(field).value = '-12';
+    await harness.fire(field, 'change');
+    await flushTasks(8);
+    assert.equal(shown(), `${stored} / ${drawn(stored)}`, `${field}: and the release after the blur leaves it there`);
+  }
+});
+
 test('options puts a refused settings save back, and names why', async () => {
   // The control is drawn at the new value before the write is asked for, so a
   // refusal has to put the page back on what is stored rather than leave the

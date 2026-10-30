@@ -268,9 +268,10 @@
   // no part. A key or the pointer held on the slider when focus leaves the slider or
   // the page ends the gesture there; a key's value is written then, and a
   // drag's by the change Chrome fires ahead of the blur. After that the
-  // slider's input does nothing and its change puts the thumb back to the value
-  // the slider held then, until the pointer or a key that moves the value is
-  // pressed on it again. A settings change that arrives during a gesture is
+  // slider's input does nothing and its change puts the thumb back to the
+  // setting the page holds (the value written, or the one a failed write put
+  // back), until the pointer or a key that moves the value is pressed on it
+  // again. A settings change that arrives during a gesture is
   // left off the slider (settingsSliderHeld); a gesture that moved nothing
   // draws the setting at its end and writes nothing.
   function holdSettingsSlider(field, drawLabel) {
@@ -281,7 +282,6 @@
     let pointerHeld = false;
     let pointerMoved = false;
     let gestureEnded = false;
-    let valueAtEnd = '';
     settingsSliderHeld[field] = () => keyHeld || pointerHeld;
     const drawSetting = () => {
       slider.value = String(currentSettings[field]);
@@ -301,8 +301,8 @@
       keys.clear();
       if (!endKeyHold() && !pointerHeld) return;
       if (!pointerMoved) drawSetting();
+      pointerHeld = false;
       gestureEnded = true;
-      valueAtEnd = slider.value;
     };
     slider.addEventListener('pointerdown', () => {
       pointerHeld = true;
@@ -335,7 +335,7 @@
     });
     slider.addEventListener('change', (e) => {
       if (gestureEnded) {
-        e.target.value = valueAtEnd;
+        drawSetting();
         return;
       }
       if (keyHeld) return;
