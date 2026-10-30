@@ -8493,61 +8493,69 @@ test('content saves and reads what a change brings while a preview holds the gai
   assert.ok(Math.abs(gainsSet()[1] - u.calcGain(-24, -20)) < 1e-12, `the Auto gain plays (${gainsSet()[1]})`);
 });
 
-test('options writes a Target LUFS held on a key once, where the key is let go or focus leaves', async () => {
-  const targetWrites = (harness) => harness.sent
-    .filter((message) => message.type === u.SETTINGS_MUTATION_MESSAGE)
-    .map((message) => message.mutation.patch.targetLufs);
-  const hold = async (harness, value, first = false) => {
-    await harness.fire('targetLufs', 'keydown', { repeat: !first });
-    harness.el('targetLufs').value = String(value);
-    await harness.fire('targetLufs', 'input');
-    await harness.fire('targetLufs', 'change');
-  };
+// Both settings sliders take a held key the same way.
+const SETTINGS_SLIDERS = [
+  { field: 'targetLufs', label: 'targetLufsValue', drawn: (v) => `${v} LUFS` },
+  { field: 'adGainDb', label: 'adGainValue', drawn: (v) => `${v > 0 ? '+' : ''}${v} dB` }
+];
 
-  const harness = createOptionsHarness();
-  await flushTasks(8);
-  await hold(harness, -17, true);
-  await hold(harness, -16);
-  await hold(harness, -15);
-  assert.equal(harness.el('targetLufsValue').textContent, '-15 LUFS', 'the label follows the key');
-  assert.deepEqual(targetWrites(harness), [], 'the repeats write nothing');
-  await harness.fire('targetLufs', 'keyup');
-  assert.deepEqual(targetWrites(harness), [-15]);
+test('options writes a settings slider held on a key once, where the key is let go or focus leaves', async () => {
+  for (const { field, label, drawn } of SETTINGS_SLIDERS) {
+    const writes = (harness) => harness.sent
+      .filter((message) => message.type === u.SETTINGS_MUTATION_MESSAGE)
+      .map((message) => message.mutation.patch[field]);
+    const hold = async (harness, value, first = false) => {
+      await harness.fire(field, 'keydown', { repeat: !first });
+      harness.el(field).value = String(value);
+      await harness.fire(field, 'input');
+      await harness.fire(field, 'change');
+    };
 
-  for (const leave of ['the page', 'the slider']) {
-    const left = createOptionsHarness();
+    const harness = createOptionsHarness();
     await flushTasks(8);
-    await hold(left, -17, true);
-    if (leave === 'the page') await left.blurWindow();
-    else await left.fire('targetLufs', 'blur');
-    assert.deepEqual(targetWrites(left), [-17], leave);
-    await hold(left, -16);
-    await left.fire('targetLufs', 'keyup');
-    assert.deepEqual(targetWrites(left), [-17], `${leave}: the rest of the hold`);
-    assert.equal(left.el('targetLufs').value, '-17', `${leave}: the thumb goes back to the value written`);
-    await hold(left, -20, true);
-    await left.fire('targetLufs', 'keyup');
-    assert.deepEqual(targetWrites(left), [-17, -20], `${leave}: the next key pressed`);
+    await hold(harness, -17, true);
+    await hold(harness, -16);
+    await hold(harness, -15);
+    assert.equal(harness.el(label).textContent, drawn(-15), `${field}: the label follows the key`);
+    assert.deepEqual(writes(harness), [], `${field}: the repeats write nothing`);
+    await harness.fire(field, 'keyup');
+    assert.deepEqual(writes(harness), [-15], field);
+
+    for (const leave of ['the page', 'the slider']) {
+      const left = createOptionsHarness();
+      await flushTasks(8);
+      await hold(left, -17, true);
+      if (leave === 'the page') await left.blurWindow();
+      else await left.fire(field, 'blur');
+      assert.deepEqual(writes(left), [-17], `${field}, ${leave}`);
+      await hold(left, -16);
+      await left.fire(field, 'keyup');
+      assert.deepEqual(writes(left), [-17], `${field}, ${leave}: the rest of the hold`);
+      assert.equal(left.el(field).value, '-17', `${field}, ${leave}: the thumb goes back to the value written`);
+      await hold(left, -20, true);
+      await left.fire(field, 'keyup');
+      assert.deepEqual(writes(left), [-17, -20], `${field}, ${leave}: the next key pressed`);
+    }
+
+    // A loss of focus with no key held ends nothing.
+    const idle = createOptionsHarness();
+    await flushTasks(8);
+    await idle.blurWindow();
+    await idle.fire(field, 'blur');
+    idle.el(field).value = '-22';
+    await idle.fire(field, 'input');
+    await idle.fire(field, 'change');
+    assert.deepEqual(writes(idle), [-22], field);
+
+    // Control: a drag is written on its change.
+    const dragged = createOptionsHarness();
+    await flushTasks(8);
+    await dragged.fire(field, 'pointerdown');
+    dragged.el(field).value = '-24';
+    await dragged.fire(field, 'input');
+    await dragged.fire(field, 'change');
+    assert.deepEqual(writes(dragged), [-24], field);
   }
-
-  // A loss of focus with no key held ends nothing.
-  const idle = createOptionsHarness();
-  await flushTasks(8);
-  await idle.blurWindow();
-  await idle.fire('targetLufs', 'blur');
-  idle.el('targetLufs').value = '-22';
-  await idle.fire('targetLufs', 'input');
-  await idle.fire('targetLufs', 'change');
-  assert.deepEqual(targetWrites(idle), [-22]);
-
-  // Control: a drag is written on its change.
-  const dragged = createOptionsHarness();
-  await flushTasks(8);
-  await dragged.fire('targetLufs', 'pointerdown');
-  dragged.el('targetLufs').value = '-24';
-  await dragged.fire('targetLufs', 'input');
-  await dragged.fire('targetLufs', 'change');
-  assert.deepEqual(targetWrites(dragged), [-24]);
 });
 
 // An Auto switch answers with the gain the page settled on, which is not the

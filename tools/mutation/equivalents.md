@@ -235,8 +235,8 @@ The default-Auto toggle's and the unit buttons' readiness checks.
 `updateSettings` opens with the same one, so the mutant reaches it and stops
 there.
 
-- `options.js:312` a guard is dropped ×1 — if (!settingsReady) return;
-- `options.js:325` a guard is dropped ×1 — if (!settingsReady) return;
+- `options.js:314` a guard is dropped ×1 — if (!settingsReady) return;
+- `options.js:327` a guard is dropped ×1 — if (!settingsReady) return;
 
 ## tools/mutation/bail.mjs
 

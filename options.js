@@ -253,56 +253,58 @@
     }
   }
 
-  // A key held on the Target LUFS slider moves the label alone, and the changes
-  // its repeats fire write nothing. The value is written once, where the key is
-  // let go or focus leaves the slider or the page; after a loss of focus the
+  // A key held on a settings slider moves its label alone, and the changes its
+  // repeats fire write nothing. The value is written once, where the key is let
+  // go or focus leaves the slider or the page; after a loss of focus the
   // slider's input does nothing and its change puts the thumb back to the value
   // written then, until a key or the pointer is pressed on it again.
-  let targetKeyHeld = false;
-  let targetKeyMoved = false;
-  let targetGestureEnded = false;
-  let targetValueAtEnd = '';
-  // Whether a key was held.
-  function endTargetKeyHold() {
-    if (!targetKeyHeld) return false;
-    targetKeyHeld = false;
-    const moved = targetKeyMoved;
-    targetKeyMoved = false;
-    if (moved) void updateSettings({ targetLufs: Number($('targetLufs').value) });
-    return true;
+  function holdSettingsSlider(field, drawLabel) {
+    const slider = $(field);
+    let keyHeld = false;
+    let keyMoved = false;
+    let gestureEnded = false;
+    let valueAtEnd = '';
+    // Whether a key was held.
+    const endKeyHold = () => {
+      if (!keyHeld) return false;
+      keyHeld = false;
+      const moved = keyMoved;
+      keyMoved = false;
+      if (moved) void updateSettings({ [field]: Number(slider.value) });
+      return true;
+    };
+    const endGestureOnBlur = () => {
+      if (!endKeyHold()) return;
+      gestureEnded = true;
+      valueAtEnd = slider.value;
+    };
+    slider.addEventListener('pointerdown', () => { gestureEnded = false; });
+    slider.addEventListener('keydown', (e) => {
+      if (!e.repeat) gestureEnded = false;
+      keyHeld = true;
+    });
+    slider.addEventListener('keyup', endKeyHold);
+    slider.addEventListener('blur', endGestureOnBlur);
+    window.addEventListener('blur', endGestureOnBlur);
+    slider.addEventListener('input', (e) => {
+      if (gestureEnded) return;
+      if (keyHeld) keyMoved = true;
+      drawLabel(Number(e.target.value));
+    });
+    slider.addEventListener('change', (e) => {
+      if (gestureEnded) {
+        e.target.value = valueAtEnd;
+        return;
+      }
+      if (keyHeld) return;
+      void updateSettings({ [field]: Number(e.target.value) });
+    });
   }
-  const endTargetGestureOnBlur = () => {
-    if (!endTargetKeyHold()) return;
-    targetGestureEnded = true;
-    targetValueAtEnd = $('targetLufs').value;
-  };
-  $('targetLufs').addEventListener('pointerdown', () => { targetGestureEnded = false; });
-  $('targetLufs').addEventListener('keydown', (e) => {
-    if (!e.repeat) targetGestureEnded = false;
-    targetKeyHeld = true;
+  holdSettingsSlider('targetLufs', (v) => {
+    $('targetLufsValue').textContent = v + ' LUFS';
   });
-  $('targetLufs').addEventListener('keyup', endTargetKeyHold);
-  $('targetLufs').addEventListener('blur', endTargetGestureOnBlur);
-  window.addEventListener('blur', endTargetGestureOnBlur);
-  $('targetLufs').addEventListener('input', (e) => {
-    if (targetGestureEnded) return;
-    if (targetKeyHeld) targetKeyMoved = true;
-    $('targetLufsValue').textContent = e.target.value + ' LUFS';
-  });
-  $('targetLufs').addEventListener('change', (e) => {
-    if (targetGestureEnded) {
-      e.target.value = targetValueAtEnd;
-      return;
-    }
-    if (targetKeyHeld) return;
-    void updateSettings({ targetLufs: Number(e.target.value) });
-  });
-  $('adGainDb').addEventListener('input', (e) => {
-    const v = Number(e.target.value);
+  holdSettingsSlider('adGainDb', (v) => {
     $('adGainValue').textContent = (v > 0 ? '+' : '') + v + ' dB';
-  });
-  $('adGainDb').addEventListener('change', (e) => {
-    void updateSettings({ adGainDb: Number(e.target.value) });
   });
 
   for (const kind of ['live', 'vod']) {
