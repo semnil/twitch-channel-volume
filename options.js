@@ -254,14 +254,17 @@
   }
 
   // A key held on a settings slider moves its label alone, and the changes its
-  // repeats fire write nothing. The value is written once, where the key is let
-  // go or focus leaves the slider or the page; after a loss of focus the
+  // repeats fire write nothing: the value is written once, where the key is let
+  // go. A key or the pointer held on the slider when focus leaves the slider or
+  // the page ends the gesture there; a key's value is written then, and a
+  // drag's by the change Chrome fires ahead of the blur. After that the
   // slider's input does nothing and its change puts the thumb back to the value
-  // written then, until a key or the pointer is pressed on it again.
+  // the slider held then, until a key or the pointer is pressed on it again.
   function holdSettingsSlider(field, drawLabel) {
     const slider = $(field);
     let keyHeld = false;
     let keyMoved = false;
+    let pointerHeld = false;
     let gestureEnded = false;
     let valueAtEnd = '';
     // Whether a key was held.
@@ -274,11 +277,17 @@
       return true;
     };
     const endGestureOnBlur = () => {
-      if (!endKeyHold()) return;
+      if (!endKeyHold() && !pointerHeld) return;
       gestureEnded = true;
       valueAtEnd = slider.value;
     };
-    slider.addEventListener('pointerdown', () => { gestureEnded = false; });
+    slider.addEventListener('pointerdown', () => {
+      pointerHeld = true;
+      gestureEnded = false;
+    });
+    const releasePointer = () => { pointerHeld = false; };
+    slider.addEventListener('pointerup', releasePointer);
+    slider.addEventListener('pointercancel', releasePointer);
     slider.addEventListener('keydown', (e) => {
       if (!e.repeat) gestureEnded = false;
       keyHeld = true;

@@ -8558,6 +8558,59 @@ test('options writes a settings slider held on a key once, where the key is let 
   }
 });
 
+// Chrome fires the change of a drag ahead of the blur that takes focus from
+// the page, and that change is written. What the drag does after the blur is
+// not written, and its change puts the thumb back to the value written.
+test('options ends a drag on a settings slider where focus leaves, and writes nothing it does after', async () => {
+  for (const { field, label, drawn } of SETTINGS_SLIDERS) {
+    const writes = (harness) => harness.sent
+      .filter((message) => message.type === u.SETTINGS_MUTATION_MESSAGE)
+      .map((message) => message.mutation.patch[field]);
+    const move = async (harness, value) => {
+      harness.el(field).value = String(value);
+      await harness.fire(field, 'input');
+    };
+
+    for (const leave of ['the page', 'the slider']) {
+      const dragged = createOptionsHarness();
+      await flushTasks(8);
+      await dragged.fire(field, 'pointerdown');
+      await move(dragged, -17);
+      await dragged.fire(field, 'change');
+      if (leave === 'the page') await dragged.blurWindow();
+      else await dragged.fire(field, 'blur');
+      assert.deepEqual(writes(dragged), [-17], `${field}, ${leave}`);
+
+      await move(dragged, -12);
+      await dragged.fire(field, 'pointerup');
+      await dragged.fire(field, 'change');
+      assert.deepEqual(writes(dragged), [-17], `${field}, ${leave}: the rest of the drag`);
+      assert.equal(dragged.el(label).textContent, drawn(-17), `${field}, ${leave}: the label stays`);
+      assert.equal(dragged.el(field).value, '-17', `${field}, ${leave}: the thumb goes back to the value written`);
+
+      // The next press of the pointer begins again.
+      await dragged.fire(field, 'pointerdown');
+      await move(dragged, -20);
+      await dragged.fire(field, 'pointerup');
+      await dragged.fire(field, 'change');
+      assert.deepEqual(writes(dragged), [-17, -20], `${field}, ${leave}: the next drag`);
+    }
+
+    // A loss of focus after the pointer is let go ends nothing.
+    const released = createOptionsHarness();
+    await flushTasks(8);
+    await released.fire(field, 'pointerdown');
+    await move(released, -17);
+    await released.fire(field, 'pointerup');
+    await released.fire(field, 'change');
+    await released.blurWindow();
+    await released.fire(field, 'blur');
+    await move(released, -22);
+    await released.fire(field, 'change');
+    assert.deepEqual(writes(released), [-17, -22], field);
+  }
+});
+
 // An Auto switch answers with the gain the page settled on, which is not the
 // gain it saved: switching off saves nothing and puts the manual gain back.
 // The slider carries that answer, and with Auto off the poll that follows will
