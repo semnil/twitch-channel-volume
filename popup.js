@@ -433,11 +433,35 @@
   // release can pass unseen: the start of the next gesture is what says the
   // one before it is over. Taking the copy here rather than on every movement
   // keeps a drag on the state it began on.
-  const beginSliderGesture = () => { sliderAppliesTo = currentAppliesTo; };
-  $('manualSlider').addEventListener('pointerdown', beginSliderGesture);
+  //
+  // A drag the popup loses focus in ends there. Chrome commits the value the
+  // slider holds with a change ahead of the blur, and what the drag does after
+  // it, the change at the release included, is not sent: such a change puts
+  // the thumb back to the value the slider held at the blur. The next press of
+  // the pointer or of a key begins a gesture again; a key's repeat does not.
+  let sliderPointerHeld = false;
+  let sliderGestureEnded = false;
+  let sliderValueAtEnd = '';
+  const beginSliderGesture = (event) => {
+    sliderAppliesTo = currentAppliesTo;
+    if (!event.repeat) sliderGestureEnded = false;
+  };
+  $('manualSlider').addEventListener('pointerdown', (event) => {
+    sliderPointerHeld = true;
+    beginSliderGesture(event);
+  });
+  const releaseSliderPointer = () => { sliderPointerHeld = false; };
+  $('manualSlider').addEventListener('pointerup', releaseSliderPointer);
+  $('manualSlider').addEventListener('pointercancel', releaseSliderPointer);
   $('manualSlider').addEventListener('keydown', beginSliderGesture);
+  window.addEventListener('blur', () => {
+    if (!sliderPointerHeld) return;
+    sliderGestureEnded = true;
+    sliderValueAtEnd = $('manualSlider').value;
+  });
 
   $('manualSlider').addEventListener('input', (e) => {
+    if (sliderGestureEnded) return;
     // An input that arrived without either of those begins one too.
     if (sliderAppliesTo === null) sliderAppliesTo = currentAppliesTo;
     if (autoUpdatePending) return;
@@ -447,6 +471,10 @@
     $('manualValue').textContent = f.text + f.unit;
   });
   $('manualSlider').addEventListener('change', (e) => {
+    if (sliderGestureEnded) {
+      e.target.value = sliderValueAtEnd;
+      return;
+    }
     const appliesTo = sliderAppliesTo ?? currentAppliesTo;
     sliderAppliesTo = null;
     setGain(Number(e.target.value), appliesTo);

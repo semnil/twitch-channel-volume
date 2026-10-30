@@ -41,114 +41,120 @@ The gate's empty-set exits. An empty mean is `NaN` and `msToLufs(NaN)` is
 `-Infinity`, which is the value the guards return; `removeTreeValue` on a value
 the tree does not hold is a no-op.
 
-- `page-bridge.js:332` a guard is dropped ×1 — if (list.length === 0) return -Infinity;
-- `page-bridge.js:344` a guard is dropped ×1 — if (absoluteGatedCount === 0) return { lufs: -Infinity, windows: 0 };
-- `page-bridge.js:348` a guard is dropped ×1 — if (gated.count === 0) return { lufs: -Infinity, windows: 0 };
-- `page-bridge.js:374` a guard is always taken ×1 — if (ms >= ABSOLUTE_GATE_MEAN_SQUARE) {
+- `page-bridge.js:335` a guard is dropped ×1 — if (list.length === 0) return -Infinity;
+- `page-bridge.js:347` a guard is dropped ×1 — if (absoluteGatedCount === 0) return { lufs: -Infinity, windows: 0 };
+- `page-bridge.js:351` a guard is dropped ×1 — if (gated.count === 0) return { lufs: -Infinity, windows: 0 };
+- `page-bridge.js:377` a guard is always taken ×1 — if (ms >= ABSOLUTE_GATE_MEAN_SQUARE) {
 
 `buildMeasurementChain`'s three-way check. Its one caller is inside
 `if (workletReady)`, it is called once per attach, and `sourceNode` is assigned
 two lines before the call — every clause is backstopped.
 
-- `page-bridge.js:463` a guard is dropped ×1 — if (!workletReady || workletNode || !sourceNode) return;
-- `page-bridge.js:463` || becomes && ×2 — ||
+- `page-bridge.js:466` a guard is dropped ×1 — if (!workletReady || workletNode || !sourceNode) return;
+- `page-bridge.js:466` || becomes && ×2 — ||
 
 The attach loop's exits. `attach` re-reads `attachedVideo` after the context
 await and returns there; the tick stops the loop at its own end either way;
 `clearInterval(null)` is a no-op; and `attach` is only ever called with an
 element `findVideo` returned, which is never the one already held.
 
-- `page-bridge.js:604` a guard body is dropped ×1 — if (attachedVideo) {
-- `page-bridge.js:633` a guard is always taken ×1 — if (attachTimer) {
-- `page-bridge.js:648` a guard is dropped ×1 — if (!video || attachedVideo === video) return;
-- `page-bridge.js:648` || becomes && ×1 — ||
+- `page-bridge.js:607` a guard body is dropped ×1 — if (attachedVideo) {
+- `page-bridge.js:636` a guard is always taken ×1 — if (attachTimer) {
+- `page-bridge.js:651` a guard is dropped ×1 — if (!video || attachedVideo === video) return;
+- `page-bridge.js:651` || becomes && ×1 — ||
 
 The block trim. `blocksToLufs` reads the tail, so what the trim drops is never
 read, and with a short list the splice count is negative and removes nothing.
 
-- `page-bridge.js:732` a guard body is dropped ×1 — if (blocks.length > Math.max(MOMENTARY_BLOCKS, SHORT_BLOCKS) * 4) {
-- `page-bridge.js:732` a guard is always taken ×1 — if (blocks.length > Math.max(MOMENTARY_BLOCKS, SHORT_BLOCKS) * 4) {
+- `page-bridge.js:735` a guard body is dropped ×1 — if (blocks.length > Math.max(MOMENTARY_BLOCKS, SHORT_BLOCKS) * 4) {
+- `page-bridge.js:735` a guard is always taken ×1 — if (blocks.length > Math.max(MOMENTARY_BLOCKS, SHORT_BLOCKS) * 4) {
 
 `applyEffectiveGain`'s check. `createContext` assigns the gain and the context
 together and clears both together, so a gain without a context is not a state
 the bridge has.
 
-- `page-bridge.js:809` || becomes && ×1 — ||
+- `page-bridge.js:812` || becomes && ×1 — ||
 
 `adStartRollbackBlocks`'s three-way check. `adBreakStartMedia` is only set by a
 cue, which is what sets `adCueSeen`, and a break only opens while
 `playerBreakActive` has a finite playhead. Neither mutant's discriminating state
 is reachable.
 
-- `page-bridge.js:846` || becomes && ×2 — ||
+- `page-bridge.js:849` || becomes && ×2 — ||
 
 `setDomAdActive`'s dedup and `syncAdElementGains`' context check.
 `updateAdState` opens with `if (wanted === adActive) return`, so the repeat one
 saves is a no-op; and the chain list is empty whenever there is no context.
 
-- `page-bridge.js:917` a guard is dropped ×1 — if (domAdActive === !!active) return;
-- `page-bridge.js:1017` a guard is dropped ×1 — if (!ctx) return;
+- `page-bridge.js:920` a guard is dropped ×1 — if (domAdActive === !!active) return;
+- `page-bridge.js:1020` a guard is dropped ×1 — if (!ctx) return;
 
 The dropped await on `ensureContext` in `resume`. `createContext` assigns `ctx`
 before its first await, so the resume that follows has it.
 
-- `page-bridge.js:1180` an await is dropped ×1 — await
+- `page-bridge.js:1182` an await is dropped ×1 — await
 
 ## content.js
 
 The store helpers' opening checks. `sendChannelMutation` opens with the same
 runtime check, and every caller of these already holds `currentChannel.id`.
 
-- `content.js:170` a guard body is dropped ×1 — if (!channelId || !isContextValid() || !Number.isFinite(lufs)) {
-- `content.js:170` || becomes && ×2 — ||
-- `content.js:189` a guard body is dropped ×1 — if (!channelId || !isContextValid() || !Number.isFinite(autoGain)) {
-- `content.js:189` || becomes && ×2 — ||
-- `content.js:213` a guard is dropped ×1 — if (!fromId || !toId || fromId === toId) return Promise.resolve();
-- `content.js:213` || becomes && ×2 — ||
+- `content.js:179` a guard body is dropped ×1 — if (!channelId || !isContextValid() || !Number.isFinite(lufs)) {
+- `content.js:179` || becomes && ×2 — ||
+- `content.js:198` a guard body is dropped ×1 — if (!channelId || !isContextValid() || !Number.isFinite(autoGain)) {
+- `content.js:198` || becomes && ×2 — ||
+- `content.js:222` a guard is dropped ×1 — if (!fromId || !toId || fromId === toId) return Promise.resolve();
+- `content.js:222` || becomes && ×2 — ||
 
 The url `channelMetadata` puts on a mutation. Measured against the store: a
 merge whose channel names only the login comes back holding `name` and `url` all
 the same, because the store fills both from the login it was given.
 
-- `content.js:378` || becomes && ×1 — ||
+- `content.js:393` || becomes && ×1 — ||
 
 `acceptOwner`'s provisional-id check. A provisional id is `login:<name>` or
 `vod-owner:<id>` and a confirmed one is numeric, so the second clause is never
 false; the first is only false on a clip, which `ownerMatchesTwitchContent`
 refuses at the top of `acceptOwner`.
 
-- `content.js:384` && becomes || ×1 — &&
-- `content.js:384` a guard is always taken ×1 — if (provisionalId && provisionalId !== confirmedId) {
+- `content.js:399` && becomes || ×1 — &&
+- `content.js:399` a guard is always taken ×1 — if (provisionalId && provisionalId !== confirmedId) {
 
 The three dropped awaits on `resolveChannel`. It holds no await of its own, so
 its promise is already settled when it is returned.
 
-- `content.js:406` an await is dropped ×1 — await
-- `content.js:699` an await is dropped ×1 — await
-- `content.js:1001` an await is dropped ×1 — await
+- `content.js:421` an await is dropped ×1 — await
+- `content.js:717` an await is dropped ×1 — await
+- `content.js:1028` an await is dropped ×1 — await
 
 `reapplyForCurrentChannel`'s "no channel here" exit and its staleness check. The
 path below the exit loads nothing for an empty id, resolves the gain to 1.0 with
 no entry and applies that, which is what the body does; and the revision beside
 the staleness check is bumped by every channel change, so it answers first.
 
-- `content.js:450` a guard body is dropped ×1 — if (!ch.id || ch.kind === 'none') {
-- `content.js:450` || becomes && ×1 — ||
-- `content.js:460` || becomes && ×1 — ||
+- `content.js:463` a guard body is dropped ×1 — if (!ch.id || ch.kind === 'none') {
+- `content.js:463` || becomes && ×1 — ||
+- `content.js:474` || becomes && ×1 — ||
+
+The `true` that exit returns. Of the callers, only a settings change reads
+what the reapply returns, and its Auto save stops at
+`currentAutoApplyLoudness`, which the exit has just set to false.
+
+- `content.js:469` true becomes false ×1 — return true;
 
 `handleBridgeMessage`'s runtime check. Each case reaches a guard of its own —
 the storage helpers above — and the rest only post to the page.
 
-- `content.js:494` a guard is dropped ×1 — if (!isContextValid()) return;
+- `content.js:509` a guard is dropped ×1 — if (!isContextValid()) return;
 
 The cached entry an Auto save and a measurement reset rewrite. What the mutants
 differ on is the other kind's `autoGainRef` and `lastLufs`, and `lastMeasuredAt`
 — content.js reads `lastLufs` only at `currentChannel.kind`, `lastMeasuredAt`
 nowhere, and the entry is reloaded before another kind is read.
 
-- `content.js:888` || becomes && ×1 — ||
-- `content.js:940` a guard is always taken ×1 — if (currentChannelEntry) {
-- `content.js:942` || becomes && ×1 — ||
+- `content.js:915` || becomes && ×1 — ||
+- `content.js:967` a guard is always taken ×1 — if (currentChannelEntry) {
+- `content.js:969` || becomes && ×1 — ||
 
 ## channel-store.js
 
@@ -223,8 +229,8 @@ The default-Auto toggle's and the unit buttons' readiness checks.
 `updateSettings` opens with the same one, so the mutant reaches it and stops
 there.
 
-- `options.js:270` a guard is dropped ×1 — if (!settingsReady) return;
-- `options.js:283` a guard is dropped ×1 — if (!settingsReady) return;
+- `options.js:274` a guard is dropped ×1 — if (!settingsReady) return;
+- `options.js:287` a guard is dropped ×1 — if (!settingsReady) return;
 
 ## tools/mutation/bail.mjs
 

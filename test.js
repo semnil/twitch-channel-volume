@@ -2561,8 +2561,9 @@ function createContentHarness({
   let failingChannelMutationOperation = failChannelMutationOperation;
   let rejectingChannelMutationOperation = rejectChannelMutationOperation;
   let resolveInitialStorageGet;
-  let pendingStorageGetDeferred = false;
-  let resolvePendingStorageGet;
+  // Reads held in the order they were asked for, released oldest first.
+  let pendingStorageGetDeferrals = 0;
+  const resolvePendingStorageGets = [];
   let resolveChannelMutation;
   let currentTimeMs = 10_000;
   const location = { href };
@@ -2691,10 +2692,10 @@ function createContentHarness({
         resolveInitialStorageGet = () => resolve(readStoredKeys(area, keys));
       });
     }
-    if (pendingStorageGetDeferred) {
-      pendingStorageGetDeferred = false;
+    if (pendingStorageGetDeferrals > 0) {
+      pendingStorageGetDeferrals -= 1;
       return new Promise((resolve) => {
-        resolvePendingStorageGet = () => resolve(readStoredKeys(area, keys));
+        resolvePendingStorageGets.push(() => resolve(readStoredKeys(area, keys)));
       });
     }
     if (failNextStorageGet) {
@@ -2888,12 +2889,11 @@ function createContentHarness({
       failNextStorageGet = true;
     },
     deferNextStorageGet() {
-      pendingStorageGetDeferred = true;
+      pendingStorageGetDeferrals += 1;
     },
     async releaseStorageGet() {
-      assert.ok(resolvePendingStorageGet, 'storage read is not pending');
-      resolvePendingStorageGet();
-      resolvePendingStorageGet = null;
+      assert.ok(resolvePendingStorageGets.length, 'storage read is not pending');
+      resolvePendingStorageGets.shift()();
       await flushTasks(8);
     },
     invalidateRuntime() {
@@ -3014,6 +3014,8 @@ function createOptionsHarness({
   // The read the failure path makes, held so a case can ask what the page is
   // doing while it is out. The load's own read is not held.
   holdReloadRead = false,
+  // That read failing, where the load's own read does not.
+  failReloadRead = false,
   // A mutation whose answer is held, for the same reason.
   holdMutation = '',
   // Keys the page carries that the locale does not declare.
@@ -3122,7 +3124,9 @@ function createOptionsHarness({
     if (holdReloadRead && area === synced && settingsReads > 1) {
       await new Promise((resolve) => { releaseReloadRead = resolve; });
     }
-    if (failStorage) throw new Error('storage unavailable');
+    if (failStorage || (failReloadRead && area === synced && settingsReads > 1)) {
+      throw new Error('storage unavailable');
+    }
     return readStoredKeys(area, keys);
   }
 
@@ -3283,6 +3287,7 @@ function createPopupHarness({
   const warnings = [];
   const infos = [];
   const intervals = [];
+  const windowListeners = {};
   let resolveAutoSave;
   let currentState = {
     channel: { id: '123', name: 'somechannel', kind: 'live', url: 'https://www.twitch.tv/somechannel' },
@@ -3428,7 +3433,10 @@ function createPopupHarness({
     },
     requestAnimationFrame(callback) { callback(); },
     setInterval(callback) { return intervals.push(callback); },
-    structuredClone
+    structuredClone,
+    window: {
+      addEventListener(type, listener) { (windowListeners[type] ||= []).push(listener); }
+    }
   });
   loadScriptsInto(context, ['settings-area.js', 'popup.js']);
 
@@ -3523,9 +3531,17 @@ function createPopupHarness({
     },
     // A disabled control receives no event: the browser does not dispatch one,
     // so what keeps a gesture out is the disabling, not a guard in the handler.
-    async fire(id, type) {
+    // `fields` are what the event carries besides its target, a key's repeat.
+    async fire(id, type, fields = {}) {
       if (element(id).disabled) { await flushTasks(8); return; }
-      for (const listener of element(id).listeners[type] || []) await listener({ target: element(id) });
+      for (const listener of element(id).listeners[type] || []) {
+        await listener({ target: element(id), ...fields });
+      }
+      await flushTasks(8);
+    },
+    // The popup loses focus: another window or application comes to the front.
+    async blurWindow() {
+      for (const listener of windowListeners.blur || []) await listener({ type: 'blur' });
       await flushTasks(8);
     },
     async firePreset(index, type) {
@@ -5109,6 +5125,7 @@ test('invalidated content script stops a queued owner migration without reportin
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -21,
     shortTerm: -21,
     integrated: -21
@@ -5214,7 +5231,7 @@ test('a save files the channel under its own name, not its id', async () => {
   // rather than whatever the tab holds by the time the save goes out.
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
-    event: 'lufs', momentary: -21, shortTerm: -21, integrated: -21
+    event: 'lufs', playing: true, momentary: -21, shortTerm: -21, integrated: -21
   });
   await flushTasks();
 
@@ -5266,7 +5283,7 @@ test('an Auto choice is filed under the channel it was made on', async () => {
   // The gain Auto then works out is filed against the same channel.
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
-    event: 'lufs', momentary: -21, shortTerm: -21, integrated: -21
+    event: 'lufs', playing: true, momentary: -21, shortTerm: -21, integrated: -21
   });
   await flushTasks();
 
@@ -5391,7 +5408,7 @@ test('content keeps the other kind\'s Auto reference when this kind gets one', a
   await flushTasks();
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
-    event: 'lufs', momentary: -21, shortTerm: -21, integrated: -21
+    event: 'lufs', playing: true, momentary: -21, shortTerm: -21, integrated: -21
   });
   await flushTasks();
 
@@ -5506,7 +5523,7 @@ test('content saves a measurement no oftener than the storage can bear', async (
   const lufs = async (integrated) => {
     await harness.dispatchMessage({
       type: '__twitch_channel_volume__',
-      event: 'lufs', momentary: integrated, shortTerm: integrated, integrated
+      event: 'lufs', playing: true, momentary: integrated, shortTerm: integrated, integrated
     });
     await flushTasks();
   };
@@ -5525,6 +5542,167 @@ test('content saves a measurement no oftener than the storage can bear', async (
     'and one far enough behind is');
 });
 
+// Two tabs on one channel and kind save to one row. The tab the viewer is not
+// listening to does not write its own reading over the other's.
+test('content saves a measurement only while the bridge says the player is playing', async () => {
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/somechannel' });
+  await claimChannel(harness);
+  const saved = () => harness.stored[u.CHANNEL_VOLUMES_KEY]['123456789']?.lastLufs?.live;
+  const block = (integrated, playing) => harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'lufs', playing, momentary: integrated, shortTerm: integrated, integrated
+  });
+
+  await block(-21, false);
+  await flushTasks();
+  assert.equal(saved(), undefined, 'a paused or muted player');
+  await block(-22, undefined);
+  await flushTasks();
+  assert.equal(saved(), undefined, 'a block that does not say');
+
+  await block(-23, true);
+  await flushTasks();
+  assert.equal(saved(), -23, 'the first block that plays is saved at once');
+});
+
+test('page bridge says the player is playing while it is neither paused nor muted', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  const playing = () => {
+    harness.messages.length = 0;
+    harness.emitMeasurementBlock(0.01);
+    return harness.messages.filter((message) => message.event === 'lufs').map((m) => m.playing);
+  };
+
+  assert.deepEqual(playing(), [true]);
+  harness.setPaused(true);
+  assert.deepEqual(playing(), [false], 'paused');
+  harness.setPaused(false);
+  harness.setMuted(true);
+  assert.deepEqual(playing(), [false], 'muted');
+  harness.setMuted(false);
+  harness.setVolume(0);
+  assert.deepEqual(playing(), [true], 'at volume 0');
+  harness.setVolume(1);
+  await harness.dispatchCommand('setGain', { value: 0 });
+  assert.deepEqual(playing(), [true], 'at a gain of 0');
+});
+
+// Only a tab whose player is playing saves the Auto gain a settings change
+// gives, as only it saves the measurement; a paused or muted tab on the same
+// channel applies the gain and writes nothing to the row.
+test('content saves the Auto gain a settings change gives only from a tab whose player is playing', async () => {
+  for (const playing of [false, true]) {
+    const harness = createMeasuringHarness({ settings: { autoApplyLoudnessLiveDefault: true } });
+    await claimChannel(harness);
+    await measureOn(harness, -24);
+    await harness.dispatchMessage({
+      type: '__twitch_channel_volume__',
+      event: 'lufs', playing, momentary: -30, shortTerm: -30, integrated: -30
+    });
+    await flushTasks();
+    const row = () => harness.stored[u.CHANNEL_VOLUMES_KEY]['123456789'];
+    // Every channel write the harness applies replaces the rows it keeps.
+    let rows = harness.stored[u.CHANNEL_VOLUMES_KEY];
+    let writeCount = 0;
+    Object.defineProperty(harness.stored, u.CHANNEL_VOLUMES_KEY, {
+      configurable: true,
+      enumerable: true,
+      get: () => rows,
+      set: (next) => { writeCount += 1; rows = next; }
+    });
+    const writes = () => writeCount;
+    const before = { autoGain: row()?.autoGainLive, writes: writes() };
+    assert.ok(Number.isFinite(before.autoGain), 'the measurement was saved while playing');
+
+    harness.commands.length = 0;
+    harness.synced[u.SETTINGS_KEY] = { ...harness.synced[u.SETTINGS_KEY], targetLufs: -20 };
+    await harness.dispatchStorage({
+      [u.SETTINGS_KEY]: { newValue: structuredClone(harness.synced[u.SETTINGS_KEY]) }
+    }, 'sync');
+    await flushTasks(8);
+
+    assert.ok(harness.commands.some((command) => command.cmd === 'setGain'),
+      `the gain is resolved again (playing ${playing})`);
+    if (playing) {
+      assert.equal(writes(), before.writes + 1, 'a playing tab writes once');
+      assert.ok(Math.abs(row().autoGainLive - u.calcGain(-30, -20)) < 1e-12,
+        `the row holds ${row().autoGainLive}`);
+    } else {
+      assert.equal(writes(), before.writes, 'a tab not playing writes nothing');
+      assert.equal(row().autoGainLive, before.autoGain);
+    }
+  }
+});
+
+// A settings change that turns an Auto default on, whose read of the row comes
+// back overtaken before the read that overtook it: Auto is on for the channel
+// only once a read has taken the change, and the Auto gain is owed all the same.
+test('content saves the Auto gain an Auto default turned on gives when its read of the row was overtaken', async () => {
+  const harness = createMeasuringHarness();
+  await claimChannel(harness);
+  await measureOn(harness, -24);
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).autoApplyLoudness, false);
+  const stored = () => harness.stored[u.CHANNEL_VOLUMES_KEY]['123456789']?.autoGainLive;
+  assert.equal(stored(), undefined, 'no Auto gain while Auto is off');
+
+  harness.synced[u.SETTINGS_KEY] = {
+    ...(harness.synced[u.SETTINGS_KEY] || {}), autoApplyLoudnessLiveDefault: true
+  };
+  harness.deferNextStorageGet();
+  harness.deferNextStorageGet();
+  await harness.dispatchStorage({
+    [u.SETTINGS_KEY]: { newValue: structuredClone(harness.synced[u.SETTINGS_KEY]) }
+  }, 'sync');
+  await harness.dispatchStorage({
+    [u.CHANNEL_VOLUMES_KEY]: { newValue: structuredClone(harness.stored[u.CHANNEL_VOLUMES_KEY]) }
+  }, 'local');
+  await harness.releaseStorageGet();
+  await harness.releaseStorageGet();
+  assert.ok(Math.abs(stored() - u.calcGain(-24, -18)) < 1e-12, `the row holds ${stored()}`);
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).autoApplyLoudness, true);
+});
+
+// A settings change's read of the row is overtaken by the read a channel write
+// starts, as the startup read is; the Auto gain the new target gives is owed
+// to the row all the same.
+test('content saves the Auto gain for a new target when its read of the row was overtaken', async () => {
+  const harness = createMeasuringHarness({ settings: { autoApplyLoudnessLiveDefault: true } });
+  await claimChannel(harness);
+  await measureOn(harness, -24);
+  const stored = () => harness.stored[u.CHANNEL_VOLUMES_KEY]['123456789']?.autoGainLive;
+  assert.ok(Math.abs(stored() - u.calcGain(-24, -18)) < 1e-12, 'the gain for the old target');
+
+  harness.synced[u.SETTINGS_KEY] = { ...harness.synced[u.SETTINGS_KEY], targetLufs: -20 };
+  harness.deferNextStorageGet();
+  await harness.dispatchStorage({
+    [u.SETTINGS_KEY]: { newValue: structuredClone(harness.synced[u.SETTINGS_KEY]) }
+  }, 'sync');
+  await harness.dispatchStorage({
+    [u.CHANNEL_VOLUMES_KEY]: { newValue: structuredClone(harness.stored[u.CHANNEL_VOLUMES_KEY]) }
+  }, 'local');
+  await harness.releaseStorageGet();
+
+  assert.ok(Math.abs(stored() - u.calcGain(-24, -20)) < 1e-12, `the row holds ${stored()}`);
+  assert.ok(Math.abs((await harness.dispatchRuntime({ cmd: 'getState' })).gain - u.calcGain(-24, -20)) < 1e-12);
+
+  // The overtaken read can come back before the one that overtook it has
+  // applied anything.
+  harness.synced[u.SETTINGS_KEY] = { ...harness.synced[u.SETTINGS_KEY], targetLufs: -22 };
+  harness.deferNextStorageGet();
+  harness.deferNextStorageGet();
+  await harness.dispatchStorage({
+    [u.SETTINGS_KEY]: { newValue: structuredClone(harness.synced[u.SETTINGS_KEY]) }
+  }, 'sync');
+  await harness.dispatchStorage({
+    [u.CHANNEL_VOLUMES_KEY]: { newValue: structuredClone(harness.stored[u.CHANNEL_VOLUMES_KEY]) }
+  }, 'local');
+  await harness.releaseStorageGet();
+  assert.ok(Math.abs(stored() - u.calcGain(-24, -22)) < 1e-12, `the row holds ${stored()}`);
+  await harness.releaseStorageGet();
+  assert.ok(Math.abs(stored() - u.calcGain(-24, -22)) < 1e-12, `the row holds ${stored()}`);
+});
+
 // The measurement save is the one call the page makes to the extension on its
 // own, ten times a second, for as long as a channel plays.
 function createMeasuringHarness(options = {}) {
@@ -5534,7 +5712,7 @@ function createMeasuringHarness(options = {}) {
 async function measureOn(harness, integrated) {
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
-    event: 'lufs', momentary: integrated, shortTerm: integrated, integrated
+    event: 'lufs', playing: true, momentary: integrated, shortTerm: integrated, integrated
   });
   await flushTasks();
 }
@@ -5645,7 +5823,7 @@ test('content saves nothing from a reading that is no reading', async () => {
   // at all, and there is nothing to file or to follow.
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
-    event: 'lufs', momentary: -21, shortTerm: -21, integrated: -Infinity
+    event: 'lufs', playing: true, momentary: -21, shortTerm: -21, integrated: -Infinity
   });
   await flushTasks();
 
@@ -5706,7 +5884,7 @@ test('content writes nothing once the runtime it had is gone', async () => {
   await harness.dispatchGesture({ cmd: 'resetMeasurement' });
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
-    event: 'lufs', momentary: -21, shortTerm: -21, integrated: -21
+    event: 'lufs', playing: true, momentary: -21, shortTerm: -21, integrated: -21
   });
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
@@ -5738,7 +5916,7 @@ test('content writes nothing for a page that resolves to no channel', async () =
   await harness.dispatchGesture({ cmd: 'resetMeasurement' });
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
-    event: 'lufs', momentary: -21, shortTerm: -21, integrated: -21
+    event: 'lufs', playing: true, momentary: -21, shortTerm: -21, integrated: -21
   });
   await flushTasks();
 
@@ -5754,7 +5932,7 @@ test('content reads a bridge message only from the page it shares', async () => 
   // A frame of its own, posting the same shape.
   await harness.dispatchMessageFrom({ name: 'another frame' }, {
     type: '__twitch_channel_volume__',
-    event: 'lufs', momentary: -21, shortTerm: -21, integrated: -21
+    event: 'lufs', playing: true, momentary: -21, shortTerm: -21, integrated: -21
   });
   // The page's own scripts, posting something else entirely.
   await harness.dispatchMessage({ type: 'something else', event: 'lufs', integrated: -21 });
@@ -5869,6 +6047,7 @@ test('content Auto mode follows LUFS and recalculates when the target changes', 
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -23,
     shortTerm: -23,
     integrated: -23
@@ -5910,6 +6089,7 @@ test('content limits Auto gain updates to the popup display interval', async () 
   const emitIntegrated = (integrated) => harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: integrated,
     shortTerm: integrated,
     integrated
@@ -5939,7 +6119,7 @@ test('content limits Auto gain updates to the popup display interval', async () 
 // One block as the bridge posts it: the Integrated value, and the short-term
 // loudness beside it, which is the Integrated value where none is given.
 function lufsPost(integrated, shortTerm = integrated) {
-  return { type: '__twitch_channel_volume__', event: 'lufs', momentary: shortTerm, shortTerm, integrated };
+  return { type: '__twitch_channel_volume__', event: 'lufs', playing: true, momentary: shortTerm, shortTerm, integrated };
 }
 
 // A gain in dB, unrounded: gainToDb rounds to the 0.1 dB the screen shows.
@@ -6219,6 +6399,7 @@ test('content manual mode does not follow incoming LUFS measurements', async () 
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -23,
     shortTerm: -23,
     integrated: -23
@@ -6552,6 +6733,7 @@ test('content keeps the audio notice through the messages that do not answer it'
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -23,
     shortTerm: -23,
     integrated: -23
@@ -6676,6 +6858,7 @@ test('content ignores measurements taken while the player audio is out of reach'
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -14,
     shortTerm: -14,
     integrated: -14
@@ -6832,6 +7015,7 @@ test('content stores a measurement the next session can seed from', async () => 
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -21,
     shortTerm: -21,
     integrated: -21,
@@ -6879,6 +7063,7 @@ test('content ignores a window count the bridge cannot have measured', async () 
     await harness.dispatchMessage({
       type: '__twitch_channel_volume__',
       event: 'lufs',
+      playing: true,
       momentary: -21,
       shortTerm: -21,
       integrated: -21,
@@ -7336,6 +7521,61 @@ test('content seeds the measurement once the owner ID resolves', async () => {
   assert.equal(state.channel.id, '777');
 });
 
+// The read an owner event makes can be overtaken like the one startup makes,
+// and the seed the owner moved the measurement to is owed all the same.
+test('content seeds the measurement an owner moved from the read that won', async () => {
+  const harness = createContentHarness({
+    href: 'https://www.twitch.tv/videos/100',
+    channelVolumes: { '777': { name: 'Streamer', ...measured({ vod: -16 }, 900) } }
+  });
+  await flushTasks();
+  harness.commands.length = 0;
+
+  harness.deferNextStorageGet();
+  const owner = harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '777',
+    login: 'streamer',
+    displayName: 'Streamer',
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '100'
+  });
+  await flushTasks();
+  await harness.dispatchStorage({
+    [u.CHANNEL_VOLUMES_KEY]: { newValue: structuredClone(harness.stored[u.CHANNEL_VOLUMES_KEY]) }
+  }, 'local');
+  await harness.releaseStorageGet();
+  await owner;
+
+  const resets = harness.commands.filter((command) => command.cmd === 'resetMeasurement')
+    .map((command) => [command.initialIntegratedLufs, command.initialIntegratedWindows]);
+  assert.deepEqual(resets, [[-16, 900]]);
+  assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).channel.id, '777');
+});
+
+test('content names an owner whose row it could not read as a failed bridge message', async () => {
+  const harness = createContentHarness({ href: 'https://www.twitch.tv/videos/100' });
+  await flushTasks();
+  harness.failNextStorageGet();
+  await harness.dispatchMessage({
+    type: '__twitch_channel_volume__',
+    event: 'owner',
+    userId: '777',
+    login: 'streamer',
+    displayName: 'Streamer',
+    source: 'video',
+    contentKind: 'vod',
+    contentId: '100'
+  });
+  await flushTasks();
+
+  const [named] = loggedWarning(harness, '[TCV] failed to handle a bridge message');
+  assert.equal(named.event, 'owner');
+  assert.match(String(named.error), /injected storage read failure/);
+});
+
 test('content keeps the running measurement when the owner resolves the same channel', async () => {
   const harness = createContentHarness({
     href: 'https://www.twitch.tv/streamer',
@@ -7371,6 +7611,7 @@ test('content keeps the running measurement when the owner resolves the same cha
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -16.2,
     shortTerm: -16.2,
     integrated: -16.2
@@ -7411,6 +7652,7 @@ test('content clears the saved and active measurement for the current media kind
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -23,
     shortTerm: -23,
     integrated: -23
@@ -7443,6 +7685,7 @@ test('content clears the saved and active measurement for the current media kind
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -22,
     shortTerm: -22,
     integrated: -22
@@ -7468,6 +7711,7 @@ test('content ignores measurements while the reset storage mutation is pending',
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -15,
     shortTerm: -15,
     integrated: -15
@@ -7496,6 +7740,7 @@ test('content keeps the active measurement when resetting storage fails', async 
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -19,
     shortTerm: -19,
     integrated: -19
@@ -7566,6 +7811,7 @@ test('content drops a measurement produced before the reset it requested', async
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     epoch: resetCommand.epoch - 1,
     momentary: -15,
     shortTerm: -15,
@@ -7600,6 +7846,7 @@ test('content accepts a measurement stamped with the current reset epoch', async
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     epoch: resetCommand.epoch,
     momentary: -15,
     shortTerm: -15,
@@ -7652,7 +7899,7 @@ test('content reseeds on a kind change when SPA navigation lost the reapply race
 
   // Navigate to the same owner's VOD, but hold the reapply read open and let a
   // storage change start a second reapply. The first one then loses the
-  // revision race and returns false, so navigation never reseeds.
+  // revision race and returns false.
   harness.deferNextStorageGet();
   const navigation = harness.navigate('https://www.twitch.tv/videos/100');
   await flushTasks();
@@ -7662,12 +7909,12 @@ test('content reseeds on a kind change when SPA navigation lost the reapply race
   await harness.releaseStorageGet();
   await navigation;
 
-  // Only the unconditional reset from onNavigate ran: the reapply that would
-  // have reseeded lost the race, so the seeded target is still the live one.
+  // The unconditional reset from onNavigate, then the one the read that won
+  // sends for the VOD's provisional id, which has no row and so no seed.
   const duringNavigation = harness.commands
     .filter((command) => command.cmd === 'resetMeasurement');
-  assert.equal(duringNavigation.length, 1);
-  assert.equal(duringNavigation[0].initialIntegratedLufs, undefined);
+  assert.deepEqual(duringNavigation.map((command) => command.initialIntegratedLufs),
+    [undefined, undefined]);
   harness.commands.length = 0;
 
   await harness.dispatchMessage({
@@ -7686,6 +7933,49 @@ test('content reseeds on a kind change when SPA navigation lost the reapply race
   const afterOwner = harness.commands.filter((command) => command.cmd === 'resetMeasurement');
   assert.equal(afterOwner.length, 1);
   assert.equal(afterOwner[0].initialIntegratedLufs, -23);
+});
+
+// A write anywhere reaches the tab as a change notice, and the read that
+// notice starts overtakes the one startup or a route change made. The seed is
+// owed to the measurement either way.
+test('content seeds the measurement from the read that won, after startup and after a route change', async () => {
+  const channelVolumes = {
+    'vod-owner:100': { name: '100', gainVod: 0.5, ...measured({ vod: -20 }, 1800) },
+    'vod-owner:200': { name: '200', gainVod: 0.5, ...measured({ vod: -22 }, 1800) }
+  };
+  const resets = (harness) => harness.commands
+    .filter((command) => command.cmd === 'resetMeasurement')
+    .map((command) => [command.initialIntegratedLufs, command.initialIntegratedWindows]);
+  const writeElsewhere = (harness) => harness.dispatchStorage({
+    [u.CHANNEL_VOLUMES_KEY]: { newValue: structuredClone(channelVolumes) }
+  }, 'local');
+
+  // Control: nothing overtakes the startup read.
+  const alone = createContentHarness({ channelVolumes });
+  await flushTasks();
+  assert.deepEqual(resets(alone), [[-20, 1800]]);
+
+  const harness = createContentHarness({ channelVolumes });
+  harness.deferNextStorageGet();
+  await flushTasks();
+  await writeElsewhere(harness);
+  await harness.releaseStorageGet();
+  assert.deepEqual(resets(harness), [[-20, 1800]], 'startup');
+
+  harness.commands.length = 0;
+  harness.deferNextStorageGet();
+  const navigation = harness.navigate('https://www.twitch.tv/videos/200');
+  await flushTasks();
+  await writeElsewhere(harness);
+  await harness.releaseStorageGet();
+  await navigation;
+  assert.deepEqual(resets(harness), [[undefined, undefined], [-22, 1800]], 'route change');
+
+  // The seed is owed once: a later write re-reads the row and resets nothing.
+  harness.commands.length = 0;
+  await writeElsewhere(harness);
+  assert.deepEqual(resets(harness), []);
+  assert.ok(harness.commands.some((command) => command.cmd === 'setGain'));
 });
 
 // The popup and the content script joined up, so what one sends is what the
@@ -7773,6 +8063,87 @@ test('a slider released with the tab where it was saves the gain', async () => {
   assert.ok(Math.abs(content.stored[u.CHANNEL_VOLUMES_KEY]['login:streamer_a'].gainLive - 0.25) < 1e-9);
 });
 
+// When the popup loses focus in the middle of a drag, Chrome fires a change
+// with the value the slider holds, then the blur, and the slider goes on
+// following the pointer until it is let go.
+test('a drag the popup loses focus in is saved at the blur, and nothing it does after is sent', async () => {
+  const popup = createPopupHarness();
+  await flushTasks(8);
+  const gainsSent = () => popup.sent
+    .filter((request) => request.cmd === 'setGain')
+    .map((request) => request.gain);
+  const move = async (percent) => {
+    popup.el('manualSlider').value = String(percent);
+    await popup.fire('manualSlider', 'input');
+  };
+
+  await popup.fire('manualSlider', 'pointerdown');
+  await move(45);
+  await popup.fire('manualSlider', 'change');
+  await popup.blurWindow();
+  assert.deepEqual(gainsSent(), [0.45], 'the change ahead of the blur');
+
+  await move(155);
+  await popup.fire('manualSlider', 'pointerup');
+  assert.equal(popup.el('manualSlider').value, '155', 'the thumb follows the pointer to its release');
+  await popup.fire('manualSlider', 'change');
+  assert.deepEqual(gainsSent(), [0.45], 'the rest of the drag and its release');
+  assert.equal(popup.el('manualValue').textContent, '45%', 'the label stays where the save left it');
+  assert.equal(popup.el('manualSlider').value, '45', 'and the release puts the thumb back there');
+
+  // A key's repeat is the hold already under way; a key pressed begins again.
+  await popup.fire('manualSlider', 'keydown', { repeat: true });
+  await move(160);
+  await popup.fire('manualSlider', 'change');
+  assert.deepEqual(gainsSent(), [0.45]);
+  await popup.fire('manualSlider', 'keydown', { repeat: false });
+  await move(165);
+  await popup.fire('manualSlider', 'change');
+  assert.deepEqual(gainsSent(), [0.45, 1.65]);
+
+  await popup.blurWindow();
+  await popup.fire('manualSlider', 'pointerdown');
+  await move(200);
+  await popup.fire('manualSlider', 'pointerup');
+  await popup.fire('manualSlider', 'change');
+  assert.deepEqual(gainsSent(), [0.45, 1.65, 2], 'a blur with no pointer held ends nothing');
+
+  // Not even for an input and a change that arrive without a press.
+  await popup.blurWindow();
+  await move(210);
+  await popup.fire('manualSlider', 'change');
+  assert.deepEqual(gainsSent(), [0.45, 1.65, 2, 2.1]);
+});
+
+test('a drag the popup lost focus in writes nothing to the channel the tab moves to', async () => {
+  const content = createContentHarness({ href: 'https://www.twitch.tv/streamer_a' });
+  await flushTasks();
+  const popup = createPopupHarness({ connectTo: content, tabUrl: 'https://www.twitch.tv/streamer_a' });
+  await flushTasks(8);
+
+  await popup.fire('manualSlider', 'pointerdown');
+  popup.el('manualSlider').value = '45';
+  await popup.fire('manualSlider', 'input');
+  await popup.fire('manualSlider', 'change');
+  await popup.blurWindow();
+  const stored = () => content.stored[u.CHANNEL_VOLUMES_KEY];
+  assert.equal(stored()['login:streamer_a']?.gainLive, 0.45);
+
+  // The tab moves on while the pointer is still held, the display's tick draws
+  // the new channel, and the drag goes on to its release.
+  await content.navigate('https://www.twitch.tv/streamer_b');
+  await popup.poll();
+  popup.el('manualSlider').value = '155';
+  await popup.fire('manualSlider', 'input');
+  await popup.fire('manualSlider', 'pointerup');
+  await popup.fire('manualSlider', 'change');
+
+  assert.equal(stored()['login:streamer_b'], undefined);
+  assert.equal(stored()['login:streamer_a']?.gainLive, 0.45);
+  assert.equal(popup.sent.filter((request) => request.cmd === 'setGain').length, 1);
+  assert.equal(popup.el('manualSlider').value, '45');
+});
+
 // An Auto switch answers with the gain the page settled on, which is not the
 // gain it saved: switching off saves nothing and puts the manual gain back.
 // The slider carries that answer, and with Auto off the poll that follows will
@@ -7794,6 +8165,7 @@ test('the slider follows the gain the page returns to when Auto goes off', async
   await content.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -30,
     shortTerm: -30,
     integrated: -30
@@ -8680,6 +9052,7 @@ test('turning Auto off stores no Auto gain for it to come back with', async () =
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -23,
     shortTerm: -23,
     integrated: -23
@@ -8755,6 +9128,7 @@ test('Auto save whose follow-up read fails keeps the rest of the entry', async (
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -23,
     shortTerm: -23,
     integrated: -23
@@ -8785,6 +9159,7 @@ test('Auto save whose follow-up read fails leaves a tab that has moved on alone'
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -23,
     shortTerm: -23,
     integrated: -23
@@ -8824,6 +9199,7 @@ test('Auto save remains successful when only the follow-up storage read fails', 
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -23,
     shortTerm: -23,
     integrated: -23
@@ -9061,32 +9437,37 @@ test('a request that could not be made on a channel page stays out of the error 
   assert.deepEqual(JSON.parse(run.stdout), expected);
 });
 
-test('GraphQL owner fallback keeps the request-time VOD identity across navigation', async () => {
+// The answer arrives after the request, on whatever page the tab is on by
+// then. An owner it names no video for is not taken as the owner of any.
+test('GraphQL video owner with no video id is no owner, across navigation or not', async () => {
+  const answer = (video) => ({
+    clone() {
+      return { async json() { return { data: { video } }; } };
+    }
+  });
+  const ownerOnly = { owner: { id: '123', login: 'owner', displayName: 'Owner' } };
+  const owners = (harness) => harness.messages
+    .filter((message) => message.event === 'owner')
+    .map((message) => [message.contentKind, message.contentId, message.userId]);
+
   const harness = createPageBridgeHarness();
   harness.messages.length = 0;
   harness.fetch('https://gql.twitch.tv/gql');
   harness.location.href = 'https://www.twitch.tv/videos/200';
-  harness.resolveFetch({
-    clone() {
-      return {
-        async json() {
-          return {
-            data: {
-              video: {
-                owner: { id: '123', login: 'owner', displayName: 'Owner' }
-              }
-            }
-          };
-        }
-      };
-    }
-  });
+  harness.resolveFetch(answer(ownerOnly));
   await flushTasks();
+  assert.deepEqual(owners(harness), [], 'the page moved on while the request was out');
 
-  const owners = harness.messages.filter((message) => message.event === 'owner');
-  assert.equal(owners.length, 1);
-  assert.equal(owners[0].contentKind, 'vod');
-  assert.equal(owners[0].contentId, '100');
+  harness.fetch('https://gql.twitch.tv/gql');
+  harness.resolveFetch(answer(ownerOnly));
+  await flushTasks();
+  assert.deepEqual(owners(harness), [], 'the page it was made on');
+
+  // The same answer naming its video names an owner.
+  harness.fetch('https://gql.twitch.tv/gql');
+  harness.resolveFetch(answer({ id: '100', ...ownerOnly }));
+  await flushTasks();
+  assert.deepEqual(owners(harness), [['vod', '100', '123']]);
 });
 
 test('page bridge reads no owner out of a clip response', async () => {
@@ -9839,6 +10220,26 @@ test('settings mutations reject unknown fields and invalid values', () => {
   }), /must not be empty/);
 });
 
+test('settings mutations take each setting at a value it can hold', () => {
+  const valid = {
+    targetLufs: -24,
+    adGainDb: -12,
+    displayUnit: 'dB',
+    showGainOverlay: false,
+    autoApplyLoudnessLiveDefault: true,
+    autoApplyLoudnessVodDefault: false
+  };
+  for (const [field, value] of Object.entries(valid)) {
+    const next = settingsStore.applySettingsMutation({}, {
+      operation: 'patchSettings', patch: { [field]: value }
+    });
+    assert.equal(next[field], value, field);
+  }
+  assert.throws(() => settingsStore.applySettingsMutation({}, {
+    operation: 'patchSettings', patch: { showGainOverlay: 'off' }
+  }), /invalid settings value/);
+});
+
 test('options puts a refused settings save back, and names why', async () => {
   // The control is drawn at the new value before the write is asked for, so a
   // refusal has to put the page back on what is stored rather than leave the
@@ -9858,6 +10259,32 @@ test('options puts a refused settings save back, and names why', async () => {
   assert.equal(named.length, 1, `the failure is named once (${harness.errors.length} logged)`);
   assert.equal(String(named[0]?.[1]?.message), 'settings-update-failed',
     'carrying the reason the worker gave');
+});
+
+// Where the read after a failed save fails too, the page still shows the
+// value nothing saved, and says to reload rather than that it was put back.
+test('options asks for a reload where a failed save could not read back what is saved', async () => {
+  const refuseMutation = { [u.SETTINGS_MUTATION_MESSAGE]: 'settings-update-failed' };
+  const errorLine = async (harness) => {
+    await flushTasks(8);
+    harness.el('targetLufs').value = '-24';
+    await harness.fire('targetLufs', 'change');
+    assert.equal(harness.el('settingsError').classList.contains('hidden'), false);
+    return harness.el('settingsError').textContent;
+  };
+
+  const unread = createOptionsHarness({ settings: { targetLufs: -18 }, refuseMutation, failReloadRead: true });
+  assert.equal(await errorLine(unread), unread.message('settingsLoadFailed'));
+  assert.equal(unread.el('targetLufs').value, '-24', 'the control is where the viewer left it');
+  assert.equal(unread.errors.filter((args) =>
+    String(args[0]).includes('failed to reload settings after save failure')).length, 1);
+  assert.equal(unread.errors.filter((args) =>
+    String(args[0]).includes('failed to save settings field')).length, 1);
+
+  // Control: a re-read that works puts the value back and says so.
+  const reread = createOptionsHarness({ settings: { targetLufs: -18 }, refuseMutation });
+  assert.equal(await errorLine(reread), reread.message('settingsSaveFailed'));
+  assert.equal(reread.el('targetLufs').value, '-18');
 });
 
 test('options draws back what is on file, not what the defaults would be', async () => {
@@ -11302,7 +11729,8 @@ test('the worker moves settings left in local to sync, and removes them from loc
 });
 
 test('the worker keeps what sync holds over a copy left in local', async () => {
-  // Another computer moved its settings first; that is what every one reads.
+  // With Chrome sync on, another Chrome the user is signed in to moved its
+  // settings first; that is what each of them reads.
   const harness = createBackgroundHarness({
     syncSettings: { targetLufs: -20, displayUnit: '%' },
     localSettings: { targetLufs: -24, displayUnit: 'dB' }
@@ -11335,6 +11763,20 @@ test('a move that cannot write sync leaves the settings in local', async () => {
   assert.deepEqual(harness.stored.autoLoudnessSettings, left,
     'what the readers fall back on is still there');
   assert.deepEqual(harness.writes, []);
+  assert.equal(harness.errors.at(-1)?.[0], '[TCV] failed to move the settings to sync');
+});
+
+test('a move that cannot remove the copy in local is named as a failed move', async () => {
+  const left = { targetLufs: -24 };
+  const harness = createBackgroundHarness({
+    syncSettings: null,
+    localSettings: left,
+    failingCall: 'local.remove'
+  });
+  await flushTasks(8);
+
+  assert.deepEqual(harness.synced.autoLoudnessSettings, left, 'sync holds what was moved');
+  assert.deepEqual(harness.stored.autoLoudnessSettings, left, 'and local still holds its copy');
   assert.equal(harness.errors.at(-1)?.[0], '[TCV] failed to move the settings to sync');
 });
 
@@ -11384,9 +11826,10 @@ test('a settings write made before the move carries the local values into sync',
 });
 
 test('an install writes no settings to either area', async () => {
-  // A computer newly set up starts with sync empty until Chrome brings it what
-  // the profile holds; defaults written then would stand in sync for every
-  // computer. The readers take the defaults where nothing is stored.
+  // With Chrome sync on, a Chrome the user has newly signed in to starts with
+  // sync empty until Chrome sync brings it what the account holds; defaults
+  // written then would stand in sync for every Chrome the user is signed in
+  // to. The readers take the defaults where nothing is stored.
   const harness = createBackgroundHarness({ syncSettings: null });
   await harness.install();
   assert.equal(harness.synced.autoLoudnessSettings, undefined);
@@ -15022,10 +15465,9 @@ test('page bridge reads a cue with no playhead to hold as no cue', async () => {
   );
 });
 
-test('page bridge names a video the answer left unnamed from the URL it is on', async () => {
-  // The answer for a VOD carries the owner but not always the video. The URL
-  // is what the request was made on, so it is what names the video then — and
-  // only where the URL is a video, since nothing else is one.
+test('page bridge names a video only from the answer, never from the URL it is on', async () => {
+  // The URL says which page the tab is on when the answer arrives, not which
+  // video the answer is about.
   const answerWithoutVideoId = () => ({
     clone: () => ({
       json: async () => ({
@@ -15041,10 +15483,8 @@ test('page bridge names a video the answer left unnamed from the URL it is on', 
   onVod.resolveFetch(answerWithoutVideoId());
   await vodAnswered;
   await flushTasks(8);
-  const vodOwner = onVod.messages.find((message) => message.event === 'owner');
-  assert.equal(vodOwner?.contentKind, 'vod');
-  assert.equal(vodOwner?.contentId, '300',
-    `the video the URL names (${vodOwner?.contentId})`);
+  assert.deepEqual(onVod.messages.filter((message) => message.event === 'owner'), [],
+    'a video page');
 
   for (const href of [
     'https://www.twitch.tv/somechannel',
@@ -15059,9 +15499,7 @@ test('page bridge names a video the answer left unnamed from the URL it is on', 
     harness.resolveFetch(answerWithoutVideoId());
     await answered;
     await flushTasks(8);
-    const owner = harness.messages.find((message) => message.event === 'owner');
-    assert.equal(owner?.contentId, '',
-      `a page that is not a video names none (${href}: ${owner?.contentId})`);
+    assert.deepEqual(harness.messages.filter((message) => message.event === 'owner'), [], href);
   }
 
   // Where the answer does name the video, that is the name used.
@@ -17538,6 +17976,7 @@ test('a reading with no integrated value behind it moves and stores nothing', as
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -18,
     shortTerm: -18,
     integrated: null,
@@ -17554,6 +17993,7 @@ test('a settings change persists the Auto gain only where Auto is following', as
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -18,
     shortTerm: -18,
     integrated: -24,
@@ -17968,6 +18408,7 @@ test('a row the Auto gain creates carries the channel it was measured on', async
   await harness.dispatchMessage({
     type: '__twitch_channel_volume__',
     event: 'lufs',
+    playing: true,
     momentary: -18,
     shortTerm: -18,
     integrated: -24,

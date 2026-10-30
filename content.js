@@ -32,6 +32,10 @@
   }
   let currentAutoApplyLoudness = false;
   let lastLufs;
+  // Whether the player was playing — neither paused nor muted — at the lufs
+  // notification lastLufs was taken from. Only a playing tab saves the
+  // channel's level or the Auto gain a settings change gives.
+  let lastLufsPlaying;
   // How many gating windows lastLufs.integrated stands on. Saved with it so the
   // next session continues that measurement instead of restarting it.
   let integratedWindows;
@@ -55,6 +59,11 @@
   let measurementEpoch = 0;
   let currentCanonicalChannelId = '';
   let seededMeasurementTarget = '';
+  // Set at startup, on a route change and where an owner moves what is being
+  // measured: the measurement is owed a reset seeded from the row, and
+  // whichever read of the row wins sends it, a read a write reaching
+  // chrome.storage.onChanged started included.
+  let seededResetPending = false;
   let lastAutoGainUpdateAt = -Infinity;
   // When a measured level last set the gain Auto plays; null from a
   // measurement reset, a settings change or a saved Auto toggle until the next
@@ -267,6 +276,12 @@
     sendResetMeasurement(savedMeasurementForCurrentChannel());
   }
 
+  function sendPendingSeededReset() {
+    if (!seededResetPending) return;
+    seededResetPending = false;
+    resetMeasurementForCurrentChannel();
+  }
+
   let initResolve;
   const initPromise = new Promise((res) => { initResolve = res; });
 
@@ -407,10 +422,8 @@
     } finally {
       migratingChannelId = '';
     }
-    if (await reapplyForCurrentChannel() &&
-        currentMeasurementTarget() !== seededMeasurementTarget) {
-      resetMeasurementForCurrentChannel();
-    }
+    if (currentMeasurementTarget() !== seededMeasurementTarget) seededResetPending = true;
+    await reapplyForCurrentChannel();
   }
 
   async function resolveChannel(seed) {
@@ -452,6 +465,7 @@
       currentChannelEntry = null;
       currentAutoApplyLoudness = false;
       applyGain(1.0);
+      sendPendingSeededReset();
       return true;
     }
     const revision = ++preferenceRevision;
@@ -471,6 +485,7 @@
     applyGain(preferred.autoApply && Number.isFinite(lastLufs.integrated)
       ? autoGainToPlay()
       : preferred.gain);
+    sendPendingSeededReset();
     return true;
   }
 
@@ -553,11 +568,14 @@
         };
         integratedWindows = Number.isSafeInteger(data.integratedWindows) &&
           data.integratedWindows > 0 ? data.integratedWindows : 0;
+        lastLufsPlaying = data.playing === true;
         if (Number.isFinite(lastLufs.integrated) && currentChannel.id) {
           if (currentAutoApplyLoudness) {
             applyAutoGain();
           }
-          throttledSaveIntegrated();
+          // Only a tab whose player is playing saves the channel's level, so
+          // a paused or muted tab on the same channel does not write over it.
+          if (lastLufsPlaying) throttledSaveIntegrated();
         }
         break;
       case 'owner':
@@ -697,7 +715,8 @@
     sendResetMeasurement();
     sendCmd({ cmd: 'attach' });
     await resolveChannel();
-    if (await reapplyForCurrentChannel()) resetMeasurementForCurrentChannel();
+    seededResetPending = true;
+    await reapplyForCurrentChannel();
   }
 
   // Every entry point below starts the handling and drops the promise.
@@ -753,18 +772,26 @@
       showGainOverlay = next.showGainOverlay ?? true;
       updateGainOverlay();
       autoRaiseFrom = null;
-      reapplyForCurrentChannel().then((applied) => {
-        if (!applied || !currentAutoApplyLoudness || !Number.isFinite(lastLufs.integrated)) {
-          return;
-        }
-        return saveChannelAutoGain(
-          currentChannel.id,
-          currentChannel.kind,
-          calcGain(lastLufs.integrated, targetLufs)
-        );
-      }).catch((error) => {
-        console.warn('[TCV] failed to reapply or persist settings', error);
-      });
+      reapplyForCurrentChannel()
+        // A read that was overtaken applied nothing, and the Auto save went
+        // with it; the reapply is made once more against the channel and the
+        // row as they stand then.
+        .then((applied) => applied || reapplyForCurrentChannel())
+        .then((applied) => {
+          // A tab whose player is not playing applies the gain and saves
+          // nothing, as it saves no measurement.
+          if (!applied || !currentAutoApplyLoudness || !lastLufsPlaying ||
+              !Number.isFinite(lastLufs.integrated)) {
+            return;
+          }
+          return saveChannelAutoGain(
+            currentChannel.id,
+            currentChannel.kind,
+            calcGain(lastLufs.integrated, targetLufs)
+          );
+        }).catch((error) => {
+          console.warn('[TCV] failed to reapply or persist settings', error);
+        });
     }
     if (areaName === 'local' && (changes[CHANNEL_VOLUMES_KEY] || changes[CHANNEL_ALIASES_KEY]) &&
         currentChannel.id) {
@@ -999,7 +1026,8 @@
     injectWorklet();
     await loadSettings();
     await resolveChannel();
-    if (await reapplyForCurrentChannel()) resetMeasurementForCurrentChannel();
+    seededResetPending = true;
+    await reapplyForCurrentChannel();
     // Wait for the worklet to be ready before attaching so the measurement
     // chain is wired up on first attach. Fall back after a timeout.
     await Promise.race([

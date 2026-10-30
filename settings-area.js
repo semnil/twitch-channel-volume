@@ -1,8 +1,9 @@
 // settings-area.js — Where autoLoudnessSettings is kept, for every context that
 // reads it: the service worker, content.js, the popup and the options page.
 //
-// The settings name no channel, so they live in chrome.storage.sync and Chrome
-// sync carries them to every computer the profile is signed in on. Channel data
+// The settings name no channel, so they live in chrome.storage.sync, which
+// Chrome syncs with every Chrome the user is signed in to while the user has
+// Chrome sync on, and which behaves like local while it is off. Channel data
 // stays in chrome.storage.local: it grows with every channel watched, and sync
 // holds 100 KB in all and 8 KB an item.
 

@@ -71,11 +71,12 @@ function applySettingsMutation(currentValue, mutation) {
 
 // An earlier version kept the settings in local. Where local still holds them
 // they go to sync, less the fields withoutRemovedSettings drops, unless sync
-// already holds settings — another computer got there first, and what it
-// uploaded is what every computer reads from now on — and the local copy is
-// removed either way. Sync is written before local is removed, so a reader
-// always finds one of them. Once local holds nothing this is one read, which is
-// why the worker can ask for it at every start.
+// already holds settings — with Chrome sync on, another Chrome the user is
+// signed in to got there first, and what it wrote is what each of them reads
+// from now on — and the local copy is removed either way. Sync is written
+// before local is removed, so a reader always finds one of them. Once local
+// holds nothing this is one read, which is why the worker can ask for it at
+// every start.
 async function moveSettingsToSync(storage, storageKey) {
   const local = (await storage.local.get(storageKey))[storageKey];
   if (local === undefined) return false;
