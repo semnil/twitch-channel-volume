@@ -52,20 +52,11 @@ function autoApplyDefaultFieldForKind(kind) {
   return autoApplyFieldForKind(kind) + 'Default';
 }
 
+// A saved manual gain is an implicit per-channel choice. Global Auto defaults
+// only apply to a channel/type with neither an Auto choice nor a manual gain.
 function resolveAutoApplySetting(entry, kind, defaultValue) {
-  if (!entry) return !!defaultValue;
-  const autoKey = autoApplyFieldForKind(kind);
-  if (Object.prototype.hasOwnProperty.call(entry, autoKey)) return !!entry[autoKey];
-  // Read compatibility for a possible early all-types implementation.
-  if (Object.prototype.hasOwnProperty.call(entry, 'autoApplyLoudness')) {
-    return !!entry.autoApplyLoudness;
-  }
-
-  // A saved manual gain is an implicit per-channel choice. Global Auto
-  // defaults only apply to a channel/type with neither an Auto choice nor a
-  // manual gain.
-  if (extractGainForKind(entry, kind) !== null) return false;
-  return !!defaultValue;
+  return autoFlagFor(entry, autoApplyFieldForKind(kind), defaultValue,
+    extractGainForKind(entry, kind) !== null);
 }
 
 // A saved Auto gain was computed from a measurement. Without the reference the

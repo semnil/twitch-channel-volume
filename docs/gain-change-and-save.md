@@ -246,7 +246,7 @@ sequenceDiagram
   cstore->>storage: get, normalizeKnownChannelEntries, set where it changed the store
 ```
 
-Drawn from: `background.js` the `moveToSync` call at its top level and the `onInstalled` listener; `channel-store.js` `normalizeKnownChannelEntries`, `withoutClipFields`, `cloneEntry`, `expandLegacyGain`, `expandLegacyAuto`; `settings-store.js` `withoutRemovedSettings`; `core/common.js` `moveSettingsToSync`, `isStoredSettingsObject`; `options.js` `loadAll`; `utils.js` `extractGainForKind`, `resolveAutoApplySetting`.
+Drawn from: `background.js` the `moveToSync` call at its top level and the `onInstalled` listener; `channel-store.js` `normalizeKnownChannelEntries`, `withoutClipFields`, `cloneEntry`; `core/common.js` `expandLegacyGain`, `expandLegacyAutoFlag`; `settings-store.js` `withoutRemovedSettings`; `core/common.js` `moveSettingsToSync`, `isStoredSettingsObject`; `options.js` `loadAll`; `utils.js` `extractGainForKind`, `resolveAutoApplySetting`.
 
 - No settings are written on install. A reader that finds settings in neither area takes the defaults: `targetLufs` −18, `adGainDb` −6, `displayUnit` `%`, `showGainOverlay` true, and false for both Auto defaults. The first settings write is a gesture on the options page or the move.
 - Where sync already holds settings when the move runs, sync is kept and the local copy is only removed. Sync is written before local is removed, so a reader finds one of them throughout.

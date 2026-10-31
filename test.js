@@ -8489,6 +8489,34 @@ test('provisional channel migration keeps confirmed data over stale provisional 
   assert.equal(result[confirmedId].name, 'Broadcaster');
 });
 
+test('a channel write naming the row by its id keeps the name the row has', () => {
+  const stored = { 12345: { name: 'Real Name', gainLive: 0.5 } };
+  const byId = channelStore.applyChannelVolumesMutation(stored, {
+    operation: 'saveGain', channelId: '12345', kind: 'live', gain: 0.7, channel: { name: '12345' }
+  });
+  assert.equal(byId['12345'].name, 'Real Name');
+  assert.equal(byId['12345'].gainLive, 0.7);
+  const renamed = channelStore.applyChannelVolumesMutation(stored, {
+    operation: 'saveGain', channelId: '12345', kind: 'live', gain: 0.7, channel: { name: 'New Name' }
+  });
+  assert.equal(renamed['12345'].name, 'New Name', 'a name of its own replaces it');
+  const fresh = channelStore.applyChannelVolumesMutation({}, {
+    operation: 'saveGain', channelId: '777', kind: 'vod', gain: 0.7, channel: { name: '777' }
+  });
+  assert.equal(fresh['777'].name, '777', 'a new row is named by its id');
+});
+
+test('a channel write expands an earlier all-kinds Auto flag only into the kinds without one', () => {
+  const stored = { 12345: { name: 'Real Name', autoApplyLoudness: true, autoApplyLoudnessVod: false } };
+  const next = channelStore.applyChannelVolumesMutation(stored, {
+    operation: 'saveGain', channelId: '12345', kind: 'live', gain: 0.7, channel: { name: 'Real Name' }
+  });
+  assert.equal(next['12345'].autoApplyLoudnessLive, true, 'a kind without a flag takes the earlier one');
+  assert.equal(next['12345'].autoApplyLoudnessVod, false, 'a kind with a flag keeps it');
+  assert.equal('autoApplyLoudness' in next['12345'], false, 'the earlier flag is removed');
+  assert.equal(stored['12345'].autoApplyLoudness, true, 'the stored map is left as it was');
+});
+
 test('provisional channel migration uses field update order across tabs', () => {
   const provisionalId = 'vod-owner:2770346335';
   const confirmedId = '123456';

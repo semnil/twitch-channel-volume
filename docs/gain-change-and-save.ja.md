@@ -246,7 +246,7 @@ sequenceDiagram
   cstore->>storage: get、normalizeKnownChannelEntries、保存値が変わるときだけ set
 ```
 
-図のもと: `background.js` の最上位での `moveToSync` の呼び出しと `onInstalled` リスナー。`channel-store.js` の `normalizeKnownChannelEntries`、`withoutClipFields`、`cloneEntry`、`expandLegacyGain`、`expandLegacyAuto`。`settings-store.js` の `withoutRemovedSettings`。`core/common.js` の `moveSettingsToSync`、`isStoredSettingsObject`。`options.js` の `loadAll`。`utils.js` の `extractGainForKind`、`resolveAutoApplySetting`。
+図のもと: `background.js` の最上位での `moveToSync` の呼び出しと `onInstalled` リスナー。`channel-store.js` の `normalizeKnownChannelEntries`、`withoutClipFields`、`cloneEntry`。`core/common.js` の `expandLegacyGain`、`expandLegacyAutoFlag`。`settings-store.js` の `withoutRemovedSettings`。`core/common.js` の `moveSettingsToSync`、`isStoredSettingsObject`。`options.js` の `loadAll`。`utils.js` の `extractGainForKind`、`resolveAutoApplySetting`。
 
 - インストールでは設定を書かない。どちらの場所にも設定が無ければ、読むものは既定値を使う。既定値は、`targetLufs` −18、`adGainDb` −6、`displayUnit` `%`、`showGainOverlay` true、2 つの Auto 既定値は false。最初に設定を書くのは、設定ページでの操作か移し替え。
 - 移し替えのときに sync にすでに設定があれば、sync をそのまま残し、local の写しを消すだけにする。local を消す前に sync へ書くので、読むものはその間ずっとどちらかを見つける。

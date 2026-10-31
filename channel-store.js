@@ -36,6 +36,9 @@ function storeAutoFieldForKind(kind) {
   return 'autoApplyLoudnessLive';
 }
 
+// The keys of an entry's Auto flags, one per kind.
+const STORE_AUTO_FIELDS = [...CHANNEL_MUTATION_KINDS].map(storeAutoFieldForKind);
+
 function storeAutoGainFieldForKind(kind) {
   if (kind === 'vod') return 'autoGainVod';
   return 'autoGainLive';
@@ -85,24 +88,14 @@ function sameStoredValue(a, b) {
     Object.prototype.hasOwnProperty.call(b, key) && sameStoredValue(a[key], b[key]));
 }
 
-function copyMetadata(entry, channel) {
+function copyMetadata(entry, channel, channelId) {
   if (!channel || typeof channel !== 'object') return;
-  for (const field of ['name', 'login', 'url']) {
+  applyEntryName(entry, channelId, channel.name, false);
+  for (const field of ['login', 'url']) {
     if (typeof channel[field] === 'string' && channel[field]) {
       entry[field] = channel[field];
     }
   }
-}
-
-function expandLegacyAuto(entry) {
-  if (!Object.prototype.hasOwnProperty.call(entry, 'autoApplyLoudness')) return entry;
-  const legacyAuto = !!entry.autoApplyLoudness;
-  for (const kind of CHANNEL_MUTATION_KINDS) {
-    const field = storeAutoFieldForKind(kind);
-    if (!Object.prototype.hasOwnProperty.call(entry, field)) entry[field] = legacyAuto;
-  }
-  delete entry.autoApplyLoudness;
-  return entry;
 }
 
 // Clips are left to the player, so the fields a previous version stored for
@@ -181,7 +174,7 @@ function cloneEntry(entry, fallbackName) {
     cloned[FIELD_VERSIONS_FIELD] = { ...entry[FIELD_VERSIONS_FIELD] };
   }
   delete cloned[LEGACY_PROVISIONAL_WRITES_FIELD];
-  return expandLegacyAuto(expandLegacyGain(cloned, STORE_GAIN_FIELDS));
+  return expandLegacyAutoFlag(expandLegacyGain(cloned, STORE_GAIN_FIELDS), STORE_AUTO_FIELDS);
 }
 
 function normalizeLogin(value) {
@@ -367,7 +360,7 @@ function mergeProvisionalEntry(all, mutation) {
       Number.isFinite(target.lastMeasuredAt) ? target.lastMeasuredAt : 0
     );
   } else delete merged.lastMeasuredAt;
-  copyMetadata(merged, channel);
+  copyMetadata(merged, channel, toId);
   all[toId] = merged;
   delete all[fromId];
 }
@@ -394,7 +387,7 @@ function normalizeKnownChannelEntries(all) {
         channel
       });
     } else {
-      copyMetadata(target, channel);
+      copyMetadata(target, channel, toId);
     }
   }
   for (const [id, entry] of Object.entries(all)) {
@@ -422,7 +415,7 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
         throw invalidChannelMutation('gain must be finite and within [0, 6]');
       }
       const entry = cloneEntry(all[mutation.channelId], fallbackRowName(mutation.channel, mutation.channelId));
-      copyMetadata(entry, mutation.channel);
+      copyMetadata(entry, mutation.channel, mutation.channelId);
       entry[storeGainFieldForKind(mutation.kind)] = mutation.gain;
       setFieldVersion(entry, storeGainFieldForKind(mutation.kind), mutation.sequence);
       all[mutation.channelId] = entry;
@@ -435,7 +428,7 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
         throw invalidChannelMutation('enabled must be a boolean');
       }
       const entry = cloneEntry(all[mutation.channelId], fallbackRowName(mutation.channel, mutation.channelId));
-      copyMetadata(entry, mutation.channel);
+      copyMetadata(entry, mutation.channel, mutation.channelId);
       entry[storeAutoFieldForKind(mutation.kind)] = mutation.enabled;
       setFieldVersion(entry, storeAutoFieldForKind(mutation.kind), mutation.sequence);
       if (mutation.autoGain !== undefined) {
@@ -454,7 +447,7 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
       assertKind(mutation.kind);
       if (!Number.isFinite(mutation.lufs)) throw invalidChannelMutation('lufs must be finite');
       const entry = cloneEntry(all[mutation.channelId], fallbackRowName(mutation.channel, mutation.channelId));
-      copyMetadata(entry, mutation.channel);
+      copyMetadata(entry, mutation.channel, mutation.channelId);
       entry.lastLufs = { ...(entry.lastLufs || {}), [mutation.kind]: mutation.lufs };
       applyMeasurementReference(entry, mutation, 'lastLufsRef');
       applyMeasurementWindows(entry, mutation);
@@ -498,7 +491,7 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
         throw invalidChannelMutation('autoGain must be finite and within [0, 6]');
       }
       const entry = cloneEntry(all[mutation.channelId], fallbackRowName(mutation.channel, mutation.channelId));
-      copyMetadata(entry, mutation.channel);
+      copyMetadata(entry, mutation.channel, mutation.channelId);
       entry[storeAutoGainFieldForKind(mutation.kind)] = mutation.autoGain;
       setFieldVersion(entry, storeAutoGainFieldForKind(mutation.kind), mutation.sequence);
       applyMeasurementReference(entry, mutation, 'autoGainRef');
