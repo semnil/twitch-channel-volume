@@ -51,6 +51,35 @@ function formatAutoGain(gain, displayUnit, autoLabel = 'Auto') {
   return `${autoLabel} (${formatted.text}${formatted.unit})`;
 }
 
+// The keys that move a range input's value. A key hold on a slider is made of
+// these alone; any other key takes no part in it.
+const SLIDER_VALUE_KEYS = new Set([
+  'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End'
+]);
+
+function isSliderMoveKey(key) {
+  return SLIDER_VALUE_KEYS.has(key);
+}
+
+// The value keys down on one slider. press answers whether a keydown begins a
+// hold: a value key, not a repeat, pressed with no other value key down.
+// release answers whether a keyup ends it: the last value key down let go of.
+// Any other key, and a repeat, change nothing.
+function createSliderKeys() {
+  const down = new Set();
+  return {
+    press(event) {
+      if (event.repeat || !SLIDER_VALUE_KEYS.has(event.key)) return false;
+      down.add(event.key);
+      return down.size === 1;
+    },
+    release(event) {
+      return down.delete(event.key) && down.size === 0;
+    },
+    clear() { down.clear(); }
+  };
+}
+
 function esc(s) {
   const d = document.createElement('div');
   d.textContent = s;
