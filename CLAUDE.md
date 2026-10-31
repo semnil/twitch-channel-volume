@@ -127,15 +127,19 @@ flowchart LR
 - `readStoredSettings(chrome.storage, key)`: the settings object in sync, or where sync holds none (`isStoredSettingsObject`: a non-null, non-array object) the copy in local, or undefined. Every reader of the settings goes through it, the settings writer's read-modify-write among them
 - Declares no name utils.js, channel-store.js or settings-store.js declares: it shares a global with utils.js in the content script and the pages, and with the stores in the worker
 
+### core/common.js (from channel-volume-core, loaded ahead of utils.js by popup/options and content.js; the worker loads neither)
+
+- Gain conversion and display: gainToPercent, percentToGain, gainToDb, formatGain
+- i18n: msg()
+- HTML escape: esc()
+
 ### utils.js (shared, popup/options + content.js + test.js. It is not loaded in the MAIN world, so page-bridge.js carries its own constants)
 
 - Constants: SETTINGS_KEY, SETTINGS_MUTATION_MESSAGE, CHANNEL_VOLUMES_KEY, CHANNEL_ALIASES_KEY, CHANNEL_SEQUENCE_KEY, DEFAULT_TARGET_LUFS, DEFAULT_AD_GAIN_DB, DEFAULT_AUTO_APPLY_LOUDNESS, LUFS_REFERENCE_VOLUME_1, ABSOLUTE_GATE_LUFS, RELATIVE_GATE_LU, DISPLAY_UPDATE_INTERVAL_MS, MIN_GAIN, MAX_GAIN
-- Gain utilities: gainToPercent, percentToGain, gainToDb, dbToGain, formatGain, calcGain, suggestedGain, resolveAutoApplySetting, resolvePreferredGain
+- Gain utilities: dbToGain, calcGain, suggestedGain, resolveAutoApplySetting, resolvePreferredGain
 - URL classification: classifyTwitchUrl (TWITCH_RESERVED_PATHS excluded)
 - BS.1770: K_PRE_48K / K_RLB_48K coefficients + redesignBiquad (any sample rate)
 - LUFS: meanSquareToLufs, gatedIntegratedLufs (absolute + relative gating)
-- i18n: msg()
-- HTML escape: esc()
 
 ### popup.html / popup.js
 
