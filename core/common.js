@@ -54,6 +54,35 @@ async function moveSettingsToSync(storage = chrome.storage, key = SETTINGS_KEY, 
   return true;
 }
 
+// The check a table of settings checks gives for field, where the table has
+// one of its own: null for any other name, Object.prototype's among them.
+function settingCheck(checks, field) {
+  return Object.prototype.hasOwnProperty.call(checks, field) ? checks[field] : null;
+}
+
+// Whether next holds the fields stored holds, each with the same value.
+function sameStoredSettings(next, stored) {
+  if (!isStoredSettingsObject(stored)) return false;
+  const fields = Object.keys(next);
+  return fields.length === Object.keys(stored).length && fields.every((field) =>
+    Object.prototype.hasOwnProperty.call(stored, field) && next[field] === stored[field]);
+}
+
+// Writes into sync what change answers for the settings as readSettings finds
+// them, so a write made before the move carries local's settings with it. A
+// write that would store in sync what sync holds already is left out. Answers
+// the settings written, or found written. The caller runs this on its settings
+// queue; change gets a copy it may change, and a throw from it writes nothing.
+async function writeSettingsChange(change, storage = chrome.storage, key = SETTINGS_KEY) {
+  const current = await readSettings(storage, key);
+  const next = change({ ...current });
+  if (!sameStoredSettings(next, current) ||
+      !sameStoredSettings(next, (await storage.sync.get(key))[key])) {
+    await storage.sync.set({ [key]: next });
+  }
+  return next;
+}
+
 // A queue that runs the work handed to it one after the other: each starts
 // once the one before it has ended, resolved or rejected. What it answers
 // settles as the work does.

@@ -9121,6 +9121,13 @@ test('settings mutations reject unknown fields and invalid values', () => {
   assert.throws(() => settingsStore.applySettingsMutation({}, {
     operation: 'patchSettings', patch: {}
   }), /must not be empty/);
+  // A name every object answers through its prototype is no settings field.
+  // The patch is parsed, as a message arrives, so __proto__ is a field of it.
+  for (const field of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+    assert.throws(() => settingsStore.applySettingsMutation({}, {
+      operation: 'patchSettings', patch: JSON.parse(`{"${field}":1}`)
+    }), { reason: 'invalid-mutation', message: `unknown settings field: ${field}` }, field);
+  }
 });
 
 test('settings mutations take each setting at a value it can hold', () => {

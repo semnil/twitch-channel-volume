@@ -174,7 +174,7 @@ sequenceDiagram
   end
 ```
 
-図のもと: `background.js` の `onMessage` リスナー。`core/common.js` の `readSettings`。`settings-store.js` の `createSettingsWriter`、`sameStoredSettings`、`applySettingsMutation`、`validateSettingsPatch`、`withoutRemovedSettings`。`options.js` の `mutateSettings`。
+図のもと: `background.js` の `onMessage` リスナー。`core/common.js` の `readSettings`、`writeSettingsChange`、`sameStoredSettings`、`settingCheck`。`settings-store.js` の `createSettingsWriter`、`applySettingsMutation`、`validateSettingsPatch`、`withoutRemovedSettings`。`options.js` の `mutateSettings`。
 
 - `validateSettingsPatch` が受け付けるのは、−30〜−6 の `targetLufs`、−24〜6 の `adGainDb`、`%` か `dB` の `displayUnit`、真偽値の `showGainOverlay` と 2 つの Auto 既定値。それ以外は `invalid-mutation` (`[TCV] settings mutation rejected as invalid`)。reason の付いていない失敗は `settings-update-failed` (`[TCV] settings mutation failed`) で答える。
 - どの項目も sync が持つ値のままにする patch (すでに選ばれている表示単位のボタンも含む) は、何も書かない。local の写しから読んだ設定は、sync が持っていないので sync へ書く。

@@ -28,7 +28,7 @@ function validateSettingsPatch(patch) {
   const entries = Object.entries(patch);
   if (entries.length === 0) throw invalidSettingsMutation('settings patch must not be empty');
   for (const [field, value] of entries) {
-    const validate = SETTINGS_VALIDATORS[field];
+    const validate = settingCheck(SETTINGS_VALIDATORS, field);
     if (!validate) throw invalidSettingsMutation(`unknown settings field: ${field}`);
     if (!validate(value)) throw invalidSettingsMutation(`invalid settings value: ${field}`);
   }
@@ -63,16 +63,6 @@ function applySettingsMutation(currentValue, mutation) {
   throw invalidSettingsMutation('unknown settings mutation');
 }
 
-// Whether the settings to be written are the ones stored, field for field.
-// Every value a write carries is a number, a string or a boolean, or the one
-// it read from the store.
-function sameStoredSettings(next, stored) {
-  if (!stored || typeof stored !== 'object') return false;
-  const fields = Object.keys(next);
-  return fields.length === Object.keys(stored).length && fields.every((field) =>
-    Object.prototype.hasOwnProperty.call(stored, field) && next[field] === stored[field]);
-}
-
 // `storage` is chrome.storage itself: the writes go to sync, and the read goes
 // through readSettings, so a write made before the move carries the local
 // values with it instead of starting sync from an empty object.
@@ -80,17 +70,8 @@ function createSettingsWriter(storage, storageKey = SETTINGS_STORE_KEY) {
   const enqueue = createSerialQueue();
 
   function enqueueSettingsMutation(mutation) {
-    return enqueue(async () => {
-      const current = await readSettings(storage, storageKey);
-      const next = applySettingsMutation(current, mutation);
-      // A write that would store in sync what sync holds already is left out.
-      // What was read can be local's copy, which sync does not hold.
-      if (!sameStoredSettings(next, current) ||
-          !sameStoredSettings(next, (await storage.sync.get(storageKey))[storageKey])) {
-        await storage.sync.set({ [storageKey]: next });
-      }
-      return next;
-    });
+    return enqueue(() =>
+      writeSettingsChange((current) => applySettingsMutation(current, mutation), storage, storageKey));
   }
   // On the same queue as the mutations, so a write and the move cannot read the
   // two areas in between each other's steps.
