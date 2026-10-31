@@ -99,6 +99,24 @@ function createSerialQueue() {
   };
 }
 
+// A writer of the map kept in chrome.storage.local under key, on a queue of
+// its own, so a write reads what the one before it left. Each write reads the
+// map, hands it to mutate to change in place, and writes it back where mutate
+// changed it; extraKeys, where given, are written alongside, whatever mutate
+// did. A context that can no longer reach the runtime writes nothing.
+function createStoredMapWriter(key) {
+  const queue = createSerialQueue();
+  return (mutate, extraKeys) => queue(async () => {
+    if (!isContextValid()) return;
+    const data = await chrome.storage.local.get(key);
+    const map = data[key] || {};
+    const before = JSON.stringify(map);
+    mutate(map);
+    if (JSON.stringify(map) === before && !extraKeys) return;
+    await chrome.storage.local.set({ [key]: map, ...extraKeys });
+  });
+}
+
 // Whether this context can still reach the extension's runtime: false once the
 // extension has been reloaded or removed under it.
 function isContextValid() {
