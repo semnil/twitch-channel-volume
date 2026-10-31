@@ -121,7 +121,7 @@ sequenceDiagram
   end
 ```
 
-Drawn from: `background.js` `onMessage` listener, `namedFailure`; `channel-store.js` `createChannelVolumesWriter`, `sameStoredValue`, `resolveMutation`, `mutationNeedsSequence`, `applyChannelVolumesMutation`, `normalizeKnownChannelEntries`, `aliasesLeadingTo`; `content.js` `sendChannelMutation`; `options.js` `mutateChannelVolumes`.
+Drawn from: `background.js` `onMessage` listener; `core/common.js` `createWriteListener`; `channel-store.js` `createChannelVolumesWriter`, `sameStoredValue`, `resolveMutation`, `mutationNeedsSequence`, `applyChannelVolumesMutation`, `normalizeKnownChannelEntries`, `aliasesLeadingTo`; `content.js` `sendChannelMutation`; `options.js` `mutateChannelVolumes`.
 
 | `operation` | Sent by | Fields sent | What it writes on the row | Sequence |
 |---|---|---|---|---|

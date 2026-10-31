@@ -21,51 +21,30 @@ writeSettings.moveToSync().catch((error) => {
   console.error('[TCV] failed to move the settings to sync', error);
 });
 
-// The stores name the rejections they raise themselves. A rejection with no
-// name came from the storage area, and only that one is worth retrying.
-function namedFailure(error) {
-  return typeof error?.reason === 'string' ? error.reason : '';
-}
-
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type === channelStore.CHANNEL_MUTATION_MESSAGE) {
-    writeChannelVolumes(message.mutation).then(() => {
-      sendResponse({ ok: true });
-    }).catch((error) => {
-      const named = namedFailure(error);
-      if (named === 'invalid-mutation') {
-        console.error('[TCV] channelVolumes mutation rejected as invalid', error);
-      } else if (named === 'stored-state-invalid') {
-        console.error('[TCV] channelVolumes mutation blocked by the stored state', error);
-      } else {
-        console.error('[TCV] channelVolumes mutation failed', error);
-      }
-      sendResponse({ ok: false, reason: named || 'storage-update-failed' });
-    });
-  } else if (message?.type === settingsStore.SETTINGS_MUTATION_MESSAGE) {
-    writeSettings(message.mutation).then((settings) => {
-      sendResponse({ ok: true, settings });
-    }).catch((error) => {
-      const named = namedFailure(error);
-      if (named === 'invalid-mutation') {
-        console.error('[TCV] settings mutation rejected as invalid', error);
-      } else if (named === 'stored-state-invalid') {
-        console.error('[TCV] settings mutation blocked by the stored state', error);
-      } else {
-        console.error('[TCV] settings mutation failed', error);
-      }
-      sendResponse({ ok: false, reason: named || 'settings-update-failed' });
-    });
-  } else {
-    // Answering here would take the response away from a listener added later,
-    // so the message is named and left alone.
-    console.warn('[TCV] unknown message type', message?.type);
-    return false;
+// The stores name the rejections they raise themselves (invalid-mutation,
+// stored-state-invalid); a rejection with no name came from the storage area.
+// Any other message is named and left alone, since answering it would take
+// the response away from a listener added later.
+chrome.runtime.onMessage.addListener(createWriteListener({
+  prefix: '[TCV]',
+  route: (message) => {
+    if (message?.type === channelStore.CHANNEL_MUTATION_MESSAGE) {
+      return {
+        write: (m) => writeChannelVolumes(m.mutation).then(() => undefined),
+        label: 'channelVolumes mutation',
+        failed: 'storage-update-failed'
+      };
+    }
+    if (message?.type === settingsStore.SETTINGS_MUTATION_MESSAGE) {
+      return {
+        write: (m) => writeSettings(m.mutation).then((settings) => ({ settings })),
+        label: 'settings mutation',
+        failed: 'settings-update-failed'
+      };
+    }
+    return null;
   }
-  // Keep the service worker and response channel alive through the queued
-  // read-modify-write operation.
-  return true;
-});
+}));
 
 chrome.runtime.onInstalled.addListener(() => {
   writeChannelVolumes({ operation: 'normalizeChannels' }).catch((error) => {
