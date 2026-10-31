@@ -1377,20 +1377,8 @@ function createOptionsHarness({
 
   const context = vm.createContext({
     ...u,
-    msg: (key, substitutions) => {
-      // Only the keys a case names take the fallback path; every other key has
-      // to be one the locale declares.
-      if (unknownI18nKeys.includes(key)) return key;
-      assert.ok(messages[key], `msg('${key}') has no message`);
-      const text = messages[key].message;
-      return substitutions && substitutions.length ? text.replace('$VALUE$', substitutions[0]) : text;
-    },
     chrome,
     document,
-    // A mirror of utils' esc: the stub element has no serializer, so the
-    // harness escapes what one would. `esc agrees with the harness's mirror of
-    // it` holds the two together.
-    esc: harnessEsc,
     console: {
       warn(...args) { warnings.push(args); },
       error(...args) { errors.push(args); },
@@ -1406,6 +1394,23 @@ function createOptionsHarness({
     window: {
       addEventListener(type, listener) { (windowListeners[type] ||= []).push(listener); }
     }
+  });
+  // core/common.js first, as the page loads it; its msg and esc then give way
+  // to the harness's.
+  loadScriptsInto(context, ['core/common.js']);
+  Object.assign(context, {
+    msg: (key, substitutions) => {
+      // Only the keys a case names take the fallback path; every other key has
+      // to be one the locale declares.
+      if (unknownI18nKeys.includes(key)) return key;
+      assert.ok(messages[key], `msg('${key}') has no message`);
+      const text = messages[key].message;
+      return substitutions && substitutions.length ? text.replace('$VALUE$', substitutions[0]) : text;
+    },
+    // A mirror of utils' esc: the stub element has no serializer, so the
+    // harness escapes what one would. `esc agrees with the harness's mirror of
+    // it` holds the two together.
+    esc: harnessEsc
   });
   loadScriptsInto(context, ['options.js']);
 
@@ -9370,7 +9375,7 @@ test('options names a refusal that gives no reason', async () => {
   await harness.fire('targetLufs', 'change');
 
   const named = harness.errors.filter((args) => String(args[0]).includes('failed to save settings field'));
-  assert.equal(String(named[0]?.[1]?.message), 'settings mutation failed',
+  assert.equal(String(named[0]?.[1]?.message), 'write not confirmed',
     'a refusal with nothing to say is still named');
 });
 
