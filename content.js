@@ -122,16 +122,9 @@
   }
 
   function sendChannelMutation(mutation) {
-    const task = channelMutationQueue.then(async () => {
+    const task = channelMutationQueue.then(() => {
       if (!isContextValid()) throw new Error('runtime context invalid');
-      const response = await chrome.runtime.sendMessage({
-        type: CHANNEL_MUTATION_MESSAGE,
-        mutation
-      });
-      if (!response?.ok) {
-        throw new Error(response?.reason || 'channelVolumes mutation failed');
-      }
-      return response;
+      return requestWrite({ type: CHANNEL_MUTATION_MESSAGE, mutation });
     });
     // Preserve order within this tab. The service worker adds the global queue
     // shared by content scripts, popup, and options contexts.

@@ -169,6 +169,16 @@ function createWriteListener({ route, prefix, ignoredTypes = [] }) {
   };
 }
 
+// Asks the worker for the write message describes and resolves with its
+// answer once the write has landed. A write the worker turns down rejects with
+// the reason it answered, and one it confirms with no ok and no reason (or
+// does not answer) with 'write not confirmed'.
+async function requestWrite(message) {
+  const response = await chrome.runtime.sendMessage(message);
+  if (!response?.ok) throw new Error(response?.reason || 'write not confirmed');
+  return response;
+}
+
 // Whether this context can still reach the extension's runtime: false once the
 // extension has been reloaded or removed under it.
 function isContextValid() {
@@ -250,6 +260,12 @@ function isRowKey(key) {
   return typeof key === 'string' && key.length > 0;
 }
 
+// A stored row's label: its name where the name is non-empty text, its key
+// otherwise.
+function rowLabel(key, entry) {
+  return typeof entry.name === 'string' && entry.name ? entry.name : key;
+}
+
 // Names entry, the stored row for id, from the name a write carries. A name
 // that is no text, is empty, or is the id itself (a sender gives the id before
 // it knows the name) leaves the row's name as it is; a row with no name takes
@@ -328,4 +344,29 @@ function esc(s) {
   // Serialising a text node leaves both quotes alone, and every caller puts the
   // result inside a quoted attribute as well as between tags.
   return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// The settings page's #settingsError line: shown with the catalog's text for
+// key, or hidden.
+function showSettingsError(visible, key = 'settingsSaveFailed') {
+  const line = document.getElementById('settingsError');
+  if (visible) line.textContent = msg(key);
+  line.classList.toggle('hidden', !visible);
+}
+
+// Asks for the state again after intervalMs, at most remaining times, while
+// done() does not hold. A state that comes back is handed to take; an ask that
+// comes back empty or fails ends the asking.
+function retryGetState(remaining, intervalMs, { done, ask, take }) {
+  if (remaining <= 0 || done()) return;
+  setTimeout(async () => {
+    if (done()) return;
+    try {
+      const state = await ask();
+      if (state) {
+        take(state);
+        retryGetState(remaining - 1, intervalMs, { done, ask, take });
+      }
+    } catch (_) {}
+  }, intervalMs);
 }

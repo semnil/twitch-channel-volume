@@ -9,12 +9,6 @@
 
   function $(id) { return document.getElementById(id); }
 
-  function showSettingsError(visible, key = 'settingsSaveFailed') {
-    const line = $('settingsError');
-    if (visible) line.textContent = msg(key);
-    line.classList.toggle('hidden', !visible);
-  }
-
   function applyI18n() {
     document.querySelectorAll('[data-i18n]').forEach((el) => {
       const key = el.getAttribute('data-i18n');
@@ -137,7 +131,7 @@
       const entry = all[id];
       const tr = document.createElement('tr');
       // A stored name that is not text is shown as the channel id.
-      const name = typeof entry.name === 'string' && entry.name ? entry.name : id;
+      const name = rowLabel(id, entry);
       const url = twitchUrlForId(id, entry);
       const link = url
         ? `<a class="ch-link" href="${esc(url)}" target="_blank">${esc(name)}</a>`
@@ -195,20 +189,12 @@
   }
 
   async function mutateChannelVolumes(mutation) {
-    const response = await chrome.runtime.sendMessage({
-      type: CHANNEL_MUTATION_MESSAGE,
-      mutation
-    });
-    if (!response?.ok) throw new Error(response?.reason || 'channelVolumes mutation failed');
+    await requestWrite({ type: CHANNEL_MUTATION_MESSAGE, mutation });
   }
 
   async function mutateSettings(patch) {
     if (!settingsReady) throw new Error('settings not loaded');
-    const response = await chrome.runtime.sendMessage({
-      type: SETTINGS_MUTATION_MESSAGE,
-      mutation: { operation: 'patchSettings', patch }
-    });
-    if (!response?.ok) throw new Error(response?.reason || 'settings mutation failed');
+    await requestWrite({ type: SETTINGS_MUTATION_MESSAGE, mutation: { operation: 'patchSettings', patch } });
   }
 
   // The page says the saved value was put back, or, where the re-read failed
