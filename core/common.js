@@ -4,6 +4,18 @@
 // imports utils.js). Every name here is a top-level declaration the scripts
 // after it read.
 
+// The key the settings object is stored under: in chrome.storage.sync, and in
+// chrome.storage.local in a profile whose settings have not been moved yet.
+const SETTINGS_KEY = 'autoLoudnessSettings';
+// The Target LUFS where the settings hold none.
+const DEFAULT_TARGET_LUFS = -18;
+
+// Whether this context can still reach the extension's runtime: false once the
+// extension has been reloaded or removed under it.
+function isContextValid() {
+  try { return !!chrome.runtime?.id; } catch (_) { return false; }
+}
+
 // Gain is a linear factor: 1 is 100% and 0 dB.
 function gainToPercent(gain) { return Math.round(gain * 100); }
 function percentToGain(pct) { return pct / 100; }

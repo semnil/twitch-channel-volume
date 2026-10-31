@@ -9,10 +9,6 @@
   const MSG_OUT = '__twitch_channel_volume_cmd__';
   const CHANNEL_MUTATION_MESSAGE = '__twitch_channel_volume_channel_mutation__';
 
-  function isContextValid() {
-    try { return !!chrome.runtime?.id; } catch (_) { return false; }
-  }
-
   let currentChannel = { id: '', login: '', name: '', url: '', kind: 'none' };
   let currentGain = 1.0;
   let currentAdGainDb = DEFAULT_AD_GAIN_DB;
