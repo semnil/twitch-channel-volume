@@ -138,7 +138,8 @@ flowchart LR
 - Popup cards: setCardValue (a card's value, its unit in a span.unit, and its classes), setUnknown (`---` with the classes and `unknown`)
 - Gain for a level: gainForLevel (10^((target - level) / 20), within the gain range, 1 where that is not finite)
 - Slider keys: SLIDER_VALUE_KEYS, isSliderMoveKey, createSliderKeys (the keys that move a range input's value, which alone make a key hold on the popup's and the settings page's sliders, and the tracker of those down on one slider)
-- i18n: msg()
+- i18n: msg(), applyI18n (each `data-i18n` element's message, the key itself where the catalog has none, and `<html lang>` from `pageLanguage`)
+- Page reveal: revealPage (lays out what was written, then takes `body.initializing` off on the next frame)
 - HTML escape: esc()
 - Settings page error line: showSettingsError (`#settingsError`, shown with a catalog message or hidden)
 - Popup state retry: retryGetState (asks again for the state every interval, a set number of times, until it is settled; this popup polls instead and does not call it)
@@ -187,7 +188,7 @@ flowchart LR
 - `_locales/en/messages.json` — English, the `default_locale`: a browser language with no catalog here is answered in English
 - `_locales/ja/messages.json` — Japanese
 - The manifest's name/description use `__MSG_` references
-- The popup/options UI strings use the `data-i18n` attribute + `chrome.i18n.getMessage`
+- The popup/options UI strings use the `data-i18n` attribute + `chrome.i18n.getMessage`, applied by `applyI18n` (core/common.js). The markup holds each element's key, which is also what a key the catalog lacks shows
 - popup/options set `<html lang>` from the `pageLanguage` message, which each catalog answers with its own locale, so the page declares the language of the catalog Chrome filled it from. The markup's `lang` is `default_locale`'s
 
 ## User workflow
@@ -372,7 +373,7 @@ python3 pack.py --list
 
 - Gain value 1.0 = 100% (passthrough). Range 0.0–6.0
 - Do not run `python3 -m py_compile` at the root of the unpacked extension. It generates the `__pycache__` Chrome refuses, so use the AST parse above for the Python syntax check (the range `node test.js` scans is in "Reserved names")
-- `popup.html` / `options.html` stay in a shape the i18n extractor can read: no HTML comments, `<template>`, `<textarea>` / `<iframe>` / `<xmp>` / `<noembed>` / `<noframes>` / `<noscript>` / `<plaintext>`; the raw text elements the pages do use — `<title>` / `<style>` / `<script>` — are closed with `>` directly after the name (a form where the name continues, such as `</titles>`, is a different element and swallows what follows without closing the raw text); `data-i18n` is written lowercase and quoted; and an element carrying the attribute holds no text of its own — `applyI18n` assigns the catalog's to `textContent` before the body loses `initializing`, so anything written into the markup would be read by nobody and drift unseen. The mapping from a key to the element carrying it (tag name, `id`, `class` tokens) is pinned by a snapshot in `node test.js`
+- `popup.html` / `options.html` stay in a shape the i18n extractor can read: no HTML comments, `<template>`, `<textarea>` / `<iframe>` / `<xmp>` / `<noembed>` / `<noframes>` / `<noscript>` / `<plaintext>`; the raw text elements the pages do use — `<title>` / `<style>` / `<script>` — are closed with `>` directly after the name (a form where the name continues, such as `</titles>`, is a different element and swallows what follows without closing the raw text); `data-i18n` is written lowercase and quoted; and an element carrying the attribute holds its own key and no other text — `applyI18n` (core/common.js) assigns the catalog's message to `textContent` before the body loses `initializing`, and the key itself where the catalog has none, so wording written into the markup would be read by nobody and drift unseen. The mapping from a key to the element carrying it (tag name, `id`, `class` tokens) is pinned by a snapshot in `node test.js`
 - AudioContext starts `suspended` until the page has been interacted with (Chrome autoplay policy). The recovery is under "When the AudioContext is suspended"
 - BS.1770 reference is 48 kHz. Chrome's AudioContext is normally 48000, and a varying sample rate is handled by redesignBiquad
 - Storage keys: `autoLoudnessSettings` (target LUFS, ad gain, display unit, per-kind Auto defaults; in `chrome.storage.sync`, the rest in `chrome.storage.local`), `channelVolumes` (per-channel saved gains + per-kind Auto + the lastLufs cache and its window count), `channelVolumeAliases` (provisional ID → canonical ID), `channelVolumeSequence` (persistent update number)

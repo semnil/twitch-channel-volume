@@ -609,10 +609,9 @@ test('the screenshots take their wording from the catalog', () => {
   fs.rmSync(box, { recursive: true, force: true });
 });
 
-// A page's own text under data-i18n is replaced by the catalog's before the
-// page is ever shown — applyI18n runs before the body loses `initializing`,
-// which hides it — so text written into the markup is never read by anyone and
-// drifts from the wording that ships without a single check going red.
+// A page's markup holds, under data-i18n, the key of the message it shows —
+// what applyI18n shows for a key the catalog lacks — and no wording of its own
+// to drift from the catalog's.
 test('a page leaves its wording to the catalog', () => {
   const holder = /<([a-zA-Z][\w-]*)([^>]*\sdata-i18n\s*=\s*["\']([^"\']+)["\'][^>]*)>([\s\S]*?)<\/\1>/g;
   let keys = 0;
@@ -620,8 +619,8 @@ test('a page leaves its wording to the catalog', () => {
     const text = fs.readFileSync(path.join(__dirname, page), 'utf8');
     for (const [, , , key, inner] of text.matchAll(holder)) {
       keys += 1;
-      assert.equal(inner.trim(), '',
-        `${page} leaves ${key} to the catalog`);
+      assert.equal(inner, key,
+        `${page} holds ${key} as its own key`);
     }
     // Without this the loop above would pass over a page the pattern cannot read.
     assert.equal((text.match(/data-i18n\s*=/g) || []).length,
@@ -7634,15 +7633,15 @@ test('popup asks nothing of a tab whose address is not Twitch', async () => {
   assert.deepEqual(harness.sent, []);
 });
 
-test('popup keeps the text the page ships when the locale has no message', async () => {
-  // msg hands back the key itself for a message the locale does not declare.
-  // The viewer keeps what popup.html carries rather than reading a key name.
+test('popup shows the key where the locale has no message', async () => {
+  // msg hands back the key itself for a message the locale does not declare,
+  // and that is what the element shows, whatever it held before.
   const harness = createPopupHarness({ unknownI18nKeys: ['noSuchKey'] });
   await flushTasks(8);
 
   const node = harness.i18nNodes
     .find((element) => element.getAttribute('data-i18n') === 'noSuchKey');
-  assert.equal(node.textContent, 'what the page ships');
+  assert.equal(node.textContent, 'noSuchKey');
 });
 
 test('popup clears the reset failure when the same channel changes kind', async () => {
@@ -9481,12 +9480,12 @@ test('options draws a dash where there is no gain to draw', async () => {
   assert.doesNotMatch(markup, /NaN/, 'rather than a number that is not one');
 });
 
-test('options keeps the text the page ships when the locale has no message', async () => {
+test('options shows the key where the locale has no message', async () => {
   const harness = createOptionsHarness({ unknownI18nKeys: ['noSuchKey'] });
   await flushTasks(8);
 
   const node = harness.i18nNodes.find((el) => el.getAttribute('data-i18n') === 'noSuchKey');
-  assert.equal(node.textContent, 'what the page ships');
+  assert.equal(node.textContent, 'noSuchKey');
 });
 
 test('settings mutations refuse what is not a mutation, and say so by name', () => {
@@ -11162,9 +11161,11 @@ function revealBody(source, name) {
 }
 
 test('both pages ship hidden and hold every transition until the values are written', () => {
-  for (const [page, htmlName, sourceName, reveal, fn] of [
-    ['options', 'options.html', 'options.js', /\.finally\(revealOptions\);/, 'revealOptions'],
-    ['popup', 'popup.html', 'popup.js', /finally \{\s*revealPopup\(\);/, 'revealPopup']
+  // Both pages reveal through core/common.js's revealPage.
+  const body = revealBody(fs.readFileSync(path.join(__dirname, 'core', 'common.js'), 'utf8'), 'revealPage');
+  for (const [page, htmlName, sourceName, reveal] of [
+    ['options', 'options.html', 'options.js', /\.finally\(revealPage\);/],
+    ['popup', 'popup.html', 'popup.js', /finally \{\s*revealPage\(\);/]
   ]) {
     const html = fs.readFileSync(path.join(__dirname, htmlName), 'utf8');
     const source = fs.readFileSync(path.join(__dirname, sourceName), 'utf8');
@@ -11173,7 +11174,6 @@ test('both pages ship hidden and hold every transition until the values are writ
     assert.ok(suppressesEveryTransition(html), `${page} stops every transition while initializing`);
     assert.match(source, reveal, `${page} reveals after the load settles either way`);
 
-    const body = revealBody(source, fn);
     assert.ok(body, `${page} reveals from a named function`);
     const flush = body.indexOf('document.body.offsetWidth');
     const frame = body.indexOf('requestAnimationFrame(');
@@ -11185,7 +11185,7 @@ test('both pages ship hidden and hold every transition until the values are writ
       `${page} flushes the written values before dropping the class on the next frame`
     );
     assert.equal(
-      (source.match(new RegExp(fn, 'g')) || []).length, 2,
+      (source.match(/revealPage/g) || []).length, 1,
       `${page} reveals from one place`
     );
   }
@@ -11565,7 +11565,7 @@ test('popup exposes the selected channel-row measurement reset control', () => {
   // carries the key and no text of its own.
   assert.match(
     html,
-    /<span class="sr-only" data-i18n="resetMeasurement"><\/span>/
+    /<span class="sr-only" data-i18n="resetMeasurement">resetMeasurement<\/span>/
   );
   for (const locale of ['ja', 'en']) {
     const messages = JSON.parse(fs.readFileSync(
@@ -11612,7 +11612,7 @@ test('popup declares the player audio notice with its localized text', () => {
   // The notice takes its wording from the catalog below, not from the markup.
   assert.match(
     html,
-    /<div id="audioError" class="audio-error hidden" role="status" data-i18n="audioUnavailable"><\/div>/
+    /<div id="audioError" class="audio-error hidden" role="status" data-i18n="audioUnavailable">audioUnavailable<\/div>/
   );
   // WCAG 2.1 SC 1.4.3: the notice sits on the info panel.
   assertContrastFloor(html, [['.audio-error', '.info-section']], 4.5);
