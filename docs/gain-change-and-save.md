@@ -15,7 +15,7 @@ This document follows the code in this repository and answers two questions for 
 | content | `content.js` | Twitch tab, ISOLATED world | Chooses the baseline gain (`currentGain`), sends it to the bridge, and sends per-channel mutations to the service worker |
 | bridge | `page-bridge.js` | Twitch tab, MAIN world | Owns the `AudioContext`, the output `GainNode` and the LUFS measurement, and drives the node to the effective gain |
 | worklet | `audio-worklet.js` | AudioWorklet thread | Posts the K-weighted mean square (MS) of each 100 ms block |
-| SW | `background.js`, `settings-area.js`, `channel-store.js`, `settings-store.js` | service worker | Single writer of `channelVolumes` / `channelVolumeAliases` / `channelVolumeSequence` and of `autoLoudnessSettings`, and the move of the settings from local to sync at each start |
+| SW | `background.js`, `core/common.js`, `channel-store.js`, `settings-store.js` | service worker | Single writer of `channelVolumes` / `channelVolumeAliases` / `channelVolumeSequence` and of `autoLoudnessSettings`, and the move of the settings from local to sync at each start |
 | storage | — | `chrome.storage.local` and `chrome.storage.sync` | Hold the keys below, the settings in sync and the rest in local. content and options listen to the `onChanged` event of both, the popup to that of sync |
 
 ### Terms
@@ -45,7 +45,7 @@ This document follows the code in this repository and answers two questions for 
 | `channelVolumeAliases` | `{ [provisionalId]: userId }` | `channel-store.js` `createChannelVolumesWriter` |
 | `channelVolumeSequence` | integer | `channel-store.js` `createChannelVolumesWriter` |
 
-`autoLoudnessSettings` is kept in `chrome.storage.sync`, and the other three keys in `chrome.storage.local`. Where the user has turned on Chrome sync, Chrome syncs the sync area with every Chrome the user is signed in to; where it is off, the sync area behaves like local ([`chrome.storage`](https://developer.chrome.com/docs/extensions/reference/api/storage)). A profile an earlier version wrote holds the settings in local until the SW moves them (scenario 2). Every reader of the settings, the settings writer included, goes through `readStoredSettings` (`settings-area.js`): the settings object in sync, or where sync holds none the copy in local, or nothing, a local read that finds nothing being followed by a second read of sync.
+`autoLoudnessSettings` is kept in `chrome.storage.sync`, and the other three keys in `chrome.storage.local`. Where the user has turned on Chrome sync, Chrome syncs the sync area with every Chrome the user is signed in to; where it is off, the sync area behaves like local ([`chrome.storage`](https://developer.chrome.com/docs/extensions/reference/api/storage)). A profile an earlier version wrote holds the settings in local until the SW moves them (scenario 2). Every reader of the settings, the settings writer included, goes through `readSettings` (`core/common.js`): the settings object in sync, or where sync holds none the copy in local, or `{}`, a local read that finds nothing being followed by a second read of sync.
 
 `lastLufsRef[kind]` and `autoGainRef[kind]` hold `volume1` (`LUFS_REFERENCE_VOLUME_1`) when the value was measured with the player volume divided out. `lastLufsWindows[kind]` is the number of gating windows the stored LUFS stands on. In the tables below, `<Kind>` stands for `Live` or `Vod`.
 
@@ -158,7 +158,7 @@ sequenceDiagram
   participant storage as chrome.storage
   options->>sw: runtime.sendMessage type SETTINGS_MUTATION_MESSAGE, patchSettings with one field
   sw->>store: writeSettings(mutation), queued behind earlier tasks and the move
-  store->>storage: readStoredSettings autoLoudnessSettings
+  store->>storage: readSettings autoLoudnessSettings
   store->>store: applySettingsMutation: validateSettingsPatch, merged into the stored value, withoutRemovedSettings
   alt invalid or the storage area threw
     sw-->>options: ok false, reason
@@ -174,7 +174,7 @@ sequenceDiagram
   end
 ```
 
-Drawn from: `background.js` `onMessage` listener; `settings-area.js` `readStoredSettings`; `settings-store.js` `createSettingsWriter`, `sameStoredSettings`, `applySettingsMutation`, `validateSettingsPatch`, `withoutRemovedSettings`; `options.js` `mutateSettings`.
+Drawn from: `background.js` `onMessage` listener; `core/common.js` `readSettings`; `settings-store.js` `createSettingsWriter`, `sameStoredSettings`, `applySettingsMutation`, `validateSettingsPatch`, `withoutRemovedSettings`; `options.js` `mutateSettings`.
 
 - `validateSettingsPatch` accepts `targetLufs` from −30 to −6, `adGainDb` from −24 to 6, `displayUnit` `%` or `dB`, and booleans for `showGainOverlay` and the two Auto defaults. Anything else is `invalid-mutation` (`[TCV] settings mutation rejected as invalid`); a rejection without a reason answers `settings-update-failed` (`[TCV] settings mutation failed`).
 - A patch that leaves every field as sync holds it, the unit button already chosen among them, writes nothing. Settings read from the copy in local are written to sync, which does not hold them.
@@ -195,7 +195,7 @@ sequenceDiagram
     bridge-->>content: audio-context with the state
     bridge-->>content: init-done once the worklet module load has settled
   and content
-    content->>storage: readStoredSettings autoLoudnessSettings (loadSettings)
+    content->>storage: readSettings autoLoudnessSettings (loadSettings)
     content->>bridge: setAdGain dbToGain(adGainDb)
     content->>content: resolveChannel from the URL, seededResetPending = true
     alt Live or VOD
@@ -246,7 +246,7 @@ sequenceDiagram
   cstore->>storage: get, normalizeKnownChannelEntries, set where it changed the store
 ```
 
-Drawn from: `background.js` the `moveToSync` call at its top level and the `onInstalled` listener; `channel-store.js` `normalizeKnownChannelEntries`, `withoutClipFields`, `cloneEntry`, `expandLegacyGain`, `expandLegacyAuto`; `settings-store.js` `moveSettingsToSync`, `withoutRemovedSettings`; `settings-area.js` `isStoredSettingsObject`; `options.js` `loadAll`; `utils.js` `extractGainForKind`, `resolveAutoApplySetting`.
+Drawn from: `background.js` the `moveToSync` call at its top level and the `onInstalled` listener; `channel-store.js` `normalizeKnownChannelEntries`, `withoutClipFields`, `cloneEntry`, `expandLegacyGain`, `expandLegacyAuto`; `settings-store.js` `moveSettingsToSync`, `withoutRemovedSettings`; `core/common.js` `isStoredSettingsObject`; `options.js` `loadAll`; `utils.js` `extractGainForKind`, `resolveAutoApplySetting`.
 
 - No settings are written on install. A reader that finds settings in neither area takes the defaults: `targetLufs` −18, `adGainDb` −6, `displayUnit` `%`, `showGainOverlay` true, and false for both Auto defaults. The first settings write is a gesture on the options page or the move.
 - Where sync already holds settings when the move runs, sync is kept and the local copy is only removed. Sync is written before local is removed, so a reader finds one of them throughout.

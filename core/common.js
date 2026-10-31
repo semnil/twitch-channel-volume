@@ -15,6 +15,28 @@ const MAX_TARGET_LUFS = -6;
 const MIN_GAIN = 0;
 const MAX_GAIN = 6;
 
+// Whether a stored settings value is one a reader takes: an object, neither
+// null nor an array.
+function isStoredSettingsObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+// The settings, from sync first. A profile an earlier version wrote holds them
+// in local until the service worker moves them, and that copy stands in until
+// then. The move writes sync before it removes local, so the two reads can
+// straddle it: sync read empty, then local read after the move cleared it. A
+// local read that finds nothing is followed by a second read of sync, which
+// then holds what the move put there. {} where neither area holds a settings
+// object.
+async function readSettings(storage = chrome.storage, key = SETTINGS_KEY) {
+  const synced = (await storage.sync.get(key))[key];
+  if (isStoredSettingsObject(synced)) return synced;
+  const local = (await storage.local.get(key))[key];
+  if (isStoredSettingsObject(local)) return local;
+  const moved = (await storage.sync.get(key))[key];
+  return isStoredSettingsObject(moved) ? moved : {};
+}
+
 // Whether this context can still reach the extension's runtime: false once the
 // extension has been reloaded or removed under it.
 function isContextValid() {

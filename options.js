@@ -101,14 +101,14 @@
     // The two are kept in different areas. Either read failing fails the load,
     // so the page never shows one of them read and the other not.
     const [settings, data] = await Promise.all([
-      readStoredSettings(chrome.storage, SETTINGS_KEY),
+      readSettings(chrome.storage),
       chrome.storage.local.get(CHANNEL_VOLUMES_KEY)
     ]);
     // The page has already been shown as one whose load did not arrive, so what
     // arrives afterwards does not get to fill it in behind that.
     if (loadFailed) return;
     if (initialSettingsRevision === settingsRevision) {
-      renderSettings(settings || {});
+      renderSettings(settings);
     }
     if (initialChannelRevision === channelRevision) {
       channelVolumes = data[CHANNEL_VOLUMES_KEY] || {};
@@ -217,8 +217,8 @@
     const revision = settingsRevision;
     let errorKey = 'settingsSaveFailed';
     try {
-      const settings = await readStoredSettings(chrome.storage, SETTINGS_KEY);
-      if (revision === settingsRevision) renderSettings(settings || {});
+      const settings = await readSettings(chrome.storage);
+      if (revision === settingsRevision) renderSettings(settings);
       renderChannels(channelVolumes);
     } catch (reloadError) {
       errorKey = 'settingsLoadFailed';

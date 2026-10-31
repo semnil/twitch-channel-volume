@@ -567,7 +567,7 @@
 
   async function loadDisplayUnit() {
     const revision = settingsRevision;
-    const s = (await readStoredSettings(chrome.storage, SETTINGS_KEY)) || {};
+    const s = await readSettings(chrome.storage);
     if (revision === settingsRevision) displayUnit = s.displayUnit || '%';
   }
 

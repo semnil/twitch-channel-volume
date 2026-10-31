@@ -15,7 +15,7 @@
 | content | `content.js` | Twitch のタブ、ISOLATED world | 基準ゲイン (`currentGain`) を決めて bridge へ送り、チャンネルごとの変更を Service Worker へ送る |
 | bridge | `page-bridge.js` | Twitch のタブ、MAIN world | `AudioContext`・出力の `GainNode`・LUFS の計測を持ち、ノードを実際にかかるゲインへ動かす |
 | worklet | `audio-worklet.js` | AudioWorklet のスレッド | 100 ms のブロックごとに、K 特性をかけた信号の二乗平均 (MS) を送る |
-| SW | `background.js`、`settings-area.js`、`channel-store.js`、`settings-store.js` | Service Worker | `channelVolumes` / `channelVolumeAliases` / `channelVolumeSequence` と `autoLoudnessSettings` を書くただ 1 つの書き手。起動のたびに、設定を local から sync へ移す |
+| SW | `background.js`、`core/common.js`、`channel-store.js`、`settings-store.js` | Service Worker | `channelVolumes` / `channelVolumeAliases` / `channelVolumeSequence` と `autoLoudnessSettings` を書くただ 1 つの書き手。起動のたびに、設定を local から sync へ移す |
 | storage | — | `chrome.storage.local` と `chrome.storage.sync` | 下の保存キーを持つ。設定は sync、ほかは local。content と options は両方の `onChanged` イベントを、popup は sync のものを受け取る |
 
 ### 用語
@@ -45,7 +45,7 @@
 | `channelVolumeAliases` | `{ [仮 ID]: ユーザー ID }` | `channel-store.js` の `createChannelVolumesWriter` |
 | `channelVolumeSequence` | 整数 | `channel-store.js` の `createChannelVolumesWriter` |
 
-`autoLoudnessSettings` は `chrome.storage.sync` に、ほかの 3 つのキーは `chrome.storage.local` に置く。sync は、利用者が Chrome の同期を有効にしていれば、その利用者がサインインしているすべての Chrome と同期され、無効なら local と同じに振る舞う ([`chrome.storage`](https://developer.chrome.com/docs/extensions/reference/api/storage))。以前の版が書いたプロファイルでは、SW が移すまで設定は local にある (場面 2)。設定を読むものは、設定の書き手も含めてすべて `readStoredSettings` (`settings-area.js`) を通る。sync の設定のオブジェクト、sync に無ければ local の写し、どちらにも無ければ何も返さない。local を読んで何も無かったときは、sync をもう一度読む。
+`autoLoudnessSettings` は `chrome.storage.sync` に、ほかの 3 つのキーは `chrome.storage.local` に置く。sync は、利用者が Chrome の同期を有効にしていれば、その利用者がサインインしているすべての Chrome と同期され、無効なら local と同じに振る舞う ([`chrome.storage`](https://developer.chrome.com/docs/extensions/reference/api/storage))。以前の版が書いたプロファイルでは、SW が移すまで設定は local にある (場面 2)。設定を読むものは、設定の書き手も含めてすべて `readSettings` (`core/common.js`) を通る。sync の設定のオブジェクト、sync に無ければ local の写し、どちらにも無ければ `{}` を返す。local を読んで何も無かったときは、sync をもう一度読む。
 
 `lastLufsRef[kind]` と `autoGainRef[kind]` には、プレイヤーの音量の分を割り戻して測った値のときに `volume1` (`LUFS_REFERENCE_VOLUME_1`) が入る。`lastLufsWindows[kind]` は、保存した LUFS が何個のゲーティング窓から出た値かを表す。下の表の `<Kind>` は `Live` か `Vod` のこと。
 
@@ -158,7 +158,7 @@ sequenceDiagram
   participant storage as chrome.storage
   options->>sw: runtime.sendMessage type SETTINGS_MUTATION_MESSAGE、項目 1 つの patchSettings
   sw->>store: writeSettings(mutation)、前の処理と移し替えの後ろに並ぶ
-  store->>storage: readStoredSettings autoLoudnessSettings
+  store->>storage: readSettings autoLoudnessSettings
   store->>store: applySettingsMutation: validateSettingsPatch、保存値へ重ねる、withoutRemovedSettings
   alt 不正な入力か storage が例外を投げた
     sw-->>options: ok false、reason
@@ -174,7 +174,7 @@ sequenceDiagram
   end
 ```
 
-図のもと: `background.js` の `onMessage` リスナー。`settings-area.js` の `readStoredSettings`。`settings-store.js` の `createSettingsWriter`、`sameStoredSettings`、`applySettingsMutation`、`validateSettingsPatch`、`withoutRemovedSettings`。`options.js` の `mutateSettings`。
+図のもと: `background.js` の `onMessage` リスナー。`core/common.js` の `readSettings`。`settings-store.js` の `createSettingsWriter`、`sameStoredSettings`、`applySettingsMutation`、`validateSettingsPatch`、`withoutRemovedSettings`。`options.js` の `mutateSettings`。
 
 - `validateSettingsPatch` が受け付けるのは、−30〜−6 の `targetLufs`、−24〜6 の `adGainDb`、`%` か `dB` の `displayUnit`、真偽値の `showGainOverlay` と 2 つの Auto 既定値。それ以外は `invalid-mutation` (`[TCV] settings mutation rejected as invalid`)。reason の付いていない失敗は `settings-update-failed` (`[TCV] settings mutation failed`) で答える。
 - どの項目も sync が持つ値のままにする patch (すでに選ばれている表示単位のボタンも含む) は、何も書かない。local の写しから読んだ設定は、sync が持っていないので sync へ書く。
@@ -195,7 +195,7 @@ sequenceDiagram
     bridge-->>content: audio-context と状態
     bridge-->>content: worklet モジュールの読み込みが終わったら init-done
   and content
-    content->>storage: readStoredSettings autoLoudnessSettings (loadSettings)
+    content->>storage: readSettings autoLoudnessSettings (loadSettings)
     content->>bridge: setAdGain dbToGain(adGainDb)
     content->>content: URL から resolveChannel、seededResetPending = true
     alt Live か VOD
@@ -246,7 +246,7 @@ sequenceDiagram
   cstore->>storage: get、normalizeKnownChannelEntries、保存値が変わるときだけ set
 ```
 
-図のもと: `background.js` の最上位での `moveToSync` の呼び出しと `onInstalled` リスナー。`channel-store.js` の `normalizeKnownChannelEntries`、`withoutClipFields`、`cloneEntry`、`expandLegacyGain`、`expandLegacyAuto`。`settings-store.js` の `moveSettingsToSync`、`withoutRemovedSettings`。`settings-area.js` の `isStoredSettingsObject`。`options.js` の `loadAll`。`utils.js` の `extractGainForKind`、`resolveAutoApplySetting`。
+図のもと: `background.js` の最上位での `moveToSync` の呼び出しと `onInstalled` リスナー。`channel-store.js` の `normalizeKnownChannelEntries`、`withoutClipFields`、`cloneEntry`、`expandLegacyGain`、`expandLegacyAuto`。`settings-store.js` の `moveSettingsToSync`、`withoutRemovedSettings`。`core/common.js` の `isStoredSettingsObject`。`options.js` の `loadAll`。`utils.js` の `extractGainForKind`、`resolveAutoApplySetting`。
 
 - インストールでは設定を書かない。どちらの場所にも設定が無ければ、読むものは既定値を使う。既定値は、`targetLufs` −18、`adGainDb` −6、`displayUnit` `%`、`showGainOverlay` true、2 つの Auto 既定値は false。最初に設定を書くのは、設定ページでの操作か移し替え。
 - 移し替えのときに sync にすでに設定があれば、sync をそのまま残し、local の写しを消すだけにする。local を消す前に sync へ書くので、読むものはその間ずっとどちらかを見つける。

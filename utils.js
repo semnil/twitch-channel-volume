@@ -266,7 +266,7 @@ function gatedIntegratedLufs(blockMs) {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
-    SETTINGS_KEY, SETTINGS_MUTATION_MESSAGE,
+    SETTINGS_KEY, SETTINGS_MUTATION_MESSAGE, isStoredSettingsObject, readSettings,
     CHANNEL_VOLUMES_KEY, CHANNEL_ALIASES_KEY, CHANNEL_SEQUENCE_KEY,
     DEFAULT_TARGET_LUFS, DEFAULT_AD_GAIN_DB, DEFAULT_AUTO_APPLY_LOUDNESS,
     ABSOLUTE_GATE_LUFS, RELATIVE_GATE_LU, LUFS_REFERENCE_VOLUME_1,

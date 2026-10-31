@@ -1,11 +1,5 @@
 // settings-store.js — Serialized field-level settings mutations for the service worker.
 
-// The worker loads settings-area.js ahead of this script; the tests load this
-// one as a module, which brings its own.
-const settingsArea = typeof module !== 'undefined' && module.exports
-  ? require('./settings-area.js')
-  : globalThis.TCVSettingsArea;
-
 const SETTINGS_MUTATION_MESSAGE = '__twitch_channel_volume_settings_mutation__';
 const SETTINGS_STORE_KEY = 'autoLoudnessSettings';
 
@@ -81,8 +75,7 @@ async function moveSettingsToSync(storage, storageKey) {
   const local = (await storage.local.get(storageKey))[storageKey];
   if (local === undefined) return false;
   const synced = (await storage.sync.get(storageKey))[storageKey];
-  if (!settingsArea.isStoredSettingsObject(synced) &&
-      settingsArea.isStoredSettingsObject(local)) {
+  if (!isStoredSettingsObject(synced) && isStoredSettingsObject(local)) {
     await storage.sync.set({ [storageKey]: withoutRemovedSettings(local) });
   }
   await storage.local.remove(storageKey);
@@ -100,7 +93,7 @@ function sameStoredSettings(next, stored) {
 }
 
 // `storage` is chrome.storage itself: the writes go to sync, and the read goes
-// through readStoredSettings, so a write made before the move carries the local
+// through readSettings, so a write made before the move carries the local
 // values with it instead of starting sync from an empty object.
 function createSettingsWriter(storage, storageKey = SETTINGS_STORE_KEY) {
   let queue = Promise.resolve();
@@ -113,7 +106,7 @@ function createSettingsWriter(storage, storageKey = SETTINGS_STORE_KEY) {
 
   function enqueueSettingsMutation(mutation) {
     return enqueue(async () => {
-      const current = await settingsArea.readStoredSettings(storage, storageKey);
+      const current = await readSettings(storage, storageKey);
       const next = applySettingsMutation(current, mutation);
       // A write that would store in sync what sync holds already is left out.
       // What was read can be local's copy, which sync does not hold.
