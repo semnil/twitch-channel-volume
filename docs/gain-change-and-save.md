@@ -174,7 +174,7 @@ sequenceDiagram
   end
 ```
 
-Drawn from: `background.js` `onMessage` listener; `core/common.js` `readSettings`; `settings-store.js` `createSettingsWriter`, `sameStoredSettings`, `applySettingsMutation`, `validateSettingsPatch`, `withoutRemovedSettings`; `options.js` `mutateSettings`.
+Drawn from: `background.js` `onMessage` listener; `core/common.js` `readSettings`, `writeSettingsChange`, `sameStoredSettings`, `settingCheck`; `settings-store.js` `createSettingsWriter`, `applySettingsMutation`, `validateSettingsPatch`, `withoutRemovedSettings`; `options.js` `mutateSettings`.
 
 - `validateSettingsPatch` accepts `targetLufs` from −30 to −6, `adGainDb` from −24 to 6, `displayUnit` `%` or `dB`, and booleans for `showGainOverlay` and the two Auto defaults. Anything else is `invalid-mutation` (`[TCV] settings mutation rejected as invalid`); a rejection without a reason answers `settings-update-failed` (`[TCV] settings mutation failed`).
 - A patch that leaves every field as sync holds it, the unit button already chosen among them, writes nothing. Settings read from the copy in local are written to sync, which does not hold them.
