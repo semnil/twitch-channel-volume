@@ -45,7 +45,7 @@ function storeAutoGainFieldForKind(kind) {
 }
 
 function assertChannelId(value, field = 'channelId') {
-  if (typeof value !== 'string' || value.length === 0) {
+  if (!isRowKey(value)) {
     throw invalidChannelMutation(`${field} must be a non-empty string`);
   }
 }
