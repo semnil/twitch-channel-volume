@@ -1,14 +1,19 @@
 // core/common.js — The helpers the channel-volume extensions share, loaded as
-// a classic script ahead of each extension's utils.js wherever that loads
-// (content script, popup, options page, and the service worker where it
-// imports utils.js). Every name here is a top-level declaration the scripts
-// after it read.
+// a classic script ahead of each extension's own scripts in the content
+// script, the popup, the options page and the service worker. Every name here
+// is a top-level declaration the scripts after it read.
 
 // The key the settings object is stored under: in chrome.storage.sync, and in
 // chrome.storage.local in a profile whose settings have not been moved yet.
 const SETTINGS_KEY = 'autoLoudnessSettings';
 // The Target LUFS where the settings hold none.
 const DEFAULT_TARGET_LUFS = -18;
+// The range of Target LUFS a setting takes.
+const MIN_TARGET_LUFS = -30;
+const MAX_TARGET_LUFS = -6;
+// The range of a gain: 0 is silence, 6 is 600%.
+const MIN_GAIN = 0;
+const MAX_GAIN = 6;
 
 // Whether this context can still reach the extension's runtime: false once the
 // extension has been reloaded or removed under it.
