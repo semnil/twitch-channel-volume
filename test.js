@@ -7417,7 +7417,7 @@ test('popup shows an unmeasured level as unknown rather than as a number', async
   const cell = harness.el('integrated');
   assert.equal(cell.textContent, '---');
   assert.equal(cell.children.length, 0, 'the unknown cell carries no unit beside it');
-  assert.ok(cell.className.includes('unknown'));
+  assert.equal(cell.className, 'value unknown');
 
   const measured = createPopupHarness({
     state: { lufs: { momentary: -23, shortTerm: -23, integrated: -23 } }
