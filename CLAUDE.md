@@ -140,6 +140,7 @@ flowchart LR
 - Slider keys: SLIDER_VALUE_KEYS, isSliderMoveKey, createSliderKeys (the keys that move a range input's value, which alone make a key hold on the popup's and the settings page's sliders, and the tracker of those down on one slider)
 - i18n: msg(), applyI18n (each `data-i18n` element's message, the key itself where the catalog has none, and `<html lang>` from `pageLanguage`)
 - Page reveal: revealPage (lays out what was written, then takes `body.initializing` off on the next frame)
+- Page load: runPageLoad (a page's first load, failed where it rejects or has not settled within PAGE_LOAD_TIMEOUT_MS, 3 s, and the page shown once it is answered)
 - HTML escape: esc()
 - Settings page error line: showSettingsError (`#settingsError`, shown with a catalog message or hidden)
 - Popup state retry: retryGetState (asks again for the state every interval, a set number of times, until it is settled; this popup polls instead and does not call it)

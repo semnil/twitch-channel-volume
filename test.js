@@ -1392,6 +1392,8 @@ function createOptionsHarness({
     // Held, not run: the page arms one to end a load that never answers, and
     // a stub that fires it at once ends every load in the suite.
     setTimeout(callback, delay) { timers.push({ callback, delay }); return timers.length; },
+    // A timer let go of before it fires is taken out of those held.
+    clearTimeout(id) { if (timers[id - 1]) timers[id - 1].cleared = true; },
     structuredClone,
     window: {
       addEventListener(type, listener) { (windowListeners[type] ||= []).push(listener); }
@@ -1473,7 +1475,7 @@ function createOptionsHarness({
       await flushTasks(8);
     },
     fireTimers() {
-      for (const timer of timers.splice(0)) timer.callback();
+      for (const timer of timers.splice(0)) if (!timer.cleared) timer.callback();
     },
     // Chrome names the area a change was made in, one event per area.
     fireStorageChanged(changes, areaName) {
@@ -11127,7 +11129,7 @@ test('options disables settings until load and saves only field mutations', () =
   assert.match(source, /loadAll\(\)[\s\S]*operation:\s*'normalizeChannels'/);
   assert.ok(
     source.indexOf('setSettingsControlsDisabled(true);') <
-      source.indexOf('Promise.race([loadAll()'),
+      source.indexOf('runPageLoad(loadAll'),
     'the controls are disabled before the load is started'
   );
   assert.doesNotMatch(source, /chrome\.storage\.local\.set\(\{\s*\[SETTINGS_KEY\]/);
@@ -11161,11 +11163,15 @@ function revealBody(source, name) {
 }
 
 test('both pages ship hidden and hold every transition until the values are written', () => {
-  // Both pages reveal through core/common.js's revealPage.
-  const body = revealBody(fs.readFileSync(path.join(__dirname, 'core', 'common.js'), 'utf8'), 'revealPage');
-  for (const [page, htmlName, sourceName, reveal] of [
-    ['options', 'options.html', 'options.js', /\.finally\(revealPage\);/],
-    ['popup', 'popup.html', 'popup.js', /finally \{\s*revealPage\(\);/]
+  // Both pages reveal through core/common.js's revealPage: the popup once its
+  // first read settles, the settings page through runPageLoad.
+  const core = fs.readFileSync(path.join(__dirname, 'core', 'common.js'), 'utf8');
+  const body = revealBody(core, 'revealPage');
+  assert.match(core, /function runPageLoad\([\s\S]*?\.finally\(\(\) => \{[\s\S]*?revealPage\(\);/,
+    'runPageLoad reveals the page once its load is answered');
+  for (const [page, htmlName, sourceName, reveal, calls] of [
+    ['options', 'options.html', 'options.js', /runPageLoad\(loadAll, \{/, 0],
+    ['popup', 'popup.html', 'popup.js', /finally \{\s*revealPage\(\);/, 1]
   ]) {
     const html = fs.readFileSync(path.join(__dirname, htmlName), 'utf8');
     const source = fs.readFileSync(path.join(__dirname, sourceName), 'utf8');
@@ -11185,7 +11191,7 @@ test('both pages ship hidden and hold every transition until the values are writ
       `${page} flushes the written values before dropping the class on the next frame`
     );
     assert.equal(
-      (source.match(/revealPage/g) || []).length, 1,
+      (source.match(/revealPage/g) || []).length, calls,
       `${page} reveals from one place`
     );
   }

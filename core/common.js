@@ -367,6 +367,29 @@ function revealPage() {
   });
 }
 
+// How long a page's first load may take before the page is shown as one whose
+// load did not arrive.
+const PAGE_LOAD_TIMEOUT_MS = 3000;
+
+// Runs a page's first load. load() reads and draws what the page shows;
+// onLoaded runs once it lands, and onFailed with the error where it rejects,
+// where onLoaded throws, or where it has not settled within
+// PAGE_LOAD_TIMEOUT_MS. The page is shown (revealPage) once one of them has
+// run.
+function runPageLoad(load, { onLoaded, onFailed }) {
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error('page load timed out')), PAGE_LOAD_TIMEOUT_MS);
+  });
+  return Promise.race([Promise.resolve().then(load), deadline])
+    .then(onLoaded)
+    .catch(onFailed)
+    .finally(() => {
+      clearTimeout(timer);
+      revealPage();
+    });
+}
+
 // The gain as one text in the display unit, its number and its unit together.
 function formatGainText(gain, displayUnit) {
   const formatted = formatGain(gain, displayUnit);

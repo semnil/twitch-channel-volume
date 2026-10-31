@@ -4,8 +4,6 @@
   'use strict';
 
   const CHANNEL_MUTATION_MESSAGE = '__twitch_channel_volume_channel_mutation__';
-  // How long the page waits for a load that never answers before it says so.
-  const LOAD_TIMEOUT_MS = 3000;
 
   function $(id) { return document.getElementById(id); }
 
@@ -375,25 +373,22 @@
     }
   });
 
-  function loadDeadline() {
-    return new Promise((resolve, reject) => {
-      setTimeout(() => reject(new Error('settings load timed out')), LOAD_TIMEOUT_MS);
-    });
-  }
-
   applyI18n();
   setSettingsControlsDisabled(true);
   // A load that never settles would leave the page hidden for good, so the wait
-  // has an end and it ends the same way a failure does.
-  Promise.race([loadAll(), loadDeadline()]).then(() => {
-    settingsReady = true;
-    setSettingsControlsDisabled(false);
-    // The rows were built while the load was still out, so their delete buttons
-    // carry the state it had then.
-    renderChannels(channelVolumes);
-  }).catch((error) => {
-    loadFailed = true;
-    showSettingsError(true, 'settingsLoadFailed');
-    console.error('[TCV] failed to load settings', error);
-  }).finally(revealPage);
+  // has an end (runPageLoad's) and it ends the same way a failure does.
+  runPageLoad(loadAll, {
+    onLoaded() {
+      settingsReady = true;
+      setSettingsControlsDisabled(false);
+      // The rows were built while the load was still out, so their delete
+      // buttons carry the state it had then.
+      renderChannels(channelVolumes);
+    },
+    onFailed(error) {
+      loadFailed = true;
+      showSettingsError(true, 'settingsLoadFailed');
+      console.error('[TCV] failed to load settings', error);
+    }
+  });
 })();
