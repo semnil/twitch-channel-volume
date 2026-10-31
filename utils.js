@@ -86,10 +86,7 @@ function resolvePreferredGain(entry, kind, defaultAuto, measuredLufs, targetLufs
 
 function calcGain(measuredLufs, targetLufs) {
   if (!Number.isFinite(measuredLufs)) return 1.0;
-  const compensationDb = targetLufs - measuredLufs;
-  const gain = Math.pow(10, compensationDb / 20);
-  if (!Number.isFinite(gain)) return 1.0;
-  return Math.max(MIN_GAIN, Math.min(MAX_GAIN, gain));
+  return gainForLevel(measuredLufs, targetLufs);
 }
 
 // Without a gated measurement there is nothing that justifies a boost, so the

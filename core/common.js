@@ -43,6 +43,14 @@ function formatGain(gain, displayUnit) {
   return { text: String(gainToPercent(gain)), unit: '%' };
 }
 
+// The gain that takes audio playing at levelLufs to targetLufs, within the
+// gain range. 1 where that gain is not a finite number.
+function gainForLevel(levelLufs, targetLufs) {
+  const gain = Math.pow(10, (targetLufs - levelLufs) / 20);
+  if (!Number.isFinite(gain)) return 1.0;
+  return Math.max(MIN_GAIN, Math.min(MAX_GAIN, gain));
+}
+
 // The label of a row's Auto gain on the settings page: the stored gain in the
 // display unit, or a dash where the row holds no gain.
 function formatAutoGain(gain, displayUnit, autoLabel = 'Auto') {

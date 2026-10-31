@@ -219,15 +219,16 @@ nothing is named either way.
 
 `calcGain`'s finite check and `gatedIntegratedLufs`'s three empty-set checks.
 Measured by computing the unguarded path beside the guarded one: `calcGain`
-reaches `if (!Number.isFinite(gain)) return 1.0` three lines down, and an empty
+reaches `if (!Number.isFinite(gain)) return 1.0` in `gainForLevel`
+(`core/common.js`), and an empty
 mean is `NaN`, which `meanSquareToLufs` answers `-Infinity` for. Checked against
 `[]`, `[0, -1, NaN]` and a set below the absolute gate — guarded and unguarded
 agree on every one.
 
 - `utils.js:88` a guard is dropped ×1 — if (!Number.isFinite(measuredLufs)) return 1.0;
-- `utils.js:257` a guard is dropped ×1 — if (valid.length === 0) return -Infinity;
-- `utils.js:260` a guard is dropped ×1 — if (passAbs.length === 0) return -Infinity;
-- `utils.js:265` a guard is dropped ×1 — if (passRel.length === 0) return -Infinity;
+- `utils.js:254` a guard is dropped ×1 — if (valid.length === 0) return -Infinity;
+- `utils.js:257` a guard is dropped ×1 — if (passAbs.length === 0) return -Infinity;
+- `utils.js:262` a guard is dropped ×1 — if (passRel.length === 0) return -Infinity;
 
 ## options.js
 
