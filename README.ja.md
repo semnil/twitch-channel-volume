@@ -1,5 +1,7 @@
 # Twitch Channel Volume
 
+[![codecov](https://codecov.io/gh/semnil/twitch-channel-volume/graph/badge.svg)](https://codecov.io/gh/semnil/twitch-channel-volume)
+
 Twitch の音量をチャンネルごとに目標のラウドネス (Target LUFS) へ揃える Chrome 拡張機能 (MV3)。再生中の音声を **ITU-R BS.1770 LUFS** でリアルタイム計測し、**LUFS 自動追従** がオンなら、計測したラウドネスを Target LUFS にするゲインを適用する。オフなら、そのチャンネルに保存したゲインを適用する。CM 区間には別のゲインを適用する。
 
 Twitch はラウドネスのメタデータを一切公開していない（`loudnessDb` 相当の API も HLS の音声メタデータもない）ため、本拡張機能は再生中の `<video>` を Web Audio API で直接計測し、計測値と算出したゲインをチャンネル × 種別（Live / VOD）ごとに保存する。クリップには手を触れない。
