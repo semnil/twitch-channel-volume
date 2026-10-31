@@ -287,7 +287,7 @@
 
   function applyGain(gain) {
     if (!Number.isFinite(gain)) gain = 1.0;
-    currentGain = Math.max(MIN_GAIN, Math.min(MAX_GAIN, gain));
+    currentGain = clampGain(gain);
     sendCmd({ cmd: 'setGain', value: currentGain });
     updateGainOverlay();
   }
