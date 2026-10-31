@@ -219,7 +219,7 @@ flowchart LR
 
 ## Shared files
 
-`pack.py`, `gen_icons.py`, `tools/mutation/sweep.mjs`, `tools/mutation/bail.mjs`, `tools/mutation/sweep-all.sh`, `tools/coverage/v8-to-lcov.mjs`, `tools/check-shared.sh`, the release scripts (`tools/check-tag.sh`, `tools/tag-plan.sh`, `tools/verify-version.sh`), every workflow under `.github/workflows`, `.github/tests/`, `.github/CODEOWNERS`, `.github/FUNDING.yml` and the issue templates are copies of the files under `shared/` in [semnil/channel-volume-core](https://github.com/semnil/channel-volume-core), at the commit `core.json` locks. They are changed there, with their tests, and copied here with that repository's `sync.mjs`. The Test check fails a copy that differs from the locked commit. Dependabot runs there as well, so this repository has no `dependabot.yml`.
+`pack.py`, `gen_icons.py`, `tools/mutation/sweep.mjs`, `tools/mutation/bail.mjs`, `tools/mutation/sweep-all.sh`, `tools/coverage/v8-to-lcov.mjs`, `tools/check-shared.sh`, the release scripts (`tools/check-tag.sh`, `tools/tag-plan.sh`, `tools/verify-version.sh`), every workflow under `.github/workflows`, `.github/tests/`, `.github/CODEOWNERS`, `.github/FUNDING.yml`, the issue templates and `.gitattributes` (which checks every one of them out with LF line endings) are copies of the files under `shared/` in [semnil/channel-volume-core](https://github.com/semnil/channel-volume-core), at the commit `core.json` locks. They are changed there, with their tests, and copied here with that repository's `sync.mjs`. The Test check fails a copy that differs from the locked commit. Dependabot runs there as well, so this repository has no `dependabot.yml`.
 
 ## Key design decisions
 
