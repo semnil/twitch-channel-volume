@@ -418,7 +418,7 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
     case 'saveGain': {
       assertWritableChannelId(mutation.channelId);
       assertKind(mutation.kind);
-      if (!Number.isFinite(mutation.gain) || mutation.gain < MIN_GAIN || mutation.gain > MAX_GAIN) {
+      if (!isStorableGain(mutation.gain)) {
         throw invalidChannelMutation('gain must be finite and within [0, 6]');
       }
       const entry = cloneEntry(all[mutation.channelId], fallbackRowName(mutation.channel, mutation.channelId));
@@ -439,7 +439,7 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
       entry[storeAutoFieldForKind(mutation.kind)] = mutation.enabled;
       setFieldVersion(entry, storeAutoFieldForKind(mutation.kind), mutation.sequence);
       if (mutation.autoGain !== undefined) {
-        if (!Number.isFinite(mutation.autoGain) || mutation.autoGain < MIN_GAIN || mutation.autoGain > MAX_GAIN) {
+        if (!isStorableGain(mutation.autoGain)) {
           throw invalidChannelMutation('autoGain must be finite and within [0, 6]');
         }
         entry[storeAutoGainFieldForKind(mutation.kind)] = mutation.autoGain;
@@ -461,7 +461,7 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
       entry.lastMeasuredAt = now;
       setFieldVersion(entry, `lastLufs.${mutation.kind}`, mutation.sequence);
       if (mutation.autoGain !== undefined) {
-        if (!Number.isFinite(mutation.autoGain) || mutation.autoGain < MIN_GAIN || mutation.autoGain > MAX_GAIN) {
+        if (!isStorableGain(mutation.autoGain)) {
           throw invalidChannelMutation('autoGain must be finite and within [0, 6]');
         }
         entry[storeAutoGainFieldForKind(mutation.kind)] = mutation.autoGain;
@@ -494,7 +494,7 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
     case 'saveAutoGain': {
       assertWritableChannelId(mutation.channelId);
       assertKind(mutation.kind);
-      if (!Number.isFinite(mutation.autoGain) || mutation.autoGain < MIN_GAIN || mutation.autoGain > MAX_GAIN) {
+      if (!isStorableGain(mutation.autoGain)) {
         throw invalidChannelMutation('autoGain must be finite and within [0, 6]');
       }
       const entry = cloneEntry(all[mutation.channelId], fallbackRowName(mutation.channel, mutation.channelId));

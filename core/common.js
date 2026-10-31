@@ -150,6 +150,17 @@ function formatGain(gain, displayUnit) {
 function gainForLevel(levelLufs, targetLufs) {
   const gain = Math.pow(10, (targetLufs - levelLufs) / 20);
   if (!Number.isFinite(gain)) return 1.0;
+  return clampGain(gain);
+}
+
+// Whether gain is one a channel write may store: a finite number within the
+// gain range.
+function isStorableGain(gain) {
+  return Number.isFinite(gain) && gain >= MIN_GAIN && gain <= MAX_GAIN;
+}
+
+// gain held to the gain range.
+function clampGain(gain) {
   return Math.max(MIN_GAIN, Math.min(MAX_GAIN, gain));
 }
 
