@@ -8506,6 +8506,17 @@ test('a channel write naming the row by its id keeps the name the row has', () =
   assert.equal(fresh['777'].name, '777', 'a new row is named by its id');
 });
 
+test('a channel write expands an earlier all-kinds Auto flag only into the kinds without one', () => {
+  const stored = { 12345: { name: 'Real Name', autoApplyLoudness: true, autoApplyLoudnessVod: false } };
+  const next = channelStore.applyChannelVolumesMutation(stored, {
+    operation: 'saveGain', channelId: '12345', kind: 'live', gain: 0.7, channel: { name: 'Real Name' }
+  });
+  assert.equal(next['12345'].autoApplyLoudnessLive, true, 'a kind without a flag takes the earlier one');
+  assert.equal(next['12345'].autoApplyLoudnessVod, false, 'a kind with a flag keeps it');
+  assert.equal('autoApplyLoudness' in next['12345'], false, 'the earlier flag is removed');
+  assert.equal(stored['12345'].autoApplyLoudness, true, 'the stored map is left as it was');
+});
+
 test('provisional channel migration uses field update order across tabs', () => {
   const provisionalId = 'vod-owner:2770346335';
   const confirmedId = '123456';
