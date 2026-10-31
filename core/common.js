@@ -38,6 +38,14 @@ function formatGain(gain, displayUnit) {
   return { text: String(gainToPercent(gain)), unit: '%' };
 }
 
+// The label of a row's Auto gain on the settings page: the stored gain in the
+// display unit, or a dash where the row holds no gain.
+function formatAutoGain(gain, displayUnit, autoLabel = 'Auto') {
+  if (!Number.isFinite(gain)) return `${autoLabel} (—)`;
+  const formatted = formatGain(gain, displayUnit);
+  return `${autoLabel} (${formatted.text}${formatted.unit})`;
+}
+
 function esc(s) {
   const d = document.createElement('div');
   d.textContent = s;

@@ -18,11 +18,6 @@ const MAX_GAIN = 6;
 
 function dbToGain(db) { return Math.pow(10, db / 20); }
 
-function formatAutoGain(gain, displayUnit, autoLabel = 'Auto') {
-  const formatted = formatGain(Number.isFinite(gain) ? gain : 1.0, displayUnit);
-  return `${autoLabel} (${formatted.text}${formatted.unit})`;
-}
-
 function gainFieldForKind(kind) {
   if (kind === 'vod') return 'gainVod';
   return 'gainLive';

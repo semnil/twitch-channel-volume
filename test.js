@@ -3109,9 +3109,9 @@ test('gainToPercent / percentToGain are inverses', () => {
   assert.equal(u.percentToGain(150), 1.5);
 });
 
-test('formatAutoGain shows the stored Auto gain', () => {
+test('formatAutoGain shows the stored Auto gain, and a dash where none is stored', () => {
   assert.equal(u.formatAutoGain(0.7, '%'), 'Auto (70%)');
-  assert.equal(u.formatAutoGain(null, '%'), 'Auto (100%)');
+  assert.equal(u.formatAutoGain(null, '%'), 'Auto (—)');
   assert.equal(u.formatAutoGain(0.5, 'dB', '自動'), '自動 (-6.0 dB)');
 });
 
