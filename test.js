@@ -9815,7 +9815,7 @@ test('background mutation listener keeps async response open and reports failure
   const successResponse = await send({
     operation: 'saveAuto', channelId: 'login:test', kind: 'live', enabled: true
   });
-  assert.equal(successResponse.ok, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(successResponse)), { ok: true }, 'the answer carries nothing of the map');
   assert.equal(stored().channelVolumes['login:test'].autoApplyLoudnessLive, true);
 
   harness.failNextSet();

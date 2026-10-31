@@ -117,6 +117,58 @@ function createStoredMapWriter(key) {
   });
 }
 
+// A write refused for what its message asks, before storage is read: answered
+// as 'invalid-mutation' rather than as a storage failure.
+class WriteRefused extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'WriteRefused';
+    this.reason = 'invalid-mutation';
+  }
+}
+
+// The write table holds as an own property under the name type carries after
+// prefix, or null.
+function tableWrite(table, prefix, type) {
+  if (typeof type !== 'string' || !type.startsWith(prefix)) return null;
+  const name = type.slice(prefix.length);
+  return Object.prototype.hasOwnProperty.call(table, name) ? table[name] : null;
+}
+
+// The runtime message listener of a worker that makes the writes other
+// contexts ask for. route(msg) gives the write msg asks for as
+// { write, label, failed }, or null where it asks for none. The write runs
+// with msg, and the fields of what it resolves to are answered with ok: true.
+// A rejection is answered with ok: false and the reason it names, or failed
+// where it names none (a storage failure), and logged under prefix and label.
+// A message that asks for no write is left unanswered, so another context's
+// listener can answer it, and is logged unless its type is one of
+// ignoredTypes.
+function createWriteListener({ route, prefix, ignoredTypes = [] }) {
+  return (msg, _sender, sendResponse) => {
+    const target = route(msg);
+    if (!target) {
+      if (!ignoredTypes.includes(msg?.type)) console.warn(`${prefix} unknown message type`, msg?.type);
+      return false;
+    }
+    Promise.resolve()
+      .then(() => target.write(msg))
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((err) => {
+        const named = typeof err?.reason === 'string' ? err.reason : '';
+        if (named === 'invalid-mutation') {
+          console.error(`${prefix} ${target.label} rejected as invalid`, err);
+        } else if (named === 'stored-state-invalid') {
+          console.error(`${prefix} ${target.label} blocked by the stored state`, err);
+        } else {
+          console.error(`${prefix} ${target.label} failed`, err);
+        }
+        sendResponse({ ok: false, reason: named || target.failed });
+      });
+    return true;
+  };
+}
+
 // Whether this context can still reach the extension's runtime: false once the
 // extension has been reloaded or removed under it.
 function isContextValid() {

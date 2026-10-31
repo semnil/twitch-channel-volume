@@ -121,7 +121,7 @@ sequenceDiagram
   end
 ```
 
-図のもと: `background.js` の `onMessage` リスナー、`namedFailure`。`channel-store.js` の `createChannelVolumesWriter`、`sameStoredValue`、`resolveMutation`、`mutationNeedsSequence`、`applyChannelVolumesMutation`、`normalizeKnownChannelEntries`、`aliasesLeadingTo`。`content.js` の `sendChannelMutation`。`options.js` の `mutateChannelVolumes`。
+図のもと: `background.js` の `onMessage` リスナー。`core/common.js` の `createWriteListener`。`channel-store.js` の `createChannelVolumesWriter`、`sameStoredValue`、`resolveMutation`、`mutationNeedsSequence`、`applyChannelVolumesMutation`、`normalizeKnownChannelEntries`、`aliasesLeadingTo`。`content.js` の `sendChannelMutation`。`options.js` の `mutateChannelVolumes`。
 
 | `operation` | 送るもの | 送る項目 | 行に書くもの | 通し番号 |
 |---|---|---|---|---|
