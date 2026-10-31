@@ -193,6 +193,11 @@ function expandLegacyGain(entry, slots) {
   return entry;
 }
 
+// Whether key can name a row of a stored map in a delete: non-empty text.
+function isRowKey(key) {
+  return typeof key === 'string' && key.length > 0;
+}
+
 // Names entry, the stored row for id, from the name a write carries. A name
 // that is no text, is empty, or is the id itself (a sender gives the id before
 // it knows the name) leaves the row's name as it is; a row with no name takes
