@@ -85,7 +85,7 @@
   async function loadSettings() {
     if (!isContextValid()) return;
     const revision = settingsRevision;
-    const s = (await readStoredSettings(chrome.storage, SETTINGS_KEY)) || {};
+    const s = await readSettings(chrome.storage);
     if (revision === settingsRevision) {
       targetLufs = s.targetLufs ?? DEFAULT_TARGET_LUFS;
       currentAdGainDb = s.adGainDb ?? DEFAULT_AD_GAIN_DB;

@@ -1004,7 +1004,7 @@ function createContentHarness({
   });
   // In the order the manifest lists them, but for utils.js, whose names the
   // context already carries.
-  loadScriptsInto(context, ['core/common.js', 'settings-area.js', 'content.js']);
+  loadScriptsInto(context, ['core/common.js', 'content.js']);
 
   return {
     setAdNodePresent(present) {
@@ -1407,7 +1407,7 @@ function createOptionsHarness({
       addEventListener(type, listener) { (windowListeners[type] ||= []).push(listener); }
     }
   });
-  loadScriptsInto(context, ['settings-area.js', 'options.js']);
+  loadScriptsInto(context, ['options.js']);
 
   return {
     el: element,
@@ -1677,7 +1677,7 @@ function createPopupHarness({
       addEventListener(type, listener) { (windowListeners[type] ||= []).push(listener); }
     }
   });
-  loadScriptsInto(context, ['settings-area.js', 'popup.js']);
+  loadScriptsInto(context, ['popup.js']);
 
   return {
     el: element,
@@ -10724,8 +10724,6 @@ test('background names a message type it does not handle', async () => {
 
 // ── The settings in sync, the channels in local ──────────────────────
 
-const settingsArea = require('./settings-area.js');
-
 function settingsAreas({ sync = {}, local = {} } = {}) {
   const reads = [];
   const area = (name, held) => ({
@@ -10743,7 +10741,7 @@ test('the settings are read from sync, and from local only where sync has none',
     local: { [u.SETTINGS_KEY]: { targetLufs: -24 } }
   });
   assert.deepEqual(
-    await settingsArea.readStoredSettings(fromSync.storage, u.SETTINGS_KEY),
+    await u.readSettings(fromSync.storage, u.SETTINGS_KEY),
     { targetLufs: -20 }
   );
   assert.deepEqual(fromSync.reads, ['sync'], 'a copy left in local is not read once sync answers');
@@ -10751,7 +10749,7 @@ test('the settings are read from sync, and from local only where sync has none',
   // A profile whose settings the worker has not moved yet.
   const notMoved = settingsAreas({ local: { [u.SETTINGS_KEY]: { targetLufs: -24 } } });
   assert.deepEqual(
-    await settingsArea.readStoredSettings(notMoved.storage, u.SETTINGS_KEY),
+    await u.readSettings(notMoved.storage, u.SETTINGS_KEY),
     { targetLufs: -24 }
   );
   assert.deepEqual(notMoved.reads, ['sync', 'local']);
@@ -10763,14 +10761,14 @@ test('the settings are read from sync, and from local only where sync has none',
       local: { [u.SETTINGS_KEY]: { targetLufs: -24 } }
     });
     assert.deepEqual(
-      await settingsArea.readStoredSettings(unusable.storage, u.SETTINGS_KEY),
+      await u.readSettings(unusable.storage, u.SETTINGS_KEY),
       { targetLufs: -24 },
       `sync holding ${JSON.stringify(value)}`
     );
   }
 
   const neither = settingsAreas();
-  assert.equal(await settingsArea.readStoredSettings(neither.storage, u.SETTINGS_KEY), undefined);
+  assert.deepEqual({ ...(await u.readSettings(neither.storage, u.SETTINGS_KEY)) }, {});
   assert.deepEqual(neither.reads, ['sync', 'local', 'sync']);
 });
 
@@ -10787,7 +10785,7 @@ test('a settings read made across the move answers with what the move put in syn
     return answer;
   };
   assert.deepEqual(
-    await settingsArea.readStoredSettings(across.storage, u.SETTINGS_KEY),
+    await u.readSettings(across.storage, u.SETTINGS_KEY),
     moved
   );
 });
