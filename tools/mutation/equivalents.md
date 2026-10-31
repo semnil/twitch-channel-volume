@@ -193,21 +193,21 @@ its check guards finds no targets.
 `setAutoApplyLoudness`'s gain check. The branch above it throws on `!res?.ok`,
 so a response that reaches this line carries the gain content.js answers with.
 
-- `popup.js:381` a guard is always taken ×1 — if (Number.isFinite(res.gain)) {
+- `popup.js:364` a guard is always taken ×1 — if (Number.isFinite(res.gain)) {
 
 The `await refresh()` ending `applyMeasured`, `setGain` and
 `setAutoApplyLoudness`. All three are called from click handlers that discard
 the promise, so nothing observes when they settle.
 
-- `popup.js:325` an await is dropped ×1 — await
-- `popup.js:343` an await is dropped ×1 — await
-- `popup.js:385` an await is dropped ×1 — await
+- `popup.js:308` an await is dropped ×1 — await
+- `popup.js:326` an await is dropped ×1 — await
+- `popup.js:368` an await is dropped ×1 — await
 
 `previewGain`'s missing-tab exit. Without it `tab.id` throws inside the `try`,
 and the `catch` drops that as it drops a failed send: nothing is sent and
 nothing is named either way.
 
-- `popup.js:351` a guard is dropped ×1 — if (!tab) return;
+- `popup.js:334` a guard is dropped ×1 — if (!tab) return;
 
 ## utils.js
 
