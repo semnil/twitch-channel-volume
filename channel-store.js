@@ -609,10 +609,10 @@ function createChannelVolumesWriter(
   aliasesKey = CHANNEL_ALIASES_KEY,
   sequenceKey = CHANNEL_SEQUENCE_KEY
 ) {
-  let queue = Promise.resolve();
+  const enqueue = createSerialQueue();
 
   return function enqueueChannelVolumesMutation(mutation) {
-    const task = queue.then(async () => {
+    const task = enqueue(async () => {
       const originalFromId = mutation?.operation === 'mergeChannelIds'
         ? mutation.fromId
         : '';
@@ -672,8 +672,6 @@ function createChannelVolumesWriter(
       });
       return next;
     });
-    // Keep the single-writer queue usable after one failed storage operation.
-    queue = task.catch(() => {});
     return task;
   };
 }

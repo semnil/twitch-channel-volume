@@ -37,6 +37,35 @@ async function readSettings(storage = chrome.storage, key = SETTINGS_KEY) {
   return isStoredSettingsObject(moved) ? moved : {};
 }
 
+// Moves settings an earlier version kept in local to sync. Settings another
+// Chrome the user is signed in to already put in sync, with Chrome sync on, are
+// the ones every such Chrome reads, so they stay and the local copy goes. Sync
+// is written before local is removed, so a reader always finds one of the two.
+// keep gives what of local's settings is written to sync. Answers whether
+// local held anything under key.
+async function moveSettingsToSync(storage = chrome.storage, key = SETTINGS_KEY, keep = (settings) => settings) {
+  const local = (await storage.local.get(key))[key];
+  if (local === undefined) return false;
+  const synced = (await storage.sync.get(key))[key];
+  if (!isStoredSettingsObject(synced) && isStoredSettingsObject(local)) {
+    await storage.sync.set({ [key]: keep(local) });
+  }
+  await storage.local.remove(key);
+  return true;
+}
+
+// A queue that runs the work handed to it one after the other: each starts
+// once the one before it has ended, resolved or rejected. What it answers
+// settles as the work does.
+function createSerialQueue() {
+  let last = Promise.resolve();
+  return (work) => {
+    const task = last.then(work);
+    last = task.catch(() => {});
+    return task;
+  };
+}
+
 // Whether this context can still reach the extension's runtime: false once the
 // extension has been reloaded or removed under it.
 function isContextValid() {

@@ -246,7 +246,7 @@ sequenceDiagram
   cstore->>storage: get, normalizeKnownChannelEntries, set where it changed the store
 ```
 
-Drawn from: `background.js` the `moveToSync` call at its top level and the `onInstalled` listener; `channel-store.js` `normalizeKnownChannelEntries`, `withoutClipFields`, `cloneEntry`, `expandLegacyGain`, `expandLegacyAuto`; `settings-store.js` `moveSettingsToSync`, `withoutRemovedSettings`; `core/common.js` `isStoredSettingsObject`; `options.js` `loadAll`; `utils.js` `extractGainForKind`, `resolveAutoApplySetting`.
+Drawn from: `background.js` the `moveToSync` call at its top level and the `onInstalled` listener; `channel-store.js` `normalizeKnownChannelEntries`, `withoutClipFields`, `cloneEntry`, `expandLegacyGain`, `expandLegacyAuto`; `settings-store.js` `withoutRemovedSettings`; `core/common.js` `moveSettingsToSync`, `isStoredSettingsObject`; `options.js` `loadAll`; `utils.js` `extractGainForKind`, `resolveAutoApplySetting`.
 
 - No settings are written on install. A reader that finds settings in neither area takes the defaults: `targetLufs` −18, `adGainDb` −6, `displayUnit` `%`, `showGainOverlay` true, and false for both Auto defaults. The first settings write is a gesture on the options page or the move.
 - Where sync already holds settings when the move runs, sync is kept and the local copy is only removed. Sync is written before local is removed, so a reader finds one of them throughout.
@@ -778,7 +778,7 @@ Drawn from: `content.js` `listenForResumeGesture`, `requestAudioContextResume`, 
 |---|---|---|---|
 | Tab startup | Set to the gain resolved from the stored row, 1.0 without a channel | none | `content.js` startup block, `reapplyForCurrentChannel` |
 | AudioContext built | The new node starts at the effective gain of the held `baselineGain` | none | `page-bridge.js` `createContext` |
-| Service worker start | Not sent by the SW | none; the settings an earlier version kept in local are moved to sync | `background.js` `moveToSync`, `settings-store.js` `moveSettingsToSync` |
+| Service worker start | Not sent by the SW | none; the settings an earlier version kept in local are moved to sync | `background.js` `moveToSync`, `core/common.js` `moveSettingsToSync` |
 | Install or update | Not sent by the SW | `normalizeChannels`, written only where it changes the store; no settings are written | `background.js` `onInstalled` |
 | Options page opened | Not sent by options | `normalizeChannels`, written only where it changes the store | `options.js` `loadAll` |
 | Popup slider `input` | Unchanged, labels only | none | `popup.js` `input` listener |
