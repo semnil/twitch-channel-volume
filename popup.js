@@ -65,17 +65,6 @@
     return audioUnavailable ? 'current unknown' : 'current';
   }
 
-  function applyI18n() {
-    $('resetMeasurementBtn').title = msg('resetMeasurement');
-    document.querySelectorAll('[data-i18n]').forEach((el) => {
-      const key = el.getAttribute('data-i18n');
-      const text = msg(key);
-      if (text && text !== key) el.textContent = text;
-    });
-    const language = msg('pageLanguage');
-    if (language !== 'pageLanguage') document.documentElement.lang = language;
-  }
-
   function fmtLufs(v) {
     if (!Number.isFinite(v)) return null;
     return v.toFixed(1);
@@ -566,22 +555,14 @@
     }
   });
 
-  function revealPopup() {
-    // Commit the values the load wrote while the transitions are off, then show
-    // the popup on the next frame.
-    void document.body.offsetWidth;
-    requestAnimationFrame(() => {
-      document.body.classList.remove('initializing');
-    });
-  }
-
   applyI18n();
+  $('resetMeasurementBtn').title = msg('resetMeasurement');
   (async () => {
     try {
       await loadDisplayUnit();
       await refresh();
     } finally {
-      revealPopup();
+      revealPage();
     }
   })();
   setInterval(refresh, DISPLAY_UPDATE_INTERVAL_MS);

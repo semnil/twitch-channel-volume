@@ -348,6 +348,25 @@ function esc(s) {
   return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+// Fills each element of the page that names a catalog message in its
+// data-i18n with that message, the key itself where the catalog has none, and
+// declares the page's language as the catalog's pageLanguage.
+function applyI18n() {
+  document.querySelectorAll('[data-i18n]').forEach((el) => {
+    el.textContent = msg(el.getAttribute('data-i18n'));
+  });
+  document.documentElement.lang = msg('pageLanguage');
+}
+
+// Shows a page that ships with body.initializing: the layout takes what was
+// written while transitions are off, and the class comes off on the next frame.
+function revealPage() {
+  void document.body.offsetWidth;
+  requestAnimationFrame(() => {
+    document.body.classList.remove('initializing');
+  });
+}
+
 // The gain as one text in the display unit, its number and its unit together.
 function formatGainText(gain, displayUnit) {
   const formatted = formatGain(gain, displayUnit);

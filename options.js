@@ -9,16 +9,6 @@
 
   function $(id) { return document.getElementById(id); }
 
-  function applyI18n() {
-    document.querySelectorAll('[data-i18n]').forEach((el) => {
-      const key = el.getAttribute('data-i18n');
-      const text = msg(key);
-      if (text && text !== key) el.textContent = text;
-    });
-    const language = msg('pageLanguage');
-    if (language !== 'pageLanguage') document.documentElement.lang = language;
-  }
-
   let displayUnit = '%';
   let settingsReady = false;
   let loadFailed = false;
@@ -385,15 +375,6 @@
     }
   });
 
-  function revealOptions() {
-    // Commit the values the load wrote while the transitions are off, then show
-    // the page on the next frame.
-    void document.body.offsetWidth;
-    requestAnimationFrame(() => {
-      document.body.classList.remove('initializing');
-    });
-  }
-
   function loadDeadline() {
     return new Promise((resolve, reject) => {
       setTimeout(() => reject(new Error('settings load timed out')), LOAD_TIMEOUT_MS);
@@ -414,5 +395,5 @@
     loadFailed = true;
     showSettingsError(true, 'settingsLoadFailed');
     console.error('[TCV] failed to load settings', error);
-  }).finally(revealOptions);
+  }).finally(revealPage);
 })();
