@@ -1,5 +1,7 @@
 # Twitch Channel Volume
 
+[![codecov](https://codecov.io/gh/semnil/twitch-channel-volume/graph/badge.svg)](https://codecov.io/gh/semnil/twitch-channel-volume)
+
 Chrome extension (MV3) that balances Twitch volume per channel to a target loudness (Target LUFS). It measures the playing audio in real time with **ITU-R BS.1770 LUFS**, and with **Auto-follow LUFS** on, sets the gain to the one that brings the measured loudness to Target LUFS; with it off, it applies the gain saved for the channel. Separate gain is applied during ad breaks.
 
 Twitch does not publish any loudness metadata (no `loudnessDb`-equivalent API, no HLS audio metadata), so the extension measures the playing `<video>` directly via Web Audio API and persists the measurement and the resulting gain per channel × media kind (Live / VOD). Clips are left alone.
