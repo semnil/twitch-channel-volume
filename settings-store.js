@@ -19,7 +19,7 @@ function invalidSettingsMutation(message) {
 }
 
 const SETTINGS_VALIDATORS = {
-  targetLufs: (value) => Number.isFinite(value) && value >= -30 && value <= -6,
+  targetLufs: (value) => Number.isFinite(value) && value >= MIN_TARGET_LUFS && value <= MAX_TARGET_LUFS,
   adGainDb: (value) => Number.isFinite(value) && value >= -24 && value <= 6,
   displayUnit: (value) => value === '%' || value === 'dB',
   showGainOverlay: (value) => typeof value === 'boolean',

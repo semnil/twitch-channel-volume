@@ -5,7 +5,7 @@
 // would otherwise write them into sync before Chrome sync has brought it the
 // settings the account already holds.
 
-importScripts('settings-area.js', 'channel-store.js', 'settings-store.js');
+importScripts('core/common.js', 'settings-area.js', 'channel-store.js', 'settings-store.js');
 
 const channelStore = globalThis.TCVChannelStore;
 const settingsStore = globalThis.TCVSettingsStore;

@@ -13,8 +13,6 @@ const LUFS_REFERENCE_VOLUME_1 = 'volume1';
 const ABSOLUTE_GATE_LUFS = -70;
 const RELATIVE_GATE_LU = -10;
 const DISPLAY_UPDATE_INTERVAL_MS = 1000;
-const MIN_GAIN = 0;
-const MAX_GAIN = 6;
 
 function dbToGain(db) { return Math.pow(10, db / 20); }
 
