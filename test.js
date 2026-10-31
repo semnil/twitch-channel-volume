@@ -8489,6 +8489,23 @@ test('provisional channel migration keeps confirmed data over stale provisional 
   assert.equal(result[confirmedId].name, 'Broadcaster');
 });
 
+test('a channel write naming the row by its id keeps the name the row has', () => {
+  const stored = { 12345: { name: 'Real Name', gainLive: 0.5 } };
+  const byId = channelStore.applyChannelVolumesMutation(stored, {
+    operation: 'saveGain', channelId: '12345', kind: 'live', gain: 0.7, channel: { name: '12345' }
+  });
+  assert.equal(byId['12345'].name, 'Real Name');
+  assert.equal(byId['12345'].gainLive, 0.7);
+  const renamed = channelStore.applyChannelVolumesMutation(stored, {
+    operation: 'saveGain', channelId: '12345', kind: 'live', gain: 0.7, channel: { name: 'New Name' }
+  });
+  assert.equal(renamed['12345'].name, 'New Name', 'a name of its own replaces it');
+  const fresh = channelStore.applyChannelVolumesMutation({}, {
+    operation: 'saveGain', channelId: '777', kind: 'vod', gain: 0.7, channel: { name: '777' }
+  });
+  assert.equal(fresh['777'].name, '777', 'a new row is named by its id');
+});
+
 test('provisional channel migration uses field update order across tabs', () => {
   const provisionalId = 'vod-owner:2770346335';
   const confirmedId = '123456';

@@ -193,6 +193,41 @@ function expandLegacyGain(entry, slots) {
   return entry;
 }
 
+// Names entry, the stored row for id, from the name a write carries. A name
+// that is no text, is empty, or is the id itself (a sender gives the id before
+// it knows the name) leaves the row's name as it is; a row with no name takes
+// the id where nameNewRow says so.
+function applyEntryName(entry, id, name, nameNewRow = true) {
+  if (typeof name === 'string' && name && name !== id) entry.name = name;
+  else if (nameNewRow && !entry.name) entry.name = id;
+}
+
+// Turns an entry an earlier version wrote with one Auto flag for every type
+// into one with a flag per type, in place, ahead of a write: each of fields
+// the entry has no flag for takes the earlier flag, and the earlier flag is
+// removed.
+function expandLegacyAutoFlag(entry, fields) {
+  if (!Object.prototype.hasOwnProperty.call(entry, 'autoApplyLoudness')) return entry;
+  const legacy = !!entry.autoApplyLoudness;
+  for (const field of fields) {
+    if (!Object.prototype.hasOwnProperty.call(entry, field)) entry[field] = legacy;
+  }
+  delete entry.autoApplyLoudness;
+  return entry;
+}
+
+// Whether Auto is on for the type whose flag is field: the entry's own flag,
+// else the flag an earlier version kept for every type, else off where
+// storedGainTurnsOff (the caller's rule that a gain stored without a flag is a
+// choice of its own), else defaultValue.
+function autoFlagFor(entry, field, defaultValue, storedGainTurnsOff) {
+  if (!entry || typeof entry !== 'object') return !!defaultValue;
+  if (Object.prototype.hasOwnProperty.call(entry, field)) return !!entry[field];
+  if (Object.prototype.hasOwnProperty.call(entry, 'autoApplyLoudness')) return !!entry.autoApplyLoudness;
+  if (storedGainTurnsOff) return false;
+  return !!defaultValue;
+}
+
 // The label of a row's Auto gain on the settings page: the stored gain in the
 // display unit, or a dash where the row holds no gain.
 function formatAutoGain(gain, displayUnit, autoLabel = 'Auto') {
