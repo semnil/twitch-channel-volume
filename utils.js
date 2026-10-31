@@ -1,11 +1,9 @@
 // utils.js — Shared constants and utilities for Twitch Channel Volume
 
-const SETTINGS_KEY = 'autoLoudnessSettings';
 const SETTINGS_MUTATION_MESSAGE = '__twitch_channel_volume_settings_mutation__';
 const CHANNEL_VOLUMES_KEY = 'channelVolumes';
 const CHANNEL_ALIASES_KEY = 'channelVolumeAliases';
 const CHANNEL_SEQUENCE_KEY = 'channelVolumeSequence';
-const DEFAULT_TARGET_LUFS = -18;
 const DEFAULT_AD_GAIN_DB = -6;
 const DEFAULT_AUTO_APPLY_LOUDNESS = false;
 // Saved LUFS carrying this reference was measured with the player volume

@@ -1002,9 +1002,9 @@ function createContentHarness({
     URL,
     window
   });
-  // In the order the manifest lists them after utils.js, whose names the
+  // In the order the manifest lists them, but for utils.js, whose names the
   // context already carries.
-  loadScriptsInto(context, ['settings-area.js', 'content.js']);
+  loadScriptsInto(context, ['core/common.js', 'settings-area.js', 'content.js']);
 
   return {
     setAdNodePresent(present) {
