@@ -6486,6 +6486,21 @@ async function holdSliderKey(popup, percent, first = false) {
   await popup.fire('manualSlider', 'change');
 }
 
+test('a key pressed again on the slider while it is down stays in the hold it is in', async () => {
+  const popup = createPopupHarness({ state: { appliesTo: '123|live|' } });
+  await flushTasks(8);
+  const saved = () => popup.sent.filter((request) => request.cmd === 'setGain')
+    .map((request) => [request.gain, request.appliesTo]);
+
+  await holdSliderKey(popup, 155, true);
+  popup.setState({ appliesTo: '123|live|elsewhere' });
+  await popup.poll();
+  // The same key again, with no repeat and no keyup between.
+  await holdSliderKey(popup, 160, true);
+  await popup.fire('manualSlider', 'keyup', { key: 'ArrowRight' });
+  assert.deepEqual(saved(), [[1.6, '123|live|']], 'saved once, against the state the hold began on');
+});
+
 test('a key held on the slider is heard at each repeat and saved once, where it is let go', async () => {
   const popup = createPopupHarness({ state: { appliesTo: '123|live|' } });
   await flushTasks(8);

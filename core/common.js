@@ -320,16 +320,18 @@ function isSliderMoveKey(key) {
 }
 
 // The value keys down on one slider. press answers whether a keydown begins a
-// hold: a value key, not a repeat, pressed with no other value key down.
-// release answers whether a keyup ends it: the last value key down let go of.
-// Any other key, and a repeat, change nothing.
+// hold: a value key, not a repeat, pressed while no value key is down, so a
+// key already down that is pressed again stays in the hold it is in. release
+// answers whether a keyup ends it: the last value key down let go of. Any
+// other key, and a repeat, change nothing.
 function createSliderKeys() {
   const down = new Set();
   return {
     press(event) {
       if (event.repeat || !SLIDER_VALUE_KEYS.has(event.key)) return false;
+      const begins = down.size === 0;
       down.add(event.key);
-      return down.size === 1;
+      return begins;
     },
     release(event) {
       return down.delete(event.key) && down.size === 0;
