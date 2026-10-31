@@ -10,6 +10,9 @@ const { spawnSync } = require('node:child_process');
 // Python children write their output in UTF-8, the encoding every read below
 // decodes it with, whatever code page the host gives a pipe.
 process.env.PYTHONIOENCODING = 'utf-8';
+// core/common.js first, as every page loads it ahead of utils.js: its
+// declarations are this realm's globals, which utils.js and its exports read.
+vm.runInThisContext(fs.readFileSync(path.join(__dirname, 'core', 'common.js'), 'utf8'), { filename: 'core/common.js' });
 const u = require('./utils.js');
 // utils' esc writes text into an element and reads the markup back. This realm
 // has no DOM, so it gets the one thing esc reaches for, serialising the way a

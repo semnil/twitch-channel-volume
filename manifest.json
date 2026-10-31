@@ -14,7 +14,7 @@
         "*://*.twitch.tv/*",
         "*://clips.twitch.tv/*"
       ],
-      "js": ["utils.js", "settings-area.js", "content.js"],
+      "js": ["core/common.js", "utils.js", "settings-area.js", "content.js"],
       "run_at": "document_idle"
     },
     {
