@@ -1172,6 +1172,7 @@ function createContentHarness({
 function stubElement(id) {
   const classes = new Set();
   const listeners = {};
+  let text = '';
   const element = {
     id,
     listeners,
@@ -1180,7 +1181,9 @@ function stubElement(id) {
     checked: false,
     value: '',
     title: '',
-    textContent: '',
+    // Text written replaces every child, as a browser's does.
+    get textContent() { return text; },
+    set textContent(value) { text = String(value); element.children.length = 0; },
     offsetWidth: 0,
     style: {},
     attributes: {},
@@ -1200,9 +1203,9 @@ function stubElement(id) {
       String(value).split(/\s+/).filter(Boolean).forEach((name) => classes.add(name));
     },
     get innerHTML() { return element.textContent; },
-    set innerHTML(value) { element.textContent = String(value); element.children.length = 0; },
+    set innerHTML(value) { element.textContent = String(value); },
     appendChild(node) {
-      element.textContent += node.textContent || '';
+      text += node.textContent || '';
       element.children.push(node);
       return node;
     },
@@ -1655,17 +1658,6 @@ function createPopupHarness({
 
   const context = vm.createContext({
     ...u,
-    msg: (key, substitutions) => {
-      // A key the locale does not declare reaches the viewer as its own name.
-      // Refusing it here covers every path these tests run, including the ones
-      // no static scan can name. Only the keys a case names take that path.
-      if (unknownI18nKeys.includes(key)) return key;
-      assert.ok(messages[key], `msg('${key}') has no message`);
-      const text = messages[key].message;
-      return substitutions && substitutions.length
-        ? text.replace('$VALUE$', substitutions[0])
-        : text;
-    },
     chrome,
     document,
     console: {
@@ -1682,6 +1674,20 @@ function createPopupHarness({
       addEventListener(type, listener) { (windowListeners[type] ||= []).push(listener); }
     }
   });
+  // core/common.js first, as the popup loads it; its msg then gives way to the
+  // harness's.
+  loadScriptsInto(context, ['core/common.js']);
+  context.msg = (key, substitutions) => {
+    // A key the locale does not declare reaches the viewer as its own name.
+    // Refusing it here covers every path these tests run, including the ones
+    // no static scan can name. Only the keys a case names take that path.
+    if (unknownI18nKeys.includes(key)) return key;
+    assert.ok(messages[key], `msg('${key}') has no message`);
+    const text = messages[key].message;
+    return substitutions && substitutions.length
+      ? text.replace('$VALUE$', substitutions[0])
+      : text;
+  };
   loadScriptsInto(context, ['popup.js']);
 
   return {
@@ -7410,8 +7416,8 @@ test('popup shows an unmeasured level as unknown rather than as a number', async
   await flushTasks(8);
   const cell = harness.el('integrated');
   assert.equal(cell.textContent, '---');
-  assert.equal(cell.children.length, 1, 'the unknown cell carries no unit beside it');
-  assert.ok(cell.className.includes('unknown'));
+  assert.equal(cell.children.length, 0, 'the unknown cell carries no unit beside it');
+  assert.equal(cell.className, 'value unknown');
 
   const measured = createPopupHarness({
     state: { lufs: { momentary: -23, shortTerm: -23, integrated: -23 } }
@@ -7419,8 +7425,8 @@ test('popup shows an unmeasured level as unknown rather than as a number', async
   await flushTasks(8);
   const withValue = measured.el('integrated');
   assert.equal(withValue.textContent, '-23.0 LUFS');
-  assert.equal(withValue.children.length, 2, 'the value and the unit beside it');
-  assert.equal(withValue.children[1].textContent, ' LUFS');
+  assert.equal(withValue.children.length, 1, 'the unit beside the value');
+  assert.equal(withValue.children[0].textContent, ' LUFS');
   assert.ok(!withValue.className.includes('unknown'));
 });
 
@@ -11446,7 +11452,7 @@ test('popup keeps Auto gain displays synchronized and labels apply in the displa
   assert.match(source, /if \(currentAutoApplyLoudness \|\| !sliderSynced\) \{/);
   assert.match(
     source,
-    /msg\('applyToChannelWithValue', \[formatGainText\(lastSuggestedGain\)\]\)/
+    /msg\('applyToChannelWithValue', \[formatGainText\(lastSuggestedGain, displayUnit\)\]\)/
   );
 
   const ja = JSON.parse(fs.readFileSync(path.join(__dirname, '_locales/ja/messages.json')));

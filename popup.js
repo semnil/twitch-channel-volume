@@ -65,23 +65,6 @@
     return audioUnavailable ? 'current unknown' : 'current';
   }
 
-  function formatGainText(gain) {
-    const f = formatGain(gain, displayUnit);
-    return f.text + f.unit;
-  }
-
-  function setCardValue(el, text, unitText, extraClass) {
-    el.innerHTML = '';
-    el.className = 'value' + (extraClass ? ' ' + extraClass : '');
-    el.appendChild(document.createTextNode(text));
-    if (unitText) {
-      const unit = document.createElement('span');
-      unit.className = 'unit';
-      unit.textContent = unitText;
-      el.appendChild(unit);
-    }
-  }
-
   function applyI18n() {
     $('resetMeasurementBtn').title = msg('resetMeasurement');
     document.querySelectorAll('[data-i18n]').forEach((el) => {
@@ -104,7 +87,7 @@
     const el = $(id);
     const s = fmtLufs(v);
     if (s === null) {
-      setCardValue(el, '---', null, 'unknown');
+      setUnknown(el);
     } else {
       setCardValue(el, s, ' LUFS', audioUnavailable ? 'unknown' : '');
     }
@@ -255,7 +238,7 @@
     const applyButton = $('applyBtn');
     if (!currentAutoApplyLoudness && hasIntegrated && ch.id && !audioUnavailable) {
       applyButton.textContent =
-        msg('applyToChannelWithValue', [formatGainText(lastSuggestedGain)]);
+        msg('applyToChannelWithValue', [formatGainText(lastSuggestedGain, displayUnit)]);
     } else {
       applyButton.textContent = msg('applyToChannel');
     }

@@ -346,6 +346,30 @@ function esc(s) {
   return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+// The gain as one text in the display unit, its number and its unit together.
+function formatGainText(gain, displayUnit) {
+  const formatted = formatGain(gain, displayUnit);
+  return formatted.text + formatted.unit;
+}
+
+// A popup card's value: text, then unitText in a span.unit where there is one.
+// The card's classes become 'value' and classes.
+function setCardValue(el, text, unitText, classes) {
+  el.className = 'value' + (classes ? ' ' + classes : '');
+  el.textContent = text;
+  if (unitText) {
+    const unit = document.createElement('span');
+    unit.className = 'unit';
+    unit.textContent = unitText;
+    el.appendChild(unit);
+  }
+}
+
+// A popup card with no value: '---', with classes and 'unknown'.
+function setUnknown(el, classes) {
+  setCardValue(el, '---', null, classes ? classes + ' unknown' : 'unknown');
+}
+
 // The settings page's #settingsError line: shown with the catalog's text for
 // key, or hidden.
 function showSettingsError(visible, key = 'settingsSaveFailed') {
