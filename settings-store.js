@@ -63,25 +63,6 @@ function applySettingsMutation(currentValue, mutation) {
   throw invalidSettingsMutation('unknown settings mutation');
 }
 
-// An earlier version kept the settings in local. Where local still holds them
-// they go to sync, less the fields withoutRemovedSettings drops, unless sync
-// already holds settings — with Chrome sync on, another Chrome the user is
-// signed in to got there first, and what it wrote is what each of them reads
-// from now on — and the local copy is removed either way. Sync is written
-// before local is removed, so a reader always finds one of them. Once local
-// holds nothing this is one read, which is why the worker can ask for it at
-// every start.
-async function moveSettingsToSync(storage, storageKey) {
-  const local = (await storage.local.get(storageKey))[storageKey];
-  if (local === undefined) return false;
-  const synced = (await storage.sync.get(storageKey))[storageKey];
-  if (!isStoredSettingsObject(synced) && isStoredSettingsObject(local)) {
-    await storage.sync.set({ [storageKey]: withoutRemovedSettings(local) });
-  }
-  await storage.local.remove(storageKey);
-  return true;
-}
-
 // Whether the settings to be written are the ones stored, field for field.
 // Every value a write carries is a number, a string or a boolean, or the one
 // it read from the store.
@@ -96,13 +77,7 @@ function sameStoredSettings(next, stored) {
 // through readSettings, so a write made before the move carries the local
 // values with it instead of starting sync from an empty object.
 function createSettingsWriter(storage, storageKey = SETTINGS_STORE_KEY) {
-  let queue = Promise.resolve();
-
-  function enqueue(work) {
-    const task = queue.then(work);
-    queue = task.catch(() => {});
-    return task;
-  }
+  const enqueue = createSerialQueue();
 
   function enqueueSettingsMutation(mutation) {
     return enqueue(async () => {
@@ -120,7 +95,7 @@ function createSettingsWriter(storage, storageKey = SETTINGS_STORE_KEY) {
   // On the same queue as the mutations, so a write and the move cannot read the
   // two areas in between each other's steps.
   enqueueSettingsMutation.moveToSync = () =>
-    enqueue(() => moveSettingsToSync(storage, storageKey));
+    enqueue(() => moveSettingsToSync(storage, storageKey, withoutRemovedSettings));
   return enqueueSettingsMutation;
 }
 
@@ -128,7 +103,6 @@ const TCV_SETTINGS_STORE = {
   SETTINGS_MUTATION_MESSAGE,
   SETTINGS_STORE_KEY,
   applySettingsMutation,
-  moveSettingsToSync,
   createSettingsWriter
 };
 
