@@ -18,25 +18,7 @@ const DISPLAY_UPDATE_INTERVAL_MS = 1000;
 const MIN_GAIN = 0;
 const MAX_GAIN = 6;
 
-function gainToPercent(gain) { return Math.round(gain * 100); }
-function percentToGain(pct) { return pct / 100; }
-
-function gainToDb(gain) {
-  if (gain <= 0) return '-Inf';
-  return (20 * Math.log10(gain)).toFixed(1);
-}
-
 function dbToGain(db) { return Math.pow(10, db / 20); }
-
-function msg(key, substitutions) {
-  if (typeof chrome === 'undefined' || !chrome?.i18n) return key;
-  return chrome.i18n.getMessage(key, substitutions) || key;
-}
-
-function formatGain(gain, displayUnit) {
-  if (displayUnit === 'dB') return { text: gainToDb(gain), unit: ' dB' };
-  return { text: String(gainToPercent(gain)), unit: '%' };
-}
 
 function formatAutoGain(gain, displayUnit, autoLabel = 'Auto') {
   const formatted = formatGain(Number.isFinite(gain) ? gain : 1.0, displayUnit);
@@ -149,14 +131,6 @@ function createSliderKeys() {
     },
     clear() { down.clear(); }
   };
-}
-
-function esc(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  // Serialising a text node leaves both quotes alone, and every caller puts the
-  // result inside a quoted attribute as well as between tags.
-  return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 // URL classification ----------------------------------------------------

@@ -224,10 +224,10 @@ mean is `NaN`, which `meanSquareToLufs` answers `-Infinity` for. Checked against
 `[]`, `[0, -1, NaN]` and a set below the absolute gate — guarded and unguarded
 agree on every one.
 
-- `utils.js:115` a guard is dropped ×1 — if (!Number.isFinite(measuredLufs)) return 1.0;
-- `utils.js:317` a guard is dropped ×1 — if (valid.length === 0) return -Infinity;
-- `utils.js:320` a guard is dropped ×1 — if (passAbs.length === 0) return -Infinity;
-- `utils.js:325` a guard is dropped ×1 — if (passRel.length === 0) return -Infinity;
+- `utils.js:97` a guard is dropped ×1 — if (!Number.isFinite(measuredLufs)) return 1.0;
+- `utils.js:291` a guard is dropped ×1 — if (valid.length === 0) return -Infinity;
+- `utils.js:294` a guard is dropped ×1 — if (passAbs.length === 0) return -Infinity;
+- `utils.js:299` a guard is dropped ×1 — if (passRel.length === 0) return -Infinity;
 
 ## options.js
 
