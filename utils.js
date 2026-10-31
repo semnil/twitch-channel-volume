@@ -99,31 +99,6 @@ function suggestedGain(integratedLufs, targetLufs) {
   return calcGain(integratedLufs, targetLufs);
 }
 
-// The keys that move a range input's value. A key held on a slider is held
-// for as long as one of these is down on it; any other key takes no part.
-const SLIDER_VALUE_KEYS = new Set([
-  'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End'
-]);
-
-// The value keys down on one slider. press answers whether a keydown begins a
-// hold: a value key, not a repeat, pressed while no other is down. release
-// answers whether a keyup ends the hold: the last value key down let go. Any
-// other key, and a repeat of a key not down, change nothing.
-function createSliderKeys() {
-  const down = new Set();
-  return {
-    press(event) {
-      if (event.repeat || !SLIDER_VALUE_KEYS.has(event.key)) return false;
-      down.add(event.key);
-      return down.size === 1;
-    },
-    release(event) {
-      return down.delete(event.key) && down.size === 0;
-    },
-    clear() { down.clear(); }
-  };
-}
-
 // URL classification ----------------------------------------------------
 
 const TWITCH_RESERVED_PATHS = new Set([

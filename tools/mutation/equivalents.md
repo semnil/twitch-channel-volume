@@ -225,9 +225,9 @@ mean is `NaN`, which `meanSquareToLufs` answers `-Infinity` for. Checked against
 agree on every one.
 
 - `utils.js:88` a guard is dropped ×1 — if (!Number.isFinite(measuredLufs)) return 1.0;
-- `utils.js:282` a guard is dropped ×1 — if (valid.length === 0) return -Infinity;
-- `utils.js:285` a guard is dropped ×1 — if (passAbs.length === 0) return -Infinity;
-- `utils.js:290` a guard is dropped ×1 — if (passRel.length === 0) return -Infinity;
+- `utils.js:257` a guard is dropped ×1 — if (valid.length === 0) return -Infinity;
+- `utils.js:260` a guard is dropped ×1 — if (passAbs.length === 0) return -Infinity;
+- `utils.js:265` a guard is dropped ×1 — if (passRel.length === 0) return -Infinity;
 
 ## options.js
 
