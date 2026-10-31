@@ -1,0 +1,24 @@
+# The shared files are checked out with LF line endings on every host, as
+# channel-volume-core holds them, so a copy reads as the locked commit's
+# and the shell scripts run under bash where git converts line endings.
+/.gitattributes text eol=lf
+/.github/workflows/ci.yaml text eol=lf
+/gen_icons.py text eol=lf
+/pack.py text eol=lf
+/tools/check-shared.sh text eol=lf
+/tools/coverage/v8-to-lcov.mjs text eol=lf
+/tools/mutation/bail.mjs text eol=lf
+/tools/mutation/sweep-all.sh text eol=lf
+/tools/mutation/sweep.mjs text eol=lf
+/.github/workflows/release.yaml text eol=lf
+/.github/workflows/tag-release.yaml text eol=lf
+/tools/check-tag.sh text eol=lf
+/tools/tag-plan.sh text eol=lf
+/tools/verify-version.sh text eol=lf
+/.github/tests/dependabot-auto-merge-test.sh text eol=lf
+/.github/workflows/dependabot-auto-merge-test.yml text eol=lf
+/.github/workflows/dependabot-auto-merge.yml text eol=lf
+/.github/CODEOWNERS text eol=lf
+/.github/FUNDING.yml text eol=lf
+/.github/ISSUE_TEMPLATE/bug_report.md text eol=lf
+/.github/ISSUE_TEMPLATE/feature_request.md text eol=lf

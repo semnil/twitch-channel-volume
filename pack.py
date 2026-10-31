@@ -18,6 +18,9 @@ from html.parser import HTMLParser
 # only opening a file goes through the host's own separator.
 LOCALE_DIR = '_locales'
 LOCALE_FILE = 'messages.json'
+# The file that names this extension to the tools it shares with its siblings.
+# Nothing the extension loads refers to it, so the package never carries it.
+CONFIG = 'core.json'
 # What a copy of the extension carries although nothing in it loads them. The
 # MIT text requires the notice to travel with the copies it covers, and a store
 # package is one, so the reference walk below never reaching it is not an answer.
@@ -395,6 +398,21 @@ def _read(root, relative):
         return handle.read()
 
 
+def _package(root):
+    """The name the zip carries before its version, from core.json's
+    `package`: lowercase letters, digits and hyphens, as a repository name is
+    spelled."""
+    try:
+        text = _read(root, CONFIG)
+    except OSError as unreadable:
+        raise SystemExit(f'{CONFIG} is not readable: {unreadable}')
+    name = _json(CONFIG, text)
+    name = name.get('package') if isinstance(name, dict) else None
+    if not isinstance(name, str) or not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', name):
+        raise SystemExit(f'{CONFIG} names no package to call the zip by: {name!r}')
+    return name
+
+
 def _store_locale(locale, what):
     """Refuse a locale name the store does not carry under that spelling.
 
@@ -662,7 +680,7 @@ def pack():
     # through would otherwise leave a half-built package where the last one was.
     files = list(selected_files(root))
     version = _json('manifest.json', _read(root, 'manifest.json'))['version']
-    out = f'twitch-channel-volume-{version}.zip'
+    out = f'{_package(root)}-{version}.zip'
     out_path = os.path.join(root, out)
     # Built beside the target and moved onto it. Resolving the names first
     # answers for a file that is missing, and reading one can still fail — a

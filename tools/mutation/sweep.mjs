@@ -20,6 +20,10 @@
 // asks whether every entry in equivalents.md still names one. An entry that
 // names a site the code no longer has is a reason nobody can check, which is
 // what an equivalents list turns into on its own.
+//
+// Every run of the suite or of the confirming command is given 180 s, and one
+// that takes longer is stopped and its mutant reported as HUNG.
+// MUTATE_TIMEOUT_MS=<n> gives each run n milliseconds instead.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync, unlinkSync, openSync, closeSync, fstatSync, statSync } from 'node:fs';
 import { dirname, join, relative as relativeTo } from 'node:path';
@@ -37,6 +41,11 @@ const [tree, relative, ...command] = verifying
   : argv;
 if (!tree || (!verifying && (!relative || !command.length))) {
   console.error(USAGE);
+  process.exit(2);
+}
+const TIMEOUT_MS = Number(process.env.MUTATE_TIMEOUT_MS || 180000);
+if (!Number.isInteger(TIMEOUT_MS) || TIMEOUT_MS < 1) {
+  console.error(`MUTATE_TIMEOUT_MS wants a whole number of milliseconds, got ${process.env.MUTATE_TIMEOUT_MS}`);
   process.exit(2);
 }
 const path = relative === null ? null : join(tree, relative);
@@ -382,7 +391,7 @@ function ranAtAll(run, what) {
 const control = `throw new Error('mutation control');\n` + original;
 putMutant(control);
 const controlRun = ranAtAll(
-  spawnSync(command[0], command.slice(1), { cwd: tree, encoding: 'utf8', timeout: 180000 }),
+  spawnSync(command[0], command.slice(1), { cwd: tree, encoding: 'utf8', timeout: TIMEOUT_MS }),
   'the control run'
 );
 putBack();
@@ -391,7 +400,7 @@ if (controlRun.status === 0) {
   finish(3);
 }
 const baseline = ranAtAll(
-  spawnSync(command[0], command.slice(1), { cwd: tree, encoding: 'utf8', timeout: 180000 }),
+  spawnSync(command[0], command.slice(1), { cwd: tree, encoding: 'utf8', timeout: TIMEOUT_MS }),
   'the baseline run'
 );
 if (baseline.status !== 0) {
@@ -409,7 +418,7 @@ for (const mutant of mutants) {
   if (parses.status !== 0) { unparsed.push(mutant); continue; }
   ran += 1;
   const started = Date.now();
-  const run = spawnSync(command[0], command.slice(1), { cwd: tree, encoding: 'utf8', timeout: 180000 });
+  const run = spawnSync(command[0], command.slice(1), { cwd: tree, encoding: 'utf8', timeout: TIMEOUT_MS });
   const seconds = (Date.now() - started) / 1000;
   ranAtAll(run, 'the suite');
   if (run.error && run.error.code === 'ETIMEDOUT') {
@@ -430,7 +439,7 @@ if (confirm && survivors.length) {
   const control = `throw new Error('mutation control');\n` + original;
   putMutant(control);
   const powered = ranAtAll(
-    spawnSync('sh', ['-c', confirm], { cwd: tree, encoding: 'utf8', timeout: 180000 }),
+    spawnSync('sh', ['-c', confirm], { cwd: tree, encoding: 'utf8', timeout: TIMEOUT_MS }),
     "the confirming command's control run"
   );
   putBack();
@@ -442,7 +451,7 @@ if (confirm && survivors.length) {
     console.error(`the confirming command does not execute ${relative}; the survivors stand as the sweep found them`);
   } else {
     const green = ranAtAll(
-      spawnSync('sh', ['-c', confirm], { cwd: tree, encoding: 'utf8', timeout: 180000 }),
+      spawnSync('sh', ['-c', confirm], { cwd: tree, encoding: 'utf8', timeout: TIMEOUT_MS }),
       "the confirming command's baseline run"
     );
     if (green.status !== 0) {
@@ -456,7 +465,7 @@ if (confirm && survivors.length) {
   putBack();
   for (let i = powerless ? -1 : survivors.length - 1; i >= 0; i--) {
     putMutant(survivors[i].text);
-    const run = spawnSync('sh', ['-c', confirm], { cwd: tree, encoding: 'utf8', timeout: 180000 });
+    const run = spawnSync('sh', ['-c', confirm], { cwd: tree, encoding: 'utf8', timeout: TIMEOUT_MS });
     ranAtAll(run, 'the confirming command');
     const timedOut = run.error && run.error.code === 'ETIMEDOUT';
     if (!timedOut && run.status !== 0) {

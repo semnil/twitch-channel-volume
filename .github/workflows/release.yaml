@@ -60,8 +60,8 @@ jobs:
         with:
           python-version: '3.12'
 
-      # Before the tests: the ones that hand the generator trees it has to turn
-      # down skip themselves where it cannot draw, and a skip proves nothing.
+      # Before the tests: the ones that need Pillow skip themselves where it is
+      # missing, and a skip holds nothing.
       - name: Install Pillow 🖼️
         run: pip install pillow==12.2.0
         timeout-minutes: 5
@@ -69,10 +69,24 @@ jobs:
       - name: Check Python Syntax 🐍
         run: python3 -B -c "import ast,pathlib; [ast.parse(p.read_text()) for p in pathlib.Path('.').glob('*.py')]"
 
+      - name: Check The Shared Files 🔗
+        timeout-minutes: 5
+        run: bash tools/check-shared.sh
+
       - name: Run Unit Tests ✅
         run: node test.js
 
+      # The steps below run in the extensions that carry the file they run.
+      - name: Run Navigation Tests ✅
+        if: hashFiles('test-navigation.js') != ''
+        run: node test-navigation.js
+
+      - name: Run Screenshot Path Tests ✅
+        if: hashFiles('test-screenshots.py') != ''
+        run: python3 test-screenshots.py
+
       - name: Check Screenshots 📸
+        if: hashFiles('gen_screenshots.py') != ''
         timeout-minutes: 5
         run: python3 gen_screenshots.py --check
 
@@ -93,19 +107,21 @@ jobs:
           if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
           shopt -s nullglob
           python pack.py
-          built=( twitch-channel-volume-*.zip )
+          package="$(node -p "require('./core.json').package")"
+          built=( "${package}"-*.zip )
           if [[ ${#built[@]} -ne 1 ]]; then
             echo "::error::packing left ${#built[@]} archives, not one: ${built[*]}"
             exit 1
           fi
+          echo "package=${package}" >> "$GITHUB_OUTPUT"
           echo "archive=${built[0]}" >> "$GITHUB_OUTPUT"
           echo "digest=$(sha256sum "${built[0]}" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Upload Artifacts 📡
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: twitch-channel-volume-zip
-          path: twitch-channel-volume-*.zip
+          name: ${{ steps.pack.outputs.package }}-zip
+          path: ${{ steps.pack.outputs.archive }}
           if-no-files-found: error
 
   release:
