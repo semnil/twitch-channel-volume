@@ -16,6 +16,13 @@ on:
 permissions:
   contents: read
 
+# One run at a time in the repository, whichever branch started it: a run
+# started while another is under way waits for it, and clones the core after
+# that one has pushed.
+concurrency:
+  group: sync-core
+  cancel-in-progress: false
+
 jobs:
   sync:
     name: Sync 🔄
