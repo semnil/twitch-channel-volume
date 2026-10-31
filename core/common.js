@@ -70,16 +70,20 @@ function sameStoredSettings(next, stored) {
 
 // Writes into sync what change answers for the settings as readSettings finds
 // them, so a write made before the move carries local's settings with it. A
-// write that would store in sync what sync holds already is left out. Answers
-// the settings written, or found written. The caller runs this on its settings
-// queue; change gets a copy it may change, and a throw from it writes nothing.
+// change that leaves the settings read as they were writes nothing where sync
+// holds settings: what was read was sync's, or sync has taken settings since,
+// which a write of the read would put back. Read from local alone, they are
+// written, which carries them into sync. Answers the settings written, or
+// found written. The caller runs this on its settings queue; change gets a copy
+// it may change, and a throw from it writes nothing.
 async function writeSettingsChange(change, storage = chrome.storage, key = SETTINGS_KEY) {
   const current = await readSettings(storage, key);
   const next = change({ ...current });
-  if (!sameStoredSettings(next, current) ||
-      !sameStoredSettings(next, (await storage.sync.get(key))[key])) {
-    await storage.sync.set({ [key]: next });
+  if (sameStoredSettings(next, current) &&
+      isStoredSettingsObject((await storage.sync.get(key))[key])) {
+    return next;
   }
+  await storage.sync.set({ [key]: next });
   return next;
 }
 
