@@ -4,6 +4,7 @@
 /.gitattributes text eol=lf
 /.github/workflows/ci.yaml text eol=lf
 /.github/workflows/sync-core.yaml text eol=lf
+/core/common.js text eol=lf
 /gen_icons.py text eol=lf
 /pack.py text eol=lf
 /tools/check-shared.sh text eol=lf
