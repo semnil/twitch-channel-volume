@@ -55,7 +55,7 @@ content chooses the baseline gain in `resolvePreferredGain` (`utils.js`) from th
 
 - Auto is decided by `resolveAutoApplySetting`: the row's `autoApplyLoudness<Kind>` where the row has it; otherwise the legacy `autoApplyLoudness`; otherwise `false` when the row has a manual gain for the kind; otherwise the settings default for the kind.
 - With Auto on and a finite `lastLufs.integrated`, the gain is `calcGain(integrated, targetLufs)` = 10 ^ ((`targetLufs` − `integrated`) / 20), clamped to 0–6.
-- Otherwise it is the first of these that exists: the stored `autoGain<Kind>` whose `autoGainRef[kind]` is `volume1` (with Auto on only), the stored `gain<Kind>` (or the legacy `gain`, read by `extractGainForKind`), 1.0.
+- Otherwise it is the first of these that exists: the stored `autoGain<Kind>` whose `autoGainRef[kind]` is `volume1` (with Auto on only), the stored `gain<Kind>` (or, in an entry with neither `gainLive` nor `gainVod` as a key, the legacy `gain`; read by `extractGainForKind` through `storedGain`), 1.0.
 
 `reapplyForCurrentChannel` reads the row (`loadChannelEntry`) and then applies the gain `resolvePreferredGain` resolves, or, with Auto on and a finite Integrated value, the gain `autoGainToPlay` gives (scenario 5). When a newer read, a navigation or a channel change has started while it was reading (`preferenceRevision`, or a different `currentChannel`), it returns false and applies nothing; the diagrams below draw that as `opt the read was not overtaken`. On a page with no channel id or of kind `none` it reads nothing, applies 1.0 and returns true.
 

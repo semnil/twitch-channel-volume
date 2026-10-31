@@ -158,41 +158,35 @@ nowhere, and the entry is reloaded before another kind is read.
 
 ## channel-store.js
 
-`expandLegacyGain`'s hasOwnProperty check. Without it the legacy gain is
-`undefined`, `Number.isFinite(undefined)` is false, and `delete entry.gain` on a
-key that is not there is a no-op — the same object comes back.
-
-- `channel-store.js:95` a guard is dropped ×1 — if (!Object.prototype.hasOwnProperty.call(entry, 'gain')) return entry;
-
 `withoutClipFields`'s type checks. A non-object spreads to something whose clip
 fields are absent and whose key count does not change, so `dropped` stays false
 and the entry it was given comes back; and `__fieldVersions` is one of
 `ROW_SHARED_VALUE_FIELDS`, so `holdsNoValue` answers false for the copy and the
 row is written back unchanged.
 
-- `channel-store.js:148` a guard is dropped ×1 — if (!entry || typeof entry !== 'object') return entry;
-- `channel-store.js:148` || becomes && ×1 — ||
-- `channel-store.js:172` && becomes || ×1 — &&
-- `channel-store.js:175` a guard is always taken ×1 — if (Object.keys(kept).length !== Object.keys(versions).length) {
+- `channel-store.js:138` a guard is dropped ×1 — if (!entry || typeof entry !== 'object') return entry;
+- `channel-store.js:138` || becomes && ×1 — ||
+- `channel-store.js:162` && becomes || ×1 — &&
+- `channel-store.js:165` a guard is always taken ×1 — if (Object.keys(kept).length !== Object.keys(versions).length) {
 
 `cloneEntry`'s deep copy of the version map. `setFieldVersion` replaces that
 object rather than writing into it, and no other writer touches it in place, so
 the copy has nothing to protect.
 
-- `channel-store.js:190` === becomes !== ×1 — ===
-- `channel-store.js:190` a guard body is dropped ×1 — if (entry?.[FIELD_VERSIONS_FIELD] && typeof entry[FIELD_VERSIONS_FIELD]
+- `channel-store.js:180` === becomes !== ×1 — ===
+- `channel-store.js:180` a guard body is dropped ×1 — if (entry?.[FIELD_VERSIONS_FIELD] && typeof entry[FIELD_VERSIONS_FIELD]
 
 `resolveStoredAlias`'s cycle check. **This one is not equivalent: the mutant
 does not terminate.** A suite carrying it never reports green — the sweep stops
 it at its own timeout rather than passing it — so it is named here to be
 accounted for, not because the code cannot tell the difference.
 
-- `channel-store.js:549` && becomes || ×1 — &&
+- `channel-store.js:539` && becomes || ×1 — &&
 
 The alias rebuild after a write. `clearChannels` leaves no rows, so the rebuild
 its check guards finds no targets.
 
-- `channel-store.js:643` a guard is always taken ×1 — if (resolvedMutation.operation !== 'clearChannels') {
+- `channel-store.js:633` a guard is always taken ×1 — if (resolvedMutation.operation !== 'clearChannels') {
 
 ## popup.js
 

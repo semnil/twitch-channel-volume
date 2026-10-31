@@ -3206,6 +3206,9 @@ test('extractGainForKind does not leak a typed gain across media kinds', () => {
   // The gain a version before the per-kind fields wrote answers for any kind.
   assert.equal(u.extractGainForKind({ gain: 0.6 }, 'vod'), 0.6);
   assert.equal(u.extractGainForKind({ gain: 0.6, gainVod: 0.4 }, 'vod'), 0.4);
+  // Beside a field per kind, the earlier gain is not read for the other kind.
+  assert.equal(u.extractGainForKind({ gain: 0.6, gainLive: 0.8 }, 'vod'), null);
+  assert.equal(u.extractGainForKind({ gain: 0.6, gainVod: null }, 'vod'), null);
 });
 
 test('classifyTwitchUrl: live channel', () => {

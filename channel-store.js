@@ -28,6 +28,9 @@ function storeGainFieldForKind(kind) {
   return 'gainLive';
 }
 
+// The keys of an entry's gains, one per kind.
+const STORE_GAIN_FIELDS = [...CHANNEL_MUTATION_KINDS].map(storeGainFieldForKind);
+
 function storeAutoFieldForKind(kind) {
   if (kind === 'vod') return 'autoApplyLoudnessVod';
   return 'autoApplyLoudnessLive';
@@ -89,19 +92,6 @@ function copyMetadata(entry, channel) {
       entry[field] = channel[field];
     }
   }
-}
-
-function expandLegacyGain(entry) {
-  if (!Object.prototype.hasOwnProperty.call(entry, 'gain')) return entry;
-  const legacyGain = entry.gain;
-  for (const kind of CHANNEL_MUTATION_KINDS) {
-    const field = storeGainFieldForKind(kind);
-    if (!Number.isFinite(entry[field]) && Number.isFinite(legacyGain)) {
-      entry[field] = legacyGain;
-    }
-  }
-  delete entry.gain;
-  return entry;
 }
 
 function expandLegacyAuto(entry) {
@@ -191,7 +181,7 @@ function cloneEntry(entry, fallbackName) {
     cloned[FIELD_VERSIONS_FIELD] = { ...entry[FIELD_VERSIONS_FIELD] };
   }
   delete cloned[LEGACY_PROVISIONAL_WRITES_FIELD];
-  return expandLegacyAuto(expandLegacyGain(cloned));
+  return expandLegacyAuto(expandLegacyGain(cloned, STORE_GAIN_FIELDS));
 }
 
 function normalizeLogin(value) {

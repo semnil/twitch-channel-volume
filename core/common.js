@@ -153,6 +153,35 @@ function gainForLevel(levelLufs, targetLufs) {
   return Math.max(MIN_GAIN, Math.min(MAX_GAIN, gain));
 }
 
+// Whether entry has one of slots, the keys of its gains per type, as a key of
+// its own.
+function hasTypedGain(entry, slots) {
+  return slots.some((slot) => Object.prototype.hasOwnProperty.call(entry, slot));
+}
+
+// The gain entry holds for slot: a finite number stored there; or, in an entry
+// an earlier version wrote with one gain for every type and no slot of slots,
+// that gain where it is a finite number; null otherwise. A gain of the earlier
+// form beside a slot of slots is not read.
+function storedGain(entry, slot, slots) {
+  if (!entry || typeof entry !== 'object') return null;
+  const value = hasTypedGain(entry, slots) ? entry[slot] : entry.gain;
+  return Number.isFinite(value) ? value : null;
+}
+
+// Turns an entry an earlier version wrote with one gain for every type into one
+// with a gain per type, in place, ahead of a write to it: where it has no slot
+// of slots and that gain is a finite number, every slot takes it. The gain of
+// the earlier form is removed either way.
+function expandLegacyGain(entry, slots) {
+  if (!Object.prototype.hasOwnProperty.call(entry, 'gain')) return entry;
+  if (!hasTypedGain(entry, slots) && Number.isFinite(entry.gain)) {
+    for (const slot of slots) entry[slot] = entry.gain;
+  }
+  delete entry.gain;
+  return entry;
+}
+
 // The label of a row's Auto gain on the settings page: the stored gain in the
 // display unit, or a dash where the row holds no gain.
 function formatAutoGain(gain, displayUnit, autoLabel = 'Auto') {

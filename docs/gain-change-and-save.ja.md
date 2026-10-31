@@ -55,7 +55,7 @@ content は、今のチャンネルの行をもとに `resolvePreferredGain` (`u
 
 - Auto は `resolveAutoApplySetting` で決まる。行に `autoApplyLoudness<Kind>` があればそれ。無ければ古い形の `autoApplyLoudness`。それも無く、その種別の手動ゲインが行にあれば `false`。どれも無ければ設定にある、その種別の既定値。
 - Auto がオンで `lastLufs.integrated` が有限の数なら、ゲインは `calcGain(integrated, targetLufs)` = 10 ^ ((`targetLufs` − `integrated`) / 20) を 0〜6 に収めた値。
-- それ以外では、次のうち最初にあるもの。参照が `volume1` の保存済み `autoGain<Kind>` (Auto がオンのときだけ)、保存済みの `gain<Kind>` (または古い形の `gain`。`extractGainForKind` が読む)、1.0。
+- それ以外では、次のうち最初にあるもの。参照が `volume1` の保存済み `autoGain<Kind>` (Auto がオンのときだけ)、保存済みの `gain<Kind>` (`gainLive` も `gainVod` もキーとして無い項目では古い形の `gain`。`extractGainForKind` が `storedGain` で読む)、1.0。
 
 `reapplyForCurrentChannel` は行を読み (`loadChannelEntry`)、そのあとで `resolvePreferredGain` が決めたゲインをかける。Auto がオンで Integrated が有限なら、代わりに `autoGainToPlay` のゲインをかける (場面 5)。読んでいる間に、あとからの読み直し・遷移・チャンネルの変化が始まっていたら (`preferenceRevision`、または `currentChannel` が変わっていたら)、false を返して何もかけない。下の図ではこれを `opt 読み直しが追い越されていない` と書く。チャンネル ID が無いページや種別 `none` のページでは、何も読まずに 1.0 をかけて true を返す。
 

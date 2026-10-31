@@ -21,11 +21,11 @@ function gainFieldForKind(kind) {
   return 'gainLive';
 }
 
+// The keys of an entry's gains per kind.
+const GAIN_SLOTS = ['gainLive', 'gainVod'];
+
 function extractGainForKind(entry, kind) {
-  if (!entry) return null;
-  const typedGain = entry[gainFieldForKind(kind)];
-  if (Number.isFinite(typedGain)) return typedGain;
-  return Number.isFinite(entry.gain) ? entry.gain : null;
+  return storedGain(entry, gainFieldForKind(kind), GAIN_SLOTS);
 }
 
 function autoGainFieldForKind(kind) {
