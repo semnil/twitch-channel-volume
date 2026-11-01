@@ -189,12 +189,14 @@
   // The patch is drawn before it is written. A write that does not land puts
   // the page back to what the settings hold and says so, or, where the re-read
   // fails as well, asks for a reload (saveSettingOrRestore in core/common.js).
-  // The table is drawn again only where the unit moved, so a control of the
-  // table the viewer is on keeps its focus.
+  // The table is drawn again only where what it shows moved (the unit, or
+  // the Auto defaults of the rows that name none), so a control of the table
+  // the viewer is on keeps its focus.
   function renderSettingsAndUnit(settings) {
-    const unitBefore = displayUnit;
+    const shown = () => [displayUnit, defaultAutoApply.live, defaultAutoApply.vod].join('|');
+    const before = shown();
     renderSettings(settings);
-    if (displayUnit !== unitBefore) renderChannels(channelVolumes);
+    if (shown() !== before) renderChannels(channelVolumes);
   }
 
   async function updateSettings(patch) {
