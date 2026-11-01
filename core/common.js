@@ -429,6 +429,150 @@ function holdSettingsSlider(slider, { current, drawLabel, save }) {
   return () => keyHeld || pointerHeld;
 }
 
+// How often a popup's gain slider sends its preview again while it is held.
+const PREVIEW_KEEP_ALIVE_MS = 1000;
+
+// Holds a popup's gain slider to one save per gesture, and has it heard while
+// it moves. A gesture begins at a press of the primary button or of a value
+// key (createSliderKeys) on the slider, or at an input or a change while none
+// is in progress (begin). Each input draws the value and, where canPreview
+// holds, sends it as a preview; while the pointer or a key stays held after a
+// preview not yet saved, the preview is sent again every
+// PREVIEW_KEEP_ALIVE_MS. A drag saves at its change. A key hold saves once,
+// at the keyup of the last value key held, where a key moved the value, and a
+// press of the pointer during it leaves it held; the press stays the gesture
+// it was once the key has saved, and its change saves what it moved to after
+// the key, and nothing where it moved nothing more. A blur of the slider or
+// of the window ends the gesture, a key hold saving there where a key moved
+// the value; after it the slider's input and change send nothing until the
+// next press, and the change puts the thumb back to the value it held at the
+// blur. A drag the browser cancels ends the same way with no save, the thumb
+// back where the drag began or to the value saved since. The release is
+// taken on the slider, which holds the pointer it was pressed with. Answers
+// whether a key or the pointer is held.
+function holdPopupSlider(slider, { begin, draw, canPreview, preview, save }) {
+  const keys = createSliderKeys();
+  let keyHeld = false;
+  let keyMoved = false;
+  let pointerHeld = false;
+  let pointerStart = null;
+  let inGesture = false;
+  let gestureEnded = false;
+  let valueAtEnd = '';
+  // An input since the gesture's last save, and a save made while the pointer
+  // was held that no input has followed.
+  let unsaved = false;
+  let savedHeld = false;
+  let previewUnsaved = false;
+  let keepAliveSet = false;
+  const value = () => Number(slider.value);
+  const beginGesture = () => {
+    inGesture = true;
+    gestureEnded = false;
+    unsaved = false;
+    savedHeld = false;
+    begin();
+  };
+  // A press of the pointer still held goes on as the same gesture, from the
+  // value saved.
+  const saveValue = () => {
+    unsaved = false;
+    previewUnsaved = false;
+    savedHeld = pointerHeld;
+    if (pointerHeld) pointerStart = slider.value;
+    else inGesture = false;
+    save(value());
+  };
+  const endGesture = () => {
+    inGesture = false;
+    gestureEnded = true;
+    valueAtEnd = slider.value;
+  };
+  const keepPreviewAlive = () => {
+    if (keepAliveSet) return;
+    keepAliveSet = true;
+    setTimeout(() => {
+      keepAliveSet = false;
+      if (!(pointerHeld || keyHeld) || !previewUnsaved || !canPreview()) return;
+      preview(value());
+      keepPreviewAlive();
+    }, PREVIEW_KEEP_ALIVE_MS);
+  };
+  // Whether a key was held.
+  const endKeyHold = () => {
+    if (!keyHeld) return false;
+    keyHeld = false;
+    const moved = keyMoved;
+    keyMoved = false;
+    if (moved) saveValue();
+    return true;
+  };
+  const endGestureOnBlur = () => {
+    keys.clear();
+    if (!endKeyHold() && !pointerHeld) return;
+    pointerHeld = false;
+    endGesture();
+  };
+  slider.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    pointerHeld = true;
+    pointerStart = slider.value;
+    if (!keyHeld) beginGesture();
+  });
+  slider.addEventListener('pointerup', () => {
+    pointerHeld = false;
+    if (!keyHeld && !unsaved) inGesture = false;
+  });
+  // A key held through it stays held, and keeps the value it moved to.
+  slider.addEventListener('pointercancel', () => {
+    if (!pointerHeld) return;
+    pointerHeld = false;
+    if (keyHeld) return;
+    slider.value = pointerStart;
+    draw(value());
+    endGesture();
+  });
+  slider.addEventListener('keydown', (event) => {
+    if (!keys.press(event)) return;
+    if (!pointerHeld) beginGesture();
+    keyHeld = true;
+    keyMoved = false;
+  });
+  slider.addEventListener('keyup', (event) => {
+    if (keys.release(event)) endKeyHold();
+  });
+  slider.addEventListener('blur', endGestureOnBlur);
+  window.addEventListener('blur', endGestureOnBlur);
+  slider.addEventListener('input', () => {
+    if (gestureEnded) return;
+    if (!inGesture) beginGesture();
+    if (keyHeld) keyMoved = true;
+    unsaved = true;
+    savedHeld = false;
+    draw(value());
+    if (!canPreview()) return;
+    preview(value());
+    previewUnsaved = true;
+    keepPreviewAlive();
+  });
+  slider.addEventListener('change', () => {
+    if (gestureEnded) {
+      slider.value = valueAtEnd;
+      return;
+    }
+    if (keyHeld) return;
+    // The release after a save with no input since moves nothing of its own,
+    // whatever was drawn on the slider meanwhile.
+    if (savedHeld && !unsaved) {
+      savedHeld = false;
+      return;
+    }
+    if (!inGesture) beginGesture();
+    saveValue();
+  });
+  return () => keyHeld || pointerHeld;
+}
+
 function esc(s) {
   const d = document.createElement('div');
   d.textContent = s;

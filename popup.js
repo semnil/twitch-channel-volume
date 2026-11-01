@@ -415,123 +415,26 @@
   $('applyBtn').addEventListener('click', applyMeasured);
   $('resetMeasurementBtn').addEventListener('click', resetMeasurement);
   $('autoApplyToggle').addEventListener('change', setAutoApplyLoudness);
-  // A drag begins where the pointer goes down or a key is pressed on the
-  // slider. Chrome fires no change when the value ends where it began, so a
-  // release can pass unseen: the start of the next gesture is what says the
-  // one before it is over. Taking the copy here rather than on every movement
-  // keeps a drag on the state it began on.
-  //
-  // A drag the slider or the popup loses focus in ends there, a Tab that takes
-  // focus off the slider among them. Chrome commits the value the
-  // slider holds with a change ahead of the blur, and what the drag does after
-  // it, the change at the release included, is not sent: such a change puts
-  // the thumb back to the value the slider held at the blur. The next press of
-  // the pointer or of a key that moves the value begins a gesture again; a
-  // key's repeat does not.
-  //
-  // A key held on the slider is heard and not saved: each input sends a
-  // preview, and the changes its repeats fire send nothing. Only the keys that
-  // move the value hold it (createSliderKeys); the hold lasts until the last of
-  // them is let go. The value is saved once, there or where focus leaves the
-  // slider or the popup, and a loss of focus ends the gesture as it ends a
-  // drag.
-  let sliderPointerHeld = false;
-  const sliderKeys = createSliderKeys();
-  let sliderKeyHeld = false;
-  let sliderKeyMoved = false;
-  let sliderGestureEnded = false;
-  let sliderValueAtEnd = '';
-  const beginSliderGesture = () => {
-    sliderAppliesTo = currentAppliesTo;
-    sliderOwner = ownerKey();
-    sliderGestureEnded = false;
-  };
-  const endSliderGesture = () => {
-    sliderGestureEnded = true;
-    sliderValueAtEnd = $('manualSlider').value;
-  };
-  // Only the primary button drags the slider; another button moves no value,
-  // and its release goes to the window, so it begins no gesture.
-  $('manualSlider').addEventListener('pointerdown', (event) => {
-    if (event.button !== 0) return;
-    sliderPointerHeld = true;
-    beginSliderGesture();
-  });
-  const releaseSliderPointer = () => { sliderPointerHeld = false; };
-  $('manualSlider').addEventListener('pointerup', releaseSliderPointer);
-  $('manualSlider').addEventListener('pointercancel', releaseSliderPointer);
-  $('manualSlider').addEventListener('keydown', (event) => {
-    if (!sliderKeys.press(event)) return;
-    beginSliderGesture();
-    sliderKeyHeld = true;
-  });
-  // While the key is still held after a preview it has not saved, the
-  // preview is sent again every PREVIEW_KEEP_ALIVE_MS, so the tab keeps it
-  // for as long as the key is held and ends it once the sending stops.
-  const PREVIEW_KEEP_ALIVE_MS = 1000;
-  let keepAliveSet = false;
-  const keepPreviewAlive = () => {
-    if (keepAliveSet) return;
-    keepAliveSet = true;
-    setTimeout(() => {
-      keepAliveSet = false;
-      if (!sliderKeyHeld || !sliderKeyMoved) return;
-      previewGain(Number($('manualSlider').value), sliderAppliesTo);
-      keepPreviewAlive();
-    }, PREVIEW_KEEP_ALIVE_MS);
-  };
-  // Whether a key was held.
-  const endSliderKeyHold = () => {
-    if (!sliderKeyHeld) return false;
-    sliderKeyHeld = false;
-    const moved = sliderKeyMoved;
-    sliderKeyMoved = false;
-    if (moved) {
-      const appliesTo = sliderAppliesTo ?? currentAppliesTo;
-      const owner = sliderAppliesTo === null ? ownerKey() : sliderOwner;
-      sliderAppliesTo = null;
-      setGain(Number($('manualSlider').value), appliesTo, owner);
-    }
-    return true;
-  };
-  $('manualSlider').addEventListener('keyup', (event) => {
-    if (sliderKeys.release(event)) endSliderKeyHold();
-  });
-  const endSliderGestureOnBlur = () => {
-    sliderKeys.clear();
-    if (endSliderKeyHold() || sliderPointerHeld) endSliderGesture();
-  };
-  $('manualSlider').addEventListener('blur', endSliderGestureOnBlur);
-  window.addEventListener('blur', endSliderGestureOnBlur);
-
-  $('manualSlider').addEventListener('input', (e) => {
-    if (sliderGestureEnded) return;
-    // An input that arrived without either of those begins one too.
-    if (sliderAppliesTo === null) {
+  // One save per gesture on the slider, heard while it moves
+  // (holdPopupSlider in core/common.js). A gesture is made against the state
+  // that was on screen when it began, so it takes a copy then and carries
+  // that one to the previews and the save it sends.
+  holdPopupSlider($('manualSlider'), {
+    begin: () => {
       sliderAppliesTo = currentAppliesTo;
       sliderOwner = ownerKey();
-    }
-    if (autoUpdatePending) return;
-    const g = percentToGain(Number(e.target.value));
-    const f = formatGain(g, displayUnit);
-    setCardValue($('current'), f.text, f.unit, 'current');
-    $('manualValue').textContent = f.text + f.unit;
-    if (sliderKeyHeld) {
-      sliderKeyMoved = true;
-      previewGain(Number(e.target.value), sliderAppliesTo);
-      keepPreviewAlive();
-    }
-  });
-  $('manualSlider').addEventListener('change', (e) => {
-    if (sliderGestureEnded) {
-      e.target.value = sliderValueAtEnd;
-      return;
-    }
-    if (sliderKeyHeld) return;
-    const appliesTo = sliderAppliesTo ?? currentAppliesTo;
-    const owner = sliderAppliesTo === null ? ownerKey() : sliderOwner;
-    sliderAppliesTo = null;
-    setGain(Number(e.target.value), appliesTo, owner);
+    },
+    // The Auto save out keeps the card it drew; the controls are disabled
+    // meanwhile, and a gesture already on its way draws nothing.
+    draw: (percent) => {
+      if (autoUpdatePending) return;
+      const f = formatGain(percentToGain(percent), displayUnit);
+      setCardValue($('current'), f.text, f.unit, 'current');
+      $('manualValue').textContent = f.text + f.unit;
+    },
+    canPreview: () => !autoUpdatePending,
+    preview: (percent) => previewGain(percent, sliderAppliesTo),
+    save: (percent) => setGain(percent, sliderAppliesTo, sliderOwner)
   });
   document.querySelectorAll('.presets button').forEach((btn) => {
     btn.addEventListener('click', () => {
