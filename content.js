@@ -318,7 +318,7 @@
     if (previewHoldsGain()) return;
     const now = Date.now();
     const elapsed = now - lastAutoGainUpdateAt;
-    if (elapsed >= 0 && elapsed < DISPLAY_UPDATE_INTERVAL_MS) return;
+    if (elapsed >= 0 && elapsed < STATE_POLL_INTERVAL_MS) return;
     lastAutoGainUpdateAt = now;
     applyGain(autoGainToPlay());
   }

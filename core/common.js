@@ -660,6 +660,17 @@ function showSettingsError(visible, key = 'settingsSaveFailed') {
   line.classList.toggle('hidden', !visible);
 }
 
+// How often the popup asks its tab for the state while it is open.
+const STATE_POLL_INTERVAL_MS = 1000;
+
+// Asks the popup's tab for the state while the popup is open: first() at once,
+// then refresh() every STATE_POLL_INTERVAL_MS, whether or not an earlier ask
+// has been answered. Resolves once first() has.
+async function pollTabState(refresh, first = refresh) {
+  setInterval(refresh, STATE_POLL_INTERVAL_MS);
+  await first();
+}
+
 // Asks for the state again after intervalMs, at most remaining times, while
 // done() does not hold. A state that comes back is handed to take; an ask that
 // comes back empty or fails ends the asking.

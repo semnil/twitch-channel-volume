@@ -12,7 +12,6 @@ const LUFS_REFERENCE_VOLUME_1 = 'volume1';
 
 const ABSOLUTE_GATE_LUFS = -70;
 const RELATIVE_GATE_LU = -10;
-const DISPLAY_UPDATE_INTERVAL_MS = 1000;
 
 function dbToGain(db) { return Math.pow(10, db / 20); }
 
@@ -261,7 +260,6 @@ if (typeof module !== 'undefined' && module.exports) {
     CHANNEL_VOLUMES_KEY, CHANNEL_ALIASES_KEY, CHANNEL_SEQUENCE_KEY,
     DEFAULT_TARGET_LUFS, DEFAULT_AD_GAIN_DB, DEFAULT_AUTO_APPLY_LOUDNESS,
     ABSOLUTE_GATE_LUFS, RELATIVE_GATE_LU, LUFS_REFERENCE_VOLUME_1,
-    DISPLAY_UPDATE_INTERVAL_MS,
     MIN_GAIN, MAX_GAIN,
     gainToPercent, percentToGain, gainToDb, dbToGain,
     formatGain, formatAutoGain, calcGain, suggestedGain,
