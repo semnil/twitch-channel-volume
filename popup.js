@@ -8,6 +8,10 @@
   let displayUnit = '%';
   let lastSuggestedGain = null;
   let sliderSynced = false;
+  // A drag the browser cancelled leaves the slider to the gain in force until
+  // the next gesture begins: content plays the preview a while yet, and puts
+  // back the row once the previews stop.
+  let sliderFollowsTab = false;
   let currentChannel = { id: '', kind: 'none' };
   // What the state on screen was when it was drawn. It goes back with every
   // gesture, so one made against a state the tab has left is refused rather
@@ -266,7 +270,7 @@
     if (currentAutoApplyLoudness || !sliderSynced) {
       // syncSlider owns the Current card whenever it runs.
       syncSlider(actualGain);
-      sliderSynced = true;
+      sliderSynced = !sliderFollowsTab;
     } else {
       const currentFormatted = formatGain(actualGain, displayUnit);
       setCardValue($('current'), currentFormatted.text, currentFormatted.unit, currentCardClass());
@@ -423,6 +427,11 @@
     begin: () => {
       sliderAppliesTo = currentAppliesTo;
       sliderOwner = ownerKey();
+      // The gesture takes the slider back from the polls.
+      if (sliderFollowsTab) {
+        sliderFollowsTab = false;
+        sliderSynced = true;
+      }
     },
     // The Auto save out keeps the card it drew; the controls are disabled
     // meanwhile, and a gesture already on its way draws nothing.
@@ -435,9 +444,10 @@
     canPreview: () => !autoUpdatePending,
     preview: (percent) => previewGain(percent, sliderAppliesTo),
     save: (percent) => setGain(percent, sliderAppliesTo, sliderOwner),
-    // The next poll draws the slider at the gain content plays, which puts
-    // back the row once the previews stop.
-    cancel: () => { sliderSynced = false; }
+    cancel: () => {
+      sliderFollowsTab = true;
+      sliderSynced = false;
+    }
   });
   document.querySelectorAll('.presets button').forEach((btn) => {
     btn.addEventListener('click', () => {
