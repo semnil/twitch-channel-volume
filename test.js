@@ -13,6 +13,10 @@ process.env.PYTHONIOENCODING = 'utf-8';
 // core/common.js first, as every page loads it ahead of utils.js: its
 // declarations are this realm's globals, which utils.js and its exports read.
 vm.runInThisContext(fs.readFileSync(path.join(__dirname, 'core', 'common.js'), 'utf8'), { filename: 'core/common.js' });
+// core/loudness.js, which the manifest loads ahead of page-bridge.js in the
+// page's world. Its coefficients are what the bridge's chain is held to.
+const LOUDNESS_SOURCE = fs.readFileSync(path.join(__dirname, 'core', 'loudness.js'), 'utf8');
+const loudness = vm.runInNewContext(`${LOUDNESS_SOURCE}\nchannelVolumeLoudness`, {}, { filename: 'core/loudness.js' });
 const u = require('./utils.js');
 // utils' esc writes text into an element and reads the markup back. This realm
 // has no DOM, so it gets the one thing esc reaches for, serialising the way a
@@ -1832,6 +1836,26 @@ function createPopupHarness({
   };
 }
 
+// The measurement core/loudness.js makes is tested in channel-volume-core; the
+// bridge's cases read what it posts against this oracle over arrays.
+function meanSquareToLufs(meanSquare) {
+  if (!Number.isFinite(meanSquare) || meanSquare <= 0) return -Infinity;
+  return -0.691 + 10 * Math.log10(meanSquare);
+}
+
+// BS.1770 gated loudness of a set of gating windows: the absolute gate at -70
+// LUFS, then the relative gate 10 LU under the mean of what passed it.
+function gatedIntegratedLufs(windows) {
+  const toMeanSquare = (lufs) => Math.pow(10, (lufs + 0.691) / 10);
+  const passAbs = windows.filter((ms) => Number.isFinite(ms) && ms >= toMeanSquare(-70));
+  if (passAbs.length === 0) return -Infinity;
+  const meanAbs = passAbs.reduce((sum, ms) => sum + ms, 0) / passAbs.length;
+  const relGate = toMeanSquare(meanSquareToLufs(meanAbs) - 10);
+  const passRel = passAbs.filter((ms) => ms >= relGate);
+  if (passRel.length === 0) return -Infinity;
+  return meanSquareToLufs(passRel.reduce((sum, ms) => sum + ms, 0) / passRel.length);
+}
+
 // BS.1770-4 gates 400ms blocks overlapping by 75%: one window per 100ms
 // sub-block, formed from the four most recent sub-blocks.
 function gatingWindows(subBlocks) {
@@ -1855,7 +1879,7 @@ function assertLufsClose(actual, expected) {
 function expectedIntegrated(subBlocks, seedMeanSquare) {
   const values = gatingWindows(subBlocks);
   if (seedMeanSquare !== undefined) values.unshift(seedMeanSquare);
-  return u.gatedIntegratedLufs(values);
+  return gatedIntegratedLufs(values);
 }
 
 // Saved measurements carry the reference they were taken at.
@@ -2069,6 +2093,8 @@ function createPageBridgeHarness({
     URL,
     window
   });
+  // The two scripts in the order the manifest's MAIN-world entry names them.
+  vm.runInContext(LOUDNESS_SOURCE, context, { filename: scriptUrl.replace(/page-bridge\.js$/, 'core/loudness.js') });
   vm.runInContext(
     fs.readFileSync(path.join(__dirname, 'page-bridge.js'), 'utf8'),
     context,
@@ -2202,154 +2228,6 @@ function createPageBridgeHarness({
   };
 }
 
-// audio-worklet.js runs in the page's AudioContext, where the base class, the
-// sample rate and the registration function are globals the browser provides.
-// The bridge harness above stubs AudioWorkletNode, so nothing there loads this
-// module; this runs the module itself and drives process() by hand.
-function createWorkletHarness({ sampleRate = 48000, processorOptions } = {}) {
-  const posted = [];
-  class AudioWorkletProcessor {
-    constructor() {
-      this.port = { postMessage(message) { posted.push(message); } };
-    }
-  }
-  let registered = null;
-  const context = vm.createContext({
-    AudioWorkletProcessor,
-    sampleRate,
-    registerProcessor(name, ctor) { registered = { name, ctor }; }
-  });
-  vm.runInContext(
-    fs.readFileSync(path.join(__dirname, 'audio-worklet.js'), 'utf8'),
-    context,
-    { filename: 'audio-worklet.js' }
-  );
-  assert.ok(registered, 'the module registered a processor');
-  return {
-    name: registered.name,
-    posted,
-    processor: new registered.ctor(
-      processorOptions === undefined ? undefined : { processorOptions }
-    ),
-    // One render quantum of the channels given, as the browser hands them over.
-    feed(processor, channels) { return processor.process([channels]); }
-  };
-}
-
-// A run of one value, which makes the mean square of the block the value the
-// case can work out by hand.
-function samples(count, value) {
-  return Float32Array.from({ length: count }, () => value);
-}
-
-test('the worklet registers under the name the bridge asks for', () => {
-  const harness = createWorkletHarness();
-  const bridge = fs.readFileSync(path.join(__dirname, 'page-bridge.js'), 'utf8');
-  const asked = bridge.match(/new AudioWorkletNode\(\s*[^,]+,\s*'([^']+)'/);
-  assert.ok(asked, 'page-bridge.js constructs an AudioWorkletNode by name');
-  // Renaming one side alone leaves the extension with no measurement path and
-  // nothing that reads either file on its own would say so.
-  assert.equal(harness.name, asked[1]);
-});
-
-test('the worklet posts one mean square per block of the sample rate', () => {
-  const harness = createWorkletHarness({ sampleRate: 48000 });
-  // 0.1 second at 48000 is 4800 samples.
-  assert.equal(harness.feed(harness.processor, [samples(4799, 0.5)]), true);
-  assert.deepEqual(harness.posted, [], 'nothing until the block is full');
-
-  harness.feed(harness.processor, [samples(1, 0.5)]);
-
-  // Mono counts the one channel on both sides, so each sample carries 2 x 0.25.
-  assert.equal(harness.posted.length, 1);
-  assert.equal(harness.posted[0].samples, 4800);
-  assert.ok(Math.abs(harness.posted[0].ms - 0.5) < 1e-6);
-});
-
-test('the worklet counts the second channel where there is one', () => {
-  const harness = createWorkletHarness({ sampleRate: 48000 });
-  harness.feed(harness.processor, [samples(4800, 0.5), samples(4800, 0)]);
-
-  assert.equal(harness.posted.length, 1);
-  assert.ok(Math.abs(harness.posted[0].ms - 0.25) < 1e-6);
-});
-
-test('the worklet starts the next block empty', () => {
-  const harness = createWorkletHarness({ sampleRate: 48000 });
-  harness.feed(harness.processor, [samples(4800, 0.5)]);
-  harness.feed(harness.processor, [samples(4800, 0)]);
-
-  assert.equal(harness.posted.length, 2);
-  assert.ok(Math.abs(harness.posted[0].ms - 0.5) < 1e-6);
-  assert.equal(harness.posted[1].ms, 0, 'the loud block is not carried into it');
-});
-
-test('the worklet takes the block length from the sample rate it runs at', () => {
-  const harness = createWorkletHarness({ sampleRate: 44100 });
-  harness.feed(harness.processor, [samples(4410, 0.5)]);
-
-  assert.equal(harness.posted.length, 1);
-  assert.equal(harness.posted[0].samples, 4410);
-});
-
-test('the worklet takes the block length the bridge asks for', () => {
-  const harness = createWorkletHarness({ sampleRate: 48000, processorOptions: { blockSec: 0.05 } });
-  harness.feed(harness.processor, [samples(2400, 0.5)]);
-
-  assert.equal(harness.posted.length, 1);
-  assert.equal(harness.posted[0].samples, 2400);
-});
-
-test('the worklet holds a floor under the block length', () => {
-  // 0.0001 second at 48000 is under 5 samples. A block that short would post
-  // ten thousand times a second.
-  const harness = createWorkletHarness({ sampleRate: 48000, processorOptions: { blockSec: 0.0001 } });
-  harness.feed(harness.processor, [samples(64, 0.5)]);
-
-  assert.equal(harness.posted.length, 1);
-  assert.equal(harness.posted[0].samples, 64);
-});
-
-for (const [what, processorOptions] of [
-  ['no options at all', undefined],
-  ['options carrying nothing', {}],
-  ['a block length of zero', { blockSec: 0 }],
-  ['a block length that is not a number', { blockSec: 'a while' }]
-]) {
-  test(`the worklet falls back to a tenth of a second given ${what}`, () => {
-    const harness = createWorkletHarness({ sampleRate: 48000, processorOptions });
-    harness.feed(harness.processor, [samples(4800, 0.5)]);
-
-    assert.equal(harness.posted.length, 1);
-    assert.equal(harness.posted[0].samples, 4800);
-  });
-}
-
-for (const [what, quantum] of [
-  ['no inputs', []],
-  ['an input with no channels', [[]]],
-  ['a channel that is not there', [[undefined]]]
-]) {
-  test(`the worklet stays alive and posts nothing given ${what}`, () => {
-    const harness = createWorkletHarness({ sampleRate: 48000 });
-    assert.equal(harness.processor.process(quantum), true);
-    assert.deepEqual(harness.posted, []);
-  });
-}
-
-test('the worklet keeps what it has when a quantum brings no audio', () => {
-  const harness = createWorkletHarness({ sampleRate: 48000 });
-  harness.feed(harness.processor, [samples(4000, 0.5)]);
-  harness.processor.process([]);
-  harness.feed(harness.processor, [samples(800, 0.5)]);
-
-  // The 4000 samples are still counted: a quantum with nothing in it is not a
-  // reason to throw away the part of the block already measured.
-  assert.equal(harness.posted.length, 1);
-  assert.equal(harness.posted[0].samples, 4800);
-  assert.ok(Math.abs(harness.posted[0].ms - 0.5) < 1e-6);
-});
-
 test('the shared helpers answer for an entry that is not there', () => {
   assert.equal(u.extractAutoGainForKind(null, 'live'), null);
   assert.equal(u.extractAutoGainForKind(undefined, 'vod'), null);
@@ -2457,34 +2335,6 @@ test('an alias is followed only where there is a map to follow it through', () =
     'nor one pointing at something that is not an id');
   assert.equal(u.resolveChannelIdAlias('login:a', { 'login:a': 'login:a' }), 'login:a',
     'nor one pointing at itself');
-});
-
-test('the K-weighting at 48 kHz is the one written down, not one derived again', () => {
-  const at48k = u.kWeightingForSampleRate(48000);
-  assert.equal(at48k.pre, u.K_PRE_48K, 'the coefficients are used as they stand');
-  assert.equal(at48k.rlb, u.K_RLB_48K);
-
-  const at44k1 = u.kWeightingForSampleRate(44100);
-  assert.notEqual(at44k1.pre.b[0], u.K_PRE_48K.b[0],
-    `another rate is designed for that rate (${at44k1.pre.b[0]})`);
-  assert.notEqual(at44k1.rlb.a[1], u.K_RLB_48K.a[1], 'both filters with it');
-
-  // A rate that is not a number is not a rate to design for.
-  assert.equal(u.kWeightingForSampleRate(undefined).pre, u.K_PRE_48K);
-  assert.equal(u.kWeightingForSampleRate('nonsense').pre, u.K_PRE_48K);
-});
-
-test('the gate counts only blocks that are levels', () => {
-  const quiet = Math.pow(10, (u.ABSOLUTE_GATE_LUFS + 0.691) / 10) * 2;
-  assert.equal(u.gatedIntegratedLufs([]), -Infinity, 'nothing measured is no level');
-  assert.equal(u.gatedIntegratedLufs([NaN, 0, -1]), -Infinity, 'nor is nothing usable');
-
-  // A block of infinite power is not a measurement, and counting it would put
-  // the whole reading there.
-  const withInfinity = u.gatedIntegratedLufs([Infinity, quiet, quiet]);
-  const withoutIt = u.gatedIntegratedLufs([quiet, quiet]);
-  assert.ok(Number.isFinite(withInfinity), `the reading stays a number (${withInfinity})`);
-  assert.ok(Math.abs(withInfinity - withoutIt) < 1e-9, 'and is the one the real blocks give');
 });
 
 test('utils loads where there is no module to export to', () => {
@@ -8372,6 +8222,7 @@ const UNHANDLED_REJECTION_DRIVER = [
   'const bridgePath = process.argv[1];',
   'const channelHrefs = JSON.parse(process.argv[2]);',
   'const offHrefs = JSON.parse(process.argv[3]);',
+  'const loudnessPath = process.argv[4];',
   "const SCRIPT_URL = 'chrome-extension://abcdefghijklmnopabcdefghijklmnop/page-bridge.js';",
   'function loadBridge(href) {',
   '  const listeners = {};',
@@ -8396,6 +8247,7 @@ const UNHANDLED_REJECTION_DRIVER = [
   '    document: { querySelectorAll: () => [] },',
   '    setInterval: () => 0, clearInterval() {}',
   '  });',
+  "  vm.runInContext(fs.readFileSync(loudnessPath, 'utf8'), context, { filename: SCRIPT_URL.replace('page-bridge.js', 'core/loudness.js') });",
   "  vm.runInContext(fs.readFileSync(bridgePath, 'utf8'), context, { filename: SCRIPT_URL });",
   "  const makeError = vm.runInContext('(name, message) => (name === \"TypeError\" ? new TypeError(message) : new DOMException(message, name))', context);",
   '  return {',
@@ -8470,7 +8322,8 @@ test('a request that could not be made on a channel page stays out of the error 
 
   const run = spawnSync(process.execPath, [
     '-e', UNHANDLED_REJECTION_DRIVER,
-    path.join(__dirname, 'page-bridge.js'), JSON.stringify(channelHrefs), JSON.stringify(offHrefs)
+    path.join(__dirname, 'page-bridge.js'), JSON.stringify(channelHrefs), JSON.stringify(offHrefs),
+    path.join(__dirname, 'core', 'loudness.js')
   ], { encoding: 'utf8' });
   assert.equal(run.status, 0, run.stderr);
 
@@ -14445,28 +14298,6 @@ test('store screenshot generator draws icons the bundled font lacks', () => {
   '--check runs the self-check before it draws');
 });
 
-test('meanSquareToLufs: known reference', () => {
-  // -0.691 + 10 log10(1.0) = -0.691
-  assert.ok(Math.abs(u.meanSquareToLufs(1.0) - (-0.691)) < 1e-6);
-});
-
-test('meanSquareToLufs: zero / negative → -Inf', () => {
-  assert.equal(u.meanSquareToLufs(0), -Infinity);
-  assert.equal(u.meanSquareToLufs(-0.5), -Infinity);
-});
-
-test('gatedIntegratedLufs: empty / all-silent → -Inf', () => {
-  assert.equal(u.gatedIntegratedLufs([]), -Infinity);
-  assert.equal(u.gatedIntegratedLufs([0, 0]), -Infinity);
-});
-
-test('gatedIntegratedLufs: constant signal close to single-block LUFS', () => {
-  const ms = 1.0;
-  const blocks = Array(50).fill(ms);
-  const result = u.gatedIntegratedLufs(blocks);
-  assert.ok(Math.abs(result - (-0.691)) < 1e-6);
-});
-
 test('page bridge loads the worklet module from its own origin', async () => {
   const harness = createPageBridgeHarness();
   const own = 'chrome-extension://abcdefghijklmnopabcdefghijklmnop/audio-worklet.js';
@@ -14528,25 +14359,6 @@ test('page bridge reads a block only where it is a number', async () => {
     0,
     'and none of it counts as the first block'
   );
-});
-
-test('page bridge keeps the recent blocks, not every block', async () => {
-  // The momentary and short-term readings are the last blocks; a run holds no
-  // more than it reads from, or a long stream grows without end.
-  const harness = createPageBridgeHarness();
-  await harness.startMeasurement();
-  harness.messages.length = 0;
-
-  for (let block = 0; block < 400; block++) harness.emitMeasurementBlock(0.05);
-  const steady = harness.messages.at(-1);
-  assert.ok(Number.isFinite(steady.momentary), `the reading holds up (${steady.momentary})`);
-
-  // Loud blocks now: the momentary reading follows them, so what is kept is
-  // recent rather than everything since the start.
-  for (let block = 0; block < 4; block++) harness.emitMeasurementBlock(1.0);
-  const loud = harness.messages.at(-1);
-  assert.ok(loud.momentary > steady.momentary + 10,
-    `and follows what is playing now (${steady.momentary} to ${loud.momentary})`);
 });
 
 test('page bridge says the ad state moved, not that it was set again', async () => {
@@ -14661,50 +14473,16 @@ test('page bridge weights for the rate the page runs at', async () => {
   await at48k.startMeasurement();
   assert.equal(at48k.iirFilters.length, 2, 'the two K-weighting filters are built');
   const asNumbers = (list) => [...list];
-  assert.deepEqual(asNumbers(at48k.iirFilters[0].feedforward), [...u.K_PRE_48K.b],
+  assert.deepEqual(asNumbers(at48k.iirFilters[0].feedforward), [...loudness.K_PRE_48K.b],
     'the pre-filter is the one written down');
-  assert.deepEqual(asNumbers(at48k.iirFilters[1].feedforward), [...u.K_RLB_48K.b],
+  assert.deepEqual(asNumbers(at48k.iirFilters[1].feedforward), [...loudness.K_RLB_48K.b],
     'and so is the high-pass');
 
   const at44k1 = createPageBridgeHarness({ contextSampleRate: 44100 });
   await at44k1.startMeasurement();
-  assert.notDeepEqual(asNumbers(at44k1.iirFilters[0].feedforward), [...u.K_PRE_48K.b],
+  assert.notDeepEqual(asNumbers(at44k1.iirFilters[0].feedforward), [...loudness.K_PRE_48K.b],
     `another rate is designed for that rate (${JSON.stringify([...at44k1.iirFilters[0].feedforward])})`);
-  assert.notDeepEqual(asNumbers(at44k1.iirFilters[1].feedforward), [...u.K_RLB_48K.b], 'both of them');
-});
-
-test('page bridge reads a block of no power as no level', async () => {
-  const harness = createPageBridgeHarness();
-  await harness.startMeasurement();
-  harness.messages.length = 0;
-
-  for (const ms of [0, -1]) harness.emitMeasurementBlock(ms);
-  const reading = harness.messages.at(-1);
-
-  assert.equal(reading.momentary, -Infinity, `no power is no level (${reading.momentary})`);
-  assert.equal(reading.shortTerm, -Infinity);
-  assert.equal(reading.integrated, -Infinity, 'and nothing is integrated from it');
-});
-
-test('page bridge reports no integrated level until something passes the gate', async () => {
-  // Below the absolute gate there is nothing a programme level could be read
-  // from, and a seed weighted on nothing is worth no windows.
-  const harness = createPageBridgeHarness();
-  await harness.startMeasurement();
-  harness.messages.length = 0;
-
-  const belowTheGate = Math.pow(10, (-70 + 0.691) / 10) / 100;
-  for (let block = 0; block < 8; block++) harness.emitMeasurementBlock(belowTheGate);
-  const quiet = harness.messages.at(-1);
-
-  assert.equal(quiet.integrated, -Infinity,
-    `nothing passes the gate, so there is no integrated level (${quiet.integrated})`);
-  assert.equal(quiet.integratedWindows, 0, `and no windows to weigh one (${quiet.integratedWindows})`);
-
-  for (let block = 0; block < 8; block++) harness.emitMeasurementBlock(0.05);
-  const heard = harness.messages.at(-1);
-  assert.ok(Number.isFinite(heard.integrated), `once something does, there is (${heard.integrated})`);
-  assert.ok(heard.integratedWindows > 0, 'weighed on the windows that passed');
+  assert.notDeepEqual(asNumbers(at44k1.iirFilters[1].feedforward), [...loudness.K_RLB_48K.b], 'both of them');
 });
 
 test('page bridge takes a command only from the page it shares', async () => {
@@ -14835,32 +14613,6 @@ test('page bridge names a video only from the answer, never from the URL it is o
     'the answer outranks the URL');
 });
 
-test('page bridge Integrated LUFS is invariant to gating window order', async () => {
-  async function measure(blocks) {
-    const harness = createPageBridgeHarness();
-    await harness.startMeasurement();
-    harness.messages.length = 0;
-    for (const ms of blocks) harness.emitMeasurementBlock(ms);
-    return harness.messages.at(-1).integrated;
-  }
-
-  // Spaced far enough apart that no window holds both loud sub-blocks, so
-  // swapping them reorders the windows without changing the set.
-  const quiet = 0.02;
-  const forwardBlocks = [quiet, quiet, quiet, 1.0, quiet, quiet, quiet, 0.09, quiet, quiet, quiet];
-  const reverseBlocks = [quiet, quiet, quiet, 0.09, quiet, quiet, quiet, 1.0, quiet, quiet, quiet];
-  const sorted = (list) => gatingWindows(list).slice().sort((a, b) => a - b);
-  assert.deepEqual(sorted(forwardBlocks), sorted(reverseBlocks));
-
-  const forward = await measure(forwardBlocks);
-  const reverse = await measure(reverseBlocks);
-  const expected = expectedIntegrated(forwardBlocks);
-
-  assert.ok(Math.abs(forward - expected) < 1e-12);
-  assert.ok(Math.abs(reverse - expected) < 1e-12);
-  assert.ok(Math.abs(forward - reverse) < 1e-12);
-});
-
 test('page bridge maintains the two-stage Integrated LUFS gate incrementally', async () => {
   const harness = createPageBridgeHarness();
   await harness.startMeasurement();
@@ -14878,7 +14630,7 @@ test('page bridge maintains the two-stage Integrated LUFS gate incrementally', a
   await harness.dispatchCommand('setAdActive', { active: true });
   harness.emitMeasurementBlock(1.0);
   const kept = gatingWindows(blocks).slice(0, -AD_START_ROLLBACK);
-  const expected = u.gatedIntegratedLufs(kept);
+  const expected = gatedIntegratedLufs(kept);
   assertLufsClose(harness.messages.at(-1).integrated, expected);
 
   await harness.dispatchCommand('setAdActive', { active: false });
@@ -14888,7 +14640,7 @@ test('page bridge maintains the two-stage Integrated LUFS gate incrementally', a
   for (let i = 0; i < 7; i++) harness.emitMeasurementBlock(0.25);
   assert.equal(harness.messages.at(-1).integrated, -Infinity);
   harness.emitMeasurementBlock(0.25);
-  assert.equal(harness.messages.at(-1).integrated, u.meanSquareToLufs(0.25));
+  assert.equal(harness.messages.at(-1).integrated, meanSquareToLufs(0.25));
 });
 
 test('page bridge drops exactly the windows that span the end of an ad', async () => {
@@ -14904,7 +14656,7 @@ test('page bridge drops exactly the windows that span the end of an ad', async (
   await harness.dispatchCommand('setAdActive', { active: true });
   const kept = gatingWindows(content).slice(0, -AD_START_ROLLBACK);
   assert.ok(kept.length > 0);
-  const beforeAd = u.gatedIntegratedLufs(kept);
+  const beforeAd = gatedIntegratedLufs(kept);
   harness.emitMeasurementBlock(1.0);
   assert.ok(Math.abs(harness.messages.at(-1).integrated - beforeAd) < 1e-12);
 
@@ -14918,7 +14670,7 @@ test('page bridge drops exactly the windows that span the end of an ad', async (
 
   // The fifth window is clear of the boundary and counts again.
   harness.emitMeasurementBlock(1.0);
-  const expected = u.gatedIntegratedLufs([...kept, 1.0]);
+  const expected = gatedIntegratedLufs([...kept, 1.0]);
   assert.ok(Math.abs(expected - beforeAd) > 0.1);
   assert.ok(Math.abs(harness.messages.at(-1).integrated - expected) < 1e-12);
 });
@@ -14946,7 +14698,7 @@ test('page bridge removes the windows appended before an ad was detected', async
   const emittedAll = [...content, ...Array(adBlocks).fill(1.0)];
   const kept = gatingWindows(emittedAll).slice(0, -AD_START_ROLLBACK);
   assert.equal(kept.length, gatingWindows(emittedAll).length - AD_START_ROLLBACK);
-  assertLufsClose(harness.messages.at(-1).integrated, u.gatedIntegratedLufs(kept));
+  assertLufsClose(harness.messages.at(-1).integrated, gatedIntegratedLufs(kept));
 
   // The removed windows are reported so their level can be read.
   const rollback = harness.logs.filter((entry) => entry[0] === '[TCV] ad start rollback');
@@ -14956,7 +14708,7 @@ test('page bridge removes the windows appended before an ad was detected', async
   // Oldest first, and the values are the windows that were actually removed.
   const removedWindows = gatingWindows(emittedAll)
     .slice(-AD_START_ROLLBACK)
-    .map((window) => Number(u.meanSquareToLufs(window).toFixed(2)));
+    .map((window) => Number(meanSquareToLufs(window).toFixed(2)));
   // The log object comes from the script's realm, so copy before comparing.
   assert.deepEqual(Array.from(rollback[0][1].windowLufs), removedWindows);
 
@@ -14985,7 +14737,7 @@ test('page bridge starts a fresh gating window after the video is replaced', asy
   assert.equal(harness.messages.at(-1).integrated, -Infinity);
 
   harness.emitMeasurementBlock(0.01);
-  assert.ok(Math.abs(harness.messages.at(-1).integrated - u.meanSquareToLufs(0.01)) < 1e-12);
+  assert.ok(Math.abs(harness.messages.at(-1).integrated - meanSquareToLufs(0.01)) < 1e-12);
 });
 
 test('page bridge does not take the recent content level out with the ad', async () => {
@@ -15004,7 +14756,7 @@ test('page bridge does not take the recent content level out with the ad', async
 
   // Only the windows holding ad audio go. Reaching further back would take the
   // content that set the gate's population with them.
-  const expected = u.gatedIntegratedLufs(gatingWindows(emitted).slice(0, -AD_START_ROLLBACK));
+  const expected = gatedIntegratedLufs(gatingWindows(emitted).slice(0, -AD_START_ROLLBACK));
   assert.ok(expected > -20, 'the recent loud content drives the result');
   assertLufsClose(harness.messages.at(-1).integrated, expected);
 });
@@ -15019,11 +14771,11 @@ test('page bridge rolls back after the ring buffer has started evicting', async 
 
   for (let i = 0; i < AD_START_ROLLBACK; i++) harness.emitMeasurementBlock(1.0);
   const contaminated = harness.messages.at(-1).integrated;
-  assert.ok(contaminated > u.meanSquareToLufs(quiet) + 0.03);
+  assert.ok(contaminated > meanSquareToLufs(quiet) + 0.03);
 
   await harness.dispatchCommand('setAdActive', { active: true });
   harness.emitMeasurementBlock(1.0);
-  assert.ok(Math.abs(harness.messages.at(-1).integrated - u.meanSquareToLufs(quiet)) < 1e-12);
+  assert.ok(Math.abs(harness.messages.at(-1).integrated - meanSquareToLufs(quiet)) < 1e-12);
 });
 
 test('page bridge counts rollback budget from the last reset only', async () => {
@@ -15087,7 +14839,7 @@ test('page bridge keeps a zero player volume out of the measurement', async () =
   // every later value reads back as -Infinity.
   harness.setVolume(1);
   for (let i = 0; i < 8; i++) harness.emitMeasurementBlock(0.01);
-  assert.ok(Math.abs(harness.messages.at(-1).integrated - u.meanSquareToLufs(0.01)) < 1e-9);
+  assert.ok(Math.abs(harness.messages.at(-1).integrated - meanSquareToLufs(0.01)) < 1e-9);
 });
 
 test('page bridge holds the boundary skip open across an ad', async () => {
@@ -15130,8 +14882,8 @@ test('page bridge references the measurement to player volume 1.0', async () => 
   for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(ms);
   // Halving the player volume quarters the tapped mean square, so the
   // reported value is the same as at volume 1.0.
-  assert.ok(Math.abs(harness.messages.at(-1).integrated - u.meanSquareToLufs(ms / 0.25)) < 1e-12);
-  assert.ok(Math.abs(harness.messages.at(-1).momentary - u.meanSquareToLufs(ms / 0.25)) < 1e-12);
+  assert.ok(Math.abs(harness.messages.at(-1).integrated - meanSquareToLufs(ms / 0.25)) < 1e-12);
+  assert.ok(Math.abs(harness.messages.at(-1).momentary - meanSquareToLufs(ms / 0.25)) < 1e-12);
 });
 
 test('page bridge reports a boundary once, not once per volume step', async () => {
@@ -15201,7 +14953,7 @@ test('page bridge drops the windows that span a volume change', async () => {
 
   for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(0.01);
   const beforeChange = harness.messages.at(-1).integrated;
-  assert.ok(Math.abs(beforeChange - u.meanSquareToLufs(0.01)) < 1e-12);
+  assert.ok(Math.abs(beforeChange - meanSquareToLufs(0.01)) < 1e-12);
 
   harness.setVolume(0.5);
   for (let i = 0; i < 4; i++) {
@@ -15210,274 +14962,8 @@ test('page bridge drops the windows that span a volume change', async () => {
   }
 
   harness.emitMeasurementBlock(0.01);
-  const expected = u.gatedIntegratedLufs([0.01, 0.04]);
+  const expected = gatedIntegratedLufs([0.01, 0.04]);
   assert.ok(Math.abs(harness.messages.at(-1).integrated - expected) < 1e-12);
-});
-
-test('page bridge applies the Integrated absolute boundary and re-evaluates the relative gate', async () => {
-  const harness = createPageBridgeHarness();
-  await harness.startMeasurement();
-  harness.messages.length = 0;
-  const absoluteGateMeanSquare = Math.pow(10, (-70 + 0.691) / 10);
-
-  // A window one ULP below the absolute gate is excluded; NaN never reaches it.
-  harness.emitMeasurementBlock(NaN);
-  for (let i = 0; i < 4; i++) {
-    harness.emitMeasurementBlock(absoluteGateMeanSquare * (1 - 1e-6));
-  }
-  let measurements = harness.messages.filter((message) => message.event === 'lufs');
-  assert.equal(measurements.length, 4);
-  assert.equal(measurements.at(-1).integrated, -Infinity);
-
-  // A window exactly at the gate is kept.
-  await harness.dispatchCommand('resetMeasurement');
-  harness.messages.length = 0;
-  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(absoluteGateMeanSquare);
-  assert.ok(Math.abs(harness.messages.at(-1).integrated - (-70)) < 1e-12);
-
-  await harness.dispatchCommand('resetMeasurement');
-  harness.messages.length = 0;
-  const relativeBlocks = [1.0, 1.0, 1.0, 1.0, 0.1, 0.1, 0.1, 0.1, 0.055, 0.055, 0.055, 0.055];
-  for (const ms of relativeBlocks) harness.emitMeasurementBlock(ms);
-
-  measurements = harness.messages.filter((message) => message.event === 'lufs');
-  for (let i = 0; i < relativeBlocks.length; i++) {
-    assertLufsClose(measurements[i].integrated, expectedIntegrated(relativeBlocks.slice(0, i + 1)));
-  }
-  // The relative gate moved as the quiet windows arrived: the last window sits
-  // below it and is excluded from the reported value.
-  const windows = gatingWindows(relativeBlocks);
-  assert.ok(u.gatedIntegratedLufs(windows) > u.meanSquareToLufs(windows.at(-1)));
-});
-
-test('page bridge indexed gate matches the array oracle across varied blocks', async () => {
-  const harness = createPageBridgeHarness();
-  await harness.startMeasurement();
-  harness.messages.length = 0;
-  const blocks = [];
-  let randomState = 0x12345678;
-
-  for (let i = 0; i < 200; i++) {
-    randomState = (Math.imul(randomState, 1664525) + 1013904223) >>> 0;
-    const lufs = -80 + (randomState / 0xffffffff) * 80;
-    const ms = Math.pow(10, (lufs + 0.691) / 10);
-    blocks.push(ms);
-    harness.emitMeasurementBlock(ms);
-    const actual = harness.messages.at(-1).integrated;
-    const expected = expectedIntegrated(blocks);
-    if (expected === -Infinity) assert.equal(actual, -Infinity);
-    else assert.ok(Math.abs(actual - expected) < 1e-10);
-  }
-});
-
-test('page bridge indexed gate evicts the oldest block at the retained-window limit', async () => {
-  const harness = createPageBridgeHarness();
-  await harness.startMeasurement();
-  harness.messages.length = 0;
-  const maximumWindows = 60 * 60 * 10;
-  const emitted = [];
-  let randomState = 0x87654321;
-
-  for (let i = 0; i < 128; i++) {
-    randomState = (Math.imul(randomState, 1103515245) + 12345) >>> 0;
-    const ms = 0.01 + randomState / 0xffffffff;
-    emitted.push(ms);
-    harness.emitMeasurementBlock(ms);
-  }
-  for (let i = 0; i < maximumWindows; i++) {
-    const ms = 0.01 + i / maximumWindows;
-    emitted.push(ms);
-    harness.emitMeasurementBlock(ms);
-    if (harness.messages.length > 1000) harness.messages.length = 0;
-  }
-
-  const actual = harness.messages.at(-1).integrated;
-  const expected = u.gatedIntegratedLufs(gatingWindows(emitted).slice(-maximumWindows));
-  assert.ok(Math.abs(actual - expected) < 1e-10);
-});
-
-// A seed that weighs one window is outweighed by the first second of the new
-// session, which is what moved the Auto gain off the level it was applying.
-test('page bridge weighs a saved LUFS by the windows it was measured over', async () => {
-  const savedLufs = -20;
-  const nextMeanSquare = 0.1;
-  const savedMeanSquare = Math.pow(10, (savedLufs + 0.691) / 10);
-
-  // [count stored with the value, windows the seed weighs, windows reported back]
-  for (const [savedWindows, expectedSeed, expectedReported] of [
-    [undefined, 300, 1], [1, 300, 2], [299, 300, 300], [300, 300, 301],
-    [1200, 1200, 1201], [1800, 1800, 1800], [36000, 1800, 1800]
-  ]) {
-    const harness = createPageBridgeHarness();
-    await harness.startMeasurement();
-    harness.messages.length = 0;
-    await harness.dispatchCommand('resetMeasurement', {
-      initialIntegratedLufs: savedLufs,
-      ...(savedWindows === undefined ? {} : { initialIntegratedWindows: savedWindows })
-    });
-    for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(nextMeanSquare);
-
-    const expected = u.meanSquareToLufs(
-      (savedMeanSquare * expectedSeed + nextMeanSquare) / (expectedSeed + 1)
-    );
-    const posted = harness.messages.at(-1);
-    assert.ok(Math.abs(posted.integrated - expected) < 1e-12, `seed of ${savedWindows}`);
-    // The floor is not a measurement, so it is not reported as one.
-    assert.equal(posted.integratedWindows, expectedReported, `seed of ${savedWindows}`);
-  }
-});
-
-test('page bridge ignores a saved window count it cannot read', async () => {
-  const savedLufs = -20;
-  const savedMeanSquare = Math.pow(10, (savedLufs + 0.691) / 10);
-  const expected = u.meanSquareToLufs((savedMeanSquare * 300 + 0.1) / 301);
-
-  for (const initialIntegratedWindows of [NaN, -5, 0, 1.5, '600', Infinity, null, {}]) {
-    const harness = createPageBridgeHarness();
-    await harness.startMeasurement();
-    harness.messages.length = 0;
-    await harness.dispatchCommand('resetMeasurement', {
-      initialIntegratedLufs: savedLufs,
-      initialIntegratedWindows
-    });
-    for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(0.1);
-
-    const posted = harness.messages.at(-1);
-    // A count that says nothing leaves the seed at the floor, still seeded.
-    assert.ok(Math.abs(posted.integrated - expected) < 1e-12, String(initialIntegratedWindows));
-    assert.equal(posted.integratedWindows, 1, String(initialIntegratedWindows));
-  }
-});
-
-// Without the cap the seed loop runs once per claimed window, so a count this
-// size does not come back at all.
-test('page bridge holds the seed to what a seed may weigh', { timeout: 5000 }, async () => {
-  const harness = createPageBridgeHarness();
-  await harness.startMeasurement();
-  harness.messages.length = 0;
-  await harness.dispatchCommand('resetMeasurement', {
-    initialIntegratedLufs: -20,
-    initialIntegratedWindows: Number.MAX_SAFE_INTEGER
-  });
-  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(0.1);
-
-  const savedMeanSquare = Math.pow(10, (-20 + 0.691) / 10);
-  const capped = 3 * 60 * 10;
-  const expected = u.meanSquareToLufs((savedMeanSquare * capped + 0.1) / (capped + 1));
-  assert.ok(Math.abs(harness.messages.at(-1).integrated - expected) < 1e-12);
-  assert.equal(harness.messages.at(-1).integratedWindows, capped);
-});
-
-test('page bridge lets new windows displace a seed at the cap', async () => {
-  const harness = createPageBridgeHarness();
-  await harness.startMeasurement();
-  harness.messages.length = 0;
-  const capped = 3 * 60 * 10;
-  // Within the relative gate of the audio that follows, so the seed stays in
-  // the value and the count stays at what it came in with.
-  await harness.dispatchCommand('resetMeasurement', {
-    initialIntegratedLufs: -12,
-    initialIntegratedWindows: capped
-  });
-  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(0.5);
-  const first = harness.messages.at(-1).integrated;
-  for (let i = 0; i < 20; i++) harness.emitMeasurementBlock(0.5);
-  const later = harness.messages.at(-1);
-
-  assert.equal(later.integratedWindows, capped);
-  assert.ok(later.integrated > first, `${later.integrated} vs ${first}`);
-});
-
-// The index keys on the level, so audio holding the level the seed sits at
-// lands on the seed's own key. Which entries are the seed's is a matter of
-// where they came from, not of what they are worth.
-test('page bridge counts audio that holds the level the seed sits at', async () => {
-  const harness = createPageBridgeHarness();
-  await harness.startMeasurement();
-  harness.messages.length = 0;
-  const level = Math.pow(10, (-18 + 0.691) / 10);
-  await harness.dispatchCommand('resetMeasurement', {
-    initialIntegratedLufs: -18,
-    initialIntegratedWindows: 100
-  });
-
-  // Sixty seconds of it: 597 windows, each landing on the seed's key.
-  for (let i = 0; i < 600; i++) harness.emitMeasurementBlock(level);
-
-  const posted = harness.messages.at(-1);
-  assert.ok(Math.abs(posted.integrated - u.meanSquareToLufs(level)) < 1e-12);
-  assert.equal(posted.integratedWindows, 100 + 597);
-});
-
-// The ring evicts what it can no longer hold, and silence evicts without
-// putting anything in the index in return. What the value stands on shrinks
-// with it, and a count kept alongside the index rather than read from it does
-// not.
-test('page bridge reports what the index holds after the ring turns over', async () => {
-  const harness = createPageBridgeHarness();
-  await harness.startMeasurement();
-  harness.messages.length = 0;
-  const ring = 60 * 60 * 10;
-  const loud = Math.pow(10, (-18 + 0.691) / 10);
-  // A claim under the floor again, so what the ring gives back is visible in
-  // the count rather than cancelling against the claim.
-  await harness.dispatchCommand('resetMeasurement', {
-    initialIntegratedLufs: -18,
-    initialIntegratedWindows: 100
-  });
-
-  for (let i = 0; i < ring; i++) harness.emitMeasurementBlock(loud);
-  harness.messages.length = 0;
-  // Silence reaches the ring but not the index, so it pushes the index empty.
-  for (let i = 0; i < ring; i++) harness.emitMeasurementBlock(0);
-  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(loud);
-
-  assert.equal(harness.messages.at(-1).integratedWindows, 4);
-});
-
-// A seed the relative gate leaves out carried none of the value, so it is not
-// part of what the value stands on either.
-test('page bridge stops counting a seed the relative gate left out', async () => {
-  const harness = createPageBridgeHarness();
-  await harness.startMeasurement();
-  harness.messages.length = 0;
-  const seedMeanSquare = Math.pow(10, (-33 + 0.691) / 10);
-  const loudMeanSquare = Math.pow(10, (-18 + 0.691) / 10);
-  // A claim under the floor, so the seed's own entries outnumber what it says
-  // the value stands on: what the gate does with them is then visible.
-  await harness.dispatchCommand('resetMeasurement', {
-    initialIntegratedLufs: -33,
-    initialIntegratedWindows: 100
-  });
-
-  // While the seed still holds the gate up, it is inside the value.
-  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(loudMeanSquare);
-  assert.equal(harness.messages.at(-1).integratedWindows, 101);
-
-  // Thirty seconds of audio 15 dB above it puts the seed under the gate.
-  for (let i = 0; i < 296; i++) harness.emitMeasurementBlock(loudMeanSquare);
-  const posted = harness.messages.at(-1);
-  assert.ok(Math.abs(posted.integrated - u.meanSquareToLufs(loudMeanSquare)) < 1e-12);
-  assert.equal(posted.integratedWindows, 297);
-  assert.ok(seedMeanSquare < loudMeanSquare);
-});
-
-test('page bridge counts the windows behind the value it posts', async () => {
-  const harness = createPageBridgeHarness();
-  await harness.startMeasurement();
-  harness.messages.length = 0;
-  // Three blocks make no gating window, so nothing stands behind Integrated.
-  for (let i = 0; i < 3; i++) harness.emitMeasurementBlock(0.1);
-  assert.equal(harness.messages.at(-1).integrated, -Infinity);
-  assert.equal(harness.messages.at(-1).integratedWindows, 0);
-
-  for (let i = 0; i < 10; i++) harness.emitMeasurementBlock(0.1);
-  assert.equal(harness.messages.at(-1).integratedWindows, 10);
-
-  // Windows under the absolute gate are not among them: of the 8 that silence
-  // makes, the 3 still holding audio from the blocks before it are counted.
-  for (let i = 0; i < 8; i++) harness.emitMeasurementBlock(0);
-  assert.equal(harness.messages.at(-1).integratedWindows, 13);
 });
 
 test('page bridge keeps an ad rollback out of the windows a seed stands for', async () => {
@@ -15936,49 +15422,6 @@ test('page bridge stamps posted measurements with the reset epoch', async () => 
   assert.equal(harness.messages.at(-1).epoch, 7);
 });
 
-test('page bridge ignores invalid saved LUFS initial values', async () => {
-  const invalidValues = [
-    undefined, null, '-20', NaN, Infinity, -Infinity, -70 - 1e-6, Number.MAX_VALUE
-  ];
-  for (const initialIntegratedLufs of invalidValues) {
-    const harness = createPageBridgeHarness();
-    await harness.startMeasurement();
-    harness.messages.length = 0;
-    await harness.dispatchCommand('resetMeasurement', { initialIntegratedLufs });
-    for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(0.25);
-    assert.equal(harness.messages.at(-1).integrated, u.meanSquareToLufs(0.25));
-  }
-
-  const boundaryHarness = createPageBridgeHarness();
-  await boundaryHarness.startMeasurement();
-  boundaryHarness.messages.length = 0;
-  await boundaryHarness.dispatchCommand('resetMeasurement', { initialIntegratedLufs: -70 });
-  for (let i = 0; i < 4; i++) boundaryHarness.emitMeasurementBlock(0);
-  assert.ok(Math.abs(boundaryHarness.messages.at(-1).integrated - (-70)) < 1e-12);
-});
-
-test('kWeightingForSampleRate: returns 48kHz coefficients as-is', () => {
-  const k = u.kWeightingForSampleRate(48000);
-  assert.deepEqual(k.pre.b, u.K_PRE_48K.b);
-  assert.deepEqual(k.pre.a, u.K_PRE_48K.a);
-  assert.deepEqual(k.rlb.b, u.K_RLB_48K.b);
-  assert.deepEqual(k.rlb.a, u.K_RLB_48K.a);
-});
-
-test('kWeightingForSampleRate: 44.1k DC gain matches 48k DC gain', () => {
-  // K-weighting filters are normalized; DC gain should be near identical.
-  const at48 = u.kWeightingForSampleRate(48000);
-  const at441 = u.kWeightingForSampleRate(44100);
-  const dcGain = ({ b, a }) => (b[0] + b[1] + b[2]) / (a[0] + a[1] + a[2]);
-  const pre48 = dcGain(at48.pre);
-  const pre441 = dcGain(at441.pre);
-  assert.ok(Math.abs(pre48 - pre441) < 1e-3, `pre dc gain mismatch ${pre48} vs ${pre441}`);
-  const rlb48 = dcGain(at48.rlb);
-  const rlb441 = dcGain(at441.rlb);
-  // RLB is a high-pass, DC gain is near zero for both
-  assert.ok(Math.abs(rlb48 - rlb441) < 1e-3);
-});
-
 test('page bridge listens to the workers the page creates', () => {
   const harness = createPageBridgeHarness();
   const url = 'blob:https://www.twitch.tv/player';
@@ -16003,7 +15446,7 @@ test('page bridge takes the break from the cue the player posts', async () => {
   assert.equal(harness.messages.filter((message) => message.event === 'ad').at(-1).active, true);
   // The cue arrived with the ad's first audio, so one window held it.
   const kept = gatingWindows(content).slice(0, -1);
-  const duringAd = u.gatedIntegratedLufs(kept);
+  const duringAd = gatedIntegratedLufs(kept);
   for (let i = 0; i < 20; i++) harness.emitMeasurementBlock(1.0);
   assertLufsClose(harness.messages.at(-1).integrated, duringAd);
 
@@ -16056,7 +15499,7 @@ test('page bridge removes the windows appended between the ad and its cue', asyn
   assert.equal(rollback[0][1].removed, 4);
   harness.emitMeasurementBlock(1.0);
   const kept = gatingWindows(content).slice(0, -4);
-  assertLufsClose(harness.messages.at(-1).integrated, u.gatedIntegratedLufs(kept));
+  assertLufsClose(harness.messages.at(-1).integrated, gatedIntegratedLufs(kept));
 });
 
 test('page bridge asks the rollback only for the windows the gate took', async () => {
@@ -16087,8 +15530,8 @@ test('page bridge asks the rollback only for the windows the gate took', async (
   assert.equal(rollback[0][1].removed, 1);
 
   harness.emitMeasurementBlock(1.0);
-  const kept = u.gatedIntegratedLufs(windows.slice(0, -1));
-  const overRemoved = u.gatedIntegratedLufs(windows.slice(0, -4));
+  const kept = gatedIntegratedLufs(windows.slice(0, -1));
+  const overRemoved = gatedIntegratedLufs(windows.slice(0, -4));
   assert.ok(kept - overRemoved > 10, `${kept} vs ${overRemoved}`);
   assertLufsClose(harness.messages.at(-1).integrated, kept);
 });
@@ -16118,8 +15561,8 @@ test('page bridge counts only the skipped windows the rollback reaches', async (
   assert.equal(rollback[0][1].removed, 2);
 
   harness.emitMeasurementBlock(1.0);
-  const kept = u.gatedIntegratedLufs(windows);
-  const adLeftIn = u.gatedIntegratedLufs([...windows, 1.0]);
+  const kept = gatedIntegratedLufs(windows);
+  const adLeftIn = gatedIntegratedLufs([...windows, 1.0]);
   assert.ok(adLeftIn - kept > 3, `${kept} vs ${adLeftIn}`);
   assertLufsClose(harness.messages.at(-1).integrated, kept);
 });
@@ -16152,7 +15595,7 @@ test('page bridge counts a span it fully covered even with nothing to remove', a
   assert.equal(rollback[0][1].exhausted, true);
 
   harness.emitMeasurementBlock(1.0);
-  assertLufsClose(harness.messages.at(-1).integrated, u.gatedIntegratedLufs(windows));
+  assertLufsClose(harness.messages.at(-1).integrated, gatedIntegratedLufs(windows));
 });
 
 // A slider drag re-arms the boundary skip on every block, so every window over
@@ -16195,8 +15638,8 @@ test('page bridge counts every window a long drag kept out of the ring', async (
 
     // Only the window the ad's own audio reached goes; the one before it is
     // the level the gate's population rests on.
-    const kept = u.gatedIntegratedLufs(windows.slice(0, -1));
-    const overRemoved = u.gatedIntegratedLufs(windows.slice(0, -2));
+    const kept = gatedIntegratedLufs(windows.slice(0, -1));
+    const overRemoved = gatedIntegratedLufs(windows.slice(0, -2));
     assert.ok(kept - overRemoved > 1, `${kept} vs ${overRemoved}`);
     assertLufsClose(harness.messages.at(-1).integrated, kept);
   }
@@ -16461,7 +15904,7 @@ test('page bridge measures on when the Worker constructor cannot be wrapped', as
   // No cue can arrive, so the indicator is what decides, and the measurement
   // runs as it always did.
   for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(0.25);
-  assertLufsClose(harness.messages.at(-1).integrated, u.meanSquareToLufs(0.25));
+  assertLufsClose(harness.messages.at(-1).integrated, meanSquareToLufs(0.25));
   await harness.dispatchCommand('setAdActive', { active: true });
   assert.equal(harness.messages.filter((message) => message.event === 'ad').at(-1).active, true);
 });
@@ -17616,28 +17059,6 @@ test('init is answered once the worklet module is in, not before', async () => {
   assert.equal(harness.workletModules.length, 1);
 });
 
-test('the seed keeps its share of the window count as the ring turns over', async () => {
-  const harness = createPageBridgeHarness();
-  await harness.startMeasurement();
-  // A stored value that stands on fewer windows than the seed floor: the
-  // padding is laid down but only the count it arrived with is reported.
-  await harness.dispatchCommand('resetMeasurement', {
-    epoch: 1,
-    initialIntegratedLufs: -20,
-    initialIntegratedWindows: 100
-  });
-  // An hour of audio below the absolute gate: it fills the ring without
-  // entering the index, so the seed is what the gate still holds when the
-  // oldest entry starts falling out.
-  const quiet = 1e-9;
-  for (let i = 0; i < 35_899; i++) harness.emitMeasurementBlock(quiet);
-  harness.messages.length = 0;
-  harness.emitMeasurementBlock(quiet);
-  const [lufs] = harness.messages.filter((message) => message.event === 'lufs');
-  assert.ok(lufs, 'a reading is reported');
-  assert.equal(lufs.integratedWindows, 100);
-});
-
 test('an element that carries its media without naming it is still refused out loud', async () => {
   const harness = createPageBridgeHarness();
   // The page's only element takes its media from a source child, so the src
@@ -17803,83 +17224,6 @@ test('the row a merge lands on is named by its id where the sender knew no name'
     channel: { name: '', login: '', url: '' }
   });
   assert.equal(store.stored.channelVolumes['55'].name, '55');
-});
-
-// ── The gate's index ───────────────────────────────────────────────────────
-
-// page-bridge runs as an IIFE, so the tree it keeps is not reachable from the
-// harness. The functions are lifted out of the source text instead, which is
-// the source the extension ships.
-function gateIndex() {
-  const source = fs.readFileSync(path.join(__dirname, 'page-bridge.js'), 'utf8');
-  const take = (name) => {
-    const at = source.indexOf(`function ${name}(`);
-    assert.ok(at >= 0, `page-bridge.js declares ${name}`);
-    let depth = 0;
-    for (let i = source.indexOf('{', at); i < source.length; i++) {
-      if (source[i] === '{') depth += 1;
-      else if (source[i] === '}' && --depth === 0) return source.slice(at, i + 1);
-    }
-    throw new Error(`${name} does not close`);
-  };
-  const names = [
-    'treeHeight', 'treeCount', 'treeSum', 'updateTreeNode', 'rotateTreeLeft',
-    'rotateTreeRight', 'balanceTree', 'insertTreeValue', 'removeTreeValue'
-  ];
-  const body = names.map(take).join('\n');
-  return new Function(`${body}; return { insertTreeValue, removeTreeValue, treeCount };`)();
-}
-
-test('the index holds a window for as long as the ring does, and no longer', () => {
-  // Every window a different level, the ring evicting the oldest once it is
-  // full — an hour of a broadcast whose level keeps moving. What the reported
-  // count says is the same either way, so the invariant that has to be checked
-  // is the one the count cannot see: the index holds what the ring holds, and
-  // its height stays inside the AVL bound.
-  const { insertTreeValue, removeTreeValue, treeCount } = gateIndex();
-  const RING = 500;
-  let root = null;
-  const held = [];
-  for (let i = 0; i < 5000; i++) {
-    const meanSquare = 1e-3 * (1 + i * 1e-6);
-    root = insertTreeValue(root, meanSquare);
-    held.push(meanSquare);
-    if (held.length > RING) root = removeTreeValue(root, held.shift());
-  }
-  const liveNodes = (node) => (node ? 1 + liveNodes(node.left) + liveNodes(node.right) : 0);
-  assert.equal(treeCount(root), RING);
-  assert.equal(liveNodes(root), RING, 'a window the ring evicted leaves the index too');
-  assert.ok(
-    root.height <= Math.ceil(1.44 * Math.log2(RING + 2)),
-    `the index stays balanced (height ${root.height} over ${RING} windows)`
-  );
-});
-
-test('the index rebalances whichever way the levels lean', () => {
-  // A broadcast whose level falls leans the index one way and one whose level
-  // rises leans it the other, and a level that lands between two it already
-  // holds is the case a single rotation does not answer. Three values reach
-  // each of those; the height they leave is what says the rotation was the
-  // right one.
-  const { insertTreeValue, removeTreeValue } = gateIndex();
-  const grow = (values) => values.reduce((root, v) => insertTreeValue(root, v), null);
-  assert.equal(grow([30, 10, 20]).height, 2, 'a level between two lower ones');
-  assert.equal(grow([10, 30, 20]).height, 2, 'a level between two higher ones');
-
-  // And falling levels, which lean it the same way for a thousand windows.
-  const RING = 500;
-  let root = null;
-  const held = [];
-  for (let i = 5000; i > 0; i--) {
-    const meanSquare = 1e-3 * (1 + i * 1e-6);
-    root = insertTreeValue(root, meanSquare);
-    held.push(meanSquare);
-    if (held.length > RING) root = removeTreeValue(root, held.shift());
-  }
-  assert.ok(
-    root.height <= Math.ceil(1.44 * Math.log2(RING + 2)),
-    `a falling level leaves the index balanced (height ${root.height})`
-  );
 });
 
 // ── The mutation sweep's own record ────────────────────────────────────────

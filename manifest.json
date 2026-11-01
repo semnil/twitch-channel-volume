@@ -22,7 +22,7 @@
         "*://*.twitch.tv/*",
         "*://clips.twitch.tv/*"
       ],
-      "js": ["page-bridge.js"],
+      "js": ["core/loudness.js", "page-bridge.js"],
       "run_at": "document_start",
       "world": "MAIN"
     }

@@ -12,6 +12,8 @@
 /tools/mutation/bail.mjs text eol=lf
 /tools/mutation/sweep-all.sh text eol=lf
 /tools/mutation/sweep.mjs text eol=lf
+/audio-worklet.js text eol=lf
+/core/loudness.js text eol=lf
 /.github/workflows/release.yaml text eol=lf
 /.github/workflows/tag-release.yaml text eol=lf
 /tools/check-tag.sh text eol=lf

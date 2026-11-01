@@ -1,4 +1,4 @@
-// audio-worklet.js — Loaded by page-bridge.js into the page's AudioContext.
+// audio-worklet.js — Loaded into the AudioContext the extension measures with.
 // Accumulates K-weighted mean-square per fixed-length sub-block and posts
 // values to the main thread, which then forms 400ms / 3s windows.
 

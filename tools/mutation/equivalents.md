@@ -22,77 +22,47 @@ it does not find standing.
 
 ## page-bridge.js
 
-`kForSampleRate`'s shortcut for the rate the coefficients were designed at.
-Measured: `redesignBiquad(K_PRE_48K, 48000, 48000)` is a bilinear round trip
-that gives back the input doubles, so the shortcut and the redesign are the same
-numbers.
-
-- `page-bridge.js:62` a guard is dropped ×1 — if (Math.abs(sr - REF_RATE) < 1) return { pre: K_PRE_48K, rlb: K_RLB_48K
-
-The balanced tree's empty-node exits. `treeHeight` and `treeCount` answer 0 for
-a node that is not there, and a walk that reaches one returns what the guard
-returns, so the exits save the walk rather than change it.
-
-- `page-bridge.js:187` a guard is dropped ×1 — if (!node) return null;
-- `page-bridge.js:224` a guard is dropped ×1 — if (!node) return null;
-- `page-bridge.js:229` a guard is dropped ×1 — if (!node.left) return node.right;
-
-The gate's empty-set exits. An empty mean is `NaN` and `msToLufs(NaN)` is
-`-Infinity`, which is the value the guards return; `removeTreeValue` on a value
-the tree does not hold is a no-op.
-
-- `page-bridge.js:335` a guard is dropped ×1 — if (list.length === 0) return -Infinity;
-- `page-bridge.js:347` a guard is dropped ×1 — if (absoluteGatedCount === 0) return { lufs: -Infinity, windows: 0 };
-- `page-bridge.js:351` a guard is dropped ×1 — if (gated.count === 0) return { lufs: -Infinity, windows: 0 };
-- `page-bridge.js:377` a guard is always taken ×1 — if (ms >= ABSOLUTE_GATE_MEAN_SQUARE) {
-
 `buildMeasurementChain`'s three-way check. Its one caller is inside
 `if (workletReady)`, it is called once per attach, and `sourceNode` is assigned
 two lines before the call — every clause is backstopped.
 
-- `page-bridge.js:466` a guard is dropped ×1 — if (!workletReady || workletNode || !sourceNode) return;
-- `page-bridge.js:466` || becomes && ×2 — ||
+- `page-bridge.js:183` a guard is dropped ×1 — if (!workletReady || workletNode || !sourceNode) return;
+- `page-bridge.js:183` || becomes && ×2 — ||
 
 The attach loop's exits. `attach` re-reads `attachedVideo` after the context
 await and returns there; the tick stops the loop at its own end either way;
 `clearInterval(null)` is a no-op; and `attach` is only ever called with an
 element `findVideo` returned, which is never the one already held.
 
-- `page-bridge.js:607` a guard body is dropped ×1 — if (attachedVideo) {
-- `page-bridge.js:636` a guard is always taken ×1 — if (attachTimer) {
-- `page-bridge.js:651` a guard is dropped ×1 — if (!video || attachedVideo === video) return;
-- `page-bridge.js:651` || becomes && ×1 — ||
-
-The block trim. `blocksToLufs` reads the tail, so what the trim drops is never
-read, and with a short list the splice count is negative and removes nothing.
-
-- `page-bridge.js:735` a guard body is dropped ×1 — if (blocks.length > Math.max(MOMENTARY_BLOCKS, SHORT_BLOCKS) * 4) {
-- `page-bridge.js:735` a guard is always taken ×1 — if (blocks.length > Math.max(MOMENTARY_BLOCKS, SHORT_BLOCKS) * 4) {
+- `page-bridge.js:310` a guard body is dropped ×1 — if (attachedVideo) {
+- `page-bridge.js:339` a guard is always taken ×1 — if (attachTimer) {
+- `page-bridge.js:354` a guard is dropped ×1 — if (!video || attachedVideo === video) return;
+- `page-bridge.js:354` || becomes && ×1 — ||
 
 `applyEffectiveGain`'s check. `createContext` assigns the gain and the context
 together and clears both together, so a gain without a context is not a state
 the bridge has.
 
-- `page-bridge.js:812` || becomes && ×1 — ||
+- `page-bridge.js:496` || becomes && ×1 — ||
 
 `adStartRollbackBlocks`'s three-way check. `adBreakStartMedia` is only set by a
 cue, which is what sets `adCueSeen`, and a break only opens while
 `playerBreakActive` has a finite playhead. Neither mutant's discriminating state
 is reachable.
 
-- `page-bridge.js:849` || becomes && ×2 — ||
+- `page-bridge.js:533` || becomes && ×2 — ||
 
 `setDomAdActive`'s dedup and `syncAdElementGains`' context check.
 `updateAdState` opens with `if (wanted === adActive) return`, so the repeat one
 saves is a no-op; and the chain list is empty whenever there is no context.
 
-- `page-bridge.js:920` a guard is dropped ×1 — if (domAdActive === !!active) return;
-- `page-bridge.js:1020` a guard is dropped ×1 — if (!ctx) return;
+- `page-bridge.js:594` a guard is dropped ×1 — if (domAdActive === !!active) return;
+- `page-bridge.js:694` a guard is dropped ×1 — if (!ctx) return;
 
 The dropped await on `ensureContext` in `resume`. `createContext` assigns `ctx`
 before its first await, so the resume that follows has it.
 
-- `page-bridge.js:1182` an await is dropped ×1 — await
+- `page-bridge.js:856` an await is dropped ×1 — await
 
 ## content.js
 
@@ -206,18 +176,11 @@ the promise, so nothing observes when they settle.
 
 ## utils.js
 
-`calcGain`'s finite check and `gatedIntegratedLufs`'s three empty-set checks.
-Measured by computing the unguarded path beside the guarded one: `calcGain`
-reaches `if (!Number.isFinite(gain)) return 1.0` in `gainForLevel`
-(`core/common.js`), and an empty
-mean is `NaN`, which `meanSquareToLufs` answers `-Infinity` for. Checked against
-`[]`, `[0, -1, NaN]` and a set below the absolute gate — guarded and unguarded
-agree on every one.
+`calcGain`'s finite check. Measured by computing the unguarded path beside the
+guarded one: `calcGain` reaches `if (!Number.isFinite(gain)) return 1.0` in
+`gainForLevel` (`core/common.js`), and guarded and unguarded agree.
 
-- `utils.js:77` a guard is dropped ×1 — if (!Number.isFinite(measuredLufs)) return 1.0;
-- `utils.js:243` a guard is dropped ×1 — if (valid.length === 0) return -Infinity;
-- `utils.js:246` a guard is dropped ×1 — if (passAbs.length === 0) return -Infinity;
-- `utils.js:251` a guard is dropped ×1 — if (passRel.length === 0) return -Infinity;
+- `utils.js:74` a guard is dropped ×1 — if (!Number.isFinite(measuredLufs)) return 1.0;
 
 ## options.js
 
