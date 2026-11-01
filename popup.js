@@ -434,17 +434,13 @@
       sliderSynced = false;
     }
   });
-  document.querySelectorAll('.presets button').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      if (autoUpdatePending) return;
-      const v = Number(btn.getAttribute('data-gain'));
-      const g = percentToGain(v);
-      const f = formatGain(g, displayUnit);
-      $('manualSlider').value = String(v);
-      $('manualValue').textContent = f.text + f.unit;
-      setCardValue($('current'), f.text, f.unit, 'current');
-      setGain(v);
-    });
+  bindPresets(document.querySelectorAll('.presets button'), {
+    slider: $('manualSlider'),
+    valueEl: $('manualValue'),
+    currentEl: $('current'),
+    unit: () => displayUnit,
+    allow: () => !autoUpdatePending,
+    pick: (percent) => setGain(percent)
   });
   $('optionsBtn').addEventListener('click', () => chrome.runtime.openOptionsPage());
 

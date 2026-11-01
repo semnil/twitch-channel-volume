@@ -149,7 +149,7 @@ flowchart LR
 - Popup state poll: pollTabState, STATE_POLL_INTERVAL_MS (the first ask at once, then the state every second while the popup is open)
 - Popup messages: sendTabMessage (the popup's message to its tab, refused where it holds none), createSaveNotice (the notice under the Apply button that a gain is not saved, raised by the answer to the latest save sent for the owner shown where it is not ok, and taken down by one that is or by another owner)
 - Popup owner line: drawOwnerName (the owner's name, or the catalog's not-detected text in the `empty` class, with the full text as its title for a row too narrow to show it)
-- Popup page state: isSiteTab (the tab's URL host name is the site's or a subdomain's), showPopupStatus / hidePopupStatus (the status line with the catalog's text in place of the screen), followDisplayUnit (the display unit read once and followed in sync while the popup is open)
+- Popup page state: isSiteTab (the tab's URL host name is the site's or a subdomain's), showPopupStatus / hidePopupStatus (the status line with the catalog's text in place of the screen), followDisplayUnit (the display unit read once and followed in sync while the popup is open), bindPresets (the preset buttons: the percent in data-vol drawn on the slider, its value and the current card, then handed on)
 
 ### utils.js (shared, popup/options + content.js + test.js. It is not loaded in the MAIN world, so page-bridge.js carries its own constants)
 
