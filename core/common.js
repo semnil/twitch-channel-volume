@@ -14,6 +14,9 @@ const MAX_TARGET_LUFS = -6;
 // Whether the gain is shown beside the player's volume where the settings hold
 // no choice.
 const DEFAULT_SHOW_GAIN_OVERLAY = true;
+// Whether Auto is on for a type where neither the owner's row nor the
+// settings name a choice.
+const DEFAULT_AUTO_APPLY_LOUDNESS = false;
 // The range of a gain: 0 is silence, 6 is 600%.
 const MIN_GAIN = 0;
 const MAX_GAIN = 6;
@@ -188,6 +191,36 @@ function isContextValid() {
   try { return !!chrome.runtime?.id; } catch (_) { return false; }
 }
 
+// Whether media is playing: neither paused nor muted. A volume of 0 and a gain
+// of 0 still count as playing.
+function isMediaPlaying(media) {
+  return !!media && !media.paused && !media.muted;
+}
+
+// A reporter of the writes a page makes that no gesture asked for, each made
+// again by the next one of its kind. Each name keeps a stretch of its own: the
+// first failure is logged at info, the next failure of that name at error and
+// then nothing more, and a write of that name that lands ends the stretch. A
+// failure where the runtime can no longer be reached is not logged.
+function createUnaskedWriteReporter(prefix) {
+  const stretches = new Map();
+  return (what, write) => write.then(() => {
+    stretches.delete(what);
+  }, (err) => {
+    if (!isContextValid()) return;
+    const stretch = stretches.get(what);
+    if (!stretch) {
+      stretches.set(what, { reported: false });
+      console.info(`${prefix} ${what}`, err);
+      return;
+    }
+    if (!stretch.reported) {
+      stretch.reported = true;
+      console.error(`${prefix} ${what}`, err);
+    }
+  });
+}
+
 // Gain is a linear factor: 1 is 100% and 0 dB.
 function gainToPercent(gain) { return Math.round(gain * 100); }
 function percentToGain(pct) { return pct / 100; }
@@ -306,6 +339,28 @@ function autoFlagFor(entry, field, defaultValue, storedGainTurnsOff) {
   if (Object.prototype.hasOwnProperty.call(entry, 'autoApplyLoudness')) return !!entry.autoApplyLoudness;
   if (storedGainTurnsOff) return false;
   return !!defaultValue;
+}
+
+// Sets the Auto flag field of a row, after turning an earlier version's flag
+// for every type into one per type of fields.
+function setAutoFlag(entry, field, fields, enabled) {
+  expandLegacyAutoFlag(entry, fields);
+  entry[field] = !!enabled;
+  return entry;
+}
+
+// Whether a row names an Auto choice for the type whose flag is field: its own
+// flag, or the flag an earlier version kept for every type.
+function hasAutoFlag(entry, field) {
+  return !!entry && typeof entry === 'object' &&
+    (Object.prototype.hasOwnProperty.call(entry, field) ||
+      Object.prototype.hasOwnProperty.call(entry, 'autoApplyLoudness'));
+}
+
+// Whether Auto holds the gain, so the manual controls take nothing: Auto is on
+// and the level it follows is known.
+function isManualGainLocked(autoOn, levelKnown) {
+  return !!autoOn && !!levelKnown;
 }
 
 // The label of a row's Auto gain on the settings page: the stored gain in the

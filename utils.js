@@ -5,7 +5,6 @@ const CHANNEL_VOLUMES_KEY = 'channelVolumes';
 const CHANNEL_ALIASES_KEY = 'channelVolumeAliases';
 const CHANNEL_SEQUENCE_KEY = 'channelVolumeSequence';
 const DEFAULT_AD_GAIN_DB = -6;
-const DEFAULT_AUTO_APPLY_LOUDNESS = false;
 // Saved LUFS carrying this reference was measured with the player volume
 // divided out, so it is comparable across volume settings.
 const LUFS_REFERENCE_VOLUME_1 = 'volume1';
@@ -258,7 +257,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     SETTINGS_KEY, SETTINGS_MUTATION_MESSAGE, isStoredSettingsObject, readSettings,
     CHANNEL_VOLUMES_KEY, CHANNEL_ALIASES_KEY, CHANNEL_SEQUENCE_KEY,
-    DEFAULT_TARGET_LUFS, DEFAULT_AD_GAIN_DB, DEFAULT_AUTO_APPLY_LOUDNESS,
+    DEFAULT_TARGET_LUFS, DEFAULT_AD_GAIN_DB,
     ABSOLUTE_GATE_LUFS, RELATIVE_GATE_LU, LUFS_REFERENCE_VOLUME_1,
     MIN_GAIN, MAX_GAIN,
     gainToPercent, percentToGain, gainToDb, dbToGain,
