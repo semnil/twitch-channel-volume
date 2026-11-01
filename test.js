@@ -11443,7 +11443,7 @@ test('the options markup ships the defaults a page with no settings falls back t
   assert.match(html, /<button data-unit="%" class="active"/);
   for (const kind of ['Live', 'Vod']) {
     assert.equal(fallback(`autoApplyLoudness${kind}Default`), 'DEFAULT_AUTO_APPLY_LOUDNESS', kind);
-    assert.equal(u.DEFAULT_AUTO_APPLY_LOUDNESS, false, kind);
+    assert.equal(DEFAULT_AUTO_APPLY_LOUDNESS, false, kind);
     assert.doesNotMatch(tag(`defaultAuto${kind}Toggle`), /\bchecked\b/, kind);
   }
 });
