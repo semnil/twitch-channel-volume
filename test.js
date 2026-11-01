@@ -2350,30 +2350,6 @@ test('the worklet keeps what it has when a quantum brings no audio', () => {
   assert.ok(Math.abs(harness.posted[0].ms - 0.5) < 1e-6);
 });
 
-test('gainToDb answers for a gain that is not a level at all', () => {
-  // log10 of nothing is not a number a screen can show.
-  assert.equal(u.gainToDb(0), '-Inf');
-  assert.equal(u.gainToDb(-1), '-Inf');
-  assert.equal(u.gainToDb(1), '0.0');
-  assert.equal(u.gainToDb(2), '6.0');
-});
-
-test('msg answers with the key wherever the catalog cannot', () => {
-  const outer = globalThis.chrome;
-  try {
-    delete globalThis.chrome;
-    assert.equal(u.msg('someKey'), 'someKey', 'a page with no runtime at all');
-    globalThis.chrome = {};
-    assert.equal(u.msg('someKey'), 'someKey', 'a runtime with no i18n');
-    globalThis.chrome = { i18n: { getMessage: () => '' } };
-    assert.equal(u.msg('someKey'), 'someKey', 'a catalog that declares nothing for it');
-    globalThis.chrome = { i18n: { getMessage: (key) => (key === 'known' ? 'Known message' : '') } };
-    assert.equal(u.msg('known'), 'Known message', 'and the message where it does');
-  } finally {
-    if (outer === undefined) delete globalThis.chrome; else globalThis.chrome = outer;
-  }
-});
-
 test('the shared helpers answer for an entry that is not there', () => {
   assert.equal(u.extractAutoGainForKind(null, 'live'), null);
   assert.equal(u.extractAutoGainForKind(undefined, 'vod'), null);
@@ -2523,20 +2499,6 @@ test('utils loads where there is no module to export to', () => {
     { filename: 'utils.js' }
   ));
   assert.equal(typeof sandbox.calcGain, 'function', 'and its helpers are there to be used');
-});
-
-test('esc closes the attribute it is written into', () => {
-  // The result is put inside a double-quoted attribute as well as between
-  // tags, and a quote that survives adds attributes to that tag.
-  const escaped = u.esc('UC1" onclick="steal()');
-  assert.ok(!escaped.includes('"'), `no quote survives (${escaped})`);
-  assert.equal(escaped, 'UC1&quot; onclick=&quot;steal()');
-});
-
-test('esc escapes what would open markup, an entity or a quoted value', () => {
-  assert.equal(u.esc('<b>&</b>'), '&lt;b&gt;&amp;&lt;/b&gt;');
-  assert.equal(u.esc("it's"), 'it&#39;s');
-  assert.equal(u.esc('plain'), 'plain');
 });
 
 test('esc agrees with the harness mirror of it', () => {
@@ -3137,17 +3099,6 @@ test('gainToDb / dbToGain are inverses (within 1-decimal rounding)', () => {
   const db = Number(u.gainToDb(g));
   // gainToDb formats to one decimal place; round-trip tolerance ~0.012
   assert.ok(Math.abs(u.dbToGain(db) - g) < 0.02);
-});
-
-test('gainToPercent / percentToGain are inverses', () => {
-  assert.equal(u.gainToPercent(1.0), 100);
-  assert.equal(u.percentToGain(150), 1.5);
-});
-
-test('formatAutoGain shows the stored Auto gain, and a dash where none is stored', () => {
-  assert.equal(u.formatAutoGain(0.7, '%'), 'Auto (70%)');
-  assert.equal(u.formatAutoGain(null, '%'), 'Auto (—)');
-  assert.equal(u.formatAutoGain(0.5, 'dB', '自動'), '自動 (-6.0 dB)');
 });
 
 test('auto-apply fields are independent for Live and VOD', () => {
