@@ -7065,6 +7065,20 @@ test('popup begins a slider gesture on the primary button alone', async () => {
   }
 });
 
+test('options keeps a settings slider key hold through a press of the pointer, and writes what the key moved', async () => {
+  for (const { field } of SETTINGS_SLIDERS) {
+    const harness = createOptionsHarness();
+    await flushTasks(8);
+    await harness.fire(field, 'keydown', sliderKey('ArrowRight'));
+    await moveSettingsSlider(harness, field, -9);
+    await harness.fire(field, 'change');
+    await harness.fire(field, 'pointerdown');
+    await harness.fire(field, 'pointerup');
+    await harness.fire(field, 'keyup', sliderKey('ArrowRight'));
+    assert.deepEqual(settingsWrites(harness, field), [-9], `${field}: the key's value is written at its keyup`);
+  }
+});
+
 test('options leaves a held settings slider to its gesture when a settings change arrives', async () => {
   for (const { field, label, drawn } of SETTINGS_SLIDERS) {
     const harness = createOptionsHarness();

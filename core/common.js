@@ -340,6 +340,95 @@ function createSliderKeys() {
   };
 }
 
+// Holds a settings page's slider to one write per gesture, and answers
+// whether a key or the pointer is held on it. A key held on it (the value keys
+// createSliderKeys counts) or a drag with the primary button moves the label
+// alone (drawLabel); the gesture writes the value once (save): at the keyup of
+// the last value key where a key moved the value, at a drag's change, or at a
+// blur of the slider or the window that ends the gesture, where Chrome fires a
+// drag's change ahead of that blur. A key hold that moved nothing, a drag let
+// go of on the value it began on and a blur that ends a gesture draw the
+// stored value (current) again; a press of the pointer while a key is held
+// leaves the key's hold and its value as they are. After that blur the
+// slider's input and change move nothing until the next press of the pointer
+// or of a value key, and the change draws the stored value; a drag the browser
+// cancels ends the same way, without a write. A drag's release is taken on
+// the slider, which holds the pointer it was pressed with.
+function holdSettingsSlider(slider, { current, drawLabel, save }) {
+  const keys = createSliderKeys();
+  let keyHeld = false;
+  let keyMoved = false;
+  let pointerHeld = false;
+  let pointerStart = null;
+  let gestureEnded = false;
+  const drawStored = () => {
+    slider.value = String(current());
+    drawLabel(current());
+  };
+  // Whether a key was held.
+  const endKeyHold = () => {
+    if (!keyHeld) return false;
+    keyHeld = false;
+    const moved = keyMoved;
+    keyMoved = false;
+    if (moved) save(Number(slider.value));
+    else drawStored();
+    return true;
+  };
+  const endGestureOnBlur = () => {
+    keys.clear();
+    if (!endKeyHold() && !pointerHeld) return;
+    drawStored();
+    pointerHeld = false;
+    gestureEnded = true;
+  };
+  slider.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    pointerHeld = true;
+    pointerStart = Number(slider.value);
+    gestureEnded = false;
+  });
+  // A key held through the press keeps the value it moved to for its keyup.
+  const releasePointer = () => {
+    if (pointerHeld && !keyHeld && Number(slider.value) === pointerStart) drawStored();
+    pointerHeld = false;
+  };
+  slider.addEventListener('pointerup', releasePointer);
+  // A drag the browser takes away writes nothing: the stored value is drawn
+  // and the gesture ends, so the change Chrome fires later moves nothing. A
+  // key held through it stays held.
+  slider.addEventListener('pointercancel', () => {
+    pointerHeld = false;
+    if (keyHeld) return;
+    drawStored();
+    gestureEnded = true;
+  });
+  slider.addEventListener('keydown', (event) => {
+    if (!keys.press(event)) return;
+    gestureEnded = false;
+    keyHeld = true;
+  });
+  slider.addEventListener('keyup', (event) => {
+    if (keys.release(event)) endKeyHold();
+  });
+  slider.addEventListener('blur', endGestureOnBlur);
+  window.addEventListener('blur', endGestureOnBlur);
+  slider.addEventListener('input', () => {
+    if (gestureEnded) return;
+    if (keyHeld) keyMoved = true;
+    drawLabel(Number(slider.value));
+  });
+  slider.addEventListener('change', () => {
+    if (gestureEnded) {
+      drawStored();
+      return;
+    }
+    if (keyHeld) return;
+    save(Number(slider.value));
+  });
+  return () => keyHeld || pointerHeld;
+}
+
 function esc(s) {
   const d = document.createElement('div');
   d.textContent = s;
