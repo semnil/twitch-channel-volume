@@ -527,3 +527,42 @@ function retryGetState(remaining, intervalMs, { done, ask, take }) {
     } catch (_) {}
   }, intervalMs);
 }
+
+// Sends message to the content script of the popup's tab, and resolves with
+// its answer. A popup that holds no tab sends nothing and rejects.
+function sendTabMessage(tabId, message) {
+  if (!tabId) return Promise.reject(new Error('no tab'));
+  return chrome.tabs.sendMessage(tabId, message);
+}
+
+// The popup's notice that the gain a gesture asked to save is not saved
+// (gainSaveFailed). An answer that is not ok raises it, whether the tab
+// refused the gesture or could not save it, and an answer that is ok takes it
+// down; so does the popup coming to show another owner.
+function createSaveNotice() {
+  let raised = false;
+  let owner = '';
+  return {
+    raised: () => raised,
+    raise() { raised = true; },
+    // Whether the answer is ok.
+    take(answer) {
+      raised = !answer?.ok;
+      return !raised;
+    },
+    // The owner the popup shows, as a key; '' where it shows none, which
+    // leaves the notice as it is.
+    showOwner(key) {
+      if (!key) return;
+      if (owner && key !== owner) raised = false;
+      owner = key;
+    },
+    // Puts the notice in hint while it is raised, in the error colour.
+    // Whether it did.
+    draw(hint) {
+      hint.classList.toggle('error', raised);
+      if (raised) hint.textContent = msg('gainSaveFailed');
+      return raised;
+    }
+  };
+}

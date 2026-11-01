@@ -306,12 +306,12 @@ sequenceDiagram
     end
   end
   opt the answer is not ok true
-    popup->>popup: gainSaveError = true, sliderSynced = false
+    popup->>popup: saveNotice raised, sliderSynced = false
   end
   popup->>content: getState (refresh)
 ```
 
-Drawn from: `popup.js` the `manualSlider` `input` / `change` / `pointerdown` / `pointerup` / `pointercancel` / `keydown` / `keyup` / `blur` listeners, the `window` `blur` listener, `endSliderKeyHold`, `endSliderGesture`, `keepPreviewAlive`, `previewGain`, the preset `click` listener, `setGain`, `applyMeasured`, `syncInteractionDisabledState`, `renderState`; `content.js` the `previewGain` and `setGain` cases of the `runtime.onMessage` listener, `startPreview`, `endPreview`, `endIdlePreview`, `putBackStoredGain`, `previewHoldsGain`, `gainGestureRefusal`, `applyGain`, `saveChannelGain`, `reapplyForCurrentChannel`.
+Drawn from: `popup.js` the `manualSlider` `input` / `change` / `pointerdown` / `pointerup` / `pointercancel` / `keydown` / `keyup` / `blur` listeners, the `window` `blur` listener, `endSliderKeyHold`, `endSliderGesture`, `keepPreviewAlive`, `previewGain`, the preset `click` listener, `setGain`, `applyMeasured`, `syncInteractionDisabledState`, `renderState`; `core/common.js` `sendTabMessage`, `createSaveNotice`; `content.js` the `previewGain` and `setGain` cases of the `runtime.onMessage` listener, `startPreview`, `endPreview`, `endIdlePreview`, `putBackStoredGain`, `previewHoldsGain`, `gainGestureRefusal`, `applyGain`, `saveChannelGain`, `reapplyForCurrentChannel`.
 
 - `input` (while the slider moves) updates the Current card and the value label and sends nothing. `change` sends one `setGain`. A preset button moves the slider, updates the same two labels and sends one `setGain`.
 - Only the keys that move the value hold the slider — the arrows, PageUp / PageDown, Home / End (`SLIDER_VALUE_KEYS`, `createSliderKeys`); any other key, Tab or Shift among them, takes no part. A key held on the slider, from the `keydown` of the first such key to the `keyup` of the last of them still down, is heard and not saved: each `input` also sends `previewGain`, which content refuses where it refuses `setGain` (`gainGestureRefusal`) and otherwise applies without a save, and the `change` each repeat fires sends nothing. The `keyup`, or a `blur` of the slider or of the popup's `window` before it, sends one `setGain` with the slider's value when an `input` arrived during the hold. A `blur` during the hold also ends the gesture the way it ends a drag (below). The popup reports nothing for a `previewGain`; the `setGain` that ends the hold reports a refusal as below.
@@ -321,7 +321,7 @@ Drawn from: `popup.js` the `manualSlider` `input` / `change` / `pointerdown` / `
 - "Apply to channel" (`applyMeasured`) sends `resume` and then `setGain` with the Suggested gain, `suggestedGain(lufs.integrated, targetLufs)` from the last `getState`. The button is enabled with Auto off, a finite Integrated value, a channel and audio available, and its label is "Apply $VALUE$ to channel" with the gain in the display unit.
 - The popup disables the slider and the presets while Auto is on, an Auto save is pending, `audioUnavailable` is true, or the page has no Live / VOD channel.
 - Write: `saveGain` sets `gain<Kind>` of the canonical row.
-- Failure: content logs `[TCV] failed to save gain` with the channel, kind and gain it tried to save, re-reads the row and sends the stored gain back to the bridge. For any answer other than `ok: true` (a refusal included), the popup logs `[TCV] gain request failed` (or `[TCV] suggested gain request failed`), shows `gainSaveFailed` ("Could not save the gain. Please try again.") under the button from the next render on, and clears `sliderSynced` so the next `getState` moves the slider to the gain in force.
+- Failure: content logs `[TCV] failed to save gain` with the channel, kind and gain it tried to save, re-reads the row and sends the stored gain back to the bridge. For any answer other than `ok: true` (a refusal included), the popup logs `[TCV] gain request failed` (or `[TCV] suggested gain request failed`), shows `gainSaveFailed` ("Could not save the gain. Please try again.") under the button from the next render on, and clears `sliderSynced` so the next `getState` moves the slider to the gain in force. The notice (`createSaveNotice` in `core/common.js`) stands until a save is answered `ok: true` or a state names another channel or the same channel in the other kind; a state naming no channel leaves it as it is.
 
 ### 4. Auto-follow LUFS switched from the popup
 

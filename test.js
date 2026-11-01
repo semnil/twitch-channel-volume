@@ -7750,6 +7750,28 @@ test('popup clears the reset failure when the same channel changes kind', async 
   assert.equal(harness.el('resetMeasurementError').classList.contains('hidden'), true);
 });
 
+test('popup keeps a failed save on screen for its channel and kind, and takes it down for another', async () => {
+  const harness = createPopupHarness({ failCommand: 'setGain', state: WATCHING });
+  await flushTasks(8);
+  harness.el('manualSlider').value = '75';
+  await harness.dispatch('manualSlider');
+  assert.equal(harness.el('applyHint').textContent, harness.message('gainSaveFailed'));
+
+  // A page with no channel names no other one, so the notice stands.
+  harness.setState({ channel: { id: '', name: '', kind: 'none', url: '' } });
+  await harness.poll();
+  harness.setState({ channel: WATCHING.channel });
+  await harness.poll();
+  assert.equal(harness.el('applyHint').textContent, harness.message('gainSaveFailed'),
+    'the same channel after a page with none keeps it');
+
+  // The same channel in the other kind holds a gain of its own.
+  harness.setState({ channel: { ...WATCHING.channel, kind: 'vod' } });
+  await harness.poll();
+  assert.notEqual(harness.el('applyHint').textContent, harness.message('gainSaveFailed'));
+  assert.equal(harness.el('applyHint').classList.contains('error'), false);
+});
+
 test('popup keeps Apply out while a save failed and there is no level to apply', async () => {
   const harness = createPopupHarness({
     failCommand: 'setGain',

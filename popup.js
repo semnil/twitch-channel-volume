@@ -27,7 +27,10 @@
   let autoUpdatePending = false;
   let measurementResetPending = false;
   let hasResettableMeasurement = false;
-  let gainSaveError = false;
+  // The last save the viewer asked for did not land (createSaveNotice in
+  // core/common.js). It stands until a save lands or the tab is on another
+  // channel or kind.
+  const saveNotice = createSaveNotice();
 
   function syncInteractionDisabledState() {
     const validChannel = !!currentChannel.id &&
@@ -126,7 +129,7 @@
         if (showConnectionError) showStatus(msg('openOnTwitch'));
         return null;
       }
-      const res = await chrome.tabs.sendMessage(tab.id, { cmd: 'getState' });
+      const res = await sendTabMessage(tab.id, { cmd: 'getState' });
       stateRequestFailureNamed = '';
       return res;
     } catch (err) {
@@ -160,9 +163,9 @@
     const ch = state.channel || {};
     if (currentChannel.id &&
         (ch.id !== currentChannel.id || ch.kind !== currentChannel.kind)) {
-      gainSaveError = false;
       $('resetMeasurementError').classList.add('hidden');
     }
+    saveNotice.showOwner(ch.id ? ch.id + '|' + ch.kind : '');
     currentChannel = ch;
     currentAppliesTo = state?.appliesTo || '';
     currentAutoApplyLoudness = !!state.autoApplyLoudness;
@@ -232,13 +235,11 @@
       applyButton.textContent = msg('applyToChannel');
     }
 
-    $('applyHint').classList.toggle('error', gainSaveError);
-    if (gainSaveError) {
+    if (saveNotice.draw($('applyHint'))) {
       // The save failure is the viewer's own last action; the notice above
       // carries the audio state alongside it.
       applyButton.disabled =
         currentAutoApplyLoudness || audioUnavailable || !hasIntegrated || !ch.id;
-      $('applyHint').textContent = msg('gainSaveFailed');
     } else if (audioUnavailable && ch.id) {
       // The notice carries the reason; the hint stays empty.
       applyButton.disabled = true;
@@ -280,18 +281,14 @@
     const gain = lastSuggestedGain;
     try {
       const tab = await getActiveTab();
-      if (!tab) throw new Error('No active tab');
-      await chrome.tabs.sendMessage(tab.id, { cmd: 'resume' });
-      const res = await chrome.tabs.sendMessage(
-        tab.id,
-        { cmd: 'setGain', appliesTo, gain }
-      );
+      await sendTabMessage(tab?.id, { cmd: 'resume' });
+      const res = await sendTabMessage(tab?.id, { cmd: 'setGain', appliesTo, gain });
       if (!res?.ok) throw new Error(res?.reason || 'Gain update failed');
-      gainSaveError = false;
+      saveNotice.take(res);
       syncSlider(gain);
     } catch (error) {
       console.warn('[TCV] suggested gain request failed', error);
-      gainSaveError = true;
+      saveNotice.raise();
       sliderSynced = false;
     }
     await refresh();
@@ -302,14 +299,13 @@
         !currentChannel.id || currentChannel.kind === 'none') return;
     try {
       const tab = await getActiveTab();
-      if (!tab) throw new Error('No active tab');
       const gain = percentToGain(percent);
-      const res = await chrome.tabs.sendMessage(tab.id, { cmd: 'setGain', appliesTo, gain });
+      const res = await sendTabMessage(tab?.id, { cmd: 'setGain', appliesTo, gain });
       if (!res?.ok) throw new Error(res?.reason || 'Gain update failed');
-      gainSaveError = false;
+      saveNotice.take(res);
     } catch (error) {
       console.warn('[TCV] gain request failed', error);
-      gainSaveError = true;
+      saveNotice.raise();
       sliderSynced = false;
     }
     await refresh();
@@ -320,8 +316,7 @@
   async function previewGain(percent, appliesTo) {
     try {
       const tab = await getActiveTab();
-      if (!tab) return;
-      await chrome.tabs.sendMessage(tab.id, { cmd: 'previewGain', appliesTo, gain: percentToGain(percent) });
+      await sendTabMessage(tab?.id, { cmd: 'previewGain', appliesTo, gain: percentToGain(percent) });
     } catch (_) {}
   }
 
@@ -340,8 +335,7 @@
     syncInteractionDisabledState();
     try {
       const tab = await getActiveTab();
-      if (!tab) throw new Error('No active tab');
-      const res = await chrome.tabs.sendMessage(tab.id, {
+      const res = await sendTabMessage(tab?.id, {
         cmd: 'setAutoApplyLoudness',
         appliesTo,
         enabled
@@ -380,8 +374,7 @@
     syncInteractionDisabledState();
     try {
       const tab = await getActiveTab();
-      if (!tab) throw new Error('No active tab');
-      const res = await chrome.tabs.sendMessage(tab.id, {
+      const res = await sendTabMessage(tab?.id, {
         cmd: 'resetMeasurement',
         appliesTo
       });
