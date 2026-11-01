@@ -41,7 +41,7 @@
 | キー | 形 | 書くもの |
 |---|---|---|
 | `autoLoudnessSettings` | `{ targetLufs, adGainDb, displayUnit, showGainOverlay, autoApplyLoudnessLiveDefault, autoApplyLoudnessVodDefault }` | `settings-store.js` の `createSettingsWriter` |
-| `channelVolumes` | `{ [channelId]: { name, login, url, gainLive, gainVod, autoApplyLoudnessLive, autoApplyLoudnessVod, autoGainLive, autoGainVod, autoGainRef, lastLufs, lastLufsRef, lastLufsWindows, lastMeasuredAt, __fieldVersions } }`。`autoGainRef` / `lastLufs` / `lastLufsRef` / `lastLufsWindows` は `{ live, vod }` の形 | `channel-store.js` の `createChannelVolumesWriter` |
+| `channelVolumes` | `{ [channelId]: { name, login, url, gainLive, gainVod, autoApplyLoudnessLive, autoApplyLoudnessVod, autoGainLive, autoGainVod, autoGainRef, lastLufs, lastLufsRef, lastLufsWindows, lastLufsClearedAt, lastMeasuredAt, __fieldVersions } }`。`autoGainRef` / `lastLufs` / `lastLufsRef` / `lastLufsWindows` / `lastLufsClearedAt` は `{ live, vod }` の形 | `channel-store.js` の `createChannelVolumesWriter` |
 | `channelVolumeAliases` | `{ [仮 ID]: ユーザー ID }` | `channel-store.js` の `createChannelVolumesWriter` |
 | `channelVolumeSequence` | 整数 | `channel-store.js` の `createChannelVolumesWriter` |
 
@@ -127,8 +127,8 @@ sequenceDiagram
 |---|---|---|---|---|
 | `saveGain` | content の `saveChannelGain` | `channelId`、`kind`、`gain`、`channel: { name, url }` | `gain<Kind>`、`name`、`url` | あり |
 | `saveAuto` | content の `saveChannelAutoApply` | `channelId`、`kind`、`enabled`、`channel`。有限のゲインを計算できたときは `autoGain` と `reference` も | `autoApplyLoudness<Kind>`。`autoGain` があれば `autoGain<Kind>` と `autoGainRef[kind]` も | あり |
-| `saveMeasurement` | content の `saveLastIntegrated` | `channelId`、`kind`、`lufs`、`reference`、0 でないときの `windows`、Auto がオンの間の `autoGain`、`channel: { name, login, url }` | `lastLufs[kind]`、`lastLufsRef[kind]`、`lastLufsWindows[kind]` (`windows` を送らなければ消す)、`lastMeasuredAt`。`autoGain` があれば `autoGain<Kind>` と `autoGainRef[kind]` も | あり |
-| `clearMeasurement` | content の `clearSavedMeasurement` | `channelId`、`kind` | `lastLufs[kind]`、`lastLufsRef[kind]`、`lastLufsWindows[kind]` を消し (`lastLufs` が空になれば `lastMeasuredAt` も)、`lastLufs.<kind>` の版番号を記録する。`autoGainRef` は残す | あり |
+| `saveMeasurement` | content の `saveLastIntegrated` | `channelId`、`kind`、`lufs`、`reference`、`since` (計測を始めた時刻。起動時か最後のリセット)、0 でないときの `windows`、Auto がオンの間の `autoGain`、`channel: { name, login, url }` | `lastLufs[kind]`、`lastLufsRef[kind]`、`lastLufsWindows[kind]` (`windows` を送らなければ消す)、`lastMeasuredAt`。`autoGain` があれば `autoGain<Kind>` と `autoGainRef[kind]` も。`since` が `lastLufsClearedAt[kind]` より前なら何も書かない | あり |
+| `clearMeasurement` | content の `clearSavedMeasurement` | `channelId`、`kind` | `lastLufs[kind]`、`lastLufsRef[kind]`、`lastLufsWindows[kind]` を消し (`lastLufs` が空になれば `lastMeasuredAt` も)、`lastLufs.<kind>` の版番号と、`lastLufsClearedAt[kind]` に消した時刻を記録する。`autoGainRef` は残す | あり |
 | `saveAutoGain` | content の `saveChannelAutoGain` | `channelId`、`kind`、`autoGain`、`reference`、`channel` | `autoGain<Kind>`、`autoGainRef[kind]` | あり |
 | `mergeChannelIds` | content の `migrateChannelId` | `fromId`、`toId`、`kind`、`channel` | `fromId` の行を `toId` の行へまとめ (`mergeProvisionalEntry`)、`fromId` を消す。`fromId` の行が無くても、`fromId` から `toId` への別名は保存する | なし |
 | `normalizeChannels` | SW の `onInstalled`、options の `loadAll` | — | 下の整理のほかは何もしない | なし |
@@ -451,7 +451,7 @@ sequenceDiagram
 図のもと: `popup.js` の `resetMeasurement`。`content.js` の `runtime.onMessage` リスナーの `resetMeasurement`、`clearSavedMeasurement`、`clearMeasurementCache`、`sendResetMeasurement`。`page-bridge.js` の `resetMeasurement`。
 
 - かかるゲイン: ここでは `setGain` を送らない。Auto がオンなら、次に届いた有限の Integrated が 1000 ms 待たずにかかる (場面 5)。
-- 書き込み: `clearMeasurement` が `lastLufs[kind]`・`lastLufsRef[kind]`・`lastLufsWindows[kind]` を消し、消したことを通し番号つきで記録する。そのため、あとでほかの行とまとめても古い値は戻らない。保存済みの Auto のゲインは残る。
+- 書き込み: `clearMeasurement` が `lastLufs[kind]`・`lastLufsRef[kind]`・`lastLufsWindows[kind]` を消し、消したことを通し番号つきで記録する。そのため、あとでほかの行とまとめても古い値は戻らない。消した時刻も残し、それより前に始まった計測の `saveMeasurement` は何も書かないので、送信中の保存でも古い値は戻らない。同じチャンネルのほかのタブは、読み直した行に自分の計測を始めた後の消去があるか、前に読んだ値が消えていれば (行の削除)、自分の計測も空にする。保存済みの Auto のゲインは残る。
 - popup の「測定値をリセット」ボタンが押せるのは、有限の Integrated か、その種別の保存値 (`hasSavedMeasurement`) があり、Auto の保存待ちやリセット待ちが無いとき。
 - 失敗: content は `[TCV] failed to reset measurement` とログに出す。`ok: true` でない答え (断られた場合も含む) では、popup は `[TCV] measurement reset request failed` とログに出し、`resetMeasurementFailed` (「測定値をリセットできませんでした。もう一度お試しください」) を出す。
 
@@ -534,7 +534,7 @@ sequenceDiagram
 
 - bridge は、どのコンテンツのものかを応答だけから決める。`data.user` は `login` を、`data.video.owner` は `data.video.id` を `contentId` にする。`data.video.id` の無い応答の `data.video.owner` からは、owner を送らない。
 - Live のページが取る owner は、`source: 'user'` で、`contentId` が URL の login のもの。VOD のページが取るのは、`source: 'video'` で、`contentId` が動画 ID のもの。クリップのページは何も取らない。`userId` は数字だけの文字列でなければならない。
-- 書き込み: `mergeChannelIds`。ゲイン・Auto・Auto のゲイン・LUFS の各項目は、片方だけが持っていればその値を取り、両方が持っていれば版番号の大きい方を取る。同じ番号なら、ユーザー ID の行の値を残す。`lastLufs` では、`clearMeasurement` が記録した「消した」という状態も、持っているものとして数える。`lastLufsRef` と `lastLufsWindows` は説明している `lastLufs` の値と一緒に、`autoGainRef` は `autoGain<Kind>` と一緒に動く。`lastMeasuredAt` は 2 つのうち新しい方、`name` / `login` / `url` は owner のイベントから取る。仮 ID からユーザー ID への別名を保存する。
+- 書き込み: `mergeChannelIds`。ゲイン・Auto・Auto のゲイン・LUFS の各項目は、片方だけが持っていればその値を取り、両方が持っていれば版番号の大きい方を取る。同じ番号なら、ユーザー ID の行の値を残す。`lastLufs` では、`clearMeasurement` が記録した「消した」という状態も、持っているものとして数える。`lastLufsRef` と `lastLufsWindows` は説明している `lastLufs` の値と一緒に、`autoGainRef` は `autoGain<Kind>` と一緒に動く。`lastMeasuredAt` と、`lastLufsClearedAt` の種別ごとの値は 2 つのうち新しい方、`name` / `login` / `url` は owner のイベントから取る。仮 ID からユーザー ID への別名を保存する。
 - `currentChannel.id` が `migratingChannelId` と同じ間、content の `onChanged` リスナーは行を読み直さない (場面 12)。そのため、まとめる書き込みそのものによって、途中で仮 ID の行のゲインがかかることはない。
 - 保存された別名がすでに仮 ID をユーザー ID へ結んでいたときは、計測の対象が変わらないので、2 回目の種は送らない。同じコンテンツについて繰り返された owner のイベントの `mergeChannelIds` は、すでに整った状態の保存値を何も変えず、何も書かない (「チャンネルごとの値を書く単一の書き手」を参照)。
 - 読み直しが `chrome.storage.onChanged` の始めた読み直し (場面 12) に追い越されたときは、`seededResetPending` がまだ立っているので、追い越した読み直しが種つきのリセットを送る。

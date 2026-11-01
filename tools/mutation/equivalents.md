@@ -69,62 +69,62 @@ before its first await, so the resume that follows has it.
 The store helpers' opening checks. `sendChannelMutation` opens with the same
 runtime check, and every caller of these already holds `currentChannel.id`.
 
-- `content.js:161` a guard body is dropped ×1 — if (!channelId || !isContextValid() || !Number.isFinite(lufs)) {
-- `content.js:161` || becomes && ×2 — ||
-- `content.js:180` a guard body is dropped ×1 — if (!channelId || !isContextValid() || !Number.isFinite(autoGain)) {
-- `content.js:180` || becomes && ×2 — ||
-- `content.js:204` a guard is dropped ×1 — if (!fromId || !toId || fromId === toId) return Promise.resolve();
-- `content.js:204` || becomes && ×2 — ||
+- `content.js:164` a guard body is dropped ×1 — if (!channelId || !isContextValid() || !Number.isFinite(lufs)) {
+- `content.js:164` || becomes && ×2 — ||
+- `content.js:184` a guard body is dropped ×1 — if (!channelId || !isContextValid() || !Number.isFinite(autoGain)) {
+- `content.js:184` || becomes && ×2 — ||
+- `content.js:208` a guard is dropped ×1 — if (!fromId || !toId || fromId === toId) return Promise.resolve();
+- `content.js:208` || becomes && ×2 — ||
 
 The url `channelMetadata` puts on a mutation. Measured against the store: a
 merge whose channel names only the login comes back holding `name` and `url` all
 the same, because the store fills both from the login it was given.
 
-- `content.js:346` || becomes && ×1 — ||
+- `content.js:351` || becomes && ×1 — ||
 
 `acceptOwner`'s provisional-id check. A provisional id is `login:<name>` or
 `vod-owner:<id>` and a confirmed one is numeric, so the second clause is never
 false; the first is only false on a clip, which `ownerMatchesTwitchContent`
 refuses at the top of `acceptOwner`.
 
-- `content.js:352` && becomes || ×1 — &&
-- `content.js:352` a guard is always taken ×1 — if (provisionalId && provisionalId !== confirmedId) {
+- `content.js:357` && becomes || ×1 — &&
+- `content.js:357` a guard is always taken ×1 — if (provisionalId && provisionalId !== confirmedId) {
 
 The three dropped awaits on `resolveChannel`. It holds no await of its own, so
 its promise is already settled when it is returned.
 
-- `content.js:374` an await is dropped ×1 — await
-- `content.js:669` an await is dropped ×1 — await
-- `content.js:1039` an await is dropped ×1 — await
+- `content.js:379` an await is dropped ×1 — await
+- `content.js:688` an await is dropped ×1 — await
+- `content.js:1058` an await is dropped ×1 — await
 
 `reapplyForCurrentChannel`'s "no channel here" exit and its staleness check. The
 path below the exit loads nothing for an empty id, resolves the gain to 1.0 with
 no entry and applies that, which is what the body does; and the revision beside
 the staleness check is bumped by every channel change, so it answers first.
 
-- `content.js:416` a guard body is dropped ×1 — if (!ch.id || ch.kind === 'none') {
-- `content.js:416` || becomes && ×1 — ||
-- `content.js:427` || becomes && ×1 — ||
+- `content.js:421` a guard body is dropped ×1 — if (!ch.id || ch.kind === 'none') {
+- `content.js:421` || becomes && ×1 — ||
+- `content.js:432` || becomes && ×1 — ||
 
 The `true` that exit returns. Of the callers, only a settings change reads
 what the reapply returns, and its Auto save stops at
 `currentAutoApplyLoudness`, which the exit has just set to false.
 
-- `content.js:422` true becomes false ×1 — return true;
+- `content.js:427` true becomes false ×1 — return true;
 
 `handleBridgeMessage`'s runtime check. Each case reaches a guard of its own —
 the storage helpers above — and the rest only post to the page.
 
-- `content.js:462` a guard is dropped ×1 — if (!isContextValid()) return;
+- `content.js:481` a guard is dropped ×1 — if (!isContextValid()) return;
 
 The cached entry an Auto save and a measurement reset rewrite. What the mutants
 differ on is the other kind's `autoGainRef` and `lastLufs`, and `lastMeasuredAt`
 — content.js reads `lastLufs` only at `currentChannel.kind`, `lastMeasuredAt`
 nowhere, and the entry is reloaded before another kind is read.
 
-- `content.js:926` || becomes && ×1 — ||
-- `content.js:978` a guard is always taken ×1 — if (currentChannelEntry) {
-- `content.js:980` || becomes && ×1 — ||
+- `content.js:945` || becomes && ×1 — ||
+- `content.js:997` a guard is always taken ×1 — if (currentChannelEntry) {
+- `content.js:999` || becomes && ×1 — ||
 
 ## channel-store.js
 
@@ -151,12 +151,12 @@ does not terminate.** A suite carrying it never reports green — the sweep stop
 it at its own timeout rather than passing it — so it is named here to be
 accounted for, not because the code cannot tell the difference.
 
-- `channel-store.js:532` && becomes || ×1 — &&
+- `channel-store.js:544` && becomes || ×1 — &&
 
 The alias rebuild after a write. `clearChannels` leaves no rows, so the rebuild
 its check guards finds no targets.
 
-- `channel-store.js:626` a guard is always taken ×1 — if (resolvedMutation.operation !== 'clearChannels') {
+- `channel-store.js:638` a guard is always taken ×1 — if (resolvedMutation.operation !== 'clearChannels') {
 
 ## popup.js
 

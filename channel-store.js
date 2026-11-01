@@ -353,6 +353,13 @@ function mergeProvisionalEntry(all, mutation) {
   }
   if (Object.keys(mergedVersions).length) merged[FIELD_VERSIONS_FIELD] = mergedVersions;
   else delete merged[FIELD_VERSIONS_FIELD];
+  // The later clear of each kind stands for the merged row.
+  const clearedAt = { ...(source.lastLufsClearedAt || {}) };
+  for (const [clearKind, time] of Object.entries(target.lastLufsClearedAt || {})) {
+    if (!(clearedAt[clearKind] > time)) clearedAt[clearKind] = time;
+  }
+  if (Object.keys(clearedAt).length) merged.lastLufsClearedAt = clearedAt;
+  else delete merged.lastLufsClearedAt;
   if (Object.keys(mergedLufs).length &&
       (Number.isFinite(source.lastMeasuredAt) || Number.isFinite(target.lastMeasuredAt))) {
     merged.lastMeasuredAt = Math.max(
@@ -446,6 +453,10 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
       assertWritableChannelId(mutation.channelId);
       assertKind(mutation.kind);
       if (!Number.isFinite(mutation.lufs)) throw invalidChannelMutation('lufs must be finite');
+      if (!Number.isFinite(mutation.since)) throw invalidChannelMutation('since must be finite');
+      // A measurement begun before the kind's measurement was last cleared is
+      // one the clear was made against, and writes nothing.
+      if (mutation.since < all[mutation.channelId]?.lastLufsClearedAt?.[mutation.kind]) break;
       const entry = cloneEntry(all[mutation.channelId], fallbackRowName(mutation.channel, mutation.channelId));
       copyMetadata(entry, mutation.channel, mutation.channelId);
       entry.lastLufs = { ...(entry.lastLufs || {}), [mutation.kind]: mutation.lufs };
@@ -475,6 +486,7 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
       for (const field of MEASUREMENT_COMPANION_FIELDS) {
         setMeasurementCompanion(entry, field, mutation.kind, undefined);
       }
+      setMeasurementCompanion(entry, 'lastLufsClearedAt', mutation.kind, now);
       if (Object.keys(lastLufs).length) entry.lastLufs = lastLufs;
       else {
         delete entry.lastLufs;

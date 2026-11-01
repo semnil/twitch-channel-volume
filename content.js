@@ -53,6 +53,9 @@
   let autoMutationPending = false;
   let measurementResetPending = false;
   let measurementEpoch = 0;
+  // When the measurement in hand began: a save of it is not taken over a clear
+  // of the stored one made after then.
+  let measurementSince = Date.now();
   let currentCanonicalChannelId = '';
   let seededMeasurementTarget = '';
   // Set at startup, on a route change and where an owner moves what is being
@@ -168,6 +171,7 @@
       kind,
       lufs,
       reference: LUFS_REFERENCE_VOLUME_1,
+      since: measurementSince,
       // The count is whatever the bridge reported, already held to a
       // non-negative integer where it arrives; 0 means it named none.
       ...(windows ? { windows } : {}),
@@ -219,6 +223,7 @@
 
   function sendResetMeasurement(seed) {
     measurementEpoch++;
+    measurementSince = Date.now();
     lastAutoGainUpdateAt = -Infinity;
     sendCmd({
       cmd: 'resetMeasurement',
@@ -425,8 +430,22 @@
     const resolved = await loadChannelEntry(ch.id);
     if (revision !== preferenceRevision ||
         ch.id !== currentChannel.id || ch.kind !== currentChannel.kind) return false;
+    const beforeId = currentCanonicalChannelId;
+    const before = currentChannelEntry;
     currentCanonicalChannelId = resolved?.canonicalId || ch.id;
     currentChannelEntry = resolved?.entry || null;
+    // A stored measurement cleared elsewhere empties this tab's measurement
+    // too, so it is not stored back: a clear made after this measurement began
+    // (another tab's reset, whatever was stored at the time), or the value gone
+    // from the row this tab read before (the row deleted on the settings page).
+    const clearedSince = currentChannelEntry?.lastLufsClearedAt?.[ch.kind] > measurementSince;
+    const valueGone = beforeId === currentCanonicalChannelId && Number.isFinite(before?.lastLufs?.[ch.kind]) &&
+      !Number.isFinite(currentChannelEntry?.lastLufs?.[ch.kind]);
+    if (clearedSince || valueGone) {
+      clearMeasurementCache();
+      lastSavedAt = 0;
+      sendResetMeasurement();
+    }
     const preferred = resolvePreferredGain(
       currentChannelEntry,
       ch.kind,
