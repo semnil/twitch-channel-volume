@@ -11879,7 +11879,9 @@ test('popup exposes the selected channel-row measurement reset control', () => {
 
   const source = fs.readFileSync(path.join(__dirname, 'popup.js'), 'utf8');
   assert.match(source, /\$\('resetMeasurementBtn'\)\.title = msg\('resetMeasurement'\);/);
-  assert.match(source, /nameEl\.title = nameEl\.textContent;/);
+  // The name truncates to fit the row; drawOwnerName (core/common.js) keeps the
+  // full text as its title.
+  assert.match(source, /drawOwnerName\(\$\('channelName'\), ch\.name, 'channelNotDetected'\);/);
   assert.match(source, /cmd:\s*'resetMeasurement'/);
   // The reset is a gesture like the others: it carries the state the popup was
   // drawn from, copied before it looks the tab up so the display's own tick
