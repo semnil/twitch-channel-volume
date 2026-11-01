@@ -20,6 +20,9 @@
   // instead, it would carry whatever the last tick brought in, and the check on
   // the other side would pass on the state the gesture was never about.
   let sliderAppliesTo = null;
+  // The channel and kind the gesture was made for, which its save's notice is
+  // left to.
+  let sliderOwner = '';
   let currentAutoApplyLoudness = false;
   let audioUnavailable = false;
   let audioUnavailableCause = '';
@@ -27,7 +30,11 @@
   let autoUpdatePending = false;
   let measurementResetPending = false;
   let hasResettableMeasurement = false;
-  let gainSaveError = false;
+  // The last save the viewer asked for did not land (createSaveNotice in
+  // core/common.js). It stands until a save lands or the tab is on another
+  // channel or kind.
+  const saveNotice = createSaveNotice();
+  const ownerKey = () => (currentChannel.id ? currentChannel.id + '|' + currentChannel.kind : '');
 
   function syncInteractionDisabledState() {
     const validChannel = !!currentChannel.id &&
@@ -126,7 +133,7 @@
         if (showConnectionError) showStatus(msg('openOnTwitch'));
         return null;
       }
-      const res = await chrome.tabs.sendMessage(tab.id, { cmd: 'getState' });
+      const res = await sendTabMessage(tab.id, { cmd: 'getState' });
       stateRequestFailureNamed = '';
       return res;
     } catch (err) {
@@ -160,10 +167,10 @@
     const ch = state.channel || {};
     if (currentChannel.id &&
         (ch.id !== currentChannel.id || ch.kind !== currentChannel.kind)) {
-      gainSaveError = false;
       $('resetMeasurementError').classList.add('hidden');
     }
     currentChannel = ch;
+    saveNotice.showOwner(ownerKey());
     currentAppliesTo = state?.appliesTo || '';
     currentAutoApplyLoudness = !!state.autoApplyLoudness;
     audioUnavailable = !!state.audioUnavailable;
@@ -232,13 +239,11 @@
       applyButton.textContent = msg('applyToChannel');
     }
 
-    $('applyHint').classList.toggle('error', gainSaveError);
-    if (gainSaveError) {
+    if (saveNotice.draw($('applyHint'))) {
       // The save failure is the viewer's own last action; the notice above
       // carries the audio state alongside it.
       applyButton.disabled =
         currentAutoApplyLoudness || audioUnavailable || !hasIntegrated || !ch.id;
-      $('applyHint').textContent = msg('gainSaveFailed');
     } else if (audioUnavailable && ch.id) {
       // The notice carries the reason; the hint stays empty.
       applyButton.disabled = true;
@@ -278,38 +283,35 @@
         !Number.isFinite(lastSuggestedGain)) return;
     const appliesTo = currentAppliesTo;
     const gain = lastSuggestedGain;
+    const answered = saveNotice.send();
     try {
       const tab = await getActiveTab();
-      if (!tab) throw new Error('No active tab');
-      await chrome.tabs.sendMessage(tab.id, { cmd: 'resume' });
-      const res = await chrome.tabs.sendMessage(
-        tab.id,
-        { cmd: 'setGain', appliesTo, gain }
-      );
+      await sendTabMessage(tab?.id, { cmd: 'resume' });
+      const res = await sendTabMessage(tab?.id, { cmd: 'setGain', appliesTo, gain });
       if (!res?.ok) throw new Error(res?.reason || 'Gain update failed');
-      gainSaveError = false;
+      answered(res);
       syncSlider(gain);
     } catch (error) {
       console.warn('[TCV] suggested gain request failed', error);
-      gainSaveError = true;
+      answered(null);
       sliderSynced = false;
     }
     await refresh();
   }
 
-  async function setGain(percent, appliesTo = currentAppliesTo) {
+  async function setGain(percent, appliesTo = currentAppliesTo, owner) {
     if (autoUpdatePending || audioUnavailable ||
         !currentChannel.id || currentChannel.kind === 'none') return;
+    const answered = saveNotice.send(owner);
     try {
       const tab = await getActiveTab();
-      if (!tab) throw new Error('No active tab');
       const gain = percentToGain(percent);
-      const res = await chrome.tabs.sendMessage(tab.id, { cmd: 'setGain', appliesTo, gain });
+      const res = await sendTabMessage(tab?.id, { cmd: 'setGain', appliesTo, gain });
       if (!res?.ok) throw new Error(res?.reason || 'Gain update failed');
-      gainSaveError = false;
+      answered(res);
     } catch (error) {
       console.warn('[TCV] gain request failed', error);
-      gainSaveError = true;
+      answered(null);
       sliderSynced = false;
     }
     await refresh();
@@ -320,8 +322,7 @@
   async function previewGain(percent, appliesTo) {
     try {
       const tab = await getActiveTab();
-      if (!tab) return;
-      await chrome.tabs.sendMessage(tab.id, { cmd: 'previewGain', appliesTo, gain: percentToGain(percent) });
+      await sendTabMessage(tab?.id, { cmd: 'previewGain', appliesTo, gain: percentToGain(percent) });
     } catch (_) {}
   }
 
@@ -340,8 +341,7 @@
     syncInteractionDisabledState();
     try {
       const tab = await getActiveTab();
-      if (!tab) throw new Error('No active tab');
-      const res = await chrome.tabs.sendMessage(tab.id, {
+      const res = await sendTabMessage(tab?.id, {
         cmd: 'setAutoApplyLoudness',
         appliesTo,
         enabled
@@ -380,8 +380,7 @@
     syncInteractionDisabledState();
     try {
       const tab = await getActiveTab();
-      if (!tab) throw new Error('No active tab');
-      const res = await chrome.tabs.sendMessage(tab.id, {
+      const res = await sendTabMessage(tab?.id, {
         cmd: 'resetMeasurement',
         appliesTo
       });
@@ -444,6 +443,7 @@
   let sliderValueAtEnd = '';
   const beginSliderGesture = () => {
     sliderAppliesTo = currentAppliesTo;
+    sliderOwner = ownerKey();
     sliderGestureEnded = false;
   };
   const endSliderGesture = () => {
@@ -488,8 +488,9 @@
     sliderKeyMoved = false;
     if (moved) {
       const appliesTo = sliderAppliesTo ?? currentAppliesTo;
+      const owner = sliderAppliesTo === null ? ownerKey() : sliderOwner;
       sliderAppliesTo = null;
-      setGain(Number($('manualSlider').value), appliesTo);
+      setGain(Number($('manualSlider').value), appliesTo, owner);
     }
     return true;
   };
@@ -506,7 +507,10 @@
   $('manualSlider').addEventListener('input', (e) => {
     if (sliderGestureEnded) return;
     // An input that arrived without either of those begins one too.
-    if (sliderAppliesTo === null) sliderAppliesTo = currentAppliesTo;
+    if (sliderAppliesTo === null) {
+      sliderAppliesTo = currentAppliesTo;
+      sliderOwner = ownerKey();
+    }
     if (autoUpdatePending) return;
     const g = percentToGain(Number(e.target.value));
     const f = formatGain(g, displayUnit);
@@ -525,8 +529,9 @@
     }
     if (sliderKeyHeld) return;
     const appliesTo = sliderAppliesTo ?? currentAppliesTo;
+    const owner = sliderAppliesTo === null ? ownerKey() : sliderOwner;
     sliderAppliesTo = null;
-    setGain(Number(e.target.value), appliesTo);
+    setGain(Number(e.target.value), appliesTo, owner);
   });
   document.querySelectorAll('.presets button').forEach((btn) => {
     btn.addEventListener('click', () => {

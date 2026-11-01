@@ -7750,6 +7750,83 @@ test('popup clears the reset failure when the same channel changes kind', async 
   assert.equal(harness.el('resetMeasurementError').classList.contains('hidden'), true);
 });
 
+test('popup keeps a failed save on screen for its channel and kind, and takes it down for another', async () => {
+  const harness = createPopupHarness({ failCommand: 'setGain', state: WATCHING });
+  await flushTasks(8);
+  harness.el('manualSlider').value = '75';
+  await harness.dispatch('manualSlider');
+  assert.equal(harness.el('applyHint').textContent, harness.message('gainSaveFailed'));
+
+  // A page with no channel names no other one, so the notice stands.
+  harness.setState({ channel: { id: '', name: '', kind: 'none', url: '' } });
+  await harness.poll();
+  harness.setState({ channel: WATCHING.channel });
+  await harness.poll();
+  assert.equal(harness.el('applyHint').textContent, harness.message('gainSaveFailed'),
+    'the same channel after a page with none keeps it');
+
+  // The same channel in the other kind holds a gain of its own.
+  harness.setState({ channel: { ...WATCHING.channel, kind: 'vod' } });
+  await harness.poll();
+  assert.notEqual(harness.el('applyHint').textContent, harness.message('gainSaveFailed'));
+  assert.equal(harness.el('applyHint').classList.contains('error'), false);
+});
+
+test('popup leaves the notice of an unsaved gain to the latest save, made for the channel on screen', async () => {
+  // An earlier save that lands after a later one failed.
+  const order = createPopupHarness({ holdCommand: 'setGain', state: WATCHING });
+  await flushTasks(8);
+  await order.firePreset(1, 'click');
+  order.breakSendMessage({ setGain: 'Could not establish connection. Receiving end does not exist.' });
+  await order.firePreset(2, 'click');
+  await flushTasks(8);
+  assert.equal(order.el('applyHint').textContent, order.message('gainSaveFailed'), 'the later save is said not to have landed');
+  order.breakSendMessage('');
+  await order.releaseCommand();
+  assert.equal(order.el('applyHint').textContent, order.message('gainSaveFailed'),
+    'and the earlier one landing does not take that down');
+
+  // A save made for one channel that fails once another is shown.
+  const moved = createPopupHarness({ holdCommand: 'setGain', failCommand: 'setGain', state: WATCHING });
+  await flushTasks(8);
+  await moved.firePreset(1, 'click');
+  moved.setState({ channel: { id: '77', name: 'Another Streamer', kind: 'live', url: '' }, appliesTo: '77|live|' });
+  await moved.poll();
+  await moved.releaseCommand();
+  assert.notEqual(moved.el('applyHint').textContent, moved.message('gainSaveFailed'),
+    'its failure is not put up for the channel shown now');
+  assert.equal(moved.el('applyHint').classList.contains('error'), false);
+});
+
+test('popup leaves the notice to the channel shown when a slider gesture begun on another is let go of', async () => {
+  for (const by of ['drag', 'key']) {
+    const harness = createPopupHarness({ failCommand: 'setGain', state: { ...WATCHING, appliesTo: '55|live|' } });
+    await flushTasks(8);
+    const begin = () => harness.fire('manualSlider', by === 'drag' ? 'pointerdown' : 'keydown', by === 'drag' ? {} : sliderKey('ArrowRight'));
+    const end = () => (by === 'drag' ? harness.fire('manualSlider', 'change') : harness.fire('manualSlider', 'keyup', sliderKey('ArrowRight')));
+    await begin();
+    harness.el('manualSlider').value = '150';
+    await harness.fire('manualSlider', 'input');
+    harness.setState({ channel: { id: '77', name: 'Another Streamer', kind: 'live', url: '' }, appliesTo: '77|live|' });
+    await harness.poll();
+    harness.el('manualSlider').value = '160';
+    await harness.fire('manualSlider', 'input');
+    await end();
+    await flushTasks(8);
+    const save = harness.sent.filter((request) => request.cmd === 'setGain').at(-1);
+    assert.equal(save?.appliesTo, '55|live|', `${by}: the save carries the state it began on`);
+    assert.notEqual(harness.el('applyHint').textContent, harness.message('gainSaveFailed'),
+      `${by}: its failure is not put up for the channel shown`);
+    // A gesture begun on the channel shown is said so.
+    await begin();
+    harness.el('manualSlider').value = '170';
+    await harness.fire('manualSlider', 'input');
+    await end();
+    await flushTasks(8);
+    assert.equal(harness.el('applyHint').textContent, harness.message('gainSaveFailed'), `${by}: one begun on the channel shown is`);
+  }
+});
+
 test('popup keeps Apply out while a save failed and there is no level to apply', async () => {
   const harness = createPopupHarness({
     failCommand: 'setGain',

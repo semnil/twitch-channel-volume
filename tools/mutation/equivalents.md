@@ -199,15 +199,10 @@ The `await refresh()` ending `applyMeasured`, `setGain` and
 `setAutoApplyLoudness`. All three are called from click handlers that discard
 the promise, so nothing observes when they settle.
 
-- `popup.js:297` an await is dropped ×1 — await
-- `popup.js:315` an await is dropped ×1 — await
+- `popup.js:299` an await is dropped ×1 — await
+- `popup.js:317` an await is dropped ×1 — await
 - `popup.js:357` an await is dropped ×1 — await
 
-`previewGain`'s missing-tab exit. Without it `tab.id` throws inside the `try`,
-and the `catch` drops that as it drops a failed send: nothing is sent and
-nothing is named either way.
-
-- `popup.js:323` a guard is dropped ×1 — if (!tab) return;
 
 ## utils.js
 

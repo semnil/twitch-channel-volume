@@ -527,3 +527,54 @@ function retryGetState(remaining, intervalMs, { done, ask, take }) {
     } catch (_) {}
   }, intervalMs);
 }
+
+// Sends message to the content script of the popup's tab, and resolves with
+// its answer. A popup that holds no tab sends nothing and rejects.
+function sendTabMessage(tabId, message) {
+  if (!tabId) return Promise.reject(new Error('no tab'));
+  return chrome.tabs.sendMessage(tabId, message);
+}
+
+// The popup's notice that the gain a gesture asked to save is not saved
+// (gainSaveFailed). The answer to the latest save sent for the owner shown
+// raises it where the answer is not ok, whether the tab refused the gesture
+// or could not save it, and takes it down where it is ok; the answer to an
+// earlier save, to one sent for another owner than the one shown, and to one
+// answered once another owner is shown, leave it as it is. The popup coming
+// to show another owner takes it down.
+function createSaveNotice() {
+  let raised = false;
+  let owner = '';
+  let sent = 0;
+  return {
+    raised: () => raised,
+    // Called as a save goes out, with the owner it is for (the owner shown
+    // where it names none). Answers the function that save's answer is handed
+    // to (none where no answer came), which answers whether the answer is ok.
+    // A save for another owner than the one shown leaves the notice, and the
+    // saves for the owner shown, as they are.
+    send(sentFor = owner) {
+      if (sentFor !== owner) return (answer) => !!answer?.ok;
+      const save = ++sent;
+      return (answer) => {
+        const ok = !!answer?.ok;
+        if (save === sent && sentFor === owner) raised = !ok;
+        return ok;
+      };
+    },
+    // The owner the popup shows, as a key; '' where it shows none, which
+    // leaves the notice as it is.
+    showOwner(key) {
+      if (!key) return;
+      if (owner && key !== owner) raised = false;
+      owner = key;
+    },
+    // Puts the notice in hint while it is raised, in the error colour.
+    // Whether it did.
+    draw(hint) {
+      hint.classList.toggle('error', raised);
+      if (raised) hint.textContent = msg('gainSaveFailed');
+      return raised;
+    }
+  };
+}
