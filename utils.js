@@ -9,9 +9,6 @@ const DEFAULT_AD_GAIN_DB = -6;
 // divided out, so it is comparable across volume settings.
 const LUFS_REFERENCE_VOLUME_1 = 'volume1';
 
-const ABSOLUTE_GATE_LUFS = -70;
-const RELATIVE_GATE_LU = -10;
-
 function dbToGain(db) { return Math.pow(10, db / 20); }
 
 function gainFieldForKind(kind) {
@@ -170,95 +167,12 @@ function twitchChannelUrlForEntry(channelId, entry) {
   return /^[a-z0-9_]+$/.test(login) ? `https://www.twitch.tv/${login}` : '';
 }
 
-// K-weighting IIR coefficients (BS.1770-4, normalized for 48 kHz) -----
-
-const K_PRE_48K = {
-  b: [1.53512485958697, -2.69169618940638, 1.19839281085285],
-  a: [1.0, -1.69065929318241, 0.73248077421585]
-};
-const K_RLB_48K = {
-  b: [1.0, -2.0, 1.0],
-  a: [1.0, -1.99004745483398, 0.99007225036621]
-};
-
-// Bilinear-transform coefficients to a target sample rate.
-// Reference filter is defined at fs0 = 48000 Hz; the (b, a) pairs are
-// re-derived analytically for arbitrary fs. Implements the same approach
-// as ffmpeg's loudnorm: extract pole/zero parameters via Z-domain analysis
-// at 48 kHz, then re-generate at fs.
-function kWeightingForSampleRate(sampleRate) {
-  const sr = Number(sampleRate) || 48000;
-  if (Math.abs(sr - 48000) < 1) return { pre: K_PRE_48K, rlb: K_RLB_48K };
-  return {
-    pre: redesignBiquad(K_PRE_48K, 48000, sr),
-    rlb: redesignBiquad(K_RLB_48K, 48000, sr)
-  };
-}
-
-// Re-design biquad: convert (b, a) defined at fs0 to fs by inverse bilinear
-// then re-bilinear at fs. This preserves the analog response shape.
-function redesignBiquad(coef, fs0, fs) {
-  const K0 = 2 * fs0;
-  const { b, a } = coef;
-  // Inverse bilinear to s-domain (Tustin): z = (K0 + s) / (K0 - s)
-  // Numerator/denominator in s: solve polynomial substitution.
-  // For a biquad H(z) = (b0 + b1 z^-1 + b2 z^-2) / (a0 + a1 z^-1 + a2 z^-2),
-  // analog form H(s) = (B0 + B1 s + B2 s^2) / (A0 + A1 s + A2 s^2).
-  const [b0, b1, b2] = b;
-  const [a0, a1, a2] = a;
-  const B0 = b0 + b1 + b2;
-  const B1 = 2 * (b0 - b2) / K0;
-  const B2 = (b0 - b1 + b2) / (K0 * K0);
-  const A0 = a0 + a1 + a2;
-  const A1 = 2 * (a0 - a2) / K0;
-  const A2 = (a0 - a1 + a2) / (K0 * K0);
-  const K = 2 * fs;
-  const K2 = K * K;
-  const denom = A0 + A1 * K + A2 * K2;
-  return {
-    b: [
-      (B0 + B1 * K + B2 * K2) / denom,
-      (2 * B0 - 2 * B2 * K2) / denom,
-      (B0 - B1 * K + B2 * K2) / denom
-    ],
-    a: [
-      1.0,
-      (2 * A0 - 2 * A2 * K2) / denom,
-      (A0 - A1 * K + A2 * K2) / denom
-    ]
-  };
-}
-
-function meanSquareToLufs(meanSquare) {
-  if (!Number.isFinite(meanSquare) || meanSquare <= 0) return -Infinity;
-  return -0.691 + 10 * Math.log10(meanSquare);
-}
-
-// Integrated loudness (BS.1770 gated): given an array of momentary MS
-// values (each representing a 400ms block, 75% overlapped), apply the
-// absolute gate at -70 LUFS and the relative gate at -10 LU below the
-// ungated mean.
-function gatedIntegratedLufs(blockMs) {
-  const valid = blockMs.filter((ms) => Number.isFinite(ms) && ms > 0);
-  if (valid.length === 0) return -Infinity;
-  const absGateMs = Math.pow(10, (ABSOLUTE_GATE_LUFS + 0.691) / 10);
-  const passAbs = valid.filter((ms) => ms >= absGateMs);
-  if (passAbs.length === 0) return -Infinity;
-  const meanAbs = passAbs.reduce((s, v) => s + v, 0) / passAbs.length;
-  const relGateLufs = meanSquareToLufs(meanAbs) + RELATIVE_GATE_LU;
-  const relGateMs = Math.pow(10, (relGateLufs + 0.691) / 10);
-  const passRel = passAbs.filter((ms) => ms >= relGateMs);
-  if (passRel.length === 0) return -Infinity;
-  const meanRel = passRel.reduce((s, v) => s + v, 0) / passRel.length;
-  return meanSquareToLufs(meanRel);
-}
-
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     SETTINGS_KEY, SETTINGS_MUTATION_MESSAGE, isStoredSettingsObject, readSettings,
     CHANNEL_VOLUMES_KEY, CHANNEL_ALIASES_KEY, CHANNEL_SEQUENCE_KEY,
     DEFAULT_TARGET_LUFS, DEFAULT_AD_GAIN_DB,
-    ABSOLUTE_GATE_LUFS, RELATIVE_GATE_LU, LUFS_REFERENCE_VOLUME_1,
+    LUFS_REFERENCE_VOLUME_1,
     MIN_GAIN, MAX_GAIN,
     gainToPercent, percentToGain, gainToDb, dbToGain,
     formatGain, formatAutoGain, calcGain, suggestedGain,
@@ -268,9 +182,6 @@ if (typeof module !== 'undefined' && module.exports) {
     resolveAutoApplySetting, resolvePreferredGain,
     TWITCH_RESERVED_PATHS, classifyTwitchUrl, ownerMatchesTwitchContent, provisionalChannelIdForContent,
     resolveChannelIdAlias, twitchChannelUrlForEntry,
-    kWeightingForSampleRate, redesignBiquad,
-    K_PRE_48K, K_RLB_48K,
-    meanSquareToLufs, gatedIntegratedLufs,
     SLIDER_VALUE_KEYS, createSliderKeys,
     esc, msg
   };

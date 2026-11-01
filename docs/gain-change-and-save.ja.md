@@ -13,8 +13,8 @@
 | popup | `popup.js` | 拡張機能のポップアップ (ツールバーのボタンで開く小さな画面) | 操作 (ゲイン、Auto、測定値のリセット) を、開いているタブの content script へ送る。`getState` を `STATE_POLL_INTERVAL_MS` (1000 ms、core/common.js の `pollTabState`) ごとに読む。storage へは何も書かない |
 | options | `options.js` | 拡張機能の設定ページ | 設定の変更と、チャンネルの `normalizeChannels` / `deleteChannel` / `clearChannels` を Service Worker へ送る |
 | content | `content.js` | Twitch のタブ、ISOLATED world | 基準ゲイン (`currentGain`) を決めて bridge へ送り、チャンネルごとの変更を Service Worker へ送る |
-| bridge | `page-bridge.js` | Twitch のタブ、MAIN world | `AudioContext`・出力の `GainNode`・LUFS の計測を持ち、ノードを実際にかかるゲインへ動かす |
-| worklet | `audio-worklet.js` | AudioWorklet のスレッド | 100 ms のブロックごとに、K 特性をかけた信号の二乗平均 (MS) を送る |
+| bridge | `page-bridge.js` | Twitch のタブ、MAIN world | `AudioContext`・出力の `GainNode`・LUFS の計測 (先に読み込む `core/loudness.js` のメーター、[channel-volume-core](https://github.com/semnil/channel-volume-core/blob/main/docs/shared-files.ja.md#loudness)) を持ち、ノードを実際にかかるゲインへ動かす |
+| worklet | `audio-worklet.js` | AudioWorklet のスレッド | 100 ms のブロックごとに、K 特性をかけた信号の二乗平均 (MS) を送る ([channel-volume-core](https://github.com/semnil/channel-volume-core/blob/main/docs/shared-files.ja.md#worklet)) |
 | SW | `background.js`、`core/common.js`、`channel-store.js`、`settings-store.js` | Service Worker | `channelVolumes` / `channelVolumeAliases` / `channelVolumeSequence` と `autoLoudnessSettings` を書くただ 1 つの書き手。起動のたびに、設定を local から sync へ移す |
 | storage | — | `chrome.storage.local` と `chrome.storage.sync` | 下の保存キーを持つ。設定は sync、ほかは local。content と options は両方の `onChanged` イベントを、popup は sync のものを受け取る |
 
@@ -376,7 +376,7 @@ sequenceDiagram
   participant sw as Service Worker
   worklet->>bridge: ms と samples の port メッセージ、100 ms のブロックごとに 1 回
   bridge->>bridge: onBlockMs: normalizeForVolume、rereadAdState
-  bridge->>bridge: CM 中・境界のスキップ中・最初のゲーティング窓の前は Integrated をそのまま、それ以外は updateIntegratedLufs
+  bridge->>bridge: meter.addBlock: CM 中・境界のスキップ中・最初のゲーティング窓の前は Integrated をそのまま、それ以外は窓を追加
   bridge-->>content: lufs と epoch、momentary、shortTerm、integrated、integratedWindows、playing
   alt measurementResetPending、audioUnavailable、または measurementEpoch より古い epoch
     content->>content: 知らせを捨てる
@@ -406,7 +406,7 @@ sequenceDiagram
   end
 ```
 
-図のもと: `audio-worklet.js` の `KMeanSquareProcessor.process`。`page-bridge.js` の `onBlockMs`、`normalizeForVolume`、`updateIntegratedLufs`、`integratedLufs`、`postLufs`。`content.js` の `handleBridgeMessage` の `lufs`、`applyAutoGain`、`previewHoldsGain`、`throttledSaveIntegrated`、`saveLastIntegrated`、`measurementSaved`、`measurementSaveFailed`。
+図のもと: `audio-worklet.js` の `KMeanSquareProcessor.process`。`page-bridge.js` の `onBlockMs`、`postLufs`。`core/loudness.js` の `normalizeForVolume` とメーターの `addBlock`。`content.js` の `handleBridgeMessage` の `lufs`、`applyAutoGain`、`previewHoldsGain`、`throttledSaveIntegrated`、`saveLastIntegrated`、`measurementSaved`、`measurementSaveFailed`。
 
 - 2 つの間引きは別々に働く。`applyAutoGain` を通るとき、Auto のもとでゲインが変わるのは 1000 ms (`AUTO_FOLLOW_INTERVAL_MS`) に 1 回まで。`chrome.storage.onChanged` が始める読み直し (場面 10 と 12) は、この間引きを通らずに同じゲインをかける。計測結果と今かかっている Auto のゲインを書くのは、Auto のオン・オフに関係なく、タブごとに 5000 ms に 1 回までで、`playing` が true の `lufs` からだけ。`lastSavedAt` は保存を送るときに入り、保存の失敗・SPA 遷移・測定値のリセットで 0 に戻るので、次のブロックでまた送る。`sendResetMeasurement` は `lastAutoGainUpdateAt` を `-Infinity` に戻すので、リセット後に最初に届いた有限の Integrated はすぐにかかる。
 - Auto がかけるゲインは `calcGain(integrated, targetLufs)`、つまり Integrated が求めるゲインで、`currentGain` より大きくても小さくても同じ。

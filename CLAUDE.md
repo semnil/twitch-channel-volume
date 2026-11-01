@@ -46,19 +46,16 @@ flowchart LR
 ### page-bridge.js (MAIN world content script, document_start)
 
 - Owns the AudioContext / MediaElementSource / GainNode
-- K-weighting IIRFilter (pre-filter high-shelf + RLB high-pass, BS.1770-4)
-- AudioWorklet (k-mean-square) accumulates the MS of each 100ms block
-  - Each block is divided by video.volume squared on arrival, normalising it to volume 1.0
-  - Momentary: MS average of the last 4 blocks (400ms) → LUFS
-  - Short-term: MS average of the last 30 blocks (3s) → LUFS
-  - Integrated: the MS average of the last 4 blocks (400ms) is submitted every 100ms as one gating window; the stored per-kind LUFS enters as initial samples worth the window count it was measured over (floor 300 windows = 30 seconds, cap 1800 windows = 3 minutes); a 1-hour ring buffer + balanced tree updates the absolute gate (-70 LUFS) and the relative gate (-10 LU) in O(log n). Reported alongside the LUFS is the window count the value stands on (windows that passed the relative gate, with the seed counted as the window count it declared)
+- The measurement is the meter of `core/loudness.js` ([channel-volume-core](https://github.com/semnil/channel-volume-core/blob/main/docs/shared-files.md#loudness)), loaded ahead of this script in the same world: the K-weighting IIRFilters (pre-filter high-shelf + RLB high-pass, BS.1770-4) for the context's rate, the AudioWorklet (k-mean-square) that posts the MS of each 100ms block, Momentary (4 blocks), Short-term (30 blocks) and the gated Integrated with its window count, seeded from the stored per-kind LUFS and the window count it was measured over (floor 300 windows = 30 seconds, cap 1800 windows = 3 minutes). What the bridge gives it:
+  - Each block divided by video.volume squared on arrival (`normalizeForVolume`), normalising it to volume 1.0
+  - The ad gate as the block's hold, the boundary skips below, the ad-start rollback's removal of recent windows, `resetMeasurement`'s seed, and a fresh gating window when another element is attached
 - Boundary skip: after an ad ends or the volume changes, the 4 windows it takes for the gating window to clear the boundary are excluded from Integrated
 - Ad gate: nothing is added to Integrated while the playback position is at or past the cue's `startTime` and before its `endTime`. While no cue has been received at all, the gate follows the DOM indicator instead
 - Ad-start rollback: from the elapsed time when the cue arrives (playback position − the cue's `startTime`), 1 + elapsed/0.1 windows are withdrawn; with no cue and only the DOM indicator, 5 windows (windows added since the last reset only; done after the ring buffer has overflowed too). Windows the boundary skip never added are subtracted from that count
 - Measurement epoch: the number received with resetMeasurement is held and stamped on later lufs notifications
 - attach loop (scheduleAttach): retries for a video at 1s intervals. On detecting a video that left the DOM, it tears the chain down and restarts the loop itself
 - Holds the element it could not attach to, and sets takenElsewhere on attached while that element remains in the page
-- buildMeasurementChain: connected at attach time (attach runs after the worklet load has resolved)
+- buildMeasurementChain: the meter's chain (`buildChain`), connected at attach time (attach runs after the worklet load has resolved)
 - Takes an element only when Web Audio can carry its audio: a `srcObject`, the page's own origin, or a `crossorigin` attribute. Media another origin serves outside CORS mode (a Twitch clip) is left to the player and reported as `attach-failed` / `cross-origin`
 - Fetch hook (GraphQL only):
   - gql.twitch.tv → extracts user.id with the user's login / video.owner.id with the video's id, both from the answer. A video owner whose answer names no video id is not taken
@@ -101,9 +98,9 @@ flowchart LR
   - `channelVolumeAliases: { [loginOrContentProvisionalId]: canonicalOwnerId }`
   - channelVolumeSequence: persistent counter for the field update order
 
-### audio-worklet.js (page context, loaded by page-bridge.js)
+### audio-worklet.js (page context, loaded by page-bridge.js; from channel-volume-core)
 
-- KMeanSquareProcessor: port.postMessage of the L²+R² average every blockSec (default 0.1)
+- KMeanSquareProcessor: port.postMessage of the L²+R² average every blockSec (default 0.1). Shared; what it does is in channel-volume-core's [docs/shared-files.md](https://github.com/semnil/channel-volume-core/blob/main/docs/shared-files.md#worklet)
 
 ### channel-store.js (service worker helper)
 
@@ -129,13 +126,15 @@ The shared code. What each part does is in channel-volume-core's [docs/shared-fi
 - Every reader of the settings goes through `readSettings`, the settings writer's read-modify-write among them. The pages and content.js pass `chrome.storage` themselves
 - channel-store.js keeps its own writer of channelVolumes, which also holds the aliases and the update sequence, rather than `createStoredMapWriter`
 
+### core/loudness.js (from channel-volume-core, loaded ahead of page-bridge.js in the MAIN world)
+
+The shared measurement: the K-weighting, the chain the worklet is built into and the meter. What each part does is in channel-volume-core's [docs/shared-files.md](https://github.com/semnil/channel-volume-core/blob/main/docs/shared-files.md#loudness); what the bridge gives it is under page-bridge.js. It declares the one name `channelVolumeLoudness` in the page's world, a frozen object the bridge reads its parts from as it starts.
+
 ### utils.js (shared, popup/options + content.js + test.js. It is not loaded in the MAIN world, so page-bridge.js carries its own constants)
 
-- Constants: SETTINGS_MUTATION_MESSAGE, CHANNEL_VOLUMES_KEY, CHANNEL_ALIASES_KEY, CHANNEL_SEQUENCE_KEY, DEFAULT_AD_GAIN_DB, DEFAULT_AUTO_APPLY_LOUDNESS, LUFS_REFERENCE_VOLUME_1, ABSOLUTE_GATE_LUFS, RELATIVE_GATE_LU
+- Constants: SETTINGS_MUTATION_MESSAGE, CHANNEL_VOLUMES_KEY, CHANNEL_ALIASES_KEY, CHANNEL_SEQUENCE_KEY, DEFAULT_AD_GAIN_DB, DEFAULT_AUTO_APPLY_LOUDNESS, LUFS_REFERENCE_VOLUME_1
 - Gain utilities: dbToGain, calcGain, suggestedGain, resolveAutoApplySetting, resolvePreferredGain
 - URL classification: classifyTwitchUrl (TWITCH_RESERVED_PATHS excluded)
-- BS.1770: K_PRE_48K / K_RLB_48K coefficients + redesignBiquad (any sample rate)
-- LUFS: meanSquareToLufs, gatedIntegratedLufs (absolute + relative gating)
 
 ### popup.html / popup.js
 
@@ -190,8 +189,8 @@ The shared code. What each part does is in channel-volume-core's [docs/shared-fi
 | File | Role |
 |------|------|
 | `manifest.json` | MV3 manifest. permissions: storage. host: twitch.tv |
-| `page-bridge.js` | MAIN world. AudioContext + LUFS + fetch hook (GraphQL) + Worker hook (ad cues) + gain on the ad element |
-| `audio-worklet.js` | K-weighted MS accumulation (100ms blocks) |
+| `page-bridge.js` | MAIN world. AudioContext + LUFS (through `core/loudness.js`) + fetch hook (GraphQL) + Worker hook (ad cues) + gain on the ad element |
+| `audio-worklet.js` | K-weighted MS accumulation (100ms blocks); shared ([channel-volume-core](https://github.com/semnil/channel-volume-core/blob/main/docs/shared-files.md#worklet)) |
 | `content.js` | ISOLATED world. Gain management, channel resolution, storage |
 | `utils.js` | Shared constants and utilities (content.js/popup/options/test) |
 | `popup.html` / `popup.js` | Popup UI |
@@ -210,21 +209,23 @@ The shared code. What each part does is in channel-volume-core's [docs/shared-fi
 | `tools/tag-plan.sh` | The release tag a commit on main asks for, which `tag-release.yaml` pushes, so merging a version bump is the release; shared ([channel-volume-core](https://github.com/semnil/channel-volume-core/blob/main/docs/shared-files.md#release)) |
 | `tools/verify-version.sh` | Holds a release tag to the manifest's version; shared ([channel-volume-core](https://github.com/semnil/channel-volume-core/blob/main/docs/shared-files.md#release)) |
 | `tools/fonts/` | The M PLUS 1p faces used for drawing (Regular / Bold) and OFL.txt. Taken from `ofl/mplus1p` in google/fonts (commit `66a36c8`). Kept in the repository so that CI and each machine produce the same pixels |
-| `test.js` | Unit tests (`node test.js`) — utils and the stores, plus content.js / page-bridge.js / audio-worklet.js / popup.js / options.js / background.js run in a VM harness. The harnesses keep `chrome.storage.sync` and `chrome.storage.local` apart and name the area of every change they fire, as Chrome does |
+| `test.js` | Unit tests (`node test.js`) — utils and the stores, plus content.js / page-bridge.js (with `core/loudness.js` loaded ahead of it, as the manifest loads them) / popup.js / options.js / background.js run in a VM harness. The meter and the worklet are tested in channel-volume-core; the bridge's cases read what it posts against an oracle over arrays. The harnesses keep `chrome.storage.sync` and `chrome.storage.local` apart and name the area of every change they fire, as Chrome does |
 | `tools/mutation/` | `sweep.mjs`, `bail.mjs` and `sweep-all.sh` are shared ([channel-volume-core](https://github.com/semnil/channel-volume-core/blob/main/docs/shared-files.md#mutation)). `fast-suite.sh` is this repository's: `node test.js` without the packaging surface, whose slow cases shell out to python; it excludes on the case name, so it is used with `MUTATE_CONFIRM="node test.js"` and never on its own. `equivalents.md` is this repository's own: every mutant the suite lets through and what was measured about each, held to the code by `sweep.mjs --verify`, which `test.js` runs. A failed test prints `✖ <name>` from the spec reporter or `not ok <n> - <name>` from the TAP reporter, whichever the Node running it writes to a pipe, the line given to `bail.mjs`; node:test writes a test's line only once the event loop runs again, so a failure followed by tests that hold the loop (a `spawnSync`, a synchronous loop) reaches `bail.mjs` with the first test after them that waits on something |
-| `tools/coverage/` | `v8-to-lcov.mjs` is shared ([channel-volume-core](https://github.com/semnil/channel-volume-core/blob/main/docs/shared-files.md#coverage)). CI runs `test.js` under `NODE_V8_COVERAGE` and uploads to Codecov the report of the JS files `pack.py --list` ships but those under `core/`; a failed upload fails the Test check |
+| `tools/coverage/` | `v8-to-lcov.mjs` is shared ([channel-volume-core](https://github.com/semnil/channel-volume-core/blob/main/docs/shared-files.md#coverage)). CI runs `test.js` under `NODE_V8_COVERAGE` and uploads to Codecov the report of the JS files `pack.py --list` ships but those under `core/` and `audio-worklet.js`; a failed upload fails the Test check |
 | `core/common.js` | The code shared with the sibling extensions, loaded ahead of `utils.js` wherever `utils.js` loads; what each part does is in [channel-volume-core](https://github.com/semnil/channel-volume-core/blob/main/docs/shared-files.md#shared-code) |
+| `core/loudness.js` | The loudness measurement shared with the sibling extensions, loaded ahead of `page-bridge.js` in the MAIN world; what each part does is in [channel-volume-core](https://github.com/semnil/channel-volume-core/blob/main/docs/shared-files.md#loudness) |
 | `core.json` | Names this extension to [semnil/channel-volume-core](https://github.com/semnil/channel-volume-core#corejson): the groups of shared files it takes, the commit its copies come from, the zip's name and the icon. Nothing the extension loads refers to it, so the package never carries it |
 | `tools/check-shared.sh` | Compares the shared files with the commit `core.json` locks; the Test check runs it, and a copy that differs fails it. Shared ([channel-volume-core](https://github.com/semnil/channel-volume-core/blob/main/docs/shared-files.md#check-shared)) |
 
 ## Shared files
 
-`core/common.js`, `pack.py`, `gen_icons.py`, `tools/mutation/sweep.mjs`, `tools/mutation/bail.mjs`, `tools/mutation/sweep-all.sh`, `tools/coverage/v8-to-lcov.mjs`, `tools/check-shared.sh`, the release scripts (`tools/check-tag.sh`, `tools/tag-plan.sh`, `tools/verify-version.sh`), every workflow under `.github/workflows`, `.github/tests/`, `.github/CODEOWNERS`, `.github/FUNDING.yml`, the issue templates and `.gitattributes` (which checks every one of them out with LF line endings) are copies of the files under `shared/` in [semnil/channel-volume-core](https://github.com/semnil/channel-volume-core), at the commit `core.json` locks. What each of them does is in that repository's [docs/shared-files.md](https://github.com/semnil/channel-volume-core/blob/main/docs/shared-files.md). They are changed there, with their tests, and copied here with that repository's `sync.mjs`. The Test check fails a copy that differs from the locked commit. Dependabot runs there as well, so this repository has no `dependabot.yml`. Once a day, and when run by hand, the Sync Core workflow (`.github/workflows/sync-core.yaml`) opens or updates the pull request from `sync/channel-volume-core` that takes channel-volume-core's `main` where it has moved past the locked commit, with a GitHub App's token; its job is skipped while the repository has no `SYNC_APP_CLIENT_ID` variable (channel-volume-core's README, "Setting up the sync").
+`core/common.js`, `core/loudness.js`, `audio-worklet.js`, `pack.py`, `gen_icons.py`, `tools/mutation/sweep.mjs`, `tools/mutation/bail.mjs`, `tools/mutation/sweep-all.sh`, `tools/coverage/v8-to-lcov.mjs`, `tools/check-shared.sh`, the release scripts (`tools/check-tag.sh`, `tools/tag-plan.sh`, `tools/verify-version.sh`), every workflow under `.github/workflows`, `.github/tests/`, `.github/CODEOWNERS`, `.github/FUNDING.yml`, the issue templates and `.gitattributes` (which checks every one of them out with LF line endings) are copies of the files under `shared/` in [semnil/channel-volume-core](https://github.com/semnil/channel-volume-core), at the commit `core.json` locks. What each of them does is in that repository's [docs/shared-files.md](https://github.com/semnil/channel-volume-core/blob/main/docs/shared-files.md). They are changed there, with their tests, and copied here with that repository's `sync.mjs`. The Test check fails a copy that differs from the locked commit. Dependabot runs there as well, so this repository has no `dependabot.yml`. Once a day, and when run by hand, the Sync Core workflow (`.github/workflows/sync-core.yaml`) opens or updates the pull request from `sync/channel-volume-core` that takes channel-volume-core's `main` where it has moved past the locked commit, with a GitHub App's token; its job is skipped while the repository has no `SYNC_APP_CLIENT_ID` variable (channel-volume-core's README, "Setting up the sync").
 
 ## Key design decisions
 
 - **Own LUFS measurement**: Twitch provides no loudness API, so BS.1770-4 K-weighting + gated integrated LUFS are measured with the Web Audio API. An active measurement model, symmetric to yt-channel-volume's passive read of loudnessDb
 - **AudioWorklet (not ScriptProcessor)**: ScriptProcessor is deprecated. The L²+R² accumulation over 100ms units runs on the worklet thread, and the windows are formed on the main thread
+- **The measurement is shared**: the K-weighting, the worklet and the meter below are `core/loudness.js` and `audio-worklet.js` from channel-volume-core ([docs/shared-files.md](https://github.com/semnil/channel-volume-core/blob/main/docs/shared-files.md#measure)), tested and swept there; what is Twitch's is what the bridge tells the meter (the volume it divides out, the ad gate, the boundaries, the ad-start rollback, the seed)
 - **K-weighting filter coefficients**: based on the 48kHz coefficients of BS.1770-4; when AudioContext.sampleRate is not 48k, the filters are redesigned by an inverse bilinear transform followed by a fresh bilinear transform (redesignBiquad)
 - **Indexed Integrated LUFS updates**: the LUFS stored for the current channel and kind is restored as initial samples worth the window count the value stands on (the floor and the cap are in "Measurement across sessions"). The last hour of blocks is held in a ring buffer, and values that pass the absolute gate are stored in a balanced tree carrying subtree sums and counts. The relative gate of -10 LU is derived from the post-absolute-gate mean each time, and the sum and count at or above the threshold are obtained in O(log n), so the two-stage gate holds regardless of input order. An ad break is left out of the Integrated statistics (so an ad does not contaminate the programme's representative value)
 - **Measurement across sessions**: the stored LUFS is saved together with the window count it stands on (`lastLufsWindows`), and the next measurement is seeded with that many windows. Seeded as a single window, new audio arriving at 10 windows per second washes it away within a second, and Auto would set the gain from an Integrated value covering 0.4 seconds of the programme. The floor is 300 windows (30 seconds) and the cap is 1800 windows (3 minutes). With the cap at the ring buffer's own hour, the seed is a point mass at one value, so the relative gate pins to that value and the Integrated value would not move for over 20 minutes after the broadcaster genuinely lowers their level. At 3 minutes, watching for the same length of time reaches the seed's weight. A stored value with no window count (from before the extension update), and a window count that cannot be read, are weighted at the floor. The reported window count counts only windows that passed the relative gate, and the seed's share is replaced by the window count it arrived with — the padding up to the floor is not reported as measured, and windows the gate dropped and windows the ring buffer evicted are left uncounted. Which windows belong to the seed is decided from the gating window's sequence number rather than from its level (the index is keyed on level, so audio at the seed's level lands on the seed's node)
@@ -326,8 +327,8 @@ node tools/mutation/sweep.mjs --verify
 
 # The coverage report CI uploads, made locally (<dir> is any empty directory)
 NODE_V8_COVERAGE=<dir> node test.js
-# (core/ is left out: channel-volume-core's own suite covers the shared code)
-node tools/coverage/v8-to-lcov.mjs <dir> coverage.lcov $(python3 -B pack.py --list | grep '\.js$' | grep -v '^core/')
+# (core/ and audio-worklet.js are left out: channel-volume-core's own suite covers the shared code)
+node tools/coverage/v8-to-lcov.mjs <dir> coverage.lcov $(python3 -B pack.py --list | grep '\.js$' | grep -v -e '^core/' -e '^audio-worklet\.js$')
 
 # Python syntax check (leaves no __pycache__ behind)
 python3 -B -c "import ast,pathlib; [ast.parse(p.read_text()) for p in pathlib.Path('.').glob('*.py')]"
@@ -355,7 +356,7 @@ python3 pack.py --list
 - Do not run `python3 -m py_compile` at the root of the unpacked extension. It generates the `__pycache__` Chrome refuses, so use the AST parse above for the Python syntax check (the range `node test.js` scans is in "Reserved names")
 - `popup.html` / `options.html` stay in a shape the i18n extractor can read: no HTML comments, `<template>`, `<textarea>` / `<iframe>` / `<xmp>` / `<noembed>` / `<noframes>` / `<noscript>` / `<plaintext>`; the raw text elements the pages do use — `<title>` / `<style>` / `<script>` — are closed with `>` directly after the name (a form where the name continues, such as `</titles>`, is a different element and swallows what follows without closing the raw text); `data-i18n` is written lowercase and quoted; and an element carrying the attribute holds its own key and no other text — `applyI18n` (core/common.js) assigns the catalog's message to `textContent` before the body loses `initializing`, and the key itself where the catalog has none, so wording written into the markup would be read by nobody and drift unseen. The mapping from a key to the element carrying it (tag name, `id`, `class` tokens) is pinned by a snapshot in `node test.js`
 - AudioContext starts `suspended` until the page has been interacted with (Chrome autoplay policy). The recovery is under "When the AudioContext is suspended"
-- BS.1770 reference is 48 kHz. Chrome's AudioContext is normally 48000, and a varying sample rate is handled by redesignBiquad
+- BS.1770 reference is 48 kHz. Chrome's AudioContext is normally 48000, and a varying sample rate is handled by redesignBiquad (`core/loudness.js`)
 - Storage keys: `autoLoudnessSettings` (target LUFS, ad gain, display unit, per-kind Auto defaults; in `chrome.storage.sync`, the rest in `chrome.storage.local`), `channelVolumes` (per-channel saved gains + per-kind Auto + the lastLufs cache and its window count), `channelVolumeAliases` (provisional ID → canonical ID), `channelVolumeSequence` (persistent update number)
 - Storage format: `channelVolumes.{id}` = `{ name, login, gainLive, gainVod, autoGainLive, autoGainVod, autoApplyLoudnessLive, autoApplyLoudnessVod, url, lastLufs: { live, vod }, lastLufsRef: { live, vod }, lastLufsWindows: { live, vod }, autoGainRef: { live, vod }, lastMeasuredAt, __fieldVersions }`
 - A clip field left by an earlier version (`gainClip`, `autoGainClip`, `autoApplyLoudnessClip`, the `clip` key of `lastLufs` / `lastLufsRef` / `lastLufsWindows` / `autoGainRef`, and their `__fieldVersions` entries) is dropped by `withoutClipFields` the next time channel-store.js writes. `lastMeasuredAt` goes with the last `lastLufs` value on the row. A row this leaves holding no value at all — no gain, no Auto choice, no measurement, no legacy `gain` / `autoApplyLoudness`, only the name, login and URL — was a row for the clip alone and is deleted with it. A row that already held nothing before this ran is not touched by it, and neither is the `clip-owner:<slug>` alias's target

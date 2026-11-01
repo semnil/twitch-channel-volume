@@ -1,5 +1,5 @@
 // page-bridge.js — Runs in MAIN world on Twitch pages.
-// Owns the AudioContext, GainNode and K-weighted LUFS measurement pipeline.
+// Owns the AudioContext, the GainNode and the LUFS measurement of core/loudness.js.
 // Twitch publishes no loudness metadata, so the bridge measures the playing
 // <video> directly via Web Audio. It also hooks fetch to read Twitch's GraphQL
 // responses for the authoritative user_id/login, and wraps the Worker
@@ -10,7 +10,6 @@
 
   const MSG_OUT = '__twitch_channel_volume__';
   const MSG_IN = '__twitch_channel_volume_cmd__';
-  const REF_RATE = 48000;
 
   // The page shares this window and can send the same commands content.js
   // sends, so the module to load is derived here instead of being received:
@@ -21,55 +20,6 @@
     return found ? found[0] : '';
   })();
   const WORKLET_URL = SELF_ORIGIN ? `${SELF_ORIGIN}/audio-worklet.js` : '';
-
-  const K_PRE_48K = {
-    b: [1.53512485958697, -2.69169618940638, 1.19839281085285],
-    a: [1.0, -1.69065929318241, 0.73248077421585]
-  };
-  const K_RLB_48K = {
-    b: [1.0, -2.0, 1.0],
-    a: [1.0, -1.99004745483398, 0.99007225036621]
-  };
-
-  function redesignBiquad(coef, fs0, fs) {
-    const K0 = 2 * fs0;
-    const [b0, b1, b2] = coef.b;
-    const [a0, a1, a2] = coef.a;
-    const B0 = b0 + b1 + b2;
-    const B1 = 2 * (b0 - b2) / K0;
-    const B2 = (b0 - b1 + b2) / (K0 * K0);
-    const A0 = a0 + a1 + a2;
-    const A1 = 2 * (a0 - a2) / K0;
-    const A2 = (a0 - a1 + a2) / (K0 * K0);
-    const K = 2 * fs;
-    const K2 = K * K;
-    const denom = A0 + A1 * K + A2 * K2;
-    return {
-      b: [
-        (B0 + B1 * K + B2 * K2) / denom,
-        (2 * B0 - 2 * B2 * K2) / denom,
-        (B0 - B1 * K + B2 * K2) / denom
-      ],
-      a: [
-        1.0,
-        (2 * A0 - 2 * A2 * K2) / denom,
-        (A0 - A1 * K + A2 * K2) / denom
-      ]
-    };
-  }
-
-  function kForSampleRate(sr) {
-    if (Math.abs(sr - REF_RATE) < 1) return { pre: K_PRE_48K, rlb: K_RLB_48K };
-    return {
-      pre: redesignBiquad(K_PRE_48K, REF_RATE, sr),
-      rlb: redesignBiquad(K_RLB_48K, REF_RATE, sr)
-    };
-  }
-
-  function msToLufs(ms) {
-    if (!Number.isFinite(ms) || ms <= 0) return -Infinity;
-    return -0.691 + 10 * Math.log10(ms);
-  }
 
   let ctx = null;
   let gain = null;
@@ -98,25 +48,22 @@
   let reportedTakenElsewhere = false;
   let attachAttempts = 0;
 
-  const blocks = [];
-  const BLOCK_SEC = 0.1;
-  const MOMENTARY_BLOCKS = 4;
-  const SHORT_BLOCKS = 30;
-  // BS.1770-4 gates 400ms blocks overlapping by 75%: one gating window per
-  // 100ms sub-block, formed from the most recent GATE_BLOCKS sub-blocks.
-  const GATE_BLOCKS = 4;
-  const MAX_INTEGRATED_BLOCKS = 60 * 60 * 10;
-  // A saved value seeds the new measurement as at least this many windows,
-  // whatever the count stored with it says.
-  const MIN_SEED_WINDOWS = 300;
-  // and as at most this many, so a session of that length carries the same
-  // weight as the seed and can move the value off it.
-  const MAX_SEED_WINDOWS = 3 * 60 * 10;
-  // A gating window that spans the end of an ad or a volume change carries
-  // audio it cannot represent. Windows stay out of Integrated until they are
-  // clear of the boundary.
-  const BOUNDARY_SKIP_BLOCKS = GATE_BLOCKS;
-  let boundarySkipBlocks = 0;
+  // The measurement itself is core/loudness.js's, loaded ahead of this script
+  // in the same world; what the bridge tells it — the windows an ad holds out,
+  // the ones a boundary skips, the ones taken back at an ad's start — is
+  // decided here.
+  const {
+    BLOCK_SEC,
+    BOUNDARY_SKIP_BLOCKS,
+    meanSquareToLufs,
+    normalizeForVolume,
+    buildChain,
+    createMeter
+  } = channelVolumeLoudness;
+  const meter = createMeter();
+  // An ad's end and a volume change are boundaries in the tapped signal. The
+  // meter keeps the windows that span one out; the reason and what was dropped
+  // are kept here for the log.
   let boundarySkipReason = '';
   let boundarySkipDropped = 0;
   let boundarySkipLufs = [];
@@ -127,149 +74,9 @@
   // level out of the gate's population, which moves the result.
   const AD_START_ROLLBACK_BLOCKS = 5;
   const ROLLBACK_LOG_SAMPLES = 8;
-  let windowsSinceReset = 0;
-  let windowsObserved = 0;
-  // The windows behind the posted value: the ones inside the relative gate,
-  // with the seed standing for what it was told the saved value was measured
-  // over. The floor the seed is raised to is not one of them, and neither is a
-  // window the gate left out - the value does not rest on either.
-  let seedClaimedWindows = 0;
-  let seedMeanSquare = null;
-  let seedEntriesInRing = 0;
-  const ABSOLUTE_GATE_MEAN_SQUARE = Math.pow(10, (-70 + 0.691) / 10);
-  const RELATIVE_GATE_FACTOR = Math.pow(10, -10 / 10);
-  const integratedBlocks = new Array(MAX_INTEGRATED_BLOCKS);
-  // The gating window each appended block came from. A window the boundary skip
-  // dropped was never appended, so a rollback spanning it has nothing there to
-  // take back; the stamps say which of the windows a span covers are in the ring.
-  const integratedBlockWindows = new Array(MAX_INTEGRATED_BLOCKS);
-  let integratedBlockStart = 0;
-  let integratedBlockLength = 0;
-  let absoluteGatedRoot = null;
   // Stamped onto every posted measurement so content.js can drop blocks that
   // the bridge produced before it handled the matching reset command.
   let measurementEpoch = 0;
-
-  function treeHeight(node) {
-    return node?.height || 0;
-  }
-
-  function treeCount(node) {
-    return node?.subtreeCount || 0;
-  }
-
-  function treeSum(node) {
-    return node?.subtreeSum || 0;
-  }
-
-  function updateTreeNode(node) {
-    node.height = 1 + Math.max(treeHeight(node.left), treeHeight(node.right));
-    node.subtreeCount = node.count + treeCount(node.left) + treeCount(node.right);
-    node.subtreeSum = node.key * node.count + treeSum(node.left) + treeSum(node.right);
-    return node;
-  }
-
-  function rotateTreeLeft(node) {
-    const root = node.right;
-    node.right = root.left;
-    root.left = updateTreeNode(node);
-    return updateTreeNode(root);
-  }
-
-  function rotateTreeRight(node) {
-    const root = node.left;
-    node.left = root.right;
-    root.right = updateTreeNode(node);
-    return updateTreeNode(root);
-  }
-
-  function balanceTree(node) {
-    if (!node) return null;
-    updateTreeNode(node);
-    const balance = treeHeight(node.left) - treeHeight(node.right);
-    if (balance > 1) {
-      if (treeHeight(node.left.left) < treeHeight(node.left.right)) {
-        node.left = rotateTreeLeft(node.left);
-      }
-      return rotateTreeRight(node);
-    }
-    if (balance < -1) {
-      if (treeHeight(node.right.right) < treeHeight(node.right.left)) {
-        node.right = rotateTreeRight(node.right);
-      }
-      return rotateTreeLeft(node);
-    }
-    return node;
-  }
-
-  function insertTreeValue(node, key) {
-    if (!node) {
-      return {
-        key,
-        count: 1,
-        height: 1,
-        subtreeCount: 1,
-        subtreeSum: key,
-        left: null,
-        right: null
-      };
-    }
-    if (key < node.key) node.left = insertTreeValue(node.left, key);
-    else if (key > node.key) node.right = insertTreeValue(node.right, key);
-    else node.count++;
-    return balanceTree(node);
-  }
-
-  function removeTreeValue(node, key, removeAll = false) {
-    if (!node) return null;
-    if (key < node.key) node.left = removeTreeValue(node.left, key, removeAll);
-    else if (key > node.key) node.right = removeTreeValue(node.right, key, removeAll);
-    else if (node.count > 1 && !removeAll) node.count--;
-    else {
-      if (!node.left) return node.right;
-      if (!node.right) return node.left;
-      let successor = node.right;
-      while (successor.left) successor = successor.left;
-      node.key = successor.key;
-      node.count = successor.count;
-      node.right = removeTreeValue(node.right, successor.key, true);
-    }
-    return balanceTree(node);
-  }
-
-  function treeValuesAtOrAbove(node, threshold) {
-    if (!node) return { sum: 0, count: 0 };
-    if (node.key < threshold) return treeValuesAtOrAbove(node.right, threshold);
-    const left = treeValuesAtOrAbove(node.left, threshold);
-    return {
-      sum: left.sum + node.key * node.count + treeSum(node.right),
-      count: left.count + node.count + treeCount(node.right)
-    };
-  }
-
-  function appendIntegratedBlock(ms, gatingWindow) {
-    let removed;
-    if (integratedBlockLength < MAX_INTEGRATED_BLOCKS) {
-      const index = (integratedBlockStart + integratedBlockLength) % MAX_INTEGRATED_BLOCKS;
-      integratedBlocks[index] = ms;
-      integratedBlockWindows[index] = gatingWindow;
-      integratedBlockLength++;
-    } else {
-      removed = integratedBlocks[integratedBlockStart];
-      // Observed windows are stamped from one upwards, so the seed's own
-      // entries are the ones the ring gives back with a stamp of zero.
-      if (integratedBlockWindows[integratedBlockStart] === 0) seedEntriesInRing--;
-      integratedBlocks[integratedBlockStart] = ms;
-      integratedBlockWindows[integratedBlockStart] = gatingWindow;
-      integratedBlockStart = (integratedBlockStart + 1) % MAX_INTEGRATED_BLOCKS;
-    }
-    if (removed >= ABSOLUTE_GATE_MEAN_SQUARE) {
-      absoluteGatedRoot = removeTreeValue(absoluteGatedRoot, removed);
-    }
-    if (ms >= ABSOLUTE_GATE_MEAN_SQUARE) {
-      absoluteGatedRoot = insertTreeValue(absoluteGatedRoot, ms);
-    }
-  }
 
   function postReady(extra) {
     window.postMessage({
@@ -324,99 +131,9 @@
     return video ? `${video.volume}|${video.muted}` : '';
   }
 
-  function blocksMeanSquare(list, count) {
-    if (list.length < count) return null;
-    let sum = 0;
-    for (let i = list.length - count; i < list.length; i++) sum += list[i];
-    return sum / count;
-  }
-
-  function blocksToLufs(list, count) {
-    if (list.length === 0) return -Infinity;
-    const n = Math.min(count, list.length);
-    let sum = 0;
-    for (let i = list.length - n; i < list.length; i++) sum += list[i];
-    return msToLufs(sum / n);
-  }
-
-  // The value, and the windows a later session would seed with if it were
-  // stored now. The seed's entries stand for the count it was told rather than
-  // for however many were laid down to weigh it.
-  function integratedLufs() {
-    const absoluteGatedCount = treeCount(absoluteGatedRoot);
-    if (absoluteGatedCount === 0) return { lufs: -Infinity, windows: 0 };
-    const absoluteMeanSquare = treeSum(absoluteGatedRoot) / absoluteGatedCount;
-    const relativeGate = absoluteMeanSquare * RELATIVE_GATE_FACTOR;
-    const gated = treeValuesAtOrAbove(absoluteGatedRoot, relativeGate);
-    if (gated.count === 0) return { lufs: -Infinity, windows: 0 };
-    const seedInGate = seedMeanSquare !== null &&
-      seedMeanSquare >= ABSOLUTE_GATE_MEAN_SQUARE && seedMeanSquare >= relativeGate
-      ? seedEntriesInRing
-      : 0;
-    const windows = Math.min(seedClaimedWindows, seedInGate) + (gated.count - seedInGate);
-    return {
-      lufs: msToLufs(gated.sum / gated.count),
-      windows: Math.min(MAX_SEED_WINDOWS, windows)
-    };
-  }
-
-  function updateIntegratedLufs(ms) {
-    appendIntegratedBlock(ms, windowsObserved);
-    windowsSinceReset++;
-    return integratedLufs();
-  }
-
-  // Only windows appended since the last reset are removable. Removing the
-  // newest entry frees the slot the next append reuses, so a full ring is no
-  // different; what the eviction took stays gone either way.
-  function removeRecentIntegratedBlocks(count) {
-    const removed = [];
-    while (removed.length < count && windowsSinceReset > 0 && integratedBlockLength > 0) {
-      const index = (integratedBlockStart + integratedBlockLength - 1) % MAX_INTEGRATED_BLOCKS;
-      const ms = integratedBlocks[index];
-      if (ms >= ABSOLUTE_GATE_MEAN_SQUARE) {
-        absoluteGatedRoot = removeTreeValue(absoluteGatedRoot, ms);
-      }
-      integratedBlockLength--;
-      windowsSinceReset--;
-      removed.push(Number(msToLufs(ms).toFixed(2)));
-    }
-    return removed.reverse();
-  }
-
-  // What the caller says the saved value stands on, held to what a seed may
-  // weigh. A count that is not a positive integer says nothing.
-  function savedWindowCount(savedWindows) {
-    const saved = Number.isSafeInteger(savedWindows) && savedWindows > 0 ? savedWindows : 0;
-    return Math.min(MAX_SEED_WINDOWS, saved);
-  }
-
   function resetMeasurement(initialIntegratedLufs, epoch, initialIntegratedWindows) {
     if (Number.isFinite(epoch)) measurementEpoch = epoch;
-    blocks.length = 0;
-    integratedBlockStart = 0;
-    integratedBlockLength = 0;
-    absoluteGatedRoot = null;
-    windowsSinceReset = 0;
-    windowsObserved = 0;
-    seedClaimedWindows = 0;
-    seedMeanSquare = null;
-    seedEntriesInRing = 0;
-    if (!Number.isFinite(initialIntegratedLufs)) return;
-    const initialMeanSquare = Math.pow(10, (initialIntegratedLufs + 0.691) / 10);
-    if (!Number.isFinite(initialMeanSquare)) return;
-    // The seed enters as the number of windows the saved value stands on, or
-    // the floor where that is less. Its entries carry a window stamp below
-    // every observed window, so a rollback does not reach them.
-    // Values below the absolute gate reach the ring buffer but not the index,
-    // so they never contribute to Integrated.
-    seedClaimedWindows = savedWindowCount(initialIntegratedWindows);
-    seedMeanSquare = initialMeanSquare;
-    const seedWindows = Math.max(MIN_SEED_WINDOWS, seedClaimedWindows);
-    for (let i = 0; i < seedWindows; i++) {
-      appendIntegratedBlock(initialMeanSquare, windowsObserved);
-    }
-    seedEntriesInRing = seedWindows;
+    meter.reset(initialIntegratedLufs, initialIntegratedWindows);
   }
 
   let ctxPromise = null;
@@ -465,21 +182,7 @@
   function buildMeasurementChain(c) {
     if (!workletReady || workletNode || !sourceNode) return;
     try {
-      const { pre, rlb } = kForSampleRate(c.sampleRate);
-      const preNode = c.createIIRFilter(pre.b, pre.a);
-      const rlbNode = c.createIIRFilter(rlb.b, rlb.a);
-      workletNode = new AudioWorkletNode(c, 'k-mean-square', {
-        processorOptions: { blockSec: BLOCK_SEC }
-      });
-      workletNode.port.onmessage = onBlockMs;
-      sourceNode.connect(preNode);
-      preNode.connect(rlbNode);
-      rlbNode.connect(workletNode);
-      // Terminate the measurement path without contributing to output.
-      const silentGain = c.createGain();
-      silentGain.gain.value = 0;
-      workletNode.connect(silentGain);
-      silentGain.connect(c.destination);
+      workletNode = buildChain(c, sourceNode, onBlockMs);
       console.info('[TCV] measurement chain ready');
     } catch (err) {
       console.warn('[TCV] measurement chain failed', err);
@@ -684,7 +387,7 @@
     sourceNode.connect(gain);
     attachedVideo = video;
     // A gating window must not span two media elements.
-    blocks.length = 0;
+    meter.clearBlocks();
     lastVolumeState = volumeState(video);
     video.addEventListener('volumechange', onVolumeChange);
     console.info('[TCV] attached to video', {
@@ -707,14 +410,6 @@
 
   let receivedFirstBlock = false;
 
-  // The measurement taps the element ahead of the player's own volume, so the
-  // viewer's volume setting scales it. Measurements are referenced to volume 1.
-  function normalizeForVolume(ms) {
-    const volume = attachedVideo?.volume;
-    if (!Number.isFinite(volume) || volume <= 0 || volume >= 1) return ms;
-    return ms / (volume * volume);
-  }
-
   // Re-reads the ad state while the attachment has no measurement chain.
   let adClock = null;
 
@@ -730,27 +425,19 @@
       receivedFirstBlock = true;
       console.info('[TCV] first measurement block received');
     }
-    const ms = normalizeForVolume(raw);
-    blocks.push(ms);
-    if (blocks.length > Math.max(MOMENTARY_BLOCKS, SHORT_BLOCKS) * 4) {
-      blocks.splice(0, blocks.length - SHORT_BLOCKS * 4);
-    }
-    const mom = blocksToLufs(blocks, MOMENTARY_BLOCKS);
-    const st = blocksToLufs(blocks, SHORT_BLOCKS);
-    const gateWindow = blocksMeanSquare(blocks, GATE_BLOCKS);
+    // The measurement taps the element ahead of the player's own volume, so
+    // the viewer's volume setting scales it. Measurements are referenced to
+    // volume 1.
+    const ms = normalizeForVolume(raw, attachedVideo?.volume);
     // The playhead passing the end the cue gave is what ends a break, so the
-    // state is re-read on every block.
+    // state is re-read on every block, ahead of the window the block completes.
     rereadAdState();
-    // Credit is spent on windows, so a reset that empties the sub-block buffer
-    // does not consume it before a window exists.
-    if (gateWindow !== null) windowsObserved++;
-    const skipBoundary = boundarySkipBlocks > 0 && gateWindow !== null;
-    if (skipBoundary && !adActive) {
-      boundarySkipBlocks--;
+    const measured = meter.addBlock(ms, adActive);
+    if (measured.skipped) {
       boundarySkipDropped++;
-      boundarySkipLufs.push(Number(msToLufs(gateWindow).toFixed(2)));
+      boundarySkipLufs.push(Number(meanSquareToLufs(measured.window).toFixed(2)));
       if (boundarySkipLufs.length > BOUNDARY_SKIP_BLOCKS) boundarySkipLufs.shift();
-      if (boundarySkipBlocks === 0) {
+      if (meter.boundaryWindowsLeft() === 0) {
         console.info('[TCV] gate resumed', {
           reason: boundarySkipReason,
           dropped: boundarySkipDropped,
@@ -758,18 +445,15 @@
         });
       }
     }
-    const intg = (adActive || skipBoundary || gateWindow === null)
-      ? integratedLufs()
-      : updateIntegratedLufs(gateWindow);
-    postLufs(mom, st, intg);
+    postLufs(measured.momentary, measured.shortTerm, measured.integrated);
   }
 
   // A slider drag fires volumechange per step. Report the start of a skip and
   // its end, not every step and every window.
   function armBoundarySkip(reason) {
-    if (boundarySkipBlocks === 0 || boundarySkipReason !== reason) {
+    if (meter.boundaryWindowsLeft() === 0 || boundarySkipReason !== reason) {
       // A skip cut short by a different boundary never reports its own total.
-      const superseded = boundarySkipBlocks > 0
+      const superseded = meter.boundaryWindowsLeft() > 0
         ? { superseded: boundarySkipReason, droppedBefore: boundarySkipDropped }
         : null;
       boundarySkipDropped = 0;
@@ -783,7 +467,7 @@
         ...(superseded || {})
       });
     }
-    boundarySkipBlocks = BOUNDARY_SKIP_BLOCKS;
+    meter.skipBoundary();
     boundarySkipReason = reason;
   }
 
@@ -859,29 +543,19 @@
     return adCueSeen ? playerBreakActive() : domAdActive;
   }
 
-  // The windows from firstWindow onward that are in the ring. Newest first, so
-  // it stops at the first window the span does not reach.
-  function appendedWindowsSince(firstWindow) {
-    let count = 0;
-    while (count < integratedBlockLength) {
-      const index = (integratedBlockStart + integratedBlockLength - 1 - count) % MAX_INTEGRATED_BLOCKS;
-      if (integratedBlockWindows[index] < firstWindow) break;
-      count++;
-    }
-    return count;
-  }
-
   function rollBackAdStart(blocks) {
     const requested = Math.max(0, blocks);
     // Asking for a window the boundary skip already kept out takes a content
     // window in its place, and that window's level leaves the gate with it.
     // The span is named by its first window, so every window it covers is
     // accounted for however many of them the gate dropped.
-    const firstWindow = Math.max(1, windowsObserved - requested + 1);
-    const covered = Math.max(0, windowsObserved - firstWindow + 1);
-    const wanted = appendedWindowsSince(firstWindow);
+    const observed = meter.windowsObserved();
+    const firstWindow = Math.max(1, observed - requested + 1);
+    const covered = Math.max(0, observed - firstWindow + 1);
+    const wanted = meter.appendedWindowsSince(firstWindow);
     const skipped = covered - wanted;
-    const removed = removeRecentIntegratedBlocks(wanted);
+    const removed = meter.removeRecentWindows(wanted)
+      .map((ms) => Number(meanSquareToLufs(ms).toFixed(2)));
     const half = ROLLBACK_LOG_SAMPLES / 2;
     const truncated = removed.length > ROLLBACK_LOG_SAMPLES;
     console.info('[TCV] ad start rollback', {
@@ -891,7 +565,7 @@
       // The span reached back as far as it was asked to, so at the budget the
       // removal stopped short of the ad's own start.
       exhausted: covered === requested,
-      windowsSinceReset,
+      windowsSinceReset: meter.windowsSinceReset(),
       windowLufs: truncated
         ? [...removed.slice(0, half), ...removed.slice(-half)]
         : removed,

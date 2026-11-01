@@ -13,8 +13,8 @@ This document follows the code in this repository and answers two questions for 
 | popup | `popup.js` | extension popup | Sends gestures (gain, Auto, measurement reset) to the content script of the active tab and reads `getState` every `STATE_POLL_INTERVAL_MS` (1000 ms, `pollTabState` in core/common.js). Writes nothing to storage |
 | options | `options.js` | extension options page | Sends settings mutations, and channel `normalizeChannels` / `deleteChannel` / `clearChannels` mutations, to the service worker |
 | content | `content.js` | Twitch tab, ISOLATED world | Chooses the baseline gain (`currentGain`), sends it to the bridge, and sends per-channel mutations to the service worker |
-| bridge | `page-bridge.js` | Twitch tab, MAIN world | Owns the `AudioContext`, the output `GainNode` and the LUFS measurement, and drives the node to the effective gain |
-| worklet | `audio-worklet.js` | AudioWorklet thread | Posts the K-weighted mean square (MS) of each 100 ms block |
+| bridge | `page-bridge.js` | Twitch tab, MAIN world | Owns the `AudioContext`, the output `GainNode` and the LUFS measurement (the meter of `core/loudness.js`, loaded ahead of it, [channel-volume-core](https://github.com/semnil/channel-volume-core/blob/main/docs/shared-files.md#loudness)), and drives the node to the effective gain |
+| worklet | `audio-worklet.js` | AudioWorklet thread | Posts the K-weighted mean square (MS) of each 100 ms block ([channel-volume-core](https://github.com/semnil/channel-volume-core/blob/main/docs/shared-files.md#worklet)) |
 | SW | `background.js`, `core/common.js`, `channel-store.js`, `settings-store.js` | service worker | Single writer of `channelVolumes` / `channelVolumeAliases` / `channelVolumeSequence` and of `autoLoudnessSettings`, and the move of the settings from local to sync at each start |
 | storage | — | `chrome.storage.local` and `chrome.storage.sync` | Hold the keys below, the settings in sync and the rest in local. content and options listen to the `onChanged` event of both, the popup to that of sync |
 
@@ -376,7 +376,7 @@ sequenceDiagram
   participant sw as Service Worker
   worklet->>bridge: port message with ms and samples, once per 100 ms block
   bridge->>bridge: onBlockMs: normalizeForVolume, rereadAdState
-  bridge->>bridge: Integrated held during an ad, a boundary skip or before the first gating window, otherwise updateIntegratedLufs
+  bridge->>bridge: meter.addBlock: Integrated held during an ad, a boundary skip or before the first gating window, otherwise the window appended
   bridge-->>content: lufs with epoch, momentary, shortTerm, integrated, integratedWindows, playing
   alt measurementResetPending, audioUnavailable, or epoch older than measurementEpoch
     content->>content: notification discarded
@@ -406,7 +406,7 @@ sequenceDiagram
   end
 ```
 
-Drawn from: `audio-worklet.js` `KMeanSquareProcessor.process`; `page-bridge.js` `onBlockMs`, `normalizeForVolume`, `updateIntegratedLufs`, `integratedLufs`, `postLufs`; `content.js` the `lufs` case of `handleBridgeMessage`, `applyAutoGain`, `previewHoldsGain`, `throttledSaveIntegrated`, `saveLastIntegrated`, `measurementSaved`, `measurementSaveFailed`.
+Drawn from: `audio-worklet.js` `KMeanSquareProcessor.process`; `page-bridge.js` `onBlockMs`, `postLufs`; `core/loudness.js` `normalizeForVolume` and the meter's `addBlock`; `content.js` the `lufs` case of `handleBridgeMessage`, `applyAutoGain`, `previewHoldsGain`, `throttledSaveIntegrated`, `saveLastIntegrated`, `measurementSaved`, `measurementSaveFailed`.
 
 - The two gates are separate. Through `applyAutoGain` the gain under Auto changes at most once per 1000 ms (`AUTO_FOLLOW_INTERVAL_MS`); the reapply that `chrome.storage.onChanged` starts (scenarios 10 and 12) applies the same gain without this gate. The measurement and the Auto gain in force are written at most once per 5000 ms per tab, with Auto on or off, and only from a `lufs` whose `playing` is true. `lastSavedAt` is set when a save is sent, and is put back to 0 by a failed save, by SPA navigation and by a measurement reset, so the next block sends again. `sendResetMeasurement` puts `lastAutoGainUpdateAt` back to `-Infinity`, so the first finite Integrated value after a reset is applied at once.
 - The gain Auto plays is `calcGain(integrated, targetLufs)`, the gain the Integrated value asks for, above or below `currentGain` alike.
