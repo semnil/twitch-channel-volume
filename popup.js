@@ -279,16 +279,17 @@
         !Number.isFinite(lastSuggestedGain)) return;
     const appliesTo = currentAppliesTo;
     const gain = lastSuggestedGain;
+    const answered = saveNotice.send();
     try {
       const tab = await getActiveTab();
       await sendTabMessage(tab?.id, { cmd: 'resume' });
       const res = await sendTabMessage(tab?.id, { cmd: 'setGain', appliesTo, gain });
       if (!res?.ok) throw new Error(res?.reason || 'Gain update failed');
-      saveNotice.take(res);
+      answered(res);
       syncSlider(gain);
     } catch (error) {
       console.warn('[TCV] suggested gain request failed', error);
-      saveNotice.raise();
+      answered(null);
       sliderSynced = false;
     }
     await refresh();
@@ -297,15 +298,16 @@
   async function setGain(percent, appliesTo = currentAppliesTo) {
     if (autoUpdatePending || audioUnavailable ||
         !currentChannel.id || currentChannel.kind === 'none') return;
+    const answered = saveNotice.send();
     try {
       const tab = await getActiveTab();
       const gain = percentToGain(percent);
       const res = await sendTabMessage(tab?.id, { cmd: 'setGain', appliesTo, gain });
       if (!res?.ok) throw new Error(res?.reason || 'Gain update failed');
-      saveNotice.take(res);
+      answered(res);
     } catch (error) {
       console.warn('[TCV] gain request failed', error);
-      saveNotice.raise();
+      answered(null);
       sliderSynced = false;
     }
     await refresh();

@@ -193,15 +193,15 @@ its check guards finds no targets.
 `setAutoApplyLoudness`'s gain check. The branch above it throws on `!res?.ok`,
 so a response that reaches this line carries the gain content.js answers with.
 
-- `popup.js:347` a guard is always taken ×1 — if (Number.isFinite(res.gain)) {
+- `popup.js:349` a guard is always taken ×1 — if (Number.isFinite(res.gain)) {
 
 The `await refresh()` ending `applyMeasured`, `setGain` and
 `setAutoApplyLoudness`. All three are called from click handlers that discard
 the promise, so nothing observes when they settle.
 
-- `popup.js:294` an await is dropped ×1 — await
-- `popup.js:311` an await is dropped ×1 — await
-- `popup.js:351` an await is dropped ×1 — await
+- `popup.js:295` an await is dropped ×1 — await
+- `popup.js:313` an await is dropped ×1 — await
+- `popup.js:353` an await is dropped ×1 — await
 
 
 ## utils.js

@@ -321,7 +321,7 @@ sequenceDiagram
 - 「チャンネルに適用」(`applyMeasured`) は `resume` を送ってから、最後の `getState` から計算した Suggested のゲイン `suggestedGain(lufs.integrated, targetLufs)` で `setGain` を送る。このボタンが押せるのは、Auto がオフで、有限の Integrated があり、チャンネルがあり、音声が使えるとき。表示は「$VALUE$ をチャンネルに適用」で、$VALUE$ に表示単位でのゲインが入る。
 - popup は、Auto がオン、Auto の保存待ち、`audioUnavailable` が true、または Live / VOD のチャンネルが無いページのとき、スライダーとプリセットを押せなくする。
 - 書き込み: `saveGain` が正式な行の `gain<Kind>` を書く。
-- 失敗: content は `[TCV] failed to save gain` を、保存しようとしたチャンネル・種別・ゲインと一緒にログに出し、行を読み直して保存済みのゲインを bridge へ戻す。`ok: true` でない答え (断られた場合も含む) では、popup は `[TCV] gain request failed` (または `[TCV] suggested gain request failed`) をログに出し、次に描くときからボタンの下に `gainSaveFailed` (「ゲインを保存できませんでした。もう一度お試しください」) を出す。さらに `sliderSynced` を消すので、次の `getState` でスライダーが今かかっているゲインに合う。この知らせ (`core/common.js` の `createSaveNotice`) は、保存の答えが `ok: true` になるか、別のチャンネル、または同じチャンネルのもう一方の種別の状態を受け取るまで残る。チャンネルの無い状態では、知らせはそのまま。
+- 失敗: content は `[TCV] failed to save gain` を、保存しようとしたチャンネル・種別・ゲインと一緒にログに出し、行を読み直して保存済みのゲインを bridge へ戻す。`ok: true` でない答え (断られた場合も含む) では、popup は `[TCV] gain request failed` (または `[TCV] suggested gain request failed`) をログに出し、次に描くときからボタンの下に `gainSaveFailed` (「ゲインを保存できませんでした。もう一度お試しください」) を出す。さらに `sliderSynced` を消すので、次の `getState` でスライダーが今かかっているゲインに合う。この知らせ (`core/common.js` の `createSaveNotice`) は、今のチャンネルと種別を表示している間に送った最後の保存の答えだけを使い、その答えが `ok: true` になるか、別のチャンネル、または同じチャンネルのもう一方の種別の状態を受け取るまで残る。チャンネルの無い状態では、知らせはそのまま。
 
 ### 4. popup で LUFS 自動追従を切り替える
 

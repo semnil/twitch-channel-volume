@@ -7772,6 +7772,32 @@ test('popup keeps a failed save on screen for its channel and kind, and takes it
   assert.equal(harness.el('applyHint').classList.contains('error'), false);
 });
 
+test('popup leaves the notice of an unsaved gain to the latest save, made for the channel on screen', async () => {
+  // An earlier save that lands after a later one failed.
+  const order = createPopupHarness({ holdCommand: 'setGain', state: WATCHING });
+  await flushTasks(8);
+  await order.firePreset(1, 'click');
+  order.breakSendMessage({ setGain: 'Could not establish connection. Receiving end does not exist.' });
+  await order.firePreset(2, 'click');
+  await flushTasks(8);
+  assert.equal(order.el('applyHint').textContent, order.message('gainSaveFailed'), 'the later save is said not to have landed');
+  order.breakSendMessage('');
+  await order.releaseCommand();
+  assert.equal(order.el('applyHint').textContent, order.message('gainSaveFailed'),
+    'and the earlier one landing does not take that down');
+
+  // A save made for one channel that fails once another is shown.
+  const moved = createPopupHarness({ holdCommand: 'setGain', failCommand: 'setGain', state: WATCHING });
+  await flushTasks(8);
+  await moved.firePreset(1, 'click');
+  moved.setState({ channel: { id: '77', name: 'Another Streamer', kind: 'live', url: '' }, appliesTo: '77|live|' });
+  await moved.poll();
+  await moved.releaseCommand();
+  assert.notEqual(moved.el('applyHint').textContent, moved.message('gainSaveFailed'),
+    'its failure is not put up for the channel shown now');
+  assert.equal(moved.el('applyHint').classList.contains('error'), false);
+});
+
 test('popup keeps Apply out while a save failed and there is no level to apply', async () => {
   const harness = createPopupHarness({
     failCommand: 'setGain',

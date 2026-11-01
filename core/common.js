@@ -536,19 +536,28 @@ function sendTabMessage(tabId, message) {
 }
 
 // The popup's notice that the gain a gesture asked to save is not saved
-// (gainSaveFailed). An answer that is not ok raises it, whether the tab
-// refused the gesture or could not save it, and an answer that is ok takes it
-// down; so does the popup coming to show another owner.
+// (gainSaveFailed). The answer to the latest save sent for the owner shown
+// raises it where the answer is not ok, whether the tab refused the gesture
+// or could not save it, and takes it down where it is ok; the answer to an
+// earlier save, and to one sent while another owner was shown, leave it as it
+// is. The popup coming to show another owner takes it down.
 function createSaveNotice() {
   let raised = false;
   let owner = '';
+  let sent = 0;
   return {
     raised: () => raised,
-    raise() { raised = true; },
-    // Whether the answer is ok.
-    take(answer) {
-      raised = !answer?.ok;
-      return !raised;
+    // Called as a save goes out, with the owner shown then. Answers the
+    // function that save's answer is handed to (none where no answer came),
+    // which answers whether the answer is ok.
+    send() {
+      const save = ++sent;
+      const sentFor = owner;
+      return (answer) => {
+        const ok = !!answer?.ok;
+        if (save === sent && sentFor === owner) raised = !ok;
+        return ok;
+      };
     },
     // The owner the popup shows, as a key; '' where it shows none, which
     // leaves the notice as it is.
