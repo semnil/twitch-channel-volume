@@ -177,7 +177,7 @@ flowchart LR
 - Target LUFS slider (-30 to -6 LUFS, default -18)
 - Default LUFS auto-follow for all channels (separate for Live / VOD, default OFF)
 - Ad gain slider (-24 to +6 dB, default -6 dB)
-- Display unit (% / dB)
+- Display unit (% / dB). The unit already in use is not written again
 - Gain overlay on/off toggle (default ON)
 - Saved Channels table (two Live / VOD columns, the Auto gain the last stored measurement asks for while Auto is on, or `Auto (—)` where none is stored, deletable), in the order of what each row is shown under (`rowLabel`). A stored name that is not text is shown as the channel id
 - Every settings control and deletion (clear all, the row ×) is disabled until the initial settings load completes

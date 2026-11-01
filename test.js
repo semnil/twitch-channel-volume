@@ -9460,6 +9460,16 @@ test('options writes nothing from a control operated before the load lands', asy
   assert.equal(harness.sent.length, 1, 'and the same control writes once the load has landed');
 });
 
+test('options writes nothing for the unit already in use', async () => {
+  const harness = createOptionsHarness({ settings: { displayUnit: 'dB' } });
+  await flushTasks(8);
+  harness.sent.length = 0;
+  await harness.clickUnit('dB');
+  assert.deepEqual(harness.sent, [], 'the active unit is not written again');
+  await harness.clickUnit('%');
+  assert.equal(harness.sent.length, 1, 'and the other one is');
+});
+
 test('options draws a channel that has no name by its id', async () => {
   const harness = createOptionsHarness({
     channelVolumes: { 456: { login: 'nameless', gainLive: 1.5 } }
