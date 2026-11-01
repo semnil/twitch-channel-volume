@@ -2,7 +2,7 @@
 
 [日本語版はこちら (Japanese)](PRIVACY_POLICY_JA.md)
 
-Last updated: 2026-10-30
+Last updated: 2026-11-02
 
 ## Overview
 
@@ -12,8 +12,8 @@ Twitch Channel Volume is a Chrome extension that balances Twitch volume per chan
 
 ### Channel Volume Settings
 
-- **What**: Twitch channel identifiers (the numeric owner ID / broadcaster ID once the page has provided it; the login name or video ID until then), display names, channel URLs, the gain values you set per kind (Live / VOD), whether auto-follow is switched on for that channel in each of them, the gain auto-follow works out for each of them, and a cache of the most recent loudness measurement with the time it was taken, the number of measurement windows behind it, and a note that it is expressed as if the player's own volume were at full. Alongside these, the extension keeps the mapping from a provisional identifier to the numeric one and a counter that orders field updates. Once the page has provided a channel's numeric ID, the mapping holds an entry for the login name of every live channel you open and of every saved channel, and for the video ID of every VOD you open, whether or not anything is saved for that channel. Deleting a saved channel removes its entries from the mapping. The entries of a channel with nothing saved stay until Clear all on the settings page, which removes them all.
-- **Purpose**: Used to automatically apply your preferred volume, or with auto-follow on the gain that brings the channel to the target loudness, when you open a stream or VOD from a saved channel, and to start the next loudness measurement from the last one.
+- **What**: Twitch channel identifiers (the numeric owner ID / broadcaster ID once the page has provided it; the login name or video ID until then), display names, channel URLs, the gain values you set per kind (Live / VOD), whether auto-follow is switched on for that channel in each of them, the gain auto-follow works out for each of them, and a cache of the most recent loudness measurement with the time it was taken, the number of measurement windows behind it, and a note that it is expressed as if the player's own volume were at full, and, for each kind, the time you last reset the measurement. Alongside these, the extension keeps the mapping from a provisional identifier to the numeric one and a counter that orders field updates. Once the page has provided a channel's numeric ID, the mapping holds an entry for the login name of every live channel you open and of every saved channel, and for the video ID of every VOD you open, whether or not anything is saved for that channel. Deleting a saved channel removes its entries from the mapping. The entries of a channel with nothing saved stay until Clear all on the settings page, which removes them all.
+- **Purpose**: Used to automatically apply your preferred volume, or with auto-follow on the gain that brings the channel to the target loudness, when you open a stream or VOD from a saved channel, to start the next loudness measurement from the last one, and to keep a measurement taken before a reset from being saved again after it.
 - **Storage**: Saved locally in `chrome.storage.local` on your device. Not synced to your other devices, and never transmitted to any external server.
 
 ### Extension Preferences
