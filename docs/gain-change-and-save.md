@@ -57,7 +57,7 @@ content chooses the baseline gain in `resolvePreferredGain` (`utils.js`) from th
 - With Auto on and a finite `lastLufs.integrated`, the gain is `calcGain(integrated, targetLufs)` = 10 ^ ((`targetLufs` − `integrated`) / 20), clamped to 0–6.
 - Otherwise it is the first of these that exists: the stored `autoGain<Kind>` whose `autoGainRef[kind]` is `volume1` (with Auto on only), the stored `gain<Kind>` (or, in an entry with neither `gainLive` nor `gainVod` as a key, the legacy `gain`; read by `extractGainForKind` through `storedGain`), 1.0.
 
-`reapplyForCurrentChannel` reads the row (`loadChannelEntry`) and then applies the gain `resolvePreferredGain` resolves, or, with Auto on and a finite Integrated value, the gain `autoGainToPlay` gives (scenario 5). When a newer read, a navigation or a channel change has started while it was reading (`preferenceRevision`, or a different `currentChannel`), it returns false and applies nothing; the diagrams below draw that as `opt the read was not overtaken`. On a page with no channel id or of kind `none` it reads nothing, applies 1.0 and returns true.
+`reapplyForCurrentChannel` reads the row (`loadChannelEntry`) and then applies the gain `resolvePreferredGain` resolves, which with Auto on and a finite Integrated value is `calcGain(integrated, targetLufs)` (scenario 5). When a newer read, a navigation or a channel change has started while it was reading (`preferenceRevision`, or a different `currentChannel`), it returns false and applies nothing; the diagrams below draw that as `opt the read was not overtaken`. On a page with no channel id or of kind `none` it reads nothing, applies 1.0 and returns true.
 
 While content holds a `previewGain` for the state on screen (scenario 3; `previewHoldsGain`: the preview's `appliesTo` equals `currentGestureState()`), `reapplyForCurrentChannel` reads the row and takes its Auto choice but applies no gain, and `applyAutoGain` applies nothing, so the previewed gain keeps playing. What the same paths save is saved. Scenarios 5, 10 and 12 draw this hold; the other diagrams leave it out.
 
@@ -342,12 +342,9 @@ sequenceDiagram
     content->>sw: saveAuto with enabled, and autoGain and reference when computed
     alt saved
       sw-->>content: ok true
-      opt appliesTo still matches currentGestureState()
-        content->>content: autoRaiseFrom = null
-      end
       content->>content: reapplyForCurrentChannel: row read again
       opt the read was not overtaken
-        content->>content: resolvePreferredGain, autoGainToPlay with Auto on and Integrated finite
+        content->>content: resolvePreferredGain
         content->>bridge: setGain (applyGain)
       end
       content-->>popup: ok true, gain, autoApplyLoudness
@@ -361,9 +358,9 @@ sequenceDiagram
   end
 ```
 
-Drawn from: `popup.js` `setAutoApplyLoudness`; `content.js` the `setAutoApplyLoudness` case of the `runtime.onMessage` listener, `saveChannelAutoApply`, `reapplyForCurrentChannel`, `autoGainToPlay`; `utils.js` `calcGain`, `resolvePreferredGain`.
+Drawn from: `popup.js` `setAutoApplyLoudness`; `content.js` the `setAutoApplyLoudness` case of the `runtime.onMessage` listener, `saveChannelAutoApply`, `reapplyForCurrentChannel`; `utils.js` `calcGain`, `resolvePreferredGain`.
 
-- Turning Auto on applies, once the toggle is saved for the state still on screen, the gain the current Integrated value asks for as it stands when the value is finite (`autoRaiseFrom` is cleared, see scenario 5); a toggle that was not saved leaves `autoRaiseFrom` as it was. Otherwise it applies the stored `autoGain<Kind>` with reference `volume1`, the manual gain or 1.0, and the popup shows the "Fallback" badge. Turning Auto off applies the manual gain or 1.0.
+- Turning Auto on applies, once the toggle is saved, the gain the current Integrated value asks for when the value is finite. Otherwise it applies the stored `autoGain<Kind>` with reference `volume1`, the manual gain or 1.0, and the popup shows the "Fallback" badge. Turning Auto off applies the manual gain or 1.0.
 - Write: `saveAuto` sets `autoApplyLoudness<Kind>`, and `autoGain<Kind>` with `autoGainRef[kind]` = `volume1` when a gain was computed.
 - While `autoMutationPending` is true, content refuses `setGain` (`auto update pending`) and a second `setAutoApplyLoudness`.
 - When the save succeeds but the follow-up read fails, content writes the new Auto choice (and the computed gain) into its cached row itself, applies `resolvePreferredGain` of that row while `appliesTo` still matches, and logs `[TCV] Auto setting saved but local reapply failed`.
@@ -389,7 +386,7 @@ sequenceDiagram
       opt Auto on
         content->>content: applyAutoGain
         opt no previewGain held (scenario 3), and 1000 ms or more since the last apply
-          content->>bridge: setGain autoGainToPlay()
+          content->>bridge: setGain calcGain(integrated, targetLufs)
         end
       end
       opt playing is true
@@ -409,12 +406,12 @@ sequenceDiagram
   end
 ```
 
-Drawn from: `audio-worklet.js` `KMeanSquareProcessor.process`; `page-bridge.js` `onBlockMs`, `normalizeForVolume`, `updateIntegratedLufs`, `integratedLufs`, `postLufs`; `content.js` the `lufs` case of `handleBridgeMessage`, `applyAutoGain`, `previewHoldsGain`, `autoGainToPlay`, `throttledSaveIntegrated`, `saveLastIntegrated`, `measurementSaved`, `measurementSaveFailed`.
+Drawn from: `audio-worklet.js` `KMeanSquareProcessor.process`; `page-bridge.js` `onBlockMs`, `normalizeForVolume`, `updateIntegratedLufs`, `integratedLufs`, `postLufs`; `content.js` the `lufs` case of `handleBridgeMessage`, `applyAutoGain`, `previewHoldsGain`, `throttledSaveIntegrated`, `saveLastIntegrated`, `measurementSaved`, `measurementSaveFailed`.
 
-- The two gates are separate. Through `applyAutoGain` the gain under Auto changes at most once per 1000 ms (`STATE_POLL_INTERVAL_MS`); the reapply that `chrome.storage.onChanged` starts (scenarios 10 and 12) applies `autoGainToPlay` without this gate. The measurement and the Auto gain in force are written at most once per 5000 ms per tab, with Auto on or off, and only from a `lufs` whose `playing` is true. `lastSavedAt` is set when a save is sent, and is put back to 0 by a failed save, by SPA navigation and by a measurement reset, so the next block sends again. `sendResetMeasurement` puts `lastAutoGainUpdateAt` back to `-Infinity` and `autoRaiseFrom` to null, so the first finite Integrated value after a reset is applied at once and as it stands.
-- `autoGainToPlay` gives the gain Auto plays. It starts from `calcGain(integrated, targetLufs)`. Where the block's short-term loudness is 6 dB (`AUTO_RISE_DB`) or more over the Integrated value, it works the gain out as if the Integrated value were 3 dB (`AUTO_RISE_AHEAD_DB`) louder, except while `adActive` is true and for 3 s (`SHORT_TERM_MS`) after the last ad ended (`adEndedAt`). A gain at or below `currentGain` plays at once; one above it plays no higher than `currentGain` raised by 1.5 dB (`AUTO_RAISE_DB`) for every 30 s (`AUTO_RAISE_PERIOD_MS`) since a measured level last set the gain (`autoRaiseFrom`). Where `autoRaiseFrom` is null (after a measurement reset, a settings change or a saved Auto toggle), and where `currentGain` is 0, the gain plays as it stands. Each call sets `autoRaiseFrom` to now.
+- The two gates are separate. Through `applyAutoGain` the gain under Auto changes at most once per 1000 ms (`AUTO_FOLLOW_INTERVAL_MS`); the reapply that `chrome.storage.onChanged` starts (scenarios 10 and 12) applies the same gain without this gate. The measurement and the Auto gain in force are written at most once per 5000 ms per tab, with Auto on or off, and only from a `lufs` whose `playing` is true. `lastSavedAt` is set when a save is sent, and is put back to 0 by a failed save, by SPA navigation and by a measurement reset, so the next block sends again. `sendResetMeasurement` puts `lastAutoGainUpdateAt` back to `-Infinity`, so the first finite Integrated value after a reset is applied at once.
+- The gain Auto plays is `calcGain(integrated, targetLufs)`, the gain the Integrated value asks for, above or below `currentGain` alike.
 - `postLufs` sets `playing` when the attached element is neither paused nor muted. A volume of 0 or a gain of 0 leaves it true. Of two tabs on one channel and kind, a paused or muted one therefore writes nothing to the row, neither the measurement nor the Auto gain a settings change gives (scenario 10), while Auto in it goes on following its own measurement.
-- The `autoGain` written is `calcGain(integrated, targetLufs)`, the gain the Integrated value asks for, not the one `autoGainToPlay` left playing; the ad offset is not part of it.
+- The `autoGain` written is `calcGain(integrated, targetLufs)`, the gain the Integrated value asks for, the same one Auto plays; the ad offset is not part of it.
 - While an ad is active the bridge reports the Integrated value it already had, so Auto keeps the same gain through the break.
 - A clip or a page of kind `none` has no channel id, so `lufs` there applies nothing and saves nothing.
 - Failure: `measurementSaveFailed` logs `[TCV] measurement not persisted` (info) where a stretch of failures starts and `[TCV] failed to persist measurement and Auto gain` (warning) once the stretch has lasted 5000 ms (`SAVE_FAILURE_WARN_AFTER_MS`). A save that succeeds ends the stretch. Nothing is logged once the extension context is gone.
@@ -453,7 +450,7 @@ sequenceDiagram
 
 Drawn from: `popup.js` `resetMeasurement`; `content.js` the `resetMeasurement` case of the `runtime.onMessage` listener, `clearSavedMeasurement`, `clearMeasurementCache`, `sendResetMeasurement`; `page-bridge.js` `resetMeasurement`.
 
-- Applied gain: no `setGain` is sent here. With Auto on, the next finite Integrated value is applied without the 1000 ms wait, and as it stands (scenario 5).
+- Applied gain: no `setGain` is sent here. With Auto on, the next finite Integrated value is applied without the 1000 ms wait (scenario 5).
 - Write: `clearMeasurement` removes `lastLufs[kind]`, `lastLufsRef[kind]` and `lastLufsWindows[kind]` and records the removal with a sequence number, so a later merge with another row does not bring the old value back. The stored Auto gain is kept.
 - The popup's "Reset measurement" button is enabled when there is a finite Integrated value or a stored value for the kind (`hasSavedMeasurement`), and no Auto save or reset is pending.
 - Failure: content logs `[TCV] failed to reset measurement`. For any answer other than `ok: true` (a refusal included), the popup logs `[TCV] measurement reset request failed` and shows `resetMeasurementFailed` ("Could not reset the measurement. Please try again.").
@@ -574,7 +571,7 @@ Drawn from: `page-bridge.js` `installWorkerHook`, `onPlayerWorkerMessage`, `setD
 
 - A cue is the notice the player posts for each ad. `adWanted()` follows the cue once any cue has been accepted for the media (`adCueSeen`), and the DOM indicator otherwise. A cue that says more creatives follow in the pod keeps the break open for 0.4 s past `endTime` (`AD_POD_GAP_SEC`).
 - A client-side ad (the attached element is paused and another element plays the ad): while `adActive` is true and the attached element is paused, `syncAdElementGains` takes each other element that is playing, unmuted and above volume 0 (`attachAdElement`, only while `ctx.state` is `running`) and drives its own node to `baselineGain * adGainOffset * (main volume / its volume)`. Otherwise the ad-element nodes are driven to 1. A chain whose element left the DOM is disconnected. This runs in `updateAdState`, in `setGain` and `setAdGainOffset`, and in `rereadAdState` while an ad is active or a chain exists. `rereadAdState` runs on every measurement block (`onBlockMs`) and, on an attachment with no measurement chain, every 100 ms (`adClock`).
-- In content, the `ad` event sets `adActive`, which feeds the popup's "Ad detected" badge and keeps `autoGainToPlay` from looking at the short-term loudness, and its end sets `adEndedAt` (scenario 5).
+- In content, the `ad` event sets `adActive`, which feeds the popup's "Ad detected" badge.
 - Saves: none. A change of the Ad gain setting is scenario 10; the end of a break through navigation or element replacement is in scenarios 7 and 13.
 
 ### 10. Settings changes on the options page
@@ -607,7 +604,7 @@ sequenceDiagram
       opt adGainDb differs from the one held
         content->>bridge: setAdGain dbToGain(adGainDb)
       end
-      content->>content: showGainOverlay taken, updateGainOverlay, autoRaiseFrom = null
+      content->>content: showGainOverlay taken, updateGainOverlay
       content->>content: reapplyForCurrentChannel
       opt the read was overtaken
         content->>content: reapplyForCurrentChannel once more
@@ -671,7 +668,7 @@ sequenceDiagram
 
 Drawn from: `options.js` `removeChannel`, `clearAll`, `mutateChannelVolumes`, the `storage.onChanged` listener, `renderChannels`; `channel-store.js` the `deleteChannel` and `clearChannels` cases, `createChannelVolumesWriter`, `aliasesLeadingTo`; `content.js` the `storage.onChanged` listener, `reapplyForCurrentChannel`.
 
-- Without a row, Auto is the settings default for the kind. The gain is the one `autoGainToPlay` gives when that default is on and the Integrated value is finite, and 1.0 otherwise.
+- Without a row, Auto is the settings default for the kind. The gain is `calcGain(integrated, targetLufs)` when that default is on and the Integrated value is finite, and 1.0 otherwise.
 - A tab that keeps measuring the channel writes a row for it again with its next `saveMeasurement` (scenario 5).
 - `deleteChannel` removes the key, and every alias that leads to it, directly or through another alias, goes with it, so a provisional id the channel was known by makes a row of its own again. `clearChannels` empties `channelVolumes` and the aliases.
 - Both buttons are disabled until the first load has completed, and the handlers return while `settingsReady` is false.
@@ -710,7 +707,7 @@ sequenceDiagram
 Drawn from: `content.js` the `storage.onChanged` listener, `reapplyForCurrentChannel`, `loadChannelEntry`, `previewHoldsGain`, `sendPendingSeededReset`; `popup.js` the `followDisplayUnit` change handler and the `pollTabState(refresh)` call.
 
 - The listener does not look at which row changed: a tab on any channel re-reads its own row and sends `setGain`. The value changes where the resolved gain differs from `currentGain`. A tab that holds a `previewGain` (scenario 3) sends none, and puts back the gain storage holds when the preview ends with no save or a refused one.
-- With Auto on and a finite Integrated value, this path applies the gain `autoGainToPlay` gives and does not go through the 1000 ms gate of `applyAutoGain`.
+- With Auto on and a finite Integrated value, this path applies `calcGain(integrated, targetLufs)` and does not go through the 1000 ms gate of `applyAutoGain`.
 - Each write that reaches the listener starts its own read, and a read overtaken by a later one applies nothing.
 - Saves: none.
 
@@ -788,7 +785,7 @@ Drawn from: `content.js` `listenForResumeGesture`, `requestAudioContextResume`, 
 | "Apply to channel" | Set to the Suggested gain | `saveGain` | `popup.js` `applyMeasured` |
 | `saveGain` rejected | Back to the stored gain | none | `content.js` `setGain` case, `reapplyForCurrentChannel` |
 | Auto switched in the popup | Resolved again | `saveAuto`, with `autoGain` when computed | `content.js` `setAutoApplyLoudness` case, `saveChannelAutoApply` |
-| `lufs` with Auto on | `autoGainToPlay`, at most once per 1000 ms | `saveMeasurement` with `autoGain`, at most once per 5000 ms, while `playing` is true | `applyAutoGain`, `throttledSaveIntegrated` |
+| `lufs` with Auto on | Set to `calcGain(integrated, targetLufs)`, at most once per 1000 ms | `saveMeasurement` with `autoGain`, at most once per 5000 ms, while `playing` is true | `applyAutoGain`, `throttledSaveIntegrated` |
 | `lufs` with Auto off | Unchanged | `saveMeasurement`, at most once per 5000 ms, while `playing` is true | `throttledSaveIntegrated` |
 | `lufs` discarded | Unchanged | none | `lufs` case of `handleBridgeMessage` |
 | Measurement reset | Unchanged at that moment | `clearMeasurement` | `content.js` `resetMeasurement` case |

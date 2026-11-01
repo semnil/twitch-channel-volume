@@ -32,7 +32,7 @@ Drawn from the extension's own colours and strings by `gen_screenshots.py`; the 
 ## Features
 
 - **Real-time LUFS metering**: Momentary (400 ms), Short-term (3 s), Integrated (BS.1770 absolute and relative gates with indexed updates)
-- **Per-channel LUFS auto-follow**: Optional Live / VOD controls continuously follow the measured Integrated LUFS and Target LUFS. A gain lower than the one playing applies at once, and a higher one rises by no more than 1.5 dB every 30 s. While the short-term (3 s) loudness stands 6 dB or more over the Integrated value — a stream that has just turned louder than its measurement so far — the gain is worked out as if the Integrated value were 3 dB louder
+- **Per-channel LUFS auto-follow**: Optional Live / VOD controls continuously follow the measured Integrated LUFS and Target LUFS. The gain the Integrated value asks for applies at once, lower or higher, at most once a second
 - **Measurement reset**: Discards the current media kind's measurement history and restarts it from zero. The stored value tracks the restarted measurement from its first block onward; saved gains are unchanged
 - **Per-channel manual gain**: Save gain per Live / VOD kind; applied automatically on revisit while Auto is off. With Auto on, the Auto gain last stored for the channel stands in until a measurement arrives, and the manual gain where no Auto gain is stored
 - **Global Auto defaults**: Independent Live / VOD defaults apply only when a channel kind has neither an explicit Auto choice nor a manual gain
@@ -54,7 +54,7 @@ Drawn from the extension's own colours and strings by `gen_screenshots.py`; the 
                                         (per 100 ms mean-square)
 ```
 
-The measurement path applies the BS.1770-4 K-weighting (high-shelf pre-filter + RLB high-pass) and accumulates mean-square in an AudioWorklet. The main thread aggregates 400 ms momentary and 3 s short-term LUFS. Integrated LUFS starts from the saved value for the current channel and media kind, weighing it by the number of windows it stands on - at least thirty seconds and at most three minutes - so the level a session ended on still holds while the new measurement fills in. A one-hour ring buffer and balanced energy index preserve the absolute and relative two-stage gate while updating each block in logarithmic time instead of rescanning the retained history. The gain that brings the Integrated value to Target LUFS is Target LUFS − Integrated LUFS in dB, held within 0–600 %; with auto-follow on, the GainNode plays it, subject to the slow rise and the cut described under Features.
+The measurement path applies the BS.1770-4 K-weighting (high-shelf pre-filter + RLB high-pass) and accumulates mean-square in an AudioWorklet. The main thread aggregates 400 ms momentary and 3 s short-term LUFS. Integrated LUFS starts from the saved value for the current channel and media kind, weighing it by the number of windows it stands on - at least thirty seconds and at most three minutes - so the level a session ended on still holds while the new measurement fills in. A one-hour ring buffer and balanced energy index preserve the absolute and relative two-stage gate while updating each block in logarithmic time instead of rescanning the retained history. The gain that brings the Integrated value to Target LUFS is Target LUFS − Integrated LUFS in dB, held within 0–600 %; with auto-follow on, the GainNode plays it.
 
 ## Install
 
@@ -71,7 +71,7 @@ Install from the [Chrome Web Store](https://chromewebstore.google.com/detail/twi
 
 1. Open a Twitch stream or VOD
 2. Click the extension icon and enable **Auto-follow LUFS** for the current kind
-3. The gain follows the current Integrated LUFS toward Target LUFS as measurement stabilizes: down at once, up by no more than 1.5 dB every 30 s
+3. The gain follows the current Integrated LUFS toward Target LUFS as measurement stabilizes, down or up at once
 4. Use **Reset measurement** to discard the current kind's measurement history and restart it from zero
 5. Alternatively, leave Auto off and click **Apply to channel** to save the current suggested gain
 6. Use the manual slider (0–600 %) while Auto is off
