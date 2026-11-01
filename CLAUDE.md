@@ -354,7 +354,8 @@ node tools/mutation/sweep.mjs --verify
 
 # The coverage report CI uploads, made locally (<dir> is any empty directory)
 NODE_V8_COVERAGE=<dir> node test.js
-node tools/coverage/v8-to-lcov.mjs <dir> coverage.lcov $(python3 -B pack.py --list | grep '\.js$')
+# (core/ is left out: channel-volume-core's own suite covers the shared code)
+node tools/coverage/v8-to-lcov.mjs <dir> coverage.lcov $(python3 -B pack.py --list | grep '\.js$' | grep -v '^core/')
 
 # Python syntax check (leaves no __pycache__ behind)
 python3 -B -c "import ast,pathlib; [ast.parse(p.read_text()) for p in pathlib.Path('.').glob('*.py')]"

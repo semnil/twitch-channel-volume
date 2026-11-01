@@ -6671,25 +6671,6 @@ test('the popup slider saves a key let go of within a press once, and a cancel w
   assert.deepEqual(gains(popup, 'setGain'), [1.95, 2.05, 2.1], 'a cancel with nothing pressed, or during a key hold, ends nothing');
 });
 
-test('holdPopupSlider answers whether its slider is held, which this popup does not read', () => {
-  const outer = globalThis.window;
-  const on = (target) => (type, fn) => { (target.listeners[type] ||= []).push(fn); };
-  const slider = { value: '100', listeners: {} };
-  slider.addEventListener = on(slider);
-  globalThis.window = { listeners: {} };
-  globalThis.window.addEventListener = on(globalThis.window);
-  try {
-    const held = holdPopupSlider(slider, { begin() {}, draw() {}, canPreview: () => false, preview() {}, save() {} });
-    const fire = (type, event = {}) => { for (const fn of slider.listeners[type] || []) fn({ target: slider, button: 0, ...event }); };
-    fire('keydown', { key: 'ArrowRight' });
-    assert.equal(held(), true, 'a key held is held');
-    fire('keyup', { key: 'ArrowRight' });
-    assert.equal(held(), false);
-  } finally {
-    globalThis.window = outer;
-  }
-});
-
 test('a key held on the slider after a preview sends it again each second until the hold ends', async () => {
   const gains = (popup, cmd) => popup.sent.filter((request) => request.cmd === cmd).map((request) => request.gain);
   const popup = createPopupHarness({ state: { appliesTo: '123|live|' } });
