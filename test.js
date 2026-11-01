@@ -11436,10 +11436,10 @@ test('the options markup ships the defaults a page with no settings falls back t
   assert.equal(fallback('targetLufs'), 'DEFAULT_TARGET_LUFS');
   assert.equal(fallback('adGainDb'), 'DEFAULT_AD_GAIN_DB');
   assert.equal(fallback('displayUnit'), "'%'");
-  assert.equal(fallback('showGainOverlay'), 'true');
+  assert.equal(fallback('showGainOverlay'), 'DEFAULT_SHOW_GAIN_OVERLAY');
   assert.match(tag('targetLufs'), new RegExp(`value="${u.DEFAULT_TARGET_LUFS}"`));
   assert.match(tag('adGainDb'), new RegExp(`value="${u.DEFAULT_AD_GAIN_DB}"`));
-  assert.match(tag('overlayToggle'), /\bchecked\b/);
+  assert.equal(/\bchecked\b/.test(tag('overlayToggle')), DEFAULT_SHOW_GAIN_OVERLAY, 'overlayToggle ships as the default core/common.js gives');
   assert.match(html, /<button data-unit="%" class="active"/);
   for (const kind of ['Live', 'Vod']) {
     assert.equal(fallback(`autoApplyLoudness${kind}Default`), 'DEFAULT_AUTO_APPLY_LOUDNESS', kind);

@@ -46,7 +46,7 @@
       targetLufs: settings.targetLufs ?? DEFAULT_TARGET_LUFS,
       adGainDb: settings.adGainDb ?? DEFAULT_AD_GAIN_DB,
       displayUnit: settings.displayUnit || '%',
-      showGainOverlay: settings.showGainOverlay ?? true,
+      showGainOverlay: settings.showGainOverlay ?? DEFAULT_SHOW_GAIN_OVERLAY,
       autoApplyLoudnessLiveDefault:
         settings.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS,
       autoApplyLoudnessVodDefault:

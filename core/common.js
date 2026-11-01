@@ -11,6 +11,9 @@ const DEFAULT_TARGET_LUFS = -18;
 // The range of Target LUFS a setting takes.
 const MIN_TARGET_LUFS = -30;
 const MAX_TARGET_LUFS = -6;
+// Whether the gain is shown beside the player's volume where the settings hold
+// no choice.
+const DEFAULT_SHOW_GAIN_OVERLAY = true;
 // The range of a gain: 0 is silence, 6 is 600%.
 const MIN_GAIN = 0;
 const MAX_GAIN = 6;
