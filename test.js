@@ -4396,7 +4396,9 @@ test('content Auto mode follows LUFS and recalculates when the target changes', 
 
 test('content limits Auto gain updates to the popup display interval', async () => {
   const popupSource = fs.readFileSync(path.join(__dirname, 'popup.js'), 'utf8');
-  assert.match(popupSource, /setInterval\(refresh, DISPLAY_UPDATE_INTERVAL_MS\);/);
+  assert.match(popupSource, /await pollTabState\(refresh\);/);
+  const contentSource = fs.readFileSync(path.join(__dirname, 'content.js'), 'utf8');
+  assert.match(contentSource, /elapsed < STATE_POLL_INTERVAL_MS\) return;/);
   const harness = createContentHarness({ autoApply: true, autoGain: 0.8 });
   await flushTasks();
   harness.commands.length = 0;
@@ -4411,7 +4413,7 @@ test('content limits Auto gain updates to the popup display interval', async () 
   });
 
   await emitIntegrated(-23);
-  harness.advanceTime(u.DISPLAY_UPDATE_INTERVAL_MS - 1);
+  harness.advanceTime(STATE_POLL_INTERVAL_MS - 1);
   await emitIntegrated(-22);
   let gains = harness.commands.filter((command) => command.cmd === 'setGain');
   assert.equal(gains.length, 1);
@@ -4424,7 +4426,7 @@ test('content limits Auto gain updates to the popup display interval', async () 
   assert.ok(Math.abs(gains[1].value - u.calcGain(-21, -18)) < 1e-9);
 
   // A clock that steps backwards must not stall Auto until it catches up.
-  harness.advanceTime(-u.DISPLAY_UPDATE_INTERVAL_MS);
+  harness.advanceTime(-STATE_POLL_INTERVAL_MS);
   await emitIntegrated(-20);
   gains = harness.commands.filter((command) => command.cmd === 'setGain');
   assert.equal(gains.length, 3);

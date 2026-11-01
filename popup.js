@@ -477,8 +477,7 @@
         return;
       }
       settingsRead = true;
-      setInterval(refresh, DISPLAY_UPDATE_INTERVAL_MS);
-      await refresh();
+      await pollTabState(refresh);
     } finally {
       revealPage();
     }

@@ -10,7 +10,7 @@
 
 | 登場するもの | ファイル | 動く場所 | ここでの役目 |
 |---|---|---|---|
-| popup | `popup.js` | 拡張機能のポップアップ (ツールバーのボタンで開く小さな画面) | 操作 (ゲイン、Auto、測定値のリセット) を、開いているタブの content script へ送る。`getState` を `DISPLAY_UPDATE_INTERVAL_MS` (1000 ms) ごとに読む。storage へは何も書かない |
+| popup | `popup.js` | 拡張機能のポップアップ (ツールバーのボタンで開く小さな画面) | 操作 (ゲイン、Auto、測定値のリセット) を、開いているタブの content script へ送る。`getState` を `STATE_POLL_INTERVAL_MS` (1000 ms、core/common.js の `pollTabState`) ごとに読む。storage へは何も書かない |
 | options | `options.js` | 拡張機能の設定ページ | 設定の変更と、チャンネルの `normalizeChannels` / `deleteChannel` / `clearChannels` を Service Worker へ送る |
 | content | `content.js` | Twitch のタブ、ISOLATED world | 基準ゲイン (`currentGain`) を決めて bridge へ送り、チャンネルごとの変更を Service Worker へ送る |
 | bridge | `page-bridge.js` | Twitch のタブ、MAIN world | `AudioContext`・出力の `GainNode`・LUFS の計測を持ち、ノードを実際にかかるゲインへ動かす |
@@ -411,7 +411,7 @@ sequenceDiagram
 
 図のもと: `audio-worklet.js` の `KMeanSquareProcessor.process`。`page-bridge.js` の `onBlockMs`、`normalizeForVolume`、`updateIntegratedLufs`、`integratedLufs`、`postLufs`。`content.js` の `handleBridgeMessage` の `lufs`、`applyAutoGain`、`previewHoldsGain`、`autoGainToPlay`、`throttledSaveIntegrated`、`saveLastIntegrated`、`measurementSaved`、`measurementSaveFailed`。
 
-- 2 つの間引きは別々に働く。`applyAutoGain` を通るとき、Auto のもとでゲインが変わるのは 1000 ms (`DISPLAY_UPDATE_INTERVAL_MS`) に 1 回まで。`chrome.storage.onChanged` が始める読み直し (場面 10 と 12) は、この間引きを通らずに `autoGainToPlay` のゲインをかける。計測結果と今かかっている Auto のゲインを書くのは、Auto のオン・オフに関係なく、タブごとに 5000 ms に 1 回までで、`playing` が true の `lufs` からだけ。`lastSavedAt` は保存を送るときに入り、保存の失敗・SPA 遷移・測定値のリセットで 0 に戻るので、次のブロックでまた送る。`sendResetMeasurement` は `lastAutoGainUpdateAt` を `-Infinity` に、`autoRaiseFrom` を null に戻すので、リセット後に最初に届いた有限の Integrated はすぐに、そのままかかる。
+- 2 つの間引きは別々に働く。`applyAutoGain` を通るとき、Auto のもとでゲインが変わるのは 1000 ms (`STATE_POLL_INTERVAL_MS`) に 1 回まで。`chrome.storage.onChanged` が始める読み直し (場面 10 と 12) は、この間引きを通らずに `autoGainToPlay` のゲインをかける。計測結果と今かかっている Auto のゲインを書くのは、Auto のオン・オフに関係なく、タブごとに 5000 ms に 1 回までで、`playing` が true の `lufs` からだけ。`lastSavedAt` は保存を送るときに入り、保存の失敗・SPA 遷移・測定値のリセットで 0 に戻るので、次のブロックでまた送る。`sendResetMeasurement` は `lastAutoGainUpdateAt` を `-Infinity` に、`autoRaiseFrom` を null に戻すので、リセット後に最初に届いた有限の Integrated はすぐに、そのままかかる。
 - Auto がかけるゲインは `autoGainToPlay` が決める。もとは `calcGain(integrated, targetLufs)`。ブロックの short-term のラウドネスが Integrated より 6 dB (`AUTO_RISE_DB`) 以上大きいときは、Integrated が 3 dB (`AUTO_RISE_AHEAD_DB`) 大きいものとしてゲインを求める。ただし `adActive` が true の間と、最後の CM が終わってから 3 秒 (`SHORT_TERM_MS`、`adEndedAt`) の間は、そうしない。`currentGain` 以下のゲインはすぐにかかる。それより大きいゲインは、計測したレベルが最後にゲインを決めてから (`autoRaiseFrom`) 30 秒 (`AUTO_RAISE_PERIOD_MS`) ごとに 1.5 dB (`AUTO_RAISE_DB`) まで、`currentGain` から上げた値で止める。`autoRaiseFrom` が null のとき (測定値のリセット、設定の変更、保存された Auto の切り替えのあと) と、`currentGain` が 0 のときは、そのままかかる。呼ぶたびに `autoRaiseFrom` を今にする。
 - `postLufs` は、つないだ要素が止まっておらずミュートでもないとき `playing` を立てる。音量 0 やゲイン 0 でも true のまま。そのため、同じチャンネル・同じ種別の 2 つのタブのうち、止まっているかミュートのタブは行に何も書かない。計測値も、設定の変更から出る Auto のゲイン (場面 10) も書かない。そのタブの Auto は自分の計測に合わせ続ける。
 - 書く `autoGain` は `calcGain(integrated, targetLufs)`、つまり Integrated が求めるゲインで、`autoGainToPlay` が残したゲインではない。CM ゲインの倍率は入らない。
@@ -626,7 +626,7 @@ sequenceDiagram
   end
 ```
 
-図のもと: `core/common.js` の `holdSettingsSlider` (`targetLufs` と `adGainDb` のリスナー、`window` の `blur` リスナー) と、`options.js` でのその呼び出し、2 つの Auto 既定値のトグル・`#unitToggle`・`overlayToggle` のリスナー、`updateSettings`、`mutateSettings`、`reloadSettingsAfterFailure`、`storage.onChanged` リスナー。`content.js` の `storage.onChanged` リスナー、`reapplyForCurrentChannel`、`previewHoldsGain`、`saveChannelAutoGain`。`page-bridge.js` の `setAdGainOffset`。`popup.js` の `storage.onChanged` リスナー。
+図のもと: `core/common.js` の `holdSettingsSlider` (`targetLufs` と `adGainDb` のリスナー、`window` の `blur` リスナー) と、`options.js` でのその呼び出し、2 つの Auto 既定値のトグル・`#unitToggle`・`overlayToggle` のリスナー、`updateSettings`、`mutateSettings`、`reloadSettingsAfterFailure`、`storage.onChanged` リスナー。`content.js` の `storage.onChanged` リスナー、`reapplyForCurrentChannel`、`previewHoldsGain`、`saveChannelAutoGain`。`page-bridge.js` の `setAdGainOffset`。`popup.js` の `followDisplayUnit` の変更の受け手。
 
 - 「Target LUFS」と「CM Gain」のスライダーは `change` で送り、`input` ではラベルを変えるだけ。どちらのスライダーでも、キーを押し続けている間 (最初の値を動かすキーの `keydown` から、押しているそのキーの最後の 1 つの `keyup` まで。値を動かすキーだけを数えるのは popup のスライダーと同じ、場面 3) は `change` で何も送らない。`keyup`、またはその前のスライダーかページの `window` の `blur` で、値が動いていればスライダーの値を 1 回送る (押し続けの途中でポインタで押しても、押し続けとその値はそのまま残る)。そのような `blur` のあとは、次の `pointerdown` か、値を動かすキーの繰り返しでない `keydown` まで、スライダーの `input` は何もせず、`change` はつまみを設定画面が持つ設定 (`blur` の時点で書いた値、または断られた書き込みが戻した値) へ戻す。ポインタでスライダーを押している間 (`pointerdown` からその `pointerup` / `pointercancel` まで) のスライダーかページの `window` の `blur` も、同じように操作を終える。`blur` より前に Chrome が出す `change` がその値を書いており、次に押すまで、スライダーの `input` は何もせず、`change` はつまみを設定画面が持つ設定 (断られた書き込みなら保存済みの値) へ戻す。どちらかのスライダーでキーかポインタを押している間に設定の変化が届くと (`renderSettings`。このページ自身の書き込みでも、知らせでも)、設定は取り込むが、そのスライダーとラベルは操作が動かした値のままにし、操作の終わりがその値を送る。終わりで何も送らない操作は、そこで設定を描く: 値を動かさなかったキー (範囲の端)、始めた値の上で離したドラッグ (動かしても戻しても、Chrome は `change` を出さない)、`blur` で終わった押下。Live / VOD の既定値のトグルとゲイン表示のトグルは `change` で、表示単位のボタンは `click` で送る。どれも自分が受け持つ項目 1 つだけを送り、保存値と同じ値を送った項目は書かない (「設定を書く単一の書き手」を参照)。最初の読み込みが終わるまでは押せない (`settingsReady`)。
 - それぞれの Twitch のタブで: 新しい `targetLufs` は、Auto がオンで Integrated が有限ならすぐにゲインを変える (`reapplyForCurrentChannel` を通る)。新しい `adGainDb` は、CM 中ならノードを変え、CM 要素のノードも同じ手順の中で変わる (`setAdGainOffset` が `syncAdElementGains` を動かす)。新しい Auto 既定値は、その種別の Auto の選択も手動ゲインも行に無いチャンネルについて Auto を切り替えるが、`autoApplyLoudness<Kind>` は書かない。`showGainOverlay` はオーバーレイだけを変える。
@@ -707,7 +707,7 @@ sequenceDiagram
   Note over popup: channelVolumes のリスナーは無く、<br>getState を 1000 ms ごとに読む
 ```
 
-図のもと: `content.js` の `storage.onChanged` リスナー、`reapplyForCurrentChannel`、`loadChannelEntry`、`previewHoldsGain`、`sendPendingSeededReset`。`popup.js` の `storage.onChanged` リスナーと `setInterval(refresh, DISPLAY_UPDATE_INTERVAL_MS)` の呼び出し。
+図のもと: `content.js` の `storage.onChanged` リスナー、`reapplyForCurrentChannel`、`loadChannelEntry`、`previewHoldsGain`、`sendPendingSeededReset`。`popup.js` の `followDisplayUnit` の変更の受け手と `pollTabState(refresh)` の呼び出し。
 
 - リスナーはどの行が変わったかを見ない。どのチャンネルのタブも自分の行を読み直して `setGain` を送る。値が変わるのは、決まったゲインが `currentGain` と違うときだけ。`previewGain` を保っているタブ (場面 3) は送らず、プレビューが保存なしか断られた保存で終わったときに、保存されたゲインへ戻す。
 - Auto がオンで Integrated が有限なら、この流れは `autoGainToPlay` のゲインをかけ、`applyAutoGain` の 1000 ms の間引きを通らない。
