@@ -451,7 +451,7 @@ sequenceDiagram
 図のもと: `popup.js` の `resetMeasurement`。`content.js` の `runtime.onMessage` リスナーの `resetMeasurement`、`clearSavedMeasurement`、`clearMeasurementCache`、`sendResetMeasurement`。`page-bridge.js` の `resetMeasurement`。
 
 - かかるゲイン: ここでは `setGain` を送らない。Auto がオンなら、次に届いた有限の Integrated が 1000 ms 待たずにかかる (場面 5)。
-- 書き込み: `clearMeasurement` が `lastLufs[kind]`・`lastLufsRef[kind]`・`lastLufsWindows[kind]` を消し、消したことを通し番号つきで記録する。そのため、あとでほかの行とまとめても古い値は戻らない。消した時刻も残し、それより前に始まった計測の `saveMeasurement` は何も書かないので、送信中の保存でも古い値は戻らない。同じチャンネルのほかのタブは、行を読み直して値が消えていれば自分の計測も空にする。保存済みの Auto のゲインは残る。
+- 書き込み: `clearMeasurement` が `lastLufs[kind]`・`lastLufsRef[kind]`・`lastLufsWindows[kind]` を消し、消したことを通し番号つきで記録する。そのため、あとでほかの行とまとめても古い値は戻らない。消した時刻も残し、それより前に始まった計測の `saveMeasurement` は何も書かないので、送信中の保存でも古い値は戻らない。同じチャンネルのほかのタブは、読み直した行に自分の計測を始めた後の消去があるか、前に読んだ値が消えていれば (行の削除)、自分の計測も空にする。保存済みの Auto のゲインは残る。
 - popup の「測定値をリセット」ボタンが押せるのは、有限の Integrated か、その種別の保存値 (`hasSavedMeasurement`) があり、Auto の保存待ちやリセット待ちが無いとき。
 - 失敗: content は `[TCV] failed to reset measurement` とログに出す。`ok: true` でない答え (断られた場合も含む) では、popup は `[TCV] measurement reset request failed` とログに出し、`resetMeasurementFailed` (「測定値をリセットできませんでした。もう一度お試しください」) を出す。
 
