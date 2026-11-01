@@ -643,6 +643,15 @@ function setUnknown(el, classes) {
   setCardValue(el, '---', null, classes ? classes + ' unknown' : 'unknown');
 }
 
+// The popup's owner line: the owner's name, or the catalog's text for
+// missingKey in the empty class where there is none. The full text is the
+// title as well, for a row too narrow to show it.
+function drawOwnerName(el, name, missingKey) {
+  el.textContent = name || msg(missingKey);
+  el.classList.toggle('empty', !name);
+  el.title = el.textContent;
+}
+
 // The settings page's #settingsError line: shown with the catalog's text for
 // key, or hidden.
 function showSettingsError(visible, key = 'settingsSaveFailed') {

@@ -191,16 +191,7 @@
     const notice = ch.id && (audioUnavailable || measurementUnavailable);
     $('audioError').classList.toggle('hidden', !notice);
     if (notice) $('audioError').textContent = noticeText();
-    const nameEl = $('channelName');
-    if (ch.name) {
-      nameEl.textContent = ch.name;
-      nameEl.classList.remove('empty');
-    } else {
-      nameEl.textContent = msg('channelNotDetected');
-      nameEl.classList.add('empty');
-    }
-    // The name truncates to fit the row, so keep the full text on hover.
-    nameEl.title = nameEl.textContent;
+    drawOwnerName($('channelName'), ch.name, 'channelNotDetected');
     const kindEl = $('channelKind');
     if (ch.kind && ch.kind !== 'none') {
       kindEl.className = 'type-badge ' + ch.kind;
