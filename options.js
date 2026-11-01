@@ -237,95 +237,20 @@
     }
   }
 
-  // A key held on a settings slider moves its label alone, and the changes its
-  // repeats fire write nothing: the value is written once, where the last of the
-  // keys that move the value (createSliderKeys) is let go; any other key takes
-  // no part. A key or the pointer held on the slider when focus leaves the slider or
-  // the page ends the gesture there; a key's value is written then, and a
-  // drag's by the change Chrome fires ahead of the blur. After that the
-  // slider's input does nothing and its change puts the thumb back to the
-  // setting the page holds (the value written, or the one a failed write put
-  // back), until the pointer or a key that moves the value is pressed on it
-  // again. A settings change that arrives during a gesture is
-  // left off the slider (settingsSliderHeld); a gesture that writes nothing at
-  // its end (a key that moved nothing, a drag let go of where it began, a press
-  // a blur ended) draws the setting there.
-  function holdSettingsSlider(field, drawLabel) {
-    const slider = $(field);
-    const keys = createSliderKeys();
-    let keyHeld = false;
-    let keyMoved = false;
-    let pointerHeld = false;
-    let pointerStart = null;
-    let gestureEnded = false;
-    settingsSliderHeld[field] = () => keyHeld || pointerHeld;
-    const drawSetting = () => {
-      slider.value = String(currentSettings[field]);
-      drawLabel(currentSettings[field]);
-    };
-    // Whether a key was held.
-    const endKeyHold = () => {
-      if (!keyHeld) return false;
-      keyHeld = false;
-      const moved = keyMoved;
-      keyMoved = false;
-      if (moved) void updateSettings({ [field]: Number(slider.value) });
-      else drawSetting();
-      return true;
-    };
-    const endGestureOnBlur = () => {
-      keys.clear();
-      if (!endKeyHold() && !pointerHeld) return;
-      drawSetting();
-      pointerHeld = false;
-      gestureEnded = true;
-    };
-    // Only the primary button drags the slider; another button moves no value,
-    // and its release goes to the window, so it begins no gesture.
-    slider.addEventListener('pointerdown', (event) => {
-      if (event.button !== 0) return;
-      pointerHeld = true;
-      pointerStart = Number(slider.value);
-      gestureEnded = false;
-    });
-    // A release on the value the press began on fires no change after it, and
-    // draws the setting, which a settings change during the press may have moved.
-    const releasePointer = () => {
-      if (pointerHeld && Number(slider.value) === pointerStart) drawSetting();
-      pointerHeld = false;
-    };
-    slider.addEventListener('pointerup', releasePointer);
-    slider.addEventListener('pointercancel', releasePointer);
-    slider.addEventListener('keydown', (e) => {
-      if (!keys.press(e)) return;
-      gestureEnded = false;
-      keyHeld = true;
-    });
-    slider.addEventListener('keyup', (e) => {
-      if (keys.release(e)) endKeyHold();
-    });
-    slider.addEventListener('blur', endGestureOnBlur);
-    window.addEventListener('blur', endGestureOnBlur);
-    slider.addEventListener('input', (e) => {
-      if (gestureEnded) return;
-      if (keyHeld) keyMoved = true;
-      drawLabel(Number(e.target.value));
-    });
-    slider.addEventListener('change', (e) => {
-      if (gestureEnded) {
-        drawSetting();
-        return;
-      }
-      if (keyHeld) return;
-      void updateSettings({ [field]: Number(e.target.value) });
+  // One write per gesture on each settings slider (holdSettingsSlider in
+  // core/common.js), against the setting the page holds. A settings change that
+  // arrives during a gesture is left off the slider (settingsSliderHeld); a
+  // gesture that writes nothing at its end draws the setting there.
+  for (const [field, drawLabel] of [
+    ['targetLufs', (v) => { $('targetLufsValue').textContent = v + ' LUFS'; }],
+    ['adGainDb', (v) => { $('adGainValue').textContent = (v > 0 ? '+' : '') + v + ' dB'; }]
+  ]) {
+    settingsSliderHeld[field] = holdSettingsSlider($(field), {
+      current: () => currentSettings[field],
+      drawLabel,
+      save: (value) => { void updateSettings({ [field]: value }); }
     });
   }
-  holdSettingsSlider('targetLufs', (v) => {
-    $('targetLufsValue').textContent = v + ' LUFS';
-  });
-  holdSettingsSlider('adGainDb', (v) => {
-    $('adGainValue').textContent = (v > 0 ? '+' : '') + v + ' dB';
-  });
 
   for (const kind of ['live', 'vod']) {
     const id = `defaultAuto${kind[0].toUpperCase()}${kind.slice(1)}Toggle`;
