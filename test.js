@@ -9546,6 +9546,55 @@ test('options asks for a reload where a failed save could not read back what is 
   assert.equal(reread.el('targetLufs').value, '-18');
 });
 
+test('options draws the table again after a failed save only where the unit moved', async () => {
+  // A control of the table the viewer is on keeps its focus through a failed
+  // save of another setting.
+  const harness = createOptionsHarness({
+    settings: { targetLufs: -18, displayUnit: 'dB' },
+    channelVolumes: { alpha: { name: 'Alpha', gainLive: 2 } },
+    refuseMutation: { [u.SETTINGS_MUTATION_MESSAGE]: 'settings-update-failed' }
+  });
+  await flushTasks(8);
+  const rowBefore = harness.el('channelsBody').children[0];
+  assert.ok(rowBefore, 'the table has its row');
+  harness.el('targetLufs').value = '-24';
+  await harness.fire('targetLufs', 'change');
+  await flushTasks(8);
+  assert.equal(harness.el('settingsError').classList.contains('hidden'), false);
+  assert.equal(harness.el('channelsBody').children[0], rowBefore, 'a failed target save leaves the table as it is');
+});
+
+test('options draws the table back to the Auto defaults on file when a default is not saved', async () => {
+  // A row that names no Auto follows the default; a refused default puts the
+  // table back to the one on file, a channel change arriving meanwhile or not.
+  for (const kind of ['live', 'vod']) {
+    for (const from of [false, true]) {
+      const toggleId = kind === 'live' ? 'defaultAutoLiveToggle' : 'defaultAutoVodToggle';
+      const field = kind === 'live' ? 'autoApplyLoudnessLiveDefault' : 'autoApplyLoudnessVodDefault';
+      const harness = createOptionsHarness({
+        settings: { targetLufs: -18, [field]: from },
+        channelVolumes: { alpha: { name: 'Alpha' } },
+        holdMutation: u.SETTINGS_MUTATION_MESSAGE,
+        refuseMutation: { [u.SETTINGS_MUTATION_MESSAGE]: 'settings-update-failed' }
+      });
+      await flushTasks(8);
+      const onFile = harness.el('channelsBody').innerHTML;
+      harness.el(toggleId).checked = !from;
+      const saving = harness.start(toggleId, 'change');
+      await flushTasks(8);
+      harness.fireStorageChanged({ [u.CHANNEL_VOLUMES_KEY]: { newValue: { alpha: { name: 'Alpha', lastLufs: { [kind]: -20 } } } } }, 'local');
+      await flushTasks(8);
+      await harness.releaseMutation();
+      await saving;
+      await flushTasks(8);
+      const back = harness.el('channelsBody').innerHTML;
+      assert.equal(harness.el(toggleId).checked, from, `${kind} ${from}: the toggle goes back`);
+      assert.equal(back.replace(/-20[^<]*/g, ''), onFile.replace(/-20[^<]*/g, ''),
+        `${kind} ${from}: and the table shows the default on file again`);
+    }
+  }
+});
+
 test('options draws back what is on file, not what the defaults would be', async () => {
   // The re-read after a refusal is what puts the page right, so it has to draw
   // the settings it read. A page drawn from nothing shows the defaults, which

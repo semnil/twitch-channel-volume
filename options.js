@@ -189,16 +189,24 @@
   // The patch is drawn before it is written. A write that does not land puts
   // the page back to what the settings hold and says so, or, where the re-read
   // fails as well, asks for a reload (saveSettingOrRestore in core/common.js).
+  // The table is drawn again only where what it shows moved (the unit, or
+  // the Auto defaults of the rows that name none), so a control of the table
+  // the viewer is on keeps its focus.
+  function renderSettingsAndUnit(settings) {
+    const shown = () => [displayUnit, defaultAutoApply.live, defaultAutoApply.vod].join('|');
+    const before = shown();
+    renderSettings(settings);
+    if (shown() !== before) renderChannels(channelVolumes);
+  }
+
   async function updateSettings(patch) {
     if (!settingsReady) return;
-    renderSettings({ ...currentSettings, ...patch });
-    renderChannels(channelVolumes);
+    renderSettingsAndUnit({ ...currentSettings, ...patch });
     await saveSettingOrRestore(() => mutateSettings(patch), {
       loaded: () => settingsReady,
       read: () => readSettings(chrome.storage),
-      apply: renderSettings,
+      apply: renderSettingsAndUnit,
       revision: () => settingsRevision,
-      redraw: () => renderChannels(channelVolumes),
       prefix: '[TCV]'
     });
   }
