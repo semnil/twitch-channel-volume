@@ -112,7 +112,8 @@
     if (!channelsRead) return;
     const body = $('channelsBody');
     body.innerHTML = '';
-    const ids = Object.keys(all);
+    // The rows are in the order of what each is shown under.
+    const ids = Object.keys(all).sort((a, b) => rowLabel(a, all[a]).localeCompare(rowLabel(b, all[b])));
     $('emptyMsg').style.display = ids.length === 0 ? '' : 'none';
     document.querySelector('.channel-table').style.display = ids.length === 0 ? 'none' : '';
     for (const id of ids) {

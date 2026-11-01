@@ -179,7 +179,7 @@ flowchart LR
 - Ad gain slider (-24 to +6 dB, default -6 dB)
 - Display unit (% / dB)
 - Gain overlay on/off toggle (default ON)
-- Saved Channels table (two Live / VOD columns, the Auto gain the last stored measurement asks for while Auto is on, or `Auto (—)` where none is stored, deletable). A stored name that is not text is shown as the channel id
+- Saved Channels table (two Live / VOD columns, the Auto gain the last stored measurement asks for while Auto is on, or `Auto (—)` where none is stored, deletable), in the order of what each row is shown under (`rowLabel`). A stored name that is not text is shown as the channel id
 - Every settings control and deletion (clear all, the row ×) is disabled until the initial settings load completes
 - Saves only the item that changed through the Service Worker's settings mutation, synced through storage.onChanged: the settings from the `sync` area, the channel list from the `local` area. A settings change that arrives while a key or the pointer is held on the Target LUFS or Ad gain slider is taken but left off that slider and its label (`settingsSliderHeld`); the gesture's end sends its own value, or draws the setting where it sends nothing (a key that moved nothing, a drag let go of on the value it began on, a press a blur ended)
 - The initial load reads the settings (`readSettings`) and `channelVolumes` (local) together, and either read failing fails the load

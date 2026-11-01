@@ -2567,6 +2567,23 @@ test('the settings table names a row by its id where the stored name is not text
     `the row is drawn under its id (${markup.replace(/\s+/g, ' ').slice(0, 240)})`);
 });
 
+test('the settings table lists its rows in the order of what each is shown under', async () => {
+  const harness = createOptionsHarness({
+    channelVolumes: {
+      9: { name: 'Zeta', gainLive: 1 },
+      5: { name: 'Alpha', gainLive: 1 },
+      7: { name: { not: 'text' }, gainLive: 1 }
+    }
+  });
+  await flushTasks(8);
+  const markup = harness.el('channelsBody').textContent;
+  const at = (text) => markup.indexOf(text);
+  assert.ok(at('<td class="ch-name">7</td>') > -1 && at('>Alpha<') > -1 && at('>Zeta<') > -1,
+    `every row is drawn (${markup.replace(/\s+/g, ' ').slice(0, 300)})`);
+  assert.ok(at('<td class="ch-name">7</td>') < at('>Alpha<') && at('>Alpha<') < at('>Zeta<'),
+    `in name order, a row with no name under its id (${markup.replace(/\s+/g, ' ').slice(0, 300)})`);
+});
+
 test('calcGain: target equals measured → unity gain', () => {
   assert.equal(u.calcGain(-18, -18).toFixed(6), '1.000000');
 });
