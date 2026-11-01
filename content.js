@@ -434,11 +434,14 @@
     const before = currentChannelEntry;
     currentCanonicalChannelId = resolved?.canonicalId || ch.id;
     currentChannelEntry = resolved?.entry || null;
-    // A stored measurement cleared elsewhere (a reset in another tab, the row
-    // deleted on the settings page) empties this tab's measurement too, so it
-    // is not stored back.
-    if (beforeId === currentCanonicalChannelId && Number.isFinite(before?.lastLufs?.[ch.kind]) &&
-        !Number.isFinite(currentChannelEntry?.lastLufs?.[ch.kind])) {
+    // A stored measurement cleared elsewhere empties this tab's measurement
+    // too, so it is not stored back: a clear made after this measurement began
+    // (another tab's reset, whatever was stored at the time), or the value gone
+    // from the row this tab read before (the row deleted on the settings page).
+    const clearedSince = currentChannelEntry?.lastLufsClearedAt?.[ch.kind] > measurementSince;
+    const valueGone = beforeId === currentCanonicalChannelId && Number.isFinite(before?.lastLufs?.[ch.kind]) &&
+      !Number.isFinite(currentChannelEntry?.lastLufs?.[ch.kind]);
+    if (clearedSince || valueGone) {
       clearMeasurementCache();
       lastSavedAt = 0;
       sendResetMeasurement();

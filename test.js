@@ -5293,6 +5293,50 @@ test('channel store keeps the time of a clear and drops a measurement begun befo
   assert.deepEqual(stored.channelVolumes['777'].lastLufsClearedAt, { live: 250, vod: 450 });
 });
 
+test('content empties its measurement for a clear made after it began, whatever the row then holds', async () => {
+  // A tab can miss the moment the stored value goes: its read overtaken by a
+  // newer measurement from another tab, a second reset while nothing is
+  // stored, or a provisional row merged into one already reset. The time of
+  // the clear says it either way.
+  for (const lastLufs of [undefined, { live: -25 }]) {
+    const harness = createContentHarness({
+      href: 'https://www.twitch.tv/somechannel',
+      channelVolumes: { 'login:somechannel': { name: 'somechannel', gainLive: 0.5 } }
+    });
+    await flushTasks();
+    const resets = () => harness.commands.filter((command) => command.cmd === 'resetMeasurement');
+    const saves = () => harness.mutations.filter((mutation) => mutation.operation === 'saveMeasurement');
+    const block = () => harness.dispatchMessage({
+      type: '__twitch_channel_volume__', event: 'lufs', epoch: resets().at(-1).epoch, playing: true,
+      momentary: -20, shortTerm: -20, integrated: -20, integratedWindows: 40
+    });
+    const rowWith = async (over) => {
+      const oldValue = structuredClone(harness.stored[u.CHANNEL_VOLUMES_KEY]);
+      const next = { ...oldValue, 'login:somechannel': { name: 'somechannel', gainLive: 0.5, ...over } };
+      harness.stored[u.CHANNEL_VOLUMES_KEY] = next;
+      await harness.dispatchStorage({ [u.CHANNEL_VOLUMES_KEY]: { oldValue, newValue: next } }, 'local');
+      await flushTasks();
+    };
+    const label = `stored ${JSON.stringify(lastLufs)}`;
+    await block();
+    const before = resets().length;
+    // A clear older than this measurement, and one of the other kind, are not this one's.
+    await rowWith({ lastLufs, lastLufsClearedAt: { live: 9_000, vod: 20_000 } });
+    assert.equal(resets().length, before, label);
+    harness.advanceTime(1000);
+    await rowWith({ lastLufs, lastLufsClearedAt: { live: 11_000 } });
+    assert.equal(resets().length, before + 1, `${label}: the measurement starts again`);
+    assert.equal(resets().at(-1).initialIntegratedLufs, undefined, `${label}: unseeded`);
+    assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).lufs.integrated, -Infinity, `${label}: with no level`);
+    // Read again, the same clear does not reset it twice.
+    await rowWith({ lastLufs, lastLufsClearedAt: { live: 11_000 } });
+    assert.equal(resets().length, before + 1, `${label}: once`);
+    harness.advanceTime(6000);
+    await block();
+    assert.equal(saves().at(-1)?.since, 11_000, `${label}: and its save is one the store takes`);
+  }
+});
+
 test('content stamps a measurement save with the time its measurement began', async () => {
   const harness = createContentHarness({
     href: 'https://www.twitch.tv/somechannel',
