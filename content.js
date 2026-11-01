@@ -13,7 +13,7 @@
   let currentGain = 1.0;
   let currentAdGainDb = DEFAULT_AD_GAIN_DB;
   let targetLufs = DEFAULT_TARGET_LUFS;
-  let showGainOverlay = true;
+  let showGainOverlay = DEFAULT_SHOW_GAIN_OVERLAY;
   let defaultAutoApplyLoudnessLive = DEFAULT_AUTO_APPLY_LOUDNESS;
   let defaultAutoApplyLoudnessVod = DEFAULT_AUTO_APPLY_LOUDNESS;
   let currentChannelEntry = null;
@@ -82,7 +82,7 @@
     if (revision === settingsRevision) {
       targetLufs = s.targetLufs ?? DEFAULT_TARGET_LUFS;
       currentAdGainDb = s.adGainDb ?? DEFAULT_AD_GAIN_DB;
-      showGainOverlay = s.showGainOverlay ?? true;
+      showGainOverlay = s.showGainOverlay ?? DEFAULT_SHOW_GAIN_OVERLAY;
       defaultAutoApplyLoudnessLive =
         s.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
       defaultAutoApplyLoudnessVod =
@@ -763,7 +763,7 @@
         currentAdGainDb = adDb;
         sendCmd({ cmd: 'setAdGain', value: dbToGain(currentAdGainDb) });
       }
-      showGainOverlay = next.showGainOverlay ?? true;
+      showGainOverlay = next.showGainOverlay ?? DEFAULT_SHOW_GAIN_OVERLAY;
       updateGainOverlay();
       // The Auto gain on file follows the target and the Auto defaults, and
       // no other setting.
