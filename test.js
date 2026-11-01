@@ -7079,6 +7079,30 @@ test('options keeps a settings slider key hold through a press of the pointer, a
   }
 });
 
+test('options writes nothing for a cancelled drag on a settings slider, and a key held through it keeps its value', async () => {
+  for (const { field, label, drawn } of SETTINGS_SLIDERS) {
+    const harness = createOptionsHarness();
+    await flushTasks(8);
+    const stored = Number(harness.el(field).value);
+    await harness.fire(field, 'pointerdown');
+    await moveSettingsSlider(harness, field, -9);
+    await harness.fire(field, 'pointercancel');
+    assert.deepEqual([Number(harness.el(field).value), harness.el(label).textContent], [stored, drawn(stored)],
+      `${field}: a cancelled drag draws the setting`);
+    await moveSettingsSlider(harness, field, -10);
+    await harness.fire(field, 'change');
+    assert.deepEqual([settingsWrites(harness, field), Number(harness.el(field).value)], [[], stored],
+      `${field}: and the change after it moves nothing`);
+    await harness.fire(field, 'keydown', sliderKey('ArrowRight'));
+    await moveSettingsSlider(harness, field, -11);
+    await harness.fire(field, 'change');
+    await harness.fire(field, 'pointerdown');
+    await harness.fire(field, 'pointercancel');
+    await harness.fire(field, 'keyup', sliderKey('ArrowRight'));
+    assert.deepEqual(settingsWrites(harness, field), [-11], `${field}: a key held through a cancelled press writes its value`);
+  }
+});
+
 test('options leaves a held settings slider to its gesture when a settings change arrives', async () => {
   for (const { field, label, drawn } of SETTINGS_SLIDERS) {
     const harness = createOptionsHarness();
