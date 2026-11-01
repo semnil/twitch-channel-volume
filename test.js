@@ -1675,6 +1675,7 @@ function createPopupHarness({
     // Held until a case runs them.
     setTimeout(callback) { timeouts.push(callback); return timeouts.length; },
     structuredClone,
+    URL,
     window: {
       addEventListener(type, listener) { (windowListeners[type] ||= []).push(listener); }
     }

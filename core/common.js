@@ -677,6 +677,50 @@ function retryGetState(remaining, intervalMs, { done, ask, take }) {
   }, intervalMs);
 }
 
+// Whether the popup's tab is on host or a subdomain of it, read from the host
+// name of the tab's URL. A tab whose URL the popup cannot read is on none.
+function isSiteTab(tab, host) {
+  let hostname;
+  try {
+    hostname = new URL(tab.url).hostname;
+  } catch (_) {
+    return false;
+  }
+  return hostname === host || hostname.endsWith('.' + host);
+}
+
+// The popup's status line, which stands in for the whole screen where the
+// popup has nothing to act on: shown with the catalog's text for key and main
+// hidden, or hidden and main shown.
+function showPopupStatus(line, main, key) {
+  line.textContent = msg(key);
+  line.classList.remove('hidden');
+  main.classList.add('hidden');
+}
+
+function hidePopupStatus(line, main) {
+  line.classList.add('hidden');
+  main.classList.remove('hidden');
+}
+
+// The popup's display unit, followed while the popup is open: a change to the
+// settings in sync hands onChange the unit it names. The function returned
+// reads the unit, and resolves with null where a change came while the read
+// was out, which then stands over what the read found.
+function followDisplayUnit(onChange, storage = chrome.storage, key = SETTINGS_KEY) {
+  let revision = 0;
+  storage.onChanged?.addListener((changes, areaName) => {
+    if (areaName !== 'sync' || !changes[key]) return;
+    revision++;
+    onChange((changes[key].newValue || {}).displayUnit || '%');
+  });
+  return async () => {
+    const started = revision;
+    const settings = await readSettings(storage, key);
+    return started === revision ? settings.displayUnit || '%' : null;
+  };
+}
+
 // Sends message to the content script of the popup's tab, and resolves with
 // its answer. A popup that holds no tab sends nothing and rejects.
 function sendTabMessage(tabId, message) {

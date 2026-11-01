@@ -132,9 +132,9 @@
       // A tab whose URL the popup can read is one the extension runs in: the
       // manifest asks for twitch.tv alone and for no tabs permission, so Chrome
       // withholds the URL of every other tab.
-      if (!tab?.url || !/twitch\.tv/.test(tab.url)) {
+      if (!isSiteTab(tab, 'twitch.tv')) {
         reportStateRequestFailure('no Twitch tab to ask', { actionable: false });
-        if (showConnectionError) showStatus(msg('openOnTwitch'));
+        if (showConnectionError) showStatus('openOnTwitch');
         return null;
       }
       const res = await sendTabMessage(tab.id, { cmd: 'getState' });
@@ -147,23 +147,19 @@
       // no status line keep the message they put up themselves, so the reason
       // is named here, where the rest of the popup's failures are named.
       reportStateRequestFailure(err);
-      if (showConnectionError) showStatus(msg('reloadPageNeeded'));
+      if (showConnectionError) showStatus('reloadPageNeeded');
       return null;
     }
   }
 
   // The status line stands in for the whole screen: it answers for a page the
   // extension does not act on.
-  function showStatus(text) {
-    const box = $('errBox');
-    box.textContent = text;
-    box.classList.remove('hidden');
-    $('mainArea').classList.add('hidden');
+  function showStatus(key) {
+    showPopupStatus($('errBox'), $('mainArea'), key);
   }
 
   function hideStatus() {
-    $('errBox').classList.add('hidden');
-    $('mainArea').classList.remove('hidden');
+    hidePopupStatus($('errBox'), $('mainArea'));
   }
 
   function renderState(state) {
@@ -182,7 +178,7 @@
     measurementUnavailable = !audioUnavailable && !!state.measurementUnavailable;
     // A clip's volume is left to the player, so the screen says that alone.
     if (ch.kind === 'clip') {
-      showStatus(msg('clipNotAdjustable'));
+      showStatus('clipNotAdjustable');
       return;
     }
     hideStatus();
@@ -452,27 +448,19 @@
   });
   $('optionsBtn').addEventListener('click', () => chrome.runtime.openOptionsPage());
 
-  // Advanced by every synced settings change, so the first read does not undo
-  // a change that arrived while it was out.
-  let settingsRevision = 0;
+  // The unit follows the settings in sync while the popup is open
+  // (followDisplayUnit in core/common.js), and the first read does not undo a
+  // change that arrived while it was out.
+  const readDisplayUnit = followDisplayUnit((unit) => {
+    displayUnit = unit;
+    sliderSynced = false;
+    refresh();
+  });
 
   async function loadDisplayUnit() {
-    const revision = settingsRevision;
-    const s = await readSettings(chrome.storage);
-    if (revision === settingsRevision) displayUnit = s.displayUnit || '%';
+    const unit = await readDisplayUnit();
+    if (unit !== null) displayUnit = unit;
   }
-
-  // The settings are taken from sync alone; the key changes in local only when
-  // the worker moves it out, and that removal carries no value.
-  chrome.storage.onChanged?.addListener((changes, areaName) => {
-    if (areaName === 'sync' && changes[SETTINGS_KEY]) {
-      settingsRevision++;
-      const next = changes[SETTINGS_KEY].newValue || {};
-      displayUnit = next.displayUnit || '%';
-      sliderSynced = false;
-      refresh();
-    }
-  });
 
   applyI18n();
   $('resetMeasurementBtn').title = msg('resetMeasurement');
@@ -485,7 +473,7 @@
         await loadDisplayUnit();
       } catch (error) {
         console.error('[TCV] failed to read settings', error);
-        showStatus(msg('reloadPageNeeded'));
+        showStatus('reloadPageNeeded');
         return;
       }
       settingsRead = true;
