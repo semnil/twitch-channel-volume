@@ -9514,7 +9514,7 @@ test('options puts a refused settings save back, and names why', async () => {
 
   assert.equal(harness.el('targetLufs').value, '-18', 'the control goes back to what is on file');
   assert.equal(harness.el('settingsError').classList.contains('hidden'), false, 'and the page says so');
-  const named = harness.errors.filter((args) => String(args[0]).includes('failed to save settings field'));
+  const named = harness.errors.filter((args) => String(args[0]).includes('setting not saved'));
   assert.equal(named.length, 1, `the failure is named once (${harness.errors.length} logged)`);
   assert.equal(String(named[0]?.[1]?.message), 'settings-update-failed',
     'carrying the reason the worker gave');
@@ -9536,9 +9536,9 @@ test('options asks for a reload where a failed save could not read back what is 
   assert.equal(await errorLine(unread), unread.message('settingsLoadFailed'));
   assert.equal(unread.el('targetLufs').value, '-24', 'the control is where the viewer left it');
   assert.equal(unread.errors.filter((args) =>
-    String(args[0]).includes('failed to reload settings after save failure')).length, 1);
+    String(args[0]).includes('settings not read back after a failed save')).length, 1);
   assert.equal(unread.errors.filter((args) =>
-    String(args[0]).includes('failed to save settings field')).length, 1);
+    String(args[0]).includes('setting not saved')).length, 1);
 
   // Control: a re-read that works puts the value back and says so.
   const reread = createOptionsHarness({ settings: { targetLufs: -18 }, refuseMutation });
@@ -9656,7 +9656,7 @@ test('options names a refusal that gives no reason', async () => {
   harness.el('targetLufs').value = '-24';
   await harness.fire('targetLufs', 'change');
 
-  const named = harness.errors.filter((args) => String(args[0]).includes('failed to save settings field'));
+  const named = harness.errors.filter((args) => String(args[0]).includes('setting not saved'));
   assert.equal(String(named[0]?.[1]?.message), 'write not confirmed',
     'a refusal with nothing to say is still named');
 });
