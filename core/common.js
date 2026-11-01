@@ -671,23 +671,6 @@ async function pollTabState(refresh, first = refresh) {
   await first();
 }
 
-// Asks for the state again after intervalMs, at most remaining times, while
-// done() does not hold. A state that comes back is handed to take; an ask that
-// comes back empty or fails ends the asking.
-function retryGetState(remaining, intervalMs, { done, ask, take }) {
-  if (remaining <= 0 || done()) return;
-  setTimeout(async () => {
-    if (done()) return;
-    try {
-      const state = await ask();
-      if (state) {
-        take(state);
-        retryGetState(remaining - 1, intervalMs, { done, ask, take });
-      }
-    } catch (_) {}
-  }, intervalMs);
-}
-
 // Whether the popup's tab is on host or a subdomain of it, read from the host
 // name of the tab's URL. A tab whose URL the popup cannot read is on none.
 function isSiteTab(tab, host) {
