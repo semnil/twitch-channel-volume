@@ -20,6 +20,9 @@
   // instead, it would carry whatever the last tick brought in, and the check on
   // the other side would pass on the state the gesture was never about.
   let sliderAppliesTo = null;
+  // The channel and kind the gesture was made for, which its save's notice is
+  // left to.
+  let sliderOwner = '';
   let currentAutoApplyLoudness = false;
   let audioUnavailable = false;
   let audioUnavailableCause = '';
@@ -31,6 +34,7 @@
   // core/common.js). It stands until a save lands or the tab is on another
   // channel or kind.
   const saveNotice = createSaveNotice();
+  const ownerKey = () => (currentChannel.id ? currentChannel.id + '|' + currentChannel.kind : '');
 
   function syncInteractionDisabledState() {
     const validChannel = !!currentChannel.id &&
@@ -165,8 +169,8 @@
         (ch.id !== currentChannel.id || ch.kind !== currentChannel.kind)) {
       $('resetMeasurementError').classList.add('hidden');
     }
-    saveNotice.showOwner(ch.id ? ch.id + '|' + ch.kind : '');
     currentChannel = ch;
+    saveNotice.showOwner(ownerKey());
     currentAppliesTo = state?.appliesTo || '';
     currentAutoApplyLoudness = !!state.autoApplyLoudness;
     audioUnavailable = !!state.audioUnavailable;
@@ -295,10 +299,10 @@
     await refresh();
   }
 
-  async function setGain(percent, appliesTo = currentAppliesTo) {
+  async function setGain(percent, appliesTo = currentAppliesTo, owner) {
     if (autoUpdatePending || audioUnavailable ||
         !currentChannel.id || currentChannel.kind === 'none') return;
-    const answered = saveNotice.send();
+    const answered = saveNotice.send(owner);
     try {
       const tab = await getActiveTab();
       const gain = percentToGain(percent);
@@ -439,6 +443,7 @@
   let sliderValueAtEnd = '';
   const beginSliderGesture = () => {
     sliderAppliesTo = currentAppliesTo;
+    sliderOwner = ownerKey();
     sliderGestureEnded = false;
   };
   const endSliderGesture = () => {
@@ -483,8 +488,9 @@
     sliderKeyMoved = false;
     if (moved) {
       const appliesTo = sliderAppliesTo ?? currentAppliesTo;
+      const owner = sliderAppliesTo === null ? ownerKey() : sliderOwner;
       sliderAppliesTo = null;
-      setGain(Number($('manualSlider').value), appliesTo);
+      setGain(Number($('manualSlider').value), appliesTo, owner);
     }
     return true;
   };
@@ -501,7 +507,10 @@
   $('manualSlider').addEventListener('input', (e) => {
     if (sliderGestureEnded) return;
     // An input that arrived without either of those begins one too.
-    if (sliderAppliesTo === null) sliderAppliesTo = currentAppliesTo;
+    if (sliderAppliesTo === null) {
+      sliderAppliesTo = currentAppliesTo;
+      sliderOwner = ownerKey();
+    }
     if (autoUpdatePending) return;
     const g = percentToGain(Number(e.target.value));
     const f = formatGain(g, displayUnit);
@@ -520,8 +529,9 @@
     }
     if (sliderKeyHeld) return;
     const appliesTo = sliderAppliesTo ?? currentAppliesTo;
+    const owner = sliderAppliesTo === null ? ownerKey() : sliderOwner;
     sliderAppliesTo = null;
-    setGain(Number(e.target.value), appliesTo);
+    setGain(Number(e.target.value), appliesTo, owner);
   });
   document.querySelectorAll('.presets button').forEach((btn) => {
     btn.addEventListener('click', () => {

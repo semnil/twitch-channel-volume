@@ -7798,6 +7798,35 @@ test('popup leaves the notice of an unsaved gain to the latest save, made for th
   assert.equal(moved.el('applyHint').classList.contains('error'), false);
 });
 
+test('popup leaves the notice to the channel shown when a slider gesture begun on another is let go of', async () => {
+  for (const by of ['drag', 'key']) {
+    const harness = createPopupHarness({ failCommand: 'setGain', state: { ...WATCHING, appliesTo: '55|live|' } });
+    await flushTasks(8);
+    const begin = () => harness.fire('manualSlider', by === 'drag' ? 'pointerdown' : 'keydown', by === 'drag' ? {} : sliderKey('ArrowRight'));
+    const end = () => (by === 'drag' ? harness.fire('manualSlider', 'change') : harness.fire('manualSlider', 'keyup', sliderKey('ArrowRight')));
+    await begin();
+    harness.el('manualSlider').value = '150';
+    await harness.fire('manualSlider', 'input');
+    harness.setState({ channel: { id: '77', name: 'Another Streamer', kind: 'live', url: '' }, appliesTo: '77|live|' });
+    await harness.poll();
+    harness.el('manualSlider').value = '160';
+    await harness.fire('manualSlider', 'input');
+    await end();
+    await flushTasks(8);
+    const save = harness.sent.filter((request) => request.cmd === 'setGain').at(-1);
+    assert.equal(save?.appliesTo, '55|live|', `${by}: the save carries the state it began on`);
+    assert.notEqual(harness.el('applyHint').textContent, harness.message('gainSaveFailed'),
+      `${by}: its failure is not put up for the channel shown`);
+    // A gesture begun on the channel shown is said so.
+    await begin();
+    harness.el('manualSlider').value = '170';
+    await harness.fire('manualSlider', 'input');
+    await end();
+    await flushTasks(8);
+    assert.equal(harness.el('applyHint').textContent, harness.message('gainSaveFailed'), `${by}: one begun on the channel shown is`);
+  }
+});
+
 test('popup keeps Apply out while a save failed and there is no level to apply', async () => {
   const harness = createPopupHarness({
     failCommand: 'setGain',
