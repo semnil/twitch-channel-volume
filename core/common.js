@@ -727,6 +727,25 @@ function hidePopupStatus(line, main) {
   main.classList.remove('hidden');
 }
 
+// The popup's preset buttons, each naming its percent in data-vol. A click,
+// where allow holds, draws that percent on the slider, the slider's value and
+// the current card in the display unit, then hands pick the percent and its
+// gain.
+function bindPresets(buttons, { slider, valueEl, currentEl, unit, allow = () => true, pick }) {
+  for (const btn of buttons) {
+    btn.addEventListener('click', () => {
+      if (!allow()) return;
+      const percent = Number(btn.dataset.vol);
+      const gain = percentToGain(percent);
+      const f = formatGain(gain, unit());
+      slider.value = String(percent);
+      valueEl.textContent = f.text + f.unit;
+      setCardValue(currentEl, f.text, f.unit, 'current');
+      pick(percent, gain);
+    });
+  }
+}
+
 // The popup's display unit, followed while the popup is open: a change to the
 // settings in sync hands onChange the unit it names. The function returned
 // reads the unit, and resolves with null where a change came while the read

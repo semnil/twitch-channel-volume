@@ -1559,7 +1559,7 @@ function createPopupHarness({
 
   for (const percent of [0, 50, 100, 200, 400, 600]) {
     const button = stubElement(`preset-${percent}`);
-    button.setAttribute('data-gain', String(percent));
+    button.dataset = { vol: String(percent) };
     presetButtons.push(button);
   }
 
