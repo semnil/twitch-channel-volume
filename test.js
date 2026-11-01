@@ -9546,6 +9546,24 @@ test('options asks for a reload where a failed save could not read back what is 
   assert.equal(reread.el('targetLufs').value, '-18');
 });
 
+test('options draws the table again after a failed save only where the unit moved', async () => {
+  // A control of the table the viewer is on keeps its focus through a failed
+  // save of another setting.
+  const harness = createOptionsHarness({
+    settings: { targetLufs: -18, displayUnit: 'dB' },
+    channelVolumes: { alpha: { name: 'Alpha', gainLive: 2 } },
+    refuseMutation: { [u.SETTINGS_MUTATION_MESSAGE]: 'settings-update-failed' }
+  });
+  await flushTasks(8);
+  const rowBefore = harness.el('channelsBody').children[0];
+  assert.ok(rowBefore, 'the table has its row');
+  harness.el('targetLufs').value = '-24';
+  await harness.fire('targetLufs', 'change');
+  await flushTasks(8);
+  assert.equal(harness.el('settingsError').classList.contains('hidden'), false);
+  assert.equal(harness.el('channelsBody').children[0], rowBefore, 'a failed target save leaves the table as it is');
+});
+
 test('options draws back what is on file, not what the defaults would be', async () => {
   // The re-read after a refusal is what puts the page right, so it has to draw
   // the settings it read. A page drawn from nothing shows the defaults, which
