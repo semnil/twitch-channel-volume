@@ -428,10 +428,8 @@
       sliderAppliesTo = currentAppliesTo;
       sliderOwner = ownerKey();
       // The gesture takes the slider back from the polls.
-      if (sliderFollowsTab) {
-        sliderFollowsTab = false;
-        sliderSynced = true;
-      }
+      sliderFollowsTab = false;
+      sliderSynced = true;
     },
     // The Auto save out keeps the card it drew; the controls are disabled
     // meanwhile, and a gesture already on its way draws nothing.
