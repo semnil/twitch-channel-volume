@@ -186,33 +186,21 @@
     await requestWrite({ type: SETTINGS_MUTATION_MESSAGE, mutation: { operation: 'patchSettings', patch } });
   }
 
-  // The page says the saved value was put back, or, where the re-read failed
-  // as well, asks for a reload.
-  async function reloadSettingsAfterFailure(error) {
-    const revision = settingsRevision;
-    let errorKey = 'settingsSaveFailed';
-    try {
-      const settings = await readSettings(chrome.storage);
-      if (revision === settingsRevision) renderSettings(settings);
-      renderChannels(channelVolumes);
-    } catch (reloadError) {
-      errorKey = 'settingsLoadFailed';
-      console.error('[TCV] failed to reload settings after save failure', reloadError);
-    }
-    showSettingsError(true, errorKey);
-    console.error('[TCV] failed to save settings field', error);
-  }
-
+  // The patch is drawn before it is written. A write that does not land puts
+  // the page back to what the settings hold and says so, or, where the re-read
+  // fails as well, asks for a reload (saveSettingOrRestore in core/common.js).
   async function updateSettings(patch) {
     if (!settingsReady) return;
     renderSettings({ ...currentSettings, ...patch });
     renderChannels(channelVolumes);
-    try {
-      await mutateSettings(patch);
-      showSettingsError(false);
-    } catch (error) {
-      await reloadSettingsAfterFailure(error);
-    }
+    await saveSettingOrRestore(() => mutateSettings(patch), {
+      loaded: () => settingsReady,
+      read: () => readSettings(chrome.storage),
+      apply: renderSettings,
+      revision: () => settingsRevision,
+      redraw: () => renderChannels(channelVolumes),
+      prefix: '[TCV]'
+    });
   }
 
   async function removeChannel(id) {

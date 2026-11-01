@@ -660,6 +660,36 @@ function showSettingsError(visible, key = 'settingsSaveFailed') {
   line.classList.toggle('hidden', !visible);
 }
 
+// A settings control's save on the settings page. Nothing is written before
+// loaded() holds. write() makes the save; where it lands, the error line is
+// taken down. Where it does not, the page goes back to what the settings hold
+// and says so: read() is drawn with apply() unless a settings change came
+// while it was out (revision() moved), redraw() runs after, and the line
+// reads settingsSaveFailed, or settingsLoadFailed where the read fails as
+// well. Resolves with whether the save landed.
+async function saveSettingOrRestore(write, { loaded, read, apply, revision, redraw = () => {}, prefix = '' }) {
+  if (!loaded()) return false;
+  try {
+    await write();
+    showSettingsError(false);
+    return true;
+  } catch (err) {
+    const at = revision();
+    let key = 'settingsSaveFailed';
+    try {
+      const settings = await read();
+      if (at === revision()) apply(settings);
+      redraw();
+    } catch (readErr) {
+      key = 'settingsLoadFailed';
+      console.error(`${prefix} settings not read back after a failed save`, readErr);
+    }
+    showSettingsError(true, key);
+    console.error(`${prefix} setting not saved`, err);
+    return false;
+  }
+}
+
 // How often the popup asks its tab for the state while it is open.
 const STATE_POLL_INTERVAL_MS = 1000;
 

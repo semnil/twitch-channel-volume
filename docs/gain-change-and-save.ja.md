@@ -591,7 +591,7 @@ sequenceDiagram
   options->>sw: 変えた項目の patchSettings
   alt 断られた
     sw-->>options: ok false、reason
-    options->>options: reloadSettingsAfterFailure
+    options->>options: saveSettingOrRestore が設定を読み直す
     alt 設定を読み直せた
       options->>options: settingsSaveFailed を出す
     else 読み直しも失敗した
@@ -626,7 +626,7 @@ sequenceDiagram
   end
 ```
 
-図のもと: `core/common.js` の `holdSettingsSlider` (`targetLufs` と `adGainDb` のリスナー、`window` の `blur` リスナー) と、`options.js` でのその呼び出し、2 つの Auto 既定値のトグル・`#unitToggle`・`overlayToggle` のリスナー、`updateSettings`、`mutateSettings`、`reloadSettingsAfterFailure`、`storage.onChanged` リスナー。`content.js` の `storage.onChanged` リスナー、`reapplyForCurrentChannel`、`previewHoldsGain`、`saveChannelAutoGain`。`page-bridge.js` の `setAdGainOffset`。`popup.js` の `followDisplayUnit` の変更の受け手。
+図のもと: `core/common.js` の `holdSettingsSlider` (`targetLufs` と `adGainDb` のリスナー、`window` の `blur` リスナー) と、`options.js` でのその呼び出し、2 つの Auto 既定値のトグル・`#unitToggle`・`overlayToggle` のリスナー、`updateSettings`、`mutateSettings`、`core/common.js` の `saveSettingOrRestore`、`storage.onChanged` リスナー。`content.js` の `storage.onChanged` リスナー、`reapplyForCurrentChannel`、`previewHoldsGain`、`saveChannelAutoGain`。`page-bridge.js` の `setAdGainOffset`。`popup.js` の `followDisplayUnit` の変更の受け手。
 
 - 「Target LUFS」と「CM Gain」のスライダーは `change` で送り、`input` ではラベルを変えるだけ。どちらのスライダーでも、キーを押し続けている間 (最初の値を動かすキーの `keydown` から、押しているそのキーの最後の 1 つの `keyup` まで。値を動かすキーだけを数えるのは popup のスライダーと同じ、場面 3) は `change` で何も送らない。`keyup`、またはその前のスライダーかページの `window` の `blur` で、値が動いていればスライダーの値を 1 回送る (押し続けの途中でポインタで押しても、押し続けとその値はそのまま残る)。そのような `blur` のあとは、次の `pointerdown` か、値を動かすキーの繰り返しでない `keydown` まで、スライダーの `input` は何もせず、`change` はつまみを設定画面が持つ設定 (`blur` の時点で書いた値、または断られた書き込みが戻した値) へ戻す。ポインタでスライダーを押している間 (`pointerdown` からその `pointerup` / `pointercancel` まで) のスライダーかページの `window` の `blur` も、同じように操作を終える。`blur` より前に Chrome が出す `change` がその値を書いており、次に押すまで、スライダーの `input` は何もせず、`change` はつまみを設定画面が持つ設定 (断られた書き込みなら保存済みの値) へ戻す。どちらかのスライダーでキーかポインタを押している間に設定の変化が届くと (`renderSettings`。このページ自身の書き込みでも、知らせでも)、設定は取り込むが、そのスライダーとラベルは操作が動かした値のままにし、操作の終わりがその値を送る。終わりで何も送らない操作は、そこで設定を描く: 値を動かさなかったキー (範囲の端)、始めた値の上で離したドラッグ (動かしても戻しても、Chrome は `change` を出さない)、`blur` で終わった押下。Live / VOD の既定値のトグルとゲイン表示のトグルは `change` で、表示単位のボタンは `click` で送る。どれも自分が受け持つ項目 1 つだけを送り、保存値と同じ値を送った項目は書かない (「設定を書く単一の書き手」を参照)。最初の読み込みが終わるまでは押せない (`settingsReady`)。
 - それぞれの Twitch のタブで: 新しい `targetLufs` は、Auto がオンで Integrated が有限ならすぐにゲインを変える (`reapplyForCurrentChannel` を通る)。新しい `adGainDb` は、CM 中ならノードを変え、CM 要素のノードも同じ手順の中で変わる (`setAdGainOffset` が `syncAdElementGains` を動かす)。新しい Auto 既定値は、その種別の Auto の選択も手動ゲインも行に無いチャンネルについて Auto を切り替えるが、`autoApplyLoudness<Kind>` は書かない。`showGainOverlay` はオーバーレイだけを変える。
@@ -634,7 +634,7 @@ sequenceDiagram
 - content・popup・設定ページは、`autoLoudnessSettings` を `sync` の変更からだけ取り込む。local でこのキーが変わるのは移し替えが消すときだけで、その変更は設定を運ばない。
 - その読み直しが追い越されたとき (`onChanged` に届いたチャンネルの書き込みが始めた読み直し、owner のイベント、遷移による) は、それが返ったあとで、そのときのチャンネルと行についてもう 1 回読み直し、そこでかけたゲインを `saveAutoGain` で送る。もう 1 回も追い越されたときは、3 回目はしない。
 - popup は `displayUnit` を取り込み、`sliderSynced` を消して、`getState` を読み直す。ほかに開いている設定ページは設定を描き直す。
-- 失敗: 設定ページは保存された設定を読み直し、`settingsSaveFailed` (「設定を保存できませんでした。保存済みの値へ戻しました」) を出して、`[TCV] failed to save settings field` とログに出す。その読み直しも失敗したときは、部品は描いたままで、代わりに `settingsLoadFailed` (「保存済みの設定を読み込めませんでした。ページを再読み込みしてください」) を出し、`[TCV] failed to reload settings after save failure` もログに出す。content では、読み直しか `saveAutoGain` の失敗を `[TCV] failed to reapply or persist settings` とログに出す。
+- 失敗: 設定ページは保存された設定を読み直し、`settingsSaveFailed` (「設定を保存できませんでした。保存済みの値へ戻しました」) を出して、`[TCV] setting not saved` とログに出す。その読み直しも失敗したときは、部品は描いたままで、代わりに `settingsLoadFailed` (「保存済みの設定を読み込めませんでした。ページを再読み込みしてください」) を出し、`[TCV] settings not read back after a failed save` もログに出す。content では、読み直しか `saveAutoGain` の失敗を `[TCV] failed to reapply or persist settings` とログに出す。
 
 ### 11. 設定ページで削除・全削除する
 
