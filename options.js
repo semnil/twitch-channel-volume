@@ -280,7 +280,10 @@
       pointerHeld = false;
       gestureEnded = true;
     };
-    slider.addEventListener('pointerdown', () => {
+    // Only the primary button drags the slider; another button moves no value,
+    // and its release goes to the window, so it begins no gesture.
+    slider.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) return;
       pointerHeld = true;
       pointerStart = Number(slider.value);
       gestureEnded = false;

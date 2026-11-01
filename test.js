@@ -1431,8 +1431,9 @@ function createOptionsHarness({
     timers,
     // `fields` are what the event carries besides its target, a key's repeat.
     async fire(id, type, fields = {}) {
+      // A pointer event carries the primary button unless the case names another.
       for (const listener of element(id).listeners[type] || []) {
-        await listener({ target: element(id), ...fields });
+        await listener({ target: element(id), button: 0, ...fields });
       }
       await flushTasks(8);
     },
@@ -1788,8 +1789,9 @@ function createPopupHarness({
     // `fields` are what the event carries besides its target, a key's repeat.
     async fire(id, type, fields = {}) {
       if (element(id).disabled) { await flushTasks(8); return; }
+      // A pointer event carries the primary button unless the case names another.
       for (const listener of element(id).listeners[type] || []) {
-        await listener({ target: element(id), ...fields });
+        await listener({ target: element(id), button: 0, ...fields });
       }
       await flushTasks(8);
     },
@@ -7034,6 +7036,35 @@ test('options writes nothing for a Tab on a settings slider with no drag, and wh
 
 // The change notification of one write can land while the next press is
 // held, and Chrome sends a drag's pointerup ahead of its change.
+test('options begins a settings slider gesture on the primary button alone', async () => {
+  for (const { field, label, drawn } of SETTINGS_SLIDERS) {
+    for (const button of [1, 2]) {
+      const harness = createOptionsHarness();
+      await flushTasks(8);
+      // Another button moves no value and its release goes to the window, so
+      // the press holds nothing and a change from elsewhere still reaches the slider.
+      await harness.fire(field, 'pointerdown', { button });
+      harness.fireStorageChanged({ [u.SETTINGS_KEY]: { newValue: { targetLufs: -18, adGainDb: -6, [field]: -9 } } }, 'sync');
+      await flushTasks(8);
+      assert.equal(harness.el(label).textContent, drawn(-9), `${field}: a press with button ${button} holds nothing`);
+    }
+  }
+});
+
+test('popup begins a slider gesture on the primary button alone', async () => {
+  for (const button of [1, 2]) {
+    const popup = createPopupHarness({ state: { appliesTo: '123|live|' } });
+    await flushTasks(8);
+    await popup.fire('manualSlider', 'pointerdown', { button });
+    await popup.blurWindow();
+    popup.el('manualSlider').value = '160';
+    await popup.fire('manualSlider', 'input');
+    await popup.fire('manualSlider', 'change');
+    assert.ok(popup.sent.some((request) => request.cmd === 'setGain' && request.gain === 1.6),
+      `a press with button ${button} leaves the slider answering after a blur (${JSON.stringify(popup.sent.map((r) => r.cmd))})`);
+  }
+});
+
 test('options leaves a held settings slider to its gesture when a settings change arrives', async () => {
   for (const { field, label, drawn } of SETTINGS_SLIDERS) {
     const harness = createOptionsHarness();
