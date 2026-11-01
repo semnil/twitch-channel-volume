@@ -876,8 +876,8 @@
         });
         return;
       case 'previewGain': {
-        // A key held on the popup's slider: the gain is heard, and the setGain
-        // that ends the hold saves it.
+        // A key or the pointer held on the popup's slider: the gain is heard,
+        // and the setGain that ends the gesture saves it.
         const refusal = gainGestureRefusal(req);
         if (refusal) {
           sendResponse({ ok: false, reason: refusal });

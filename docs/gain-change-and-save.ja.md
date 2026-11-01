@@ -264,15 +264,15 @@ sequenceDiagram
   participant bridge as page-bridge.js
   participant sw as Service Worker
   popup->>popup: スライダーの input: Current の表示と値のラベル
-  opt スライダーでキーを押し続けている
+  opt スライダーでキーかポインターを押し続けている
     popup->>content: input ごとに previewGain と appliesTo、gain
     opt 下の setGain と同じ理由で断る
       content-->>popup: ok false、reason
     end
     content->>bridge: setGain (applyGain)、保存はしない
     content->>content: startPreview: ゲインを保ち、2000 ms の待ちを始め直す
-    opt previewGain から 1000 ms たってもキーを押し続けている
-      popup->>content: スライダーの値で previewGain をもう一度 (keepPreviewAlive)
+    opt 保存していない previewGain から 1000 ms たってもキーかポインターを押し続けている
+      popup->>content: スライダーの値で previewGain をもう一度 (holdPopupSlider)
     end
     opt previewGain も setGain も無いまま 2000 ms たつ
       content->>content: endIdlePreview、reapplyForCurrentChannel
@@ -311,13 +311,13 @@ sequenceDiagram
   popup->>content: getState (refresh)
 ```
 
-図のもと: `popup.js` の `manualSlider` の `input` / `change` / `pointerdown` / `pointerup` / `pointercancel` / `keydown` / `keyup` / `blur` リスナー、`window` の `blur` リスナー、`endSliderKeyHold`、`endSliderGesture`、`keepPreviewAlive`、`previewGain`、プリセットの `click` リスナー、`setGain`、`applyMeasured`、`syncInteractionDisabledState`、`renderState`。`core/common.js` の `sendTabMessage`、`createSaveNotice`。`content.js` の `runtime.onMessage` リスナーの `previewGain` と `setGain`、`startPreview`、`endPreview`、`endIdlePreview`、`putBackStoredGain`、`previewHoldsGain`、`gainGestureRefusal`、`applyGain`、`saveChannelGain`、`reapplyForCurrentChannel`。
+図のもと: `popup.js` の `manualSlider` に対する `holdPopupSlider` の呼び出し、`previewGain`、プリセットの `click` リスナー、`setGain`、`applyMeasured`、`syncInteractionDisabledState`、`renderState`。`core/common.js` の `holdPopupSlider`、`PREVIEW_KEEP_ALIVE_MS`、`createSliderKeys`、`sendTabMessage`、`createSaveNotice`。`content.js` の `runtime.onMessage` リスナーの `previewGain` と `setGain`、`startPreview`、`endPreview`、`endIdlePreview`、`putBackStoredGain`、`previewHoldsGain`、`gainGestureRefusal`、`applyGain`、`saveChannelGain`、`reapplyForCurrentChannel`。
 
-- `input` (スライダーを動かしている間) は Current の表示と値のラベルを変えるだけで、何も送らない。`change` で `setGain` を 1 回送る。プリセットのボタンはスライダーを動かし、同じ 2 つの表示を変えて、`setGain` を 1 回送る。
-- 値を動かすキー (矢印・PageUp / PageDown・Home / End。`SLIDER_VALUE_KEYS`、`createSliderKeys`) だけが押し続けになり、ほかのキー (Tab や Shift など) は関わらない。スライダーでキーを押し続けている間 (最初のそのキーの `keydown` から、押しているそのキーの最後の 1 つの `keyup` まで) は、音には出すが保存はしない。`input` ごとに `previewGain` も送る。content は `setGain` を断るときと同じ理由で断り (`gainGestureRefusal`)、そうでなければ保存せずにかける。繰り返しごとに出る `change` は何も送らない。`keyup`、またはその前のスライダーか popup の `window` の `blur` で、押し続けている間に `input` があったときだけ、スライダーの値で `setGain` を 1 回送る。押し続けている間の `blur` は、ドラッグと同じく (下) そこで操作も終える。popup は `previewGain` については何も知らせない。押し続けた操作を終える `setGain` が断られたときは、下と同じく知らせる。
-- `previewGain` のあともキーを押し続けていると、popup は押し続けた操作が終わるまで、1000 ms (`PREVIEW_KEEP_ALIVE_MS`) ごとにスライダーの値で `previewGain` をもう一度送る (`keepPreviewAlive`)。content は受け付けた `previewGain` を保ち (`startPreview`)、書き込み・設定の変更・計測がかけるはずのゲインをかけない (「適用するゲインの決まり方」を参照)。保つのは、押し続けた操作を終える `setGain` が届くまで (`endPreview`)、または最後の `previewGain` から 2000 ms (`PREVIEW_IDLE_MS`) たつまで (キーを押したまま popup を閉じたときなど。`endIdlePreview`)。2 つ目の形で終わったとき、およびプレビューのあとの `setGain` が断られたときは、行を読み直してかける (`putBackStoredGain`)。`appliesTo` が `currentGestureState()` と違うプレビューは何も保たない。
+- 操作は `core/common.js` の `holdPopupSlider`。`input` (スライダーを動かしている間) は Current の表示と値のラベルを変え、ドラッグでもキーの押し続けでも `previewGain` を送る。content は `setGain` を断るときと同じ理由で断り (`gainGestureRefusal`)、そうでなければ保存せずにかける。`change` で `setGain` を 1 回送る。プリセットのボタンはスライダーを動かし、同じ 2 つの表示を変えて、`setGain` を 1 回送る。
+- 値を動かすキー (矢印・PageUp / PageDown・Home / End。`SLIDER_VALUE_KEYS`、`createSliderKeys`) だけが押し続けになり、ほかのキー (Tab や Shift など) は関わらない。スライダーでキーを押し続けている間 (最初のそのキーの `keydown` から、押しているそのキーの最後の 1 つの `keyup` まで) は、音には出すが保存はしない。`input` ごとに上と同じく `previewGain` を送り、繰り返しごとに出る `change` は、押し続けている間のドラッグのものも含めて何も送らない (ポインターを押しても押し続けはそのまま続く)。`keyup`、またはその前のスライダーか popup の `window` の `blur` で、押し続けている間に `input` があったときだけ、スライダーの値で `setGain` を 1 回送る。押し続けている間の `blur` は、ドラッグと同じく (下) そこで操作も終える。popup は `previewGain` については何も知らせない。押し続けた操作を終える `setGain` が断られたときは、下と同じく知らせる。
+- 保存していない `previewGain` のあともキーかポインターを押し続けていると、popup は操作が終わるまで、1000 ms (`PREVIEW_KEEP_ALIVE_MS`) ごとにスライダーの値で `previewGain` をもう一度送る。content は受け付けた `previewGain` を保ち (`startPreview`)、書き込み・設定の変更・計測がかけるはずのゲインをかけない (「適用するゲインの決まり方」を参照)。保つのは、操作を終える `setGain` が届くまで (`endPreview`)、または最後の `previewGain` から 2000 ms (`PREVIEW_IDLE_MS`) たつまで (キーを押したまま popup を閉じたときや、始めた値で離したドラッグなど。`endIdlePreview`)。2 つ目の形で終わったとき、およびプレビューのあとの `setGain` が断られたときは、行を読み直してかける (`putBackStoredGain`)。`appliesTo` が `currentGestureState()` と違うプレビューは何も保たない。
 - スライダーは、操作を始めたとき (`pointerdown`、押し続けを始める `keydown`、または最初の `input`) に写しておいた `appliesTo` を送る。プリセットと「チャンネルに適用」ボタンは、最後に描いた状態の `appliesTo` を送る。
-- スライダーをポインターで押さえている間 (`pointerdown` から `pointerup` / `pointercancel` まで) に popup の `window` かスライダーが `blur` すると、そこで操作を終える。ドラッグの途中で Tab がフォーカスをスライダーから外したときも、これに当たる (Chrome はその後もドラッグを続ける)。`blur` より先に届いた `change` は `setGain` を送ってある。そのあとは次の `pointerdown` か、値を動かすキーの繰り返しでない `keydown` まで、スライダーの `input` は何もせず、`change` は離したときのものも含めて何も送らず、つまみを `blur` の時点のスライダーの値へ戻す。
+- スライダーをポインターで押さえている間 (`pointerdown` から `pointerup` / `pointercancel` まで) に popup の `window` かスライダーが `blur` すると、そこで操作を終える。ドラッグの途中で Tab がフォーカスをスライダーから外したときも、これに当たる (Chrome はその後もドラッグを続ける)。`blur` より先に届いた `change` は `setGain` を送ってある。そのあとは次の `pointerdown` か、値を動かすキーの繰り返しでない `keydown` まで、スライダーの `input` は何もせず、`change` は離したときのものも含めて何も送らず、つまみを `blur` の時点のスライダーの値へ戻す。キーを押していないときの `pointercancel` も同じく操作を終え、`setGain` を送らず、何も描き直さない。プレビューが止まると content が行を読み直してかけ (`endIdlePreview`)、次の操作が始まるまで、読み取りのたびにスライダーをかかっているゲインに合わせる。操作が始まると、スライダーは操作側に戻る。
 - 「チャンネルに適用」(`applyMeasured`) は `resume` を送ってから、最後の `getState` から計算した Suggested のゲイン `suggestedGain(lufs.integrated, targetLufs)` で `setGain` を送る。このボタンが押せるのは、Auto がオフで、有限の Integrated があり、チャンネルがあり、音声が使えるとき。表示は「$VALUE$ をチャンネルに適用」で、$VALUE$ に表示単位でのゲインが入る。
 - popup は、Auto がオン、Auto の保存待ち、`audioUnavailable` が true、または Live / VOD のチャンネルが無いページのとき、スライダーとプリセットを押せなくする。
 - 書き込み: `saveGain` が正式な行の `gain<Kind>` を書く。
@@ -784,7 +784,7 @@ sequenceDiagram
 | popup のスライダーの `input` | 変わらない、表示だけ | なし | `popup.js` の `input` リスナー |
 | スライダーを押さえたまま popup かスライダーが `blur` する | 変わらない。残りのドラッグは送らず、その `change` でつまみを戻す | なし | `popup.js` の `manualSlider` と `window` の `blur` リスナー |
 | popup のスライダーの `change`、プリセットのクリック | 選んだゲイン | `saveGain` | `popup.js` の `setGain`、`content.js` の `setGain`、`saveChannelGain` |
-| popup のスライダーでキーを押し続ける | 動いた先の値ごと (`previewGain`)。押し続けた操作が終わるまで、書き込み・設定の変更・Auto はこれを置き換えない (場面 3) | `keyup` か `blur` で `saveGain` を 1 回 | `popup.js` の `keydown` / `keyup` リスナー、`endSliderKeyHold`、`keepPreviewAlive`、`content.js` の `previewGain`、`startPreview`、`endIdlePreview` |
+| popup のスライダーでキーを押し続ける、またはドラッグする | 動いた先の値ごと (`previewGain`)。操作が終わるまで、書き込み・設定の変更・Auto はこれを置き換えない (場面 3) | キーの押し続けは `keyup` か `blur` で、ドラッグは `change` で `saveGain` を 1 回 | `core/common.js` の `holdPopupSlider`、`content.js` の `previewGain`、`startPreview`、`endIdlePreview` |
 | 「チャンネルに適用」 | Suggested のゲイン | `saveGain` | `popup.js` の `applyMeasured` |
 | `saveGain` が断られる | 保存済みのゲインへ戻る | なし | `content.js` の `setGain`、`reapplyForCurrentChannel` |
 | popup で Auto を切り替える | 決め直す | `saveAuto`、計算できたときは `autoGain` つき | `content.js` の `setAutoApplyLoudness`、`saveChannelAutoApply` |
