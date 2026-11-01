@@ -4345,11 +4345,9 @@ test('content Auto mode follows LUFS and recalculates when the target changes', 
   ) < 1e-9);
 });
 
-test('content limits Auto gain updates to the popup display interval', async () => {
-  const popupSource = fs.readFileSync(path.join(__dirname, 'popup.js'), 'utf8');
-  assert.match(popupSource, /await pollTabState\(refresh\);/);
+test('content limits Auto gain updates to AUTO_FOLLOW_INTERVAL_MS', async () => {
   const contentSource = fs.readFileSync(path.join(__dirname, 'content.js'), 'utf8');
-  assert.match(contentSource, /elapsed < STATE_POLL_INTERVAL_MS\) return;/);
+  assert.match(contentSource, /elapsed < AUTO_FOLLOW_INTERVAL_MS\) return;/);
   const harness = createContentHarness({ autoApply: true, autoGain: 0.8 });
   await flushTasks();
   harness.commands.length = 0;
@@ -4364,7 +4362,7 @@ test('content limits Auto gain updates to the popup display interval', async () 
   });
 
   await emitIntegrated(-23);
-  harness.advanceTime(STATE_POLL_INTERVAL_MS - 1);
+  harness.advanceTime(AUTO_FOLLOW_INTERVAL_MS - 1);
   await emitIntegrated(-22);
   let gains = harness.commands.filter((command) => command.cmd === 'setGain');
   assert.equal(gains.length, 1);
@@ -4377,7 +4375,7 @@ test('content limits Auto gain updates to the popup display interval', async () 
   assert.ok(Math.abs(gains[1].value - u.calcGain(-21, -18)) < 1e-9);
 
   // A clock that steps backwards must not stall Auto until it catches up.
-  harness.advanceTime(-STATE_POLL_INTERVAL_MS);
+  harness.advanceTime(-AUTO_FOLLOW_INTERVAL_MS);
   await emitIntegrated(-20);
   gains = harness.commands.filter((command) => command.cmd === 'setGain');
   assert.equal(gains.length, 3);
@@ -4406,45 +4404,28 @@ function assertDb(actual, expected, what) {
   assert.ok(Math.abs(actual - expected) < 1e-6, `${what}: ${actual} dB, expected ${expected} dB`);
 }
 
-test('an Auto gain below the one playing plays at once, and one above it rises 1.5 dB for every 30 s', async () => {
+test('an Auto gain plays the gain the Integrated value asks for, above the one playing as below it', async () => {
   const harness = createContentHarness({ autoApply: true, autoGain: 0.8 });
   await flushTasks();
 
-  // The first measured gain plays as it stands, however far above the one
-  // playing before it.
   await harness.dispatchMessage(lufsPost(-23));
   assertDb(playedDb(harness), 5, 'the first measured gain');
   harness.advanceTime(1000);
   await harness.dispatchMessage(lufsPost(-20));
   assertDb(playedDb(harness), 2, 'a lower gain');
-
-  // The level falls 6 dB: 10 s lets the gain up by 0.5 dB, 20 s more by 1 dB.
-  harness.advanceTime(10_000);
+  harness.advanceTime(1000);
   await harness.dispatchMessage(lufsPost(-26));
-  assertDb(playedDb(harness), 2.5, 'a higher gain 10 s on');
-  harness.advanceTime(20_000);
-  await harness.dispatchMessage(lufsPost(-26));
-  assertDb(playedDb(harness), 3.5, 'a higher gain 20 s after that');
-  // Counted from the last apply, not from the first: once a second rises
-  // 0.05 dB a second, as one apply after the same time would.
-  for (let i = 0; i < 30; i++) {
-    harness.advanceTime(1000);
-    await harness.dispatchMessage(lufsPost(-26));
-  }
-  assertDb(playedDb(harness), 5, 'a higher gain 30 one-second applies on');
+  assertDb(playedDb(harness), 8, 'a higher gain a second on');
 
-  // What is stored for Auto is the gain the level asks for.
+  // What is stored for Auto, with the save every 5 s, is the same gain.
+  harness.advanceTime(5000);
+  await harness.dispatchMessage(lufsPost(-26));
   await flushTasks();
   assertDb(gainDb(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].autoGainVod), 8,
     'the stored Auto gain');
-
-  // A clock that steps backwards lets nothing up and takes nothing down.
-  harness.advanceTime(-60_000);
-  await harness.dispatchMessage(lufsPost(-26));
-  assertDb(playedDb(harness), 5, 'a higher gain on a clock that stepped back');
 });
 
-test('the reapply a channel write starts is held to the same rise', async () => {
+test('the reapply a channel write starts plays the gain the level asks for', async () => {
   const harness = createContentHarness({ autoApply: true, autoGain: 0.8 });
   await flushTasks();
   await harness.dispatchMessage(lufsPost(-20));
@@ -4455,11 +4436,10 @@ test('the reapply a channel write starts is held to the same rise', async () => 
   harness.advanceTime(500);
   await harness.dispatchMessage(lufsPost(-26));
   assertDb(playedDb(harness), 2, 'the block inside the second');
-  harness.advanceTime(9500);
   await harness.dispatchStorage({
     [u.CHANNEL_VOLUMES_KEY]: { newValue: structuredClone(harness.stored[u.CHANNEL_VOLUMES_KEY]) }
   }, 'local');
-  assertDb(playedDb(harness), 2.5, 'the reapply 10 s after the last apply');
+  assertDb(playedDb(harness), 8, 'the reapply');
 });
 
 test('a measurement reset, a settings change and turning Auto on play the gain as it stands', async () => {
@@ -4513,68 +4493,26 @@ test('an Auto gain over a gain of 0 plays as it stands', async () => {
   assertDb(playedDb(harness), 2, 'the gain Auto plays over 0');
 });
 
-test('a short-term loudness 6 dB over the Integrated value plays the gain for 3 dB louder', async () => {
+test('the short-term loudness leaves the Auto gain to the Integrated value', async () => {
   const harness = createContentHarness({ autoApply: true, autoGain: 0.8 });
   await flushTasks();
-  // The first measured gain plays as it stands, whatever the short-term says.
   await harness.dispatchMessage(lufsPost(-23, -10));
   assertDb(playedDb(harness), 5, 'the first measured gain');
-
-  harness.advanceTime(1000);
-  await harness.dispatchMessage(lufsPost(-23, -17.1));
-  assertDb(playedDb(harness), 5, '5.9 dB over');
   harness.advanceTime(1000);
   await harness.dispatchMessage(lufsPost(-23, -17));
-  assertDb(playedDb(harness), 2, '6 dB over');
-
-  // The cut gain comes back up as any lower gain does.
-  harness.advanceTime(10_000);
-  await harness.dispatchMessage(lufsPost(-23));
-  assertDb(playedDb(harness), 2.5, '10 s after the short-term came back');
-
-  // What is stored for Auto is the gain the Integrated value asks for.
-  harness.advanceTime(5000);
-  await harness.dispatchMessage(lufsPost(-23, -17));
-  await flushTasks();
-  assertDb(gainDb(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].autoGainVod), 5,
-    'the stored Auto gain');
+  assertDb(playedDb(harness), 5, '6 dB over');
+  harness.advanceTime(1000);
+  await harness.dispatchMessage(lufsPost(-23, -40));
+  assertDb(playedDb(harness), 5, '17 dB under');
 });
 
-test('the short-term loudness is not looked at during an ad or for 3 s after it', async () => {
-  const harness = createContentHarness({ autoApply: true, autoGain: 0.8 });
-  await flushTasks();
-  await harness.dispatchMessage(lufsPost(-23));
-  assertDb(playedDb(harness), 5, 'the first measured gain');
-
-  await harness.dispatchMessage({ type: '__twitch_channel_volume__', event: 'ad', active: true });
-  harness.advanceTime(1000);
-  await harness.dispatchMessage(lufsPost(-23, -10));
-  assertDb(playedDb(harness), 5, 'during the ad');
-
-  await harness.dispatchMessage({ type: '__twitch_channel_volume__', event: 'ad', active: false });
-  harness.advanceTime(1999);
-  await harness.dispatchMessage(lufsPost(-23, -10));
-  assertDb(playedDb(harness), 5, '1.999 s after the ad');
-  // The reapply a channel write starts is not held to the second between
-  // applies, so it can ask either side of the 3 s.
-  const channelWrite = () => harness.dispatchStorage({
-    [u.CHANNEL_VOLUMES_KEY]: { newValue: structuredClone(harness.stored[u.CHANNEL_VOLUMES_KEY]) }
-  }, 'local');
-  harness.advanceTime(1000);
-  await channelWrite();
-  assertDb(playedDb(harness), 5, '2.999 s after the ad');
-  harness.advanceTime(1);
-  await channelWrite();
-  assertDb(playedDb(harness), 2, '3 s after the ad');
-});
-
-test('a settings change stores the gain the level asks for, whatever plays by then', async () => {
+test('a settings change stores the gain the level asks for', async () => {
   const harness = createContentHarness({ autoApply: true, autoGain: 0.8 });
   await flushTasks();
   await harness.dispatchMessage(lufsPost(-23));
 
   // A block lands while the reapply the change starts is still reading the
-  // channel, and the short-term over it cuts the gain that reapply plays.
+  // channel.
   harness.deferNextStorageGet();
   harness.synced[u.SETTINGS_KEY] = { ...harness.synced[u.SETTINGS_KEY], targetLufs: -20 };
   await harness.dispatchStorage({
@@ -4585,12 +4523,12 @@ test('a settings change stores the gain the level asks for, whatever plays by th
   assertDb(playedDb(harness), 3, 'the block that took the new target first');
   harness.advanceTime(1000);
   await harness.releaseStorageGet();
-  assertDb(playedDb(harness), 0, 'the reapply that came after it');
+  assertDb(playedDb(harness), 3, 'the reapply that came after it');
   assertDb(gainDb(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].autoGainVod), 3,
     'the stored Auto gain');
 });
 
-test('an Auto toggle that is not saved leaves the rise and the cut as they were', async () => {
+test('an Auto toggle that is not saved leaves Auto following the level', async () => {
   const harness = createContentHarness({
     autoApply: true,
     autoGain: 0.8,
@@ -4598,35 +4536,25 @@ test('an Auto toggle that is not saved leaves the rise and the cut as they were'
   });
   await flushTasks();
   await harness.dispatchMessage(lufsPost(-23));
-  harness.advanceTime(1000);
-  await harness.dispatchMessage(lufsPost(-23, -17));
-  assertDb(playedDb(harness), 2, 'the cut');
-  harness.advanceTime(1000);
-  await harness.dispatchMessage(lufsPost(-23));
-  assertDb(playedDb(harness), 2.05, 'a second on the way back');
+  assertDb(playedDb(harness), 5, 'the first measured gain');
 
-  // Auto stays on where the toggle's write fails, and goes on rising from
-  // where it was.
+  // Auto stays on where the toggle's write fails.
   assert.equal((await harness.dispatchGesture({ cmd: 'setAutoApplyLoudness', enabled: false }))?.ok, false);
   assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).autoApplyLoudness, true);
   harness.advanceTime(1000);
-  await harness.dispatchMessage(lufsPost(-23));
-  assertDb(playedDb(harness), 2.1, 'a second after the failed toggle');
+  await harness.dispatchMessage(lufsPost(-20));
+  assertDb(playedDb(harness), 2, 'a second after the failed toggle');
 
-  // A toggle refused while the short-term is over the Integrated value keeps
-  // the cut.
-  harness.advanceTime(1000);
-  await harness.dispatchMessage(lufsPost(-23, -17));
-  assertDb(playedDb(harness), 2, 'the cut again');
+  // And where it is refused.
   harness.rejectChannelMutations('saveAuto');
   assert.equal((await harness.dispatchGesture({ cmd: 'setAutoApplyLoudness', enabled: false }))?.ok, false);
   harness.advanceTime(1000);
-  await harness.dispatchMessage(lufsPost(-23, -17));
-  assertDb(playedDb(harness), 2, 'the cut after the refused toggle');
+  await harness.dispatchMessage(lufsPost(-26));
+  assertDb(playedDb(harness), 8, 'a second after the refused toggle');
   assert.equal(harness.stored[u.CHANNEL_VOLUMES_KEY]['vod-owner:100'].autoApplyLoudnessVod, true);
 });
 
-test('an Auto toggle saved after a route change leaves the new media\'s rise alone', async () => {
+test('an Auto toggle saved after a route change leaves the new media\'s Auto gain alone', async () => {
   const autoOn = (name) => ({
     name,
     gainVod: 0.5,
@@ -4648,11 +4576,11 @@ test('an Auto toggle saved after a route change leaves the new media\'s rise alo
   await harness.dispatchMessage(lufsPost(-23));
   assertDb(playedDb(harness), 5, 'the first gain of the new media');
   harness.advanceTime(1000);
-  await harness.dispatchMessage(lufsPost(-23, -17));
-  assertDb(playedDb(harness), 2, 'the cut on the new media');
+  await harness.dispatchMessage(lufsPost(-20));
+  assertDb(playedDb(harness), 2, 'the new media a second on');
 
   // The write for the media left behind lands; the reapply it starts is the
-  // new media's, held to that media's cut.
+  // new media's, at that media's level.
   harness.releaseChannelMutation();
   await flushTasks(8);
   await answer;

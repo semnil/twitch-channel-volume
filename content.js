@@ -61,13 +61,6 @@
   // chrome.storage.onChanged started included.
   let seededResetPending = false;
   let lastAutoGainUpdateAt = -Infinity;
-  // When a measured level last set the gain Auto plays; null from a
-  // measurement reset, a settings change or a saved Auto toggle until the next
-  // measured gain, which then plays as it stands.
-  let autoRaiseFrom = null;
-  // When the last ad ended. For the span of the short-term loudness after it,
-  // that loudness still takes in the ad's own blocks.
-  let adEndedAt = -Infinity;
 
   function clearMeasurementCache() {
     lastLufs = { momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity };
@@ -227,7 +220,6 @@
   function sendResetMeasurement(seed) {
     measurementEpoch++;
     lastAutoGainUpdateAt = -Infinity;
-    autoRaiseFrom = null;
     sendCmd({
       cmd: 'resetMeasurement',
       epoch: measurementEpoch,
@@ -285,42 +277,13 @@
     updateGainOverlay();
   }
 
-  // The gain Auto plays for the measurement it holds. Where the short-term
-  // loudness is AUTO_RISE_DB or more over the Integrated value, the gain is
-  // worked out as if the Integrated value were AUTO_RISE_AHEAD_DB louder; the
-  // short-term loudness is not looked at during an ad or for the
-  // SHORT_TERM_MS after one. A gain below the one playing plays at once. One
-  // above it plays no more than AUTO_RAISE_DB higher for every
-  // AUTO_RAISE_PERIOD_MS since a measured level last set the gain, and gets
-  // there over the applies that come after. The first measured gain after
-  // autoRaiseFrom was cleared, and one over a gain of 0, play as they stand.
-  const AUTO_RAISE_DB = 1.5;
-  const AUTO_RAISE_PERIOD_MS = 30000;
-  const AUTO_RISE_DB = 6;
-  const AUTO_RISE_AHEAD_DB = 3;
-  // The span of the bridge's short-term loudness.
-  const SHORT_TERM_MS = 3000;
-
-  function autoGainToPlay() {
-    const asked = calcGain(lastLufs.integrated, targetLufs);
-    const now = Date.now();
-    const from = autoRaiseFrom;
-    autoRaiseFrom = now;
-    if (from === null || !(currentGain > 0)) return asked;
-    const rose = !adActive && now - adEndedAt >= SHORT_TERM_MS &&
-      lastLufs.shortTerm - lastLufs.integrated >= AUTO_RISE_DB;
-    const gain = rose ? calcGain(lastLufs.integrated + AUTO_RISE_AHEAD_DB, targetLufs) : asked;
-    const allowedDb = AUTO_RAISE_DB * Math.max(0, now - from) / AUTO_RAISE_PERIOD_MS;
-    return Math.min(gain, currentGain * Math.pow(10, allowedDb / 20));
-  }
-
   function applyAutoGain() {
     if (previewHoldsGain()) return;
     const now = Date.now();
     const elapsed = now - lastAutoGainUpdateAt;
-    if (elapsed >= 0 && elapsed < STATE_POLL_INTERVAL_MS) return;
+    if (elapsed >= 0 && elapsed < AUTO_FOLLOW_INTERVAL_MS) return;
     lastAutoGainUpdateAt = now;
-    applyGain(autoGainToPlay());
+    applyGain(calcGain(lastLufs.integrated, targetLufs));
   }
 
   // ── Gain overlay on Twitch player ───────────────────────────────────
@@ -473,9 +436,7 @@
     );
     currentAutoApplyLoudness = preferred.autoApply;
     if (!previewHoldsGain()) {
-      applyGain(preferred.autoApply && Number.isFinite(lastLufs.integrated)
-        ? autoGainToPlay()
-        : preferred.gain);
+      applyGain(preferred.gain);
     }
     sendPendingSeededReset();
     return true;
@@ -574,7 +535,6 @@
         await acceptOwner(data);
         break;
       case 'ad':
-        if (!data.active) adEndedAt = Date.now();
         adActive = !!data.active;
         break;
       case 'audio-context':
@@ -805,7 +765,6 @@
       }
       showGainOverlay = next.showGainOverlay ?? true;
       updateGainOverlay();
-      autoRaiseFrom = null;
       // The Auto gain on file follows the target and the Auto defaults, and
       // no other setting.
       const autoInputsChanged = autoInputs().some((value, i) => value !== previousAutoInputs[i]);
@@ -951,9 +910,6 @@
           currentChannel.url,
           autoGain
         ).then(async () => {
-          // A toggle that was saved for the state on screen plays its gain as
-          // it stands; one that was not saved leaves Auto as it was going.
-          if (req.appliesTo === currentGestureState()) autoRaiseFrom = null;
           try {
             await reapplyForCurrentChannel();
           } catch (error) {

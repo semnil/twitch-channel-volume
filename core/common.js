@@ -215,6 +215,10 @@ function gainForLevel(levelLufs, targetLufs) {
   return clampGain(gain);
 }
 
+// How often, at most, Auto sets the gain from a level that moves while it
+// plays. Each time, the gain is the one gainForLevel gives for the level.
+const AUTO_FOLLOW_INTERVAL_MS = 1000;
+
 // Whether gain is one a channel write may store: a finite number within the
 // gain range.
 function isStorableGain(gain) {
