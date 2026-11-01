@@ -1503,6 +1503,8 @@ function createPopupHarness({
   holdCommand = '',
   // The settings read the load makes, held until the case lets it go.
   holdSettingsRead = false,
+  // That read rejecting.
+  failSettingsRead = false,
   // Keys the page carries that the locale does not declare.
   unknownI18nKeys = [],
   // A content harness to answer for real, instead of the stubbed replies. What
@@ -1639,6 +1641,7 @@ function createPopupHarness({
       sync: {
         // Answered with what sync held when the read was made, as Chrome does.
         async get() {
+          if (failSettingsRead) throw new Error('the settings read failed');
           const snapshot = { displayUnit };
           if (heldSettingsRead) {
             const holding = heldSettingsRead;
@@ -9468,6 +9471,16 @@ test('options writes nothing for the unit already in use', async () => {
   assert.deepEqual(harness.sent, [], 'the active unit is not written again');
   await harness.clickUnit('%');
   assert.equal(harness.sent.length, 1, 'and the other one is');
+});
+
+test('popup asks for a reload, and asks the tab nothing, when it cannot read the settings', async () => {
+  const harness = createPopupHarness({ failSettingsRead: true });
+  await flushTasks(8);
+  await harness.poll();
+  assert.equal(harness.el('errBox').textContent, harness.message('reloadPageNeeded'));
+  assert.equal(harness.el('errBox').classList.contains('hidden'), false);
+  assert.deepEqual(harness.sent, [], `nothing is sent to the tab (${JSON.stringify(harness.sent)})`);
+  assert.equal(harness.body.classList.contains('initializing'), false, 'and the popup is shown');
 });
 
 test('options draws a channel that has no name by its id', async () => {

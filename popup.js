@@ -559,11 +559,20 @@
   $('resetMeasurementBtn').title = msg('resetMeasurement');
   (async () => {
     try {
-      await loadDisplayUnit();
+      // A popup that cannot read the settings is one the extension cannot
+      // reach as it stands, and says so as it does for a tab it cannot reach;
+      // it asks the tab nothing, then or later.
+      try {
+        await loadDisplayUnit();
+      } catch (error) {
+        console.error('[TCV] failed to read settings', error);
+        showStatus(msg('reloadPageNeeded'));
+        return;
+      }
+      setInterval(refresh, DISPLAY_UPDATE_INTERVAL_MS);
       await refresh();
     } finally {
       revealPage();
     }
   })();
-  setInterval(refresh, DISPLAY_UPDATE_INTERVAL_MS);
 })();
