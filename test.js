@@ -5151,6 +5151,55 @@ test('content drops the window count with the measurement it described', async (
   assert.equal(resets[0].initialIntegratedWindows, undefined);
 });
 
+test('content empties its measurement when the stored one is cleared in another tab', async () => {
+  // Another tab's reset clears the stored level. This tab's bridge is told to
+  // start again unseeded, and what it measured before is not stored back:
+  // a block of the old measurement is dropped, and the tab has no level.
+  for (const autoApplyLoudnessLive of [false, true]) {
+    const row = () => ({
+      name: 'somechannel', gainLive: 0.5, autoApplyLoudnessLive,
+      lastLufs: { live: -21 }, lastLufsRef: { live: u.LUFS_REFERENCE_VOLUME_1 }, lastLufsWindows: { live: 1800 }
+    });
+    const harness = createContentHarness({
+      href: 'https://www.twitch.tv/somechannel',
+      channelVolumes: { 'login:somechannel': row(), 'login:another': { name: 'another', gainLive: 0.9, lastLufs: { live: -30 } } }
+    });
+    await flushTasks();
+    const epoch = harness.commands.filter((command) => command.cmd === 'resetMeasurement').pop().epoch;
+    const block = (integrated) => harness.dispatchMessage({
+      type: '__twitch_channel_volume__', event: 'lufs', epoch, playing: true,
+      momentary: integrated, shortTerm: integrated, integrated, integratedWindows: 40
+    });
+    await block(-20);
+    harness.commands.length = 0;
+    const volumes = () => harness.stored[u.CHANNEL_VOLUMES_KEY];
+    const change = async (next) => {
+      const oldValue = JSON.parse(JSON.stringify(volumes()));
+      harness.stored[u.CHANNEL_VOLUMES_KEY] = next;
+      await harness.dispatchStorage({ [u.CHANNEL_VOLUMES_KEY]: { oldValue, newValue: next } }, 'local');
+      await flushTasks();
+    };
+    // Another channel's clear, and another tab's newer measurement, leave this one alone.
+    await change({ ...volumes(), 'login:another': { name: 'another', gainLive: 0.9 } });
+    await change({ ...volumes(), 'login:somechannel': { ...row(), lastLufs: { live: -25 } } });
+    assert.equal(harness.commands.filter((command) => command.cmd === 'resetMeasurement').length, 0, `Auto ${autoApplyLoudnessLive}`);
+    assert.equal((await harness.dispatchRuntime({ cmd: 'getState' })).lufs.integrated, -20, `Auto ${autoApplyLoudnessLive}`);
+    const { lastLufs, lastLufsRef, lastLufsWindows, ...cleared } = row();
+    await change({ ...volumes(), 'login:somechannel': cleared });
+    const resets = harness.commands.filter((command) => command.cmd === 'resetMeasurement');
+    assert.equal(resets.length, 1, `Auto ${autoApplyLoudnessLive}: the bridge starts again`);
+    assert.equal(resets[0].initialIntegratedLufs, undefined, `Auto ${autoApplyLoudnessLive}: unseeded`);
+    assert.ok(resets[0].epoch > epoch, `Auto ${autoApplyLoudnessLive}: under a new epoch`);
+    await block(-20);
+    await flushTasks();
+    const state = await harness.dispatchRuntime({ cmd: 'getState' });
+    assert.equal(state.lufs.integrated, -Infinity, `Auto ${autoApplyLoudnessLive}: the tab has no level`);
+    assert.equal(volumes()['login:somechannel'].lastLufs, undefined,
+      `Auto ${autoApplyLoudnessLive}: nothing is stored back (${JSON.stringify(volumes()['login:somechannel'])})`);
+    assert.equal(volumes()['login:another'].gainLive, 0.9, `Auto ${autoApplyLoudnessLive}: the other row stays`);
+  }
+});
+
 test('content does not seed from a measurement taken at an unknown volume', async () => {
   const harness = createContentHarness({
     channelVolumes: {

@@ -425,8 +425,19 @@
     const resolved = await loadChannelEntry(ch.id);
     if (revision !== preferenceRevision ||
         ch.id !== currentChannel.id || ch.kind !== currentChannel.kind) return false;
+    const beforeId = currentCanonicalChannelId;
+    const before = currentChannelEntry;
     currentCanonicalChannelId = resolved?.canonicalId || ch.id;
     currentChannelEntry = resolved?.entry || null;
+    // A stored measurement cleared elsewhere (a reset in another tab, the row
+    // deleted on the settings page) empties this tab's measurement too, so it
+    // is not stored back.
+    if (beforeId === currentCanonicalChannelId && Number.isFinite(before?.lastLufs?.[ch.kind]) &&
+        !Number.isFinite(currentChannelEntry?.lastLufs?.[ch.kind])) {
+      clearMeasurementCache();
+      lastSavedAt = 0;
+      sendResetMeasurement();
+    }
     const preferred = resolvePreferredGain(
       currentChannelEntry,
       ch.kind,

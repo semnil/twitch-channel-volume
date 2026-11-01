@@ -94,8 +94,8 @@ The three dropped awaits on `resolveChannel`. It holds no await of its own, so
 its promise is already settled when it is returned.
 
 - `content.js:374` an await is dropped ×1 — await
-- `content.js:669` an await is dropped ×1 — await
-- `content.js:1039` an await is dropped ×1 — await
+- `content.js:680` an await is dropped ×1 — await
+- `content.js:1050` an await is dropped ×1 — await
 
 `reapplyForCurrentChannel`'s "no channel here" exit and its staleness check. The
 path below the exit loads nothing for an empty id, resolves the gain to 1.0 with
@@ -115,16 +115,16 @@ what the reapply returns, and its Auto save stops at
 `handleBridgeMessage`'s runtime check. Each case reaches a guard of its own —
 the storage helpers above — and the rest only post to the page.
 
-- `content.js:462` a guard is dropped ×1 — if (!isContextValid()) return;
+- `content.js:473` a guard is dropped ×1 — if (!isContextValid()) return;
 
 The cached entry an Auto save and a measurement reset rewrite. What the mutants
 differ on is the other kind's `autoGainRef` and `lastLufs`, and `lastMeasuredAt`
 — content.js reads `lastLufs` only at `currentChannel.kind`, `lastMeasuredAt`
 nowhere, and the entry is reloaded before another kind is read.
 
-- `content.js:926` || becomes && ×1 — ||
-- `content.js:978` a guard is always taken ×1 — if (currentChannelEntry) {
-- `content.js:980` || becomes && ×1 — ||
+- `content.js:937` || becomes && ×1 — ||
+- `content.js:989` a guard is always taken ×1 — if (currentChannelEntry) {
+- `content.js:991` || becomes && ×1 — ||
 
 ## channel-store.js
 
