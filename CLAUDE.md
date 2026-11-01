@@ -145,7 +145,7 @@ flowchart LR
 - Page load: runPageLoad (a page's first load, failed where it rejects or has not settled within PAGE_LOAD_TIMEOUT_MS, 3 s, and the page shown once it is answered)
 - HTML escape: esc()
 - Settings page error line: showSettingsError (`#settingsError`, shown with a catalog message or hidden)
-- Popup state retry: retryGetState (asks again for the state every interval, a set number of times, until it is settled; this popup polls instead and does not call it)
+- Popup state poll: pollTabState, STATE_POLL_INTERVAL_MS (the first ask at once, then the state every second while the popup is open)
 - Popup messages: sendTabMessage (the popup's message to its tab, refused where it holds none), createSaveNotice (the notice under the Apply button that a gain is not saved, raised by the answer to the latest save sent for the owner shown where it is not ok, and taken down by one that is or by another owner)
 - Popup owner line: drawOwnerName (the owner's name, or the catalog's not-detected text in the `empty` class, with the full text as its title for a row too narrow to show it)
 - Popup page state: isSiteTab (the tab's URL host name is the site's or a subdomain's), showPopupStatus / hidePopupStatus (the status line with the catalog's text in place of the screen), followDisplayUnit (the display unit read once and followed in sync while the popup is open)
