@@ -1431,8 +1431,9 @@ function createOptionsHarness({
     timers,
     // `fields` are what the event carries besides its target, a key's repeat.
     async fire(id, type, fields = {}) {
+      // A pointer event carries the primary button unless the case names another.
       for (const listener of element(id).listeners[type] || []) {
-        await listener({ target: element(id), ...fields });
+        await listener({ target: element(id), button: 0, ...fields });
       }
       await flushTasks(8);
     },
@@ -1503,6 +1504,8 @@ function createPopupHarness({
   holdCommand = '',
   // The settings read the load makes, held until the case lets it go.
   holdSettingsRead = false,
+  // That read rejecting.
+  failSettingsRead = false,
   // Keys the page carries that the locale does not declare.
   unknownI18nKeys = [],
   // A content harness to answer for real, instead of the stubbed replies. What
@@ -1639,6 +1642,7 @@ function createPopupHarness({
       sync: {
         // Answered with what sync held when the read was made, as Chrome does.
         async get() {
+          if (failSettingsRead) throw new Error('the settings read failed');
           const snapshot = { displayUnit };
           if (heldSettingsRead) {
             const holding = heldSettingsRead;
@@ -1785,8 +1789,9 @@ function createPopupHarness({
     // `fields` are what the event carries besides its target, a key's repeat.
     async fire(id, type, fields = {}) {
       if (element(id).disabled) { await flushTasks(8); return; }
+      // A pointer event carries the primary button unless the case names another.
       for (const listener of element(id).listeners[type] || []) {
-        await listener({ target: element(id), ...fields });
+        await listener({ target: element(id), button: 0, ...fields });
       }
       await flushTasks(8);
     },
@@ -7031,6 +7036,35 @@ test('options writes nothing for a Tab on a settings slider with no drag, and wh
 
 // The change notification of one write can land while the next press is
 // held, and Chrome sends a drag's pointerup ahead of its change.
+test('options begins a settings slider gesture on the primary button alone', async () => {
+  for (const { field, label, drawn } of SETTINGS_SLIDERS) {
+    for (const button of [1, 2]) {
+      const harness = createOptionsHarness();
+      await flushTasks(8);
+      // Another button moves no value and its release goes to the window, so
+      // the press holds nothing and a change from elsewhere still reaches the slider.
+      await harness.fire(field, 'pointerdown', { button });
+      harness.fireStorageChanged({ [u.SETTINGS_KEY]: { newValue: { targetLufs: -18, adGainDb: -6, [field]: -9 } } }, 'sync');
+      await flushTasks(8);
+      assert.equal(harness.el(label).textContent, drawn(-9), `${field}: a press with button ${button} holds nothing`);
+    }
+  }
+});
+
+test('popup begins a slider gesture on the primary button alone', async () => {
+  for (const button of [1, 2]) {
+    const popup = createPopupHarness({ state: { appliesTo: '123|live|' } });
+    await flushTasks(8);
+    await popup.fire('manualSlider', 'pointerdown', { button });
+    await popup.blurWindow();
+    popup.el('manualSlider').value = '160';
+    await popup.fire('manualSlider', 'input');
+    await popup.fire('manualSlider', 'change');
+    assert.ok(popup.sent.some((request) => request.cmd === 'setGain' && request.gain === 1.6),
+      `a press with button ${button} leaves the slider answering after a blur (${JSON.stringify(popup.sent.map((r) => r.cmd))})`);
+  }
+});
+
 test('options leaves a held settings slider to its gesture when a settings change arrives', async () => {
   for (const { field, label, drawn } of SETTINGS_SLIDERS) {
     const harness = createOptionsHarness();
@@ -9458,6 +9492,32 @@ test('options writes nothing from a control operated before the load lands', asy
   harness.el('targetLufs').value = '-24';
   await harness.fire('targetLufs', 'change');
   assert.equal(harness.sent.length, 1, 'and the same control writes once the load has landed');
+});
+
+test('options writes nothing for the unit already in use', async () => {
+  const harness = createOptionsHarness({ settings: { displayUnit: 'dB' } });
+  await flushTasks(8);
+  harness.sent.length = 0;
+  await harness.clickUnit('dB');
+  assert.deepEqual(harness.sent, [], 'the active unit is not written again');
+  await harness.clickUnit('%');
+  assert.equal(harness.sent.length, 1, 'and the other one is');
+});
+
+test('popup asks for a reload, and asks the tab nothing, when it cannot read the settings', async () => {
+  const harness = createPopupHarness({ failSettingsRead: true });
+  await flushTasks(8);
+  await harness.poll();
+  assert.equal(harness.el('errBox').textContent, harness.message('reloadPageNeeded'));
+  assert.equal(harness.el('errBox').classList.contains('hidden'), false);
+  assert.deepEqual(harness.sent, [], `nothing is sent to the tab (${JSON.stringify(harness.sent)})`);
+  assert.equal(harness.body.classList.contains('initializing'), false, 'and the popup is shown');
+
+  // A settings change that arrives afterwards does not bring the screen back.
+  await harness.changeSettings({ displayUnit: 'dB' });
+  await harness.poll();
+  assert.equal(harness.el('errBox').classList.contains('hidden'), false, 'the request for a reload stays');
+  assert.deepEqual(harness.sent, [], `and the tab is still asked nothing (${JSON.stringify(harness.sent)})`);
 });
 
 test('options draws a channel that has no name by its id', async () => {

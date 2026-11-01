@@ -402,7 +402,13 @@
     }
   }
 
+  // The tab is asked nothing until the settings have been read, whatever asks
+  // for a refresh: a popup that could not read them stays on its request for a
+  // reload.
+  let settingsRead = false;
+
   async function refresh() {
+    if (!settingsRead) return;
     const state = await requestState();
     renderState(state);
   }
@@ -444,7 +450,10 @@
     sliderGestureEnded = true;
     sliderValueAtEnd = $('manualSlider').value;
   };
-  $('manualSlider').addEventListener('pointerdown', () => {
+  // Only the primary button drags the slider; another button moves no value,
+  // and its release goes to the window, so it begins no gesture.
+  $('manualSlider').addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
     sliderPointerHeld = true;
     beginSliderGesture();
   });
@@ -559,11 +568,21 @@
   $('resetMeasurementBtn').title = msg('resetMeasurement');
   (async () => {
     try {
-      await loadDisplayUnit();
+      // A popup that cannot read the settings is one the extension cannot
+      // reach as it stands, and says so as it does for a tab it cannot reach;
+      // it asks the tab nothing, then or later.
+      try {
+        await loadDisplayUnit();
+      } catch (error) {
+        console.error('[TCV] failed to read settings', error);
+        showStatus(msg('reloadPageNeeded'));
+        return;
+      }
+      settingsRead = true;
+      setInterval(refresh, DISPLAY_UPDATE_INTERVAL_MS);
       await refresh();
     } finally {
       revealPage();
     }
   })();
-  setInterval(refresh, DISPLAY_UPDATE_INTERVAL_MS);
 })();
