@@ -6645,6 +6645,48 @@ test('a drag on the slider the browser cancels saves nothing, and the slider fol
   assert.deepEqual(gains(popup, 'setGain'), [1.2], 'and saves it');
 });
 
+test('the popup slider saves a key let go of within a press once, and a cancel with nothing pressed or during a key hold ends nothing', async () => {
+  const gains = (popup, cmd) => popup.sent.filter((request) => request.cmd === cmd).map((request) => request.gain);
+  const popup = createPopupHarness({ state: { appliesTo: '123|live|' } });
+  await flushTasks(8);
+  await popup.fire('manualSlider', 'keydown', sliderKey('ArrowRight'));
+  await popup.fire('manualSlider', 'pointerdown');
+  await movePopupSlider(popup, 195);
+  await popup.fire('manualSlider', 'keyup', sliderKey('ArrowRight'));
+  await popup.fire('manualSlider', 'pointerup');
+  await popup.fire('manualSlider', 'change');
+  assert.deepEqual(gains(popup, 'setGain'), [1.95], 'the key saves at its release, and the pointer adds nothing');
+
+  await popup.fire('manualSlider', 'pointercancel');
+  await movePopupSlider(popup, 205);
+  await popup.fire('manualSlider', 'change');
+  await popup.fire('manualSlider', 'keydown', sliderKey('ArrowRight'));
+  await popup.fire('manualSlider', 'pointerdown');
+  await popup.fire('manualSlider', 'pointercancel');
+  await movePopupSlider(popup, 210);
+  await popup.fire('manualSlider', 'keyup', sliderKey('ArrowRight'));
+  assert.deepEqual(gains(popup, 'setGain'), [1.95, 2.05, 2.1], 'a cancel with nothing pressed, or during a key hold, ends nothing');
+});
+
+test('holdPopupSlider answers whether its slider is held, which this popup does not read', () => {
+  const outer = globalThis.window;
+  const on = (target) => (type, fn) => { (target.listeners[type] ||= []).push(fn); };
+  const slider = { value: '100', listeners: {} };
+  slider.addEventListener = on(slider);
+  globalThis.window = { listeners: {} };
+  globalThis.window.addEventListener = on(globalThis.window);
+  try {
+    const held = holdPopupSlider(slider, { begin() {}, draw() {}, canPreview: () => false, preview() {}, save() {} });
+    const fire = (type, event = {}) => { for (const fn of slider.listeners[type] || []) fn({ target: slider, button: 0, ...event }); };
+    fire('keydown', { key: 'ArrowRight' });
+    assert.equal(held(), true, 'a key held is held');
+    fire('keyup', { key: 'ArrowRight' });
+    assert.equal(held(), false);
+  } finally {
+    globalThis.window = outer;
+  }
+});
+
 test('a key held on the slider after a preview sends it again each second until the hold ends', async () => {
   const gains = (popup, cmd) => popup.sent.filter((request) => request.cmd === cmd).map((request) => request.gain);
   const popup = createPopupHarness({ state: { appliesTo: '123|live|' } });
