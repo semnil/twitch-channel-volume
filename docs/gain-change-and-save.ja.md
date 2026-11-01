@@ -57,7 +57,7 @@ content は、今のチャンネルの行をもとに `resolvePreferredGain` (`u
 - Auto がオンで `lastLufs.integrated` が有限の数なら、ゲインは `calcGain(integrated, targetLufs)` = 10 ^ ((`targetLufs` − `integrated`) / 20) を 0〜6 に収めた値。
 - それ以外では、次のうち最初にあるもの。参照が `volume1` の保存済み `autoGain<Kind>` (Auto がオンのときだけ)、保存済みの `gain<Kind>` (`gainLive` も `gainVod` もキーとして無い項目では古い形の `gain`。`extractGainForKind` が `storedGain` で読む)、1.0。
 
-`reapplyForCurrentChannel` は行を読み (`loadChannelEntry`)、そのあとで `resolvePreferredGain` が決めたゲインをかける。Auto がオンで Integrated が有限なら、代わりに `autoGainToPlay` のゲインをかける (場面 5)。読んでいる間に、あとからの読み直し・遷移・チャンネルの変化が始まっていたら (`preferenceRevision`、または `currentChannel` が変わっていたら)、false を返して何もかけない。下の図ではこれを `opt 読み直しが追い越されていない` と書く。チャンネル ID が無いページや種別 `none` のページでは、何も読まずに 1.0 をかけて true を返す。
+`reapplyForCurrentChannel` は行を読み (`loadChannelEntry`)、そのあとで `resolvePreferredGain` が決めたゲインをかける。Auto がオンで Integrated が有限なら、それは `calcGain(integrated, targetLufs)` になる (場面 5)。読んでいる間に、あとからの読み直し・遷移・チャンネルの変化が始まっていたら (`preferenceRevision`、または `currentChannel` が変わっていたら)、false を返して何もかけない。下の図ではこれを `opt 読み直しが追い越されていない` と書く。チャンネル ID が無いページや種別 `none` のページでは、何も読まずに 1.0 をかけて true を返す。
 
 content が今の状態についての `previewGain` を保っている間 (場面 3。`previewHoldsGain`: プレビューの `appliesTo` が `currentGestureState()` と同じ)、`reapplyForCurrentChannel` は行を読んで Auto の選択を取り込むが、ゲインはかけない。`applyAutoGain` も何もかけない。そのため、プレビューのゲインが鳴り続ける。同じ流れが保存するものは保存する。場面 5・10・12 の図はこの保ち方を書き、ほかの図は書かない。
 
@@ -342,12 +342,9 @@ sequenceDiagram
     content->>sw: saveAuto と enabled、計算できたときは autoGain と reference
     alt 保存できた
       sw-->>content: ok true
-      opt appliesTo がまだ currentGestureState() と同じ
-        content->>content: autoRaiseFrom = null
-      end
       content->>content: reapplyForCurrentChannel: 行を読み直す
       opt 読み直しが追い越されていない
-        content->>content: resolvePreferredGain、Auto がオンで Integrated が有限なら autoGainToPlay
+        content->>content: resolvePreferredGain
         content->>bridge: setGain (applyGain)
       end
       content-->>popup: ok true、gain、autoApplyLoudness
@@ -361,9 +358,9 @@ sequenceDiagram
   end
 ```
 
-図のもと: `popup.js` の `setAutoApplyLoudness`。`content.js` の `runtime.onMessage` リスナーの `setAutoApplyLoudness`、`saveChannelAutoApply`、`reapplyForCurrentChannel`、`autoGainToPlay`。`utils.js` の `calcGain`、`resolvePreferredGain`。
+図のもと: `popup.js` の `setAutoApplyLoudness`。`content.js` の `runtime.onMessage` リスナーの `setAutoApplyLoudness`、`saveChannelAutoApply`、`reapplyForCurrentChannel`。`utils.js` の `calcGain`、`resolvePreferredGain`。
 
-- Auto をオンにすると、今の Integrated が有限の数なら、画面の状態のまま切り替えが保存されたあとで、その Integrated が求めるゲインをそのままかける (`autoRaiseFrom` を消す。場面 5)。保存されなかった切り替えは `autoRaiseFrom` をそのままにする。Integrated が有限でなければ、参照が `volume1` の保存済み `autoGain<Kind>`、手動ゲイン、1.0 のどれかをかけ、popup は「Fallback」のバッジを出す。Auto をオフにすると、手動ゲインか 1.0 をかける。
+- Auto をオンにすると、今の Integrated が有限の数なら、切り替えが保存されたあとで、その Integrated が求めるゲインをかける。Integrated が有限でなければ、参照が `volume1` の保存済み `autoGain<Kind>`、手動ゲイン、1.0 のどれかをかけ、popup は「Fallback」のバッジを出す。Auto をオフにすると、手動ゲインか 1.0 をかける。
 - 書き込み: `saveAuto` が `autoApplyLoudness<Kind>` を書く。ゲインを計算できたときは、`autoGain<Kind>` と `autoGainRef[kind]` = `volume1` も書く。
 - `autoMutationPending` が true の間、content は `setGain` (`auto update pending`) と 2 回目の `setAutoApplyLoudness` を断る。
 - 保存はできたのに、そのあとの読み直しに失敗したときは、content が新しい Auto の選択 (と計算したゲイン) を手元の行に自分で書き、`appliesTo` がまだ合っていればその行の `resolvePreferredGain` をかけて、`[TCV] Auto setting saved but local reapply failed` とログに出す。
@@ -389,7 +386,7 @@ sequenceDiagram
       opt Auto がオン
         content->>content: applyAutoGain
         opt previewGain を保っていない (場面 3)、かつ前にかけてから 1000 ms 以上たった
-          content->>bridge: setGain autoGainToPlay()
+          content->>bridge: setGain calcGain(integrated, targetLufs)
         end
       end
       opt playing が true
@@ -409,12 +406,12 @@ sequenceDiagram
   end
 ```
 
-図のもと: `audio-worklet.js` の `KMeanSquareProcessor.process`。`page-bridge.js` の `onBlockMs`、`normalizeForVolume`、`updateIntegratedLufs`、`integratedLufs`、`postLufs`。`content.js` の `handleBridgeMessage` の `lufs`、`applyAutoGain`、`previewHoldsGain`、`autoGainToPlay`、`throttledSaveIntegrated`、`saveLastIntegrated`、`measurementSaved`、`measurementSaveFailed`。
+図のもと: `audio-worklet.js` の `KMeanSquareProcessor.process`。`page-bridge.js` の `onBlockMs`、`normalizeForVolume`、`updateIntegratedLufs`、`integratedLufs`、`postLufs`。`content.js` の `handleBridgeMessage` の `lufs`、`applyAutoGain`、`previewHoldsGain`、`throttledSaveIntegrated`、`saveLastIntegrated`、`measurementSaved`、`measurementSaveFailed`。
 
-- 2 つの間引きは別々に働く。`applyAutoGain` を通るとき、Auto のもとでゲインが変わるのは 1000 ms (`STATE_POLL_INTERVAL_MS`) に 1 回まで。`chrome.storage.onChanged` が始める読み直し (場面 10 と 12) は、この間引きを通らずに `autoGainToPlay` のゲインをかける。計測結果と今かかっている Auto のゲインを書くのは、Auto のオン・オフに関係なく、タブごとに 5000 ms に 1 回までで、`playing` が true の `lufs` からだけ。`lastSavedAt` は保存を送るときに入り、保存の失敗・SPA 遷移・測定値のリセットで 0 に戻るので、次のブロックでまた送る。`sendResetMeasurement` は `lastAutoGainUpdateAt` を `-Infinity` に、`autoRaiseFrom` を null に戻すので、リセット後に最初に届いた有限の Integrated はすぐに、そのままかかる。
-- Auto がかけるゲインは `autoGainToPlay` が決める。もとは `calcGain(integrated, targetLufs)`。ブロックの short-term のラウドネスが Integrated より 6 dB (`AUTO_RISE_DB`) 以上大きいときは、Integrated が 3 dB (`AUTO_RISE_AHEAD_DB`) 大きいものとしてゲインを求める。ただし `adActive` が true の間と、最後の CM が終わってから 3 秒 (`SHORT_TERM_MS`、`adEndedAt`) の間は、そうしない。`currentGain` 以下のゲインはすぐにかかる。それより大きいゲインは、計測したレベルが最後にゲインを決めてから (`autoRaiseFrom`) 30 秒 (`AUTO_RAISE_PERIOD_MS`) ごとに 1.5 dB (`AUTO_RAISE_DB`) まで、`currentGain` から上げた値で止める。`autoRaiseFrom` が null のとき (測定値のリセット、設定の変更、保存された Auto の切り替えのあと) と、`currentGain` が 0 のときは、そのままかかる。呼ぶたびに `autoRaiseFrom` を今にする。
+- 2 つの間引きは別々に働く。`applyAutoGain` を通るとき、Auto のもとでゲインが変わるのは 1000 ms (`AUTO_FOLLOW_INTERVAL_MS`) に 1 回まで。`chrome.storage.onChanged` が始める読み直し (場面 10 と 12) は、この間引きを通らずに同じゲインをかける。計測結果と今かかっている Auto のゲインを書くのは、Auto のオン・オフに関係なく、タブごとに 5000 ms に 1 回までで、`playing` が true の `lufs` からだけ。`lastSavedAt` は保存を送るときに入り、保存の失敗・SPA 遷移・測定値のリセットで 0 に戻るので、次のブロックでまた送る。`sendResetMeasurement` は `lastAutoGainUpdateAt` を `-Infinity` に戻すので、リセット後に最初に届いた有限の Integrated はすぐにかかる。
+- Auto がかけるゲインは `calcGain(integrated, targetLufs)`、つまり Integrated が求めるゲインで、`currentGain` より大きくても小さくても同じ。
 - `postLufs` は、つないだ要素が止まっておらずミュートでもないとき `playing` を立てる。音量 0 やゲイン 0 でも true のまま。そのため、同じチャンネル・同じ種別の 2 つのタブのうち、止まっているかミュートのタブは行に何も書かない。計測値も、設定の変更から出る Auto のゲイン (場面 10) も書かない。そのタブの Auto は自分の計測に合わせ続ける。
-- 書く `autoGain` は `calcGain(integrated, targetLufs)`、つまり Integrated が求めるゲインで、`autoGainToPlay` が残したゲインではない。CM ゲインの倍率は入らない。
+- 書く `autoGain` は `calcGain(integrated, targetLufs)`、つまり Integrated が求めるゲインで、Auto がかけるゲインと同じ。CM ゲインの倍率は入らない。
 - CM の間、bridge はそれまでの Integrated を知らせ続けるので、Auto は CM の間も同じゲインを保つ。
 - クリップや種別 `none` のページにはチャンネル ID が無いので、そこでの `lufs` は何もかけず、何も保存しない。
 - 失敗: `measurementSaveFailed` は、失敗が続き始めたところで `[TCV] measurement not persisted` (info) を、それが 5000 ms (`SAVE_FAILURE_WARN_AFTER_MS`) 続いたところで `[TCV] failed to persist measurement and Auto gain` (warning) をログに出す。保存が 1 回成功すると、続いていた失敗の記録は終わる。拡張機能の実行環境が無くなったあとは何もログに出さない。
@@ -453,7 +450,7 @@ sequenceDiagram
 
 図のもと: `popup.js` の `resetMeasurement`。`content.js` の `runtime.onMessage` リスナーの `resetMeasurement`、`clearSavedMeasurement`、`clearMeasurementCache`、`sendResetMeasurement`。`page-bridge.js` の `resetMeasurement`。
 
-- かかるゲイン: ここでは `setGain` を送らない。Auto がオンなら、次に届いた有限の Integrated が 1000 ms 待たずに、そのままかかる (場面 5)。
+- かかるゲイン: ここでは `setGain` を送らない。Auto がオンなら、次に届いた有限の Integrated が 1000 ms 待たずにかかる (場面 5)。
 - 書き込み: `clearMeasurement` が `lastLufs[kind]`・`lastLufsRef[kind]`・`lastLufsWindows[kind]` を消し、消したことを通し番号つきで記録する。そのため、あとでほかの行とまとめても古い値は戻らない。保存済みの Auto のゲインは残る。
 - popup の「測定値をリセット」ボタンが押せるのは、有限の Integrated か、その種別の保存値 (`hasSavedMeasurement`) があり、Auto の保存待ちやリセット待ちが無いとき。
 - 失敗: content は `[TCV] failed to reset measurement` とログに出す。`ok: true` でない答え (断られた場合も含む) では、popup は `[TCV] measurement reset request failed` とログに出し、`resetMeasurementFailed` (「測定値をリセットできませんでした。もう一度お試しください」) を出す。
@@ -574,7 +571,7 @@ sequenceDiagram
 
 - cue はプレイヤーが CM ごとに送る合図。`adWanted()` は、そのメディアで cue を 1 つでも受け取っていれば (`adCueSeen`) cue に従い、受け取っていなければ DOM の CM 表示に従う。まだ同じ CM 枠の次の広告が続くと言う cue のときは、`endTime` のあと 0.4 秒 (`AD_POD_GAP_SEC`) CM を開いたままにする。
 - クライアント側の CM (つないだ要素が止まっていて、別の要素が CM を流すもの): `adActive` が true で、つないだ要素が止まっている間、`syncAdElementGains` は、再生中で、ミュートでなく、音量が 0 より大きいほかの要素を取り込み (`attachAdElement`。`ctx.state` が `running` のときだけ)、その要素のノードを `baselineGain * adGainOffset * (本編の音量 / その要素の音量)` へ動かす。それ以外のときは CM 要素のノードを 1 へ動かす。要素が DOM から外れたものはつなぎを外す。これは `updateAdState` の中、`setGain` と `setAdGainOffset` の中、そして CM 中か CM 要素のつなぎがある間の `rereadAdState` の中で動く。`rereadAdState` は計測のブロックごと (`onBlockMs`) に動き、計測のつなぎが無いつなぎ方では 100 ms ごと (`adClock`) に動く。
-- content では、`ad` のイベントは `adActive` を変える。これは popup の「CM 検出中」のバッジに使い、`autoGainToPlay` が short-term のラウドネスを見ないようにする。CM が終わると `adEndedAt` を入れる (場面 5)。
+- content では、`ad` のイベントは `adActive` を変える。これは popup の「CM 検出中」のバッジに使う。
 - 保存: なし。CM ゲインの設定を変える話は場面 10、遷移や要素の入れ替えで CM が終わる話は場面 7 と 13。
 
 ### 10. 設定ページで設定を変える
@@ -607,7 +604,7 @@ sequenceDiagram
       opt adGainDb が持っている値と違う
         content->>bridge: setAdGain dbToGain(adGainDb)
       end
-      content->>content: showGainOverlay を取り込み、updateGainOverlay、autoRaiseFrom = null
+      content->>content: showGainOverlay を取り込み、updateGainOverlay
       content->>content: reapplyForCurrentChannel
       opt 読み直しが追い越された
         content->>content: もう 1 回 reapplyForCurrentChannel
@@ -671,7 +668,7 @@ sequenceDiagram
 
 図のもと: `options.js` の `removeChannel`、`clearAll`、`mutateChannelVolumes`、`storage.onChanged` リスナー、`renderChannels`。`channel-store.js` の `deleteChannel` と `clearChannels`、`createChannelVolumesWriter`、`aliasesLeadingTo`。`content.js` の `storage.onChanged` リスナー、`reapplyForCurrentChannel`。
 
-- 行が無いと、Auto はその種別の設定の既定値になる。ゲインは、既定値がオンで Integrated が有限なら `autoGainToPlay` のゲイン、それ以外は 1.0。
+- 行が無いと、Auto はその種別の設定の既定値になる。ゲインは、既定値がオンで Integrated が有限なら `calcGain(integrated, targetLufs)`、それ以外は 1.0。
 - そのチャンネルを計測し続けているタブは、次の `saveMeasurement` でそのチャンネルの行をまた書く (場面 5)。
 - `deleteChannel` はキーを消し、直接またはほかの別名を経てそこへつながる別名も一緒に消す。そのため、チャンネルが呼ばれていた仮 ID は、また自分の行を作る。`clearChannels` は `channelVolumes` と別名を空にする。
 - 2 つのボタンは最初の読み込みが終わるまで押せず、処理も `settingsReady` が false の間は何もせずに戻る。
@@ -710,7 +707,7 @@ sequenceDiagram
 図のもと: `content.js` の `storage.onChanged` リスナー、`reapplyForCurrentChannel`、`loadChannelEntry`、`previewHoldsGain`、`sendPendingSeededReset`。`popup.js` の `followDisplayUnit` の変更の受け手と `pollTabState(refresh)` の呼び出し。
 
 - リスナーはどの行が変わったかを見ない。どのチャンネルのタブも自分の行を読み直して `setGain` を送る。値が変わるのは、決まったゲインが `currentGain` と違うときだけ。`previewGain` を保っているタブ (場面 3) は送らず、プレビューが保存なしか断られた保存で終わったときに、保存されたゲインへ戻す。
-- Auto がオンで Integrated が有限なら、この流れは `autoGainToPlay` のゲインをかけ、`applyAutoGain` の 1000 ms の間引きを通らない。
+- Auto がオンで Integrated が有限なら、この流れは `calcGain(integrated, targetLufs)` をかけ、`applyAutoGain` の 1000 ms の間引きを通らない。
 - リスナーに届いた書き込みごとに読み直しが始まり、あとの読み直しに追い越された読み直しは何もかけない。
 - 保存: なし。
 
@@ -788,7 +785,7 @@ sequenceDiagram
 | 「チャンネルに適用」 | Suggested のゲイン | `saveGain` | `popup.js` の `applyMeasured` |
 | `saveGain` が断られる | 保存済みのゲインへ戻る | なし | `content.js` の `setGain`、`reapplyForCurrentChannel` |
 | popup で Auto を切り替える | 決め直す | `saveAuto`、計算できたときは `autoGain` つき | `content.js` の `setAutoApplyLoudness`、`saveChannelAutoApply` |
-| Auto がオンで `lufs` | `autoGainToPlay`、1000 ms に 1 回まで | `autoGain` つきの `saveMeasurement`、5000 ms に 1 回まで、`playing` が true の間 | `applyAutoGain`、`throttledSaveIntegrated` |
+| Auto がオンで `lufs` | `calcGain(integrated, targetLufs)`、1000 ms に 1 回まで | `autoGain` つきの `saveMeasurement`、5000 ms に 1 回まで、`playing` が true の間 | `applyAutoGain`、`throttledSaveIntegrated` |
 | Auto がオフで `lufs` | 変わらない | `saveMeasurement`、5000 ms に 1 回まで、`playing` が true の間 | `throttledSaveIntegrated` |
 | `lufs` を捨てる | 変わらない | なし | `handleBridgeMessage` の `lufs` |
 | 測定値のリセット | その時点では変わらない | `clearMeasurement` | `content.js` の `resetMeasurement` |
