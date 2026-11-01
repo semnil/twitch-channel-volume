@@ -402,7 +402,13 @@
     }
   }
 
+  // The tab is asked nothing until the settings have been read, whatever asks
+  // for a refresh: a popup that could not read them stays on its request for a
+  // reload.
+  let settingsRead = false;
+
   async function refresh() {
+    if (!settingsRead) return;
     const state = await requestState();
     renderState(state);
   }
@@ -569,6 +575,7 @@
         showStatus(msg('reloadPageNeeded'));
         return;
       }
+      settingsRead = true;
       setInterval(refresh, DISPLAY_UPDATE_INTERVAL_MS);
       await refresh();
     } finally {

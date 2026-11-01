@@ -9481,6 +9481,12 @@ test('popup asks for a reload, and asks the tab nothing, when it cannot read the
   assert.equal(harness.el('errBox').classList.contains('hidden'), false);
   assert.deepEqual(harness.sent, [], `nothing is sent to the tab (${JSON.stringify(harness.sent)})`);
   assert.equal(harness.body.classList.contains('initializing'), false, 'and the popup is shown');
+
+  // A settings change that arrives afterwards does not bring the screen back.
+  await harness.changeSettings({ displayUnit: 'dB' });
+  await harness.poll();
+  assert.equal(harness.el('errBox').classList.contains('hidden'), false, 'the request for a reload stays');
+  assert.deepEqual(harness.sent, [], `and the tab is still asked nothing (${JSON.stringify(harness.sent)})`);
 });
 
 test('options draws a channel that has no name by its id', async () => {
