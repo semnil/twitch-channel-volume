@@ -53,6 +53,9 @@
   let autoMutationPending = false;
   let measurementResetPending = false;
   let measurementEpoch = 0;
+  // When the measurement in hand began: a save of it is not taken over a clear
+  // of the stored one made after then.
+  let measurementSince = Date.now();
   let currentCanonicalChannelId = '';
   let seededMeasurementTarget = '';
   // Set at startup, on a route change and where an owner moves what is being
@@ -168,6 +171,7 @@
       kind,
       lufs,
       reference: LUFS_REFERENCE_VOLUME_1,
+      since: measurementSince,
       // The count is whatever the bridge reported, already held to a
       // non-negative integer where it arrives; 0 means it named none.
       ...(windows ? { windows } : {}),
@@ -219,6 +223,7 @@
 
   function sendResetMeasurement(seed) {
     measurementEpoch++;
+    measurementSince = Date.now();
     lastAutoGainUpdateAt = -Infinity;
     sendCmd({
       cmd: 'resetMeasurement',

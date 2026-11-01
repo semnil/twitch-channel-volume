@@ -5252,6 +5252,70 @@ test('channel store records what an Auto gain was measured against', async () =>
   }
 });
 
+test('channel store keeps the time of a clear and drops a measurement begun before it', async () => {
+  let stored = { channelVolumes: {} };
+  let clock = 100;
+  const storage = {
+    async get(keys) { return readStoredKeys(stored, keys); },
+    async set(update) { stored = { ...stored, ...structuredClone(update) }; }
+  };
+  const write = channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => clock);
+  const save = (over) => write({
+    operation: 'saveMeasurement', since: 0, channelId: '777', kind: 'live', lufs: -19,
+    reference: u.LUFS_REFERENCE_VOLUME_1, windows: 40, channel: { name: 'Test' }, ...over
+  });
+  await save();
+  clock = 200;
+  await write({ operation: 'clearMeasurement', channelId: '777', kind: 'live' });
+  assert.deepEqual(stored.channelVolumes['777'].lastLufsClearedAt, { live: 200 });
+  // A save of a measurement begun before the clear, arriving after it.
+  clock = 300;
+  await save({ since: 199 });
+  assert.equal(stored.channelVolumes['777'].lastLufs, undefined);
+  assert.equal(stored.channelVolumes['777'].lastLufsWindows, undefined);
+  // One begun at the clear or after it is written; another kind's is not held back.
+  await save({ since: 200, lufs: -21 });
+  assert.equal(stored.channelVolumes['777'].lastLufs.live, -21);
+  await save({ kind: 'vod', since: 0, lufs: -23 });
+  assert.equal(stored.channelVolumes['777'].lastLufs.vod, -23);
+  // A save that names no start, or one that is no number, is refused.
+  for (const since of [undefined, '200', NaN]) {
+    await assert.rejects(() => save({ since }));
+  }
+  // An id merge keeps the later clear of each kind.
+  clock = 400;
+  await write({ operation: 'clearMeasurement', channelId: 'vod-owner:9', kind: 'vod' });
+  stored.channelVolumes['vod-owner:9'].lastLufsClearedAt = { live: 250, vod: 400 };
+  stored.channelVolumes['777'].lastLufsClearedAt = { live: 200, vod: 450 };
+  await write({
+    operation: 'mergeChannelIds', fromId: 'vod-owner:9', toId: '777', kind: 'vod', channel: { name: 'Test' }
+  });
+  assert.deepEqual(stored.channelVolumes['777'].lastLufsClearedAt, { live: 250, vod: 450 });
+});
+
+test('content stamps a measurement save with the time its measurement began', async () => {
+  const harness = createContentHarness({
+    href: 'https://www.twitch.tv/somechannel',
+    channelVolumes: { 'login:somechannel': { name: 'somechannel', gainLive: 0.5 } }
+  });
+  await flushTasks();
+  const epoch = () => harness.commands.filter((command) => command.cmd === 'resetMeasurement').pop().epoch;
+  const block = () => harness.dispatchMessage({
+    type: '__twitch_channel_volume__', event: 'lufs', epoch: epoch(), playing: true,
+    momentary: -20, shortTerm: -20, integrated: -20, integratedWindows: 40
+  });
+  const saves = () => harness.mutations.filter((mutation) => mutation.operation === 'saveMeasurement');
+  harness.advanceTime(3000);
+  await block();
+  assert.equal(saves().at(-1)?.since, 10_000, 'the first measurement began at the start');
+  harness.advanceTime(2000);
+  assert.equal((await harness.dispatchGesture({ cmd: 'resetMeasurement' }))?.ok, true);
+  await flushTasks();
+  harness.advanceTime(6000);
+  await block();
+  assert.equal(saves().at(-1)?.since, 15_000, 'the one after the reset began at the reset');
+});
+
 test('channel store rejects a reference it cannot store', async () => {
   let stored = { channelVolumes: {} };
   const storage = {
@@ -5261,7 +5325,7 @@ test('channel store rejects a reference it cannot store', async () => {
   const write = channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 100);
   for (const reference of [42, {}, 'x'.repeat(33)]) {
     await assert.rejects(() => write({
-      operation: 'saveMeasurement', channelId: 'login:test', kind: 'live', lufs: -19, reference
+      operation: 'saveMeasurement', since: 0, channelId: 'login:test', kind: 'live', lufs: -19, reference
     }));
   }
   assert.equal(stored.channelVolumes['login:test'], undefined);
@@ -5291,7 +5355,7 @@ test('channel store merges an Auto gain and its reference together', async () =>
   const borrowed = await merge(
     { 777: { name: 'X', autoGainVod: 1.5 }, 'vod-owner:100': { name: 'X' } },
     [{
-      operation: 'saveMeasurement', channelId: 'vod-owner:100', kind: 'vod', lufs: -18,
+      operation: 'saveMeasurement', since: 0, channelId: 'vod-owner:100', kind: 'vod', lufs: -18,
       reference: u.LUFS_REFERENCE_VOLUME_1
     }]
   );
@@ -5305,7 +5369,7 @@ test('channel store merges an Auto gain and its reference together', async () =>
       operation: 'saveAutoGain', channelId: '777', kind: 'vod', autoGain: 2.5,
       reference: u.LUFS_REFERENCE_VOLUME_1
     },
-    { operation: 'saveMeasurement', channelId: 'vod-owner:100', kind: 'vod', lufs: -21 }
+    { operation: 'saveMeasurement', since: 0, channelId: 'vod-owner:100', kind: 'vod', lufs: -21 }
   ]);
   assert.equal(kept.autoGainVod, 2.5);
   assert.equal(kept.autoGainRef.vod, u.LUFS_REFERENCE_VOLUME_1);
@@ -5335,7 +5399,7 @@ test('channel store references an Auto gain saved with its measurement', async (
     const write = channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 100);
     // Auto writes the gain alongside the measurement that produced it.
     await write({
-      operation: 'saveMeasurement', channelId: 'login:test', kind, lufs: -23, autoGain: 1.778,
+      operation: 'saveMeasurement', since: 0, channelId: 'login:test', kind, lufs: -23, autoGain: 1.778,
       reference: u.LUFS_REFERENCE_VOLUME_1
     });
     const entry = stored.channelVolumes['login:test'];
@@ -5355,11 +5419,11 @@ test('channel store carries the reference onto the surviving row either way', as
     const write = channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 100);
     const firstId = lastId === '777' ? 'login:test' : '777';
     await write({
-      operation: 'saveMeasurement', channelId: firstId, kind: 'live', lufs: -19,
+      operation: 'saveMeasurement', since: 0, channelId: firstId, kind: 'live', lufs: -19,
       ...(lastReferenced ? {} : { reference: u.LUFS_REFERENCE_VOLUME_1 })
     });
     await write({
-      operation: 'saveMeasurement', channelId: lastId, kind: 'live', lufs: -23,
+      operation: 'saveMeasurement', since: 0, channelId: lastId, kind: 'live', lufs: -23,
       ...(lastReferenced ? { reference: u.LUFS_REFERENCE_VOLUME_1 } : {})
     });
     await write({
@@ -5378,7 +5442,7 @@ test('channel store carries the reference onto the surviving row either way', as
     };
     const write = channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 100);
     await write({
-      operation: 'saveMeasurement', channelId: 'login:test', kind: 'live', lufs: -19,
+      operation: 'saveMeasurement', since: 0, channelId: 'login:test', kind: 'live', lufs: -19,
       reference: u.LUFS_REFERENCE_VOLUME_1
     });
     await write({
@@ -5416,7 +5480,7 @@ test('channel store keeps the measurement reference with the value it describes'
   };
   const write = channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 100);
   await write({
-    operation: 'saveMeasurement', channelId: 'login:test', kind: 'live', lufs: -19,
+    operation: 'saveMeasurement', since: 0, channelId: 'login:test', kind: 'live', lufs: -19,
     reference: u.LUFS_REFERENCE_VOLUME_1, channel: { name: 'Test' }
   });
   assert.equal(stored.channelVolumes['login:test'].lastLufsRef.live, u.LUFS_REFERENCE_VOLUME_1);
@@ -5444,8 +5508,9 @@ test('channel store keeps the measurement reference with the value it describes'
 
   // A writer that names no reference drops the measurement's, so the value it
   // wrote is not taken for a volume-referenced one. The Auto gain keeps its own.
+  // (A measurement begun at the clear, 100 on this writer's clock.)
   await write({
-    operation: 'saveMeasurement', channelId: '777', kind: 'live', lufs: -21
+    operation: 'saveMeasurement', since: 100, channelId: '777', kind: 'live', lufs: -21
   });
   const unreferencedMeasurement = stored.channelVolumes['777'];
   assert.equal(unreferencedMeasurement.lastLufs.live, -21);
@@ -5465,7 +5530,7 @@ test('channel store keeps the window count with the value it was measured over',
   };
   const write = channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 100);
   await write({
-    operation: 'saveMeasurement', channelId: 'login:test', kind: 'live', lufs: -19,
+    operation: 'saveMeasurement', since: 0, channelId: 'login:test', kind: 'live', lufs: -19,
     reference: u.LUFS_REFERENCE_VOLUME_1, windows: 1800, channel: { name: 'Test' }
   });
   assert.equal(stored.channelVolumes['login:test'].lastLufsWindows.live, 1800);
@@ -5479,11 +5544,11 @@ test('channel store keeps the window count with the value it was measured over',
   // A writer that names no count measured without one, so the one on file goes
   // with the value it described.
   await write({
-    operation: 'saveMeasurement', channelId: '777', kind: 'vod', lufs: -20,
+    operation: 'saveMeasurement', since: 0, channelId: '777', kind: 'vod', lufs: -20,
     reference: u.LUFS_REFERENCE_VOLUME_1, windows: 600
   });
   await write({
-    operation: 'saveMeasurement', channelId: '777', kind: 'live', lufs: -21,
+    operation: 'saveMeasurement', since: 0, channelId: '777', kind: 'live', lufs: -21,
     reference: u.LUFS_REFERENCE_VOLUME_1
   });
   assert.equal(stored.channelVolumes['777'].lastLufsWindows.live, undefined);
@@ -5510,7 +5575,7 @@ test('channel store keeps the window count of the value that wins an id merge', 
     if (lastWriter === 'login:test') writes.reverse();
     for (const [channelId, lufs, windows] of writes) {
       await write({
-        operation: 'saveMeasurement', channelId, kind: 'live', lufs, windows,
+        operation: 'saveMeasurement', since: 0, channelId, kind: 'live', lufs, windows,
         reference: u.LUFS_REFERENCE_VOLUME_1, channel: { name: 'Test' }
       });
     }
@@ -5530,7 +5595,7 @@ test('channel store keeps the window count of the value that wins an id merge', 
 test('channel store refuses a window count that is not a positive integer', async () => {
   for (const windows of [0, -1, 1.5, '600', NaN, Infinity, null]) {
     assert.throws(() => channelStore.applyChannelVolumesMutation({}, {
-      operation: 'saveMeasurement', channelId: '777', kind: 'live', lufs: -19,
+      operation: 'saveMeasurement', since: 0, channelId: '777', kind: 'live', lufs: -19,
       reference: u.LUFS_REFERENCE_VOLUME_1, windows
     }), TypeError, `windows: ${String(windows)}`);
   }
@@ -8595,7 +8660,7 @@ test('provisional channel migration uses field update order across tabs', () => 
     operation: 'saveAuto', channelId: provisionalId, kind: 'vod', enabled: true, sequence: 5
   }, 300);
   state = channelStore.applyChannelVolumesMutation(state, {
-    operation: 'saveMeasurement', channelId: provisionalId, kind: 'vod',
+    operation: 'saveMeasurement', since: 0, channelId: provisionalId, kind: 'vod',
     lufs: -20, autoGain: 0.9, sequence: 6
   }, 300);
   state = channelStore.applyChannelVolumesMutation(state, {
@@ -8870,7 +8935,7 @@ test('service-worker writer serializes concurrent Auto and LUFS mutations', asyn
       channel: { name: 'Test' }
     }),
     write({
-      operation: 'saveMeasurement', channelId: 'login:test', kind: 'live', lufs: -19,
+      operation: 'saveMeasurement', since: 0, channelId: 'login:test', kind: 'live', lufs: -19,
       autoGain: 0.75,
       channel: { name: 'Test' }
     })
@@ -8903,7 +8968,7 @@ test('service-worker writer orders measurement clearing after a queued save', as
 
   await Promise.all([
     write({
-      operation: 'saveMeasurement', channelId: 'login:test', kind: 'live', lufs: -19
+      operation: 'saveMeasurement', since: 0, channelId: 'login:test', kind: 'live', lufs: -19
     }),
     write({
       operation: 'clearMeasurement', channelId: 'login:test', kind: 'live'
@@ -9005,7 +9070,7 @@ test('persisted alias redirects writes after the service-worker writer is recrea
     storage, 'channelVolumes', () => 200
   );
   await restartedWriter({
-    operation: 'saveMeasurement', channelId: provisionalId, kind: 'vod', lufs: -19,
+    operation: 'saveMeasurement', since: 0, channelId: provisionalId, kind: 'vod', lufs: -19,
     autoGain: 0.9,
     channel: { name: 'v1', url: 'https://www.twitch.tv/videos/2770346335' }
   });
@@ -9047,7 +9112,7 @@ test('queued provisional measurement cannot overwrite canonical owner metadata',
       channel: { name: 'Owner', login: 'owner' }
     }),
     write({
-      operation: 'saveMeasurement', channelId: provisionalId, kind: 'vod', lufs: -18,
+      operation: 'saveMeasurement', since: 0, channelId: provisionalId, kind: 'vod', lufs: -18,
       autoGain: 0.9,
       channel: { name: 'v1', url: 'https://www.twitch.tv/videos/2770346335' }
     })
@@ -9087,7 +9152,7 @@ test('Auto gain mutations validate range and advance the persistent field sequen
     operation: 'saveAutoGain', channelId: 'login:test', kind: 'live', autoGain: -0.01
   }), /autoGain/);
   assert.throws(() => channelStore.applyChannelVolumesMutation({}, {
-    operation: 'saveMeasurement', channelId: 'login:test', kind: 'live',
+    operation: 'saveMeasurement', since: 0, channelId: 'login:test', kind: 'live',
     lufs: -18, autoGain: 6.01
   }), /autoGain/);
   assert.throws(() => channelStore.applyChannelVolumesMutation({}, {
@@ -9816,7 +9881,7 @@ test('the channel store leaves out a write that would store what is on file, and
   await write({ operation: 'saveGain', channelId: '123', kind: 'live', gain: 0.5, channel });
   assert.equal(area.sets, 2, 'a gain of the value on file');
   const measurement = {
-    operation: 'saveMeasurement', channelId: '123', kind: 'live', lufs: -20,
+    operation: 'saveMeasurement', since: 0, channelId: '123', kind: 'live', lufs: -20,
     reference: u.LUFS_REFERENCE_VOLUME_1, windows: 300, channel
   };
   await write(measurement);
@@ -10305,7 +10370,7 @@ test('a measurement save checks the Auto gain riding with it', () => {
     assert.throws(
       () => channelStore.applyChannelVolumesMutation(
         {},
-        { operation: 'saveMeasurement', channelId: '55', kind: 'live', lufs: -23, autoGain, sequence: 1 },
+        { operation: 'saveMeasurement', since: 0, channelId: '55', kind: 'live', lufs: -23, autoGain, sequence: 1 },
         1
       ),
       { reason: 'invalid-mutation', message: 'autoGain must be finite and within [0, 6]' },
@@ -10314,7 +10379,7 @@ test('a measurement save checks the Auto gain riding with it', () => {
   }
   const applied = channelStore.applyChannelVolumesMutation(
     {},
-    { operation: 'saveMeasurement', channelId: '55', kind: 'live', lufs: -23, autoGain: 2, sequence: 1 },
+    { operation: 'saveMeasurement', since: 0, channelId: '55', kind: 'live', lufs: -23, autoGain: 2, sequence: 1 },
     1
   );
   assert.equal(applied['55'].autoGainLive, 2);
@@ -10656,7 +10721,7 @@ test('the channel store refuses what it cannot apply, by name', () => {
   }
 
   for (const lufs of [NaN, Infinity, '-23', null, undefined]) {
-    refuses({ operation: 'saveMeasurement', channelId: '55', kind: 'live', lufs },
+    refuses({ operation: 'saveMeasurement', since: 0, channelId: '55', kind: 'live', lufs },
       'lufs must be finite');
   }
 
@@ -10683,7 +10748,7 @@ test('the channel store refuses what it cannot apply, by name', () => {
     for (const mutation of [
       { operation: 'saveGain', channelId: id, kind: 'live', gain: 1 },
       { operation: 'saveAuto', channelId: id, kind: 'live', enabled: true },
-      { operation: 'saveMeasurement', channelId: id, kind: 'live', lufs: -20 },
+      { operation: 'saveMeasurement', since: 0, channelId: id, kind: 'live', lufs: -20 },
       { operation: 'clearMeasurement', channelId: id, kind: 'live' },
       { operation: 'saveAutoGain', channelId: id, kind: 'live', autoGain: 1 }
     ]) {
@@ -16985,7 +17050,7 @@ test('a row whose sender knew no name is named by its id', async () => {
   const writes = [
     { operation: 'saveGain', kind: 'vod', gain: 2 },
     { operation: 'saveAuto', kind: 'vod', enabled: true },
-    { operation: 'saveMeasurement', kind: 'vod', lufs: -19, reference: u.LUFS_REFERENCE_VOLUME_1 },
+    { operation: 'saveMeasurement', since: 0, kind: 'vod', lufs: -19, reference: u.LUFS_REFERENCE_VOLUME_1 },
     { operation: 'saveAutoGain', kind: 'vod', autoGain: 1.5, reference: u.LUFS_REFERENCE_VOLUME_1 }
   ];
   for (const write of writes) {
