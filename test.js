@@ -6615,19 +6615,22 @@ test('a drag on the slider is heard as it moves, kept heard while held, and save
     .every((request) => request.appliesTo === '123|live|'), 'against the state the drag began on');
 });
 
-test('a drag on the slider the browser cancels saves nothing, and puts the thumb back', async () => {
+test('a drag on the slider the browser cancels saves nothing, and the slider follows the gain content plays', async () => {
   const gains = (popup, cmd) => popup.sent.filter((request) => request.cmd === cmd).map((request) => request.gain);
-  const popup = createPopupHarness({ state: { appliesTo: '123|live|' } });
+  const popup = createPopupHarness({ state: { appliesTo: '123|live|', gain: 0.5 } });
   await flushTasks(8);
-  const start = popup.el('manualSlider').value;
   await popup.fire('manualSlider', 'pointerdown');
   await movePopupSlider(popup, 300);
   await popup.fire('manualSlider', 'pointercancel');
-  assert.equal(popup.el('manualSlider').value, start, 'the thumb goes back where the drag began');
   await popup.runTimeouts();
   popup.el('manualSlider').value = '320';
   await popup.fire('manualSlider', 'change');
   assert.deepEqual([gains(popup, 'setGain'), gains(popup, 'previewGain')], [[], [3]], 'nothing is sent again, and nothing after it saves');
+  // Content puts back the row once the previews stop; the next poll draws it.
+  popup.setState({ gain: 0.5 });
+  await popup.poll();
+  assert.deepEqual([popup.el('manualSlider').value, popup.el('manualValue').textContent], ['50', '50%'],
+    'the slider and its label show the gain in force');
 });
 
 test('a key held on the slider after a preview sends it again each second until the hold ends', async () => {

@@ -434,7 +434,10 @@
     },
     canPreview: () => !autoUpdatePending,
     preview: (percent) => previewGain(percent, sliderAppliesTo),
-    save: (percent) => setGain(percent, sliderAppliesTo, sliderOwner)
+    save: (percent) => setGain(percent, sliderAppliesTo, sliderOwner),
+    // The next poll draws the slider at the gain content plays, which puts
+    // back the row once the previews stop.
+    cancel: () => { sliderSynced = false; }
   });
   document.querySelectorAll('.presets button').forEach((btn) => {
     btn.addEventListener('click', () => {

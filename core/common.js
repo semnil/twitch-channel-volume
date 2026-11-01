@@ -446,16 +446,16 @@ const PREVIEW_KEEP_ALIVE_MS = 1000;
 // of the window ends the gesture, a key hold saving there where a key moved
 // the value; after it the slider's input and change send nothing until the
 // next press, and the change puts the thumb back to the value it held at the
-// blur. A drag the browser cancels ends the same way with no save, the thumb
-// back where the drag began or to the value saved since. The release is
-// taken on the slider, which holds the pointer it was pressed with. Answers
-// whether a key or the pointer is held.
-function holdPopupSlider(slider, { begin, draw, canPreview, preview, save }) {
+// blur. A drag the browser cancels ends the same way with no save and draws
+// nothing: the tab puts the gain it holds back once the previews stop, and
+// the popup draws what the tab then says (cancel, where given, is told). The release is taken on the
+// slider, which holds the pointer it was pressed with. Answers whether a key
+// or the pointer is held.
+function holdPopupSlider(slider, { begin, draw, canPreview, preview, save, cancel }) {
   const keys = createSliderKeys();
   let keyHeld = false;
   let keyMoved = false;
   let pointerHeld = false;
-  let pointerStart = null;
   let inGesture = false;
   let gestureEnded = false;
   let valueAtEnd = '';
@@ -473,14 +473,12 @@ function holdPopupSlider(slider, { begin, draw, canPreview, preview, save }) {
     savedHeld = false;
     begin();
   };
-  // A press of the pointer still held goes on as the same gesture, from the
-  // value saved.
+  // A press of the pointer still held goes on as the same gesture.
   const saveValue = () => {
     unsaved = false;
     previewUnsaved = false;
     savedHeld = pointerHeld;
-    if (pointerHeld) pointerStart = slider.value;
-    else inGesture = false;
+    if (!pointerHeld) inGesture = false;
     save(value());
   };
   const endGesture = () => {
@@ -516,7 +514,6 @@ function holdPopupSlider(slider, { begin, draw, canPreview, preview, save }) {
   slider.addEventListener('pointerdown', (event) => {
     if (event.button !== 0) return;
     pointerHeld = true;
-    pointerStart = slider.value;
     if (!keyHeld) beginGesture();
   });
   slider.addEventListener('pointerup', () => {
@@ -528,9 +525,8 @@ function holdPopupSlider(slider, { begin, draw, canPreview, preview, save }) {
     if (!pointerHeld) return;
     pointerHeld = false;
     if (keyHeld) return;
-    slider.value = pointerStart;
-    draw(value());
     endGesture();
+    if (cancel) cancel();
   });
   slider.addEventListener('keydown', (event) => {
     if (!keys.press(event)) return;
