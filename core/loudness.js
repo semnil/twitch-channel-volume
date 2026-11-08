@@ -94,6 +94,9 @@ const channelVolumeLoudness = (() => {
   const BOUNDARY_SKIP_BLOCKS = GATE_BLOCKS;
   const ABSOLUTE_GATE_MEAN_SQUARE = Math.pow(10, (-70 + 0.691) / 10);
   const RELATIVE_GATE_FACTOR = Math.pow(10, -10 / 10);
+  // An Integrated level, and a seed, at or below this is no level: Integrated
+  // is -Infinity over no windows, and the seed lays nothing down.
+  const LEVEL_FLOOR_LUFS = -45.6;
 
   // The processor audio-worklet.js registers.
   const WORKLET_PROCESSOR = 'k-mean-square';
@@ -299,13 +302,15 @@ const channelVolumeLoudness = (() => {
       const relativeGate = absoluteMeanSquare * RELATIVE_GATE_FACTOR;
       const gated = treeValuesAtOrAbove(absoluteGatedRoot, relativeGate);
       if (gated.count === 0) return { lufs: -Infinity, windows: 0 };
+      const lufs = meanSquareToLufs(gated.sum / gated.count);
+      if (!(lufs > LEVEL_FLOOR_LUFS)) return { lufs: -Infinity, windows: 0 };
       const seedInGate = seedMeanSquare !== null &&
         seedMeanSquare >= ABSOLUTE_GATE_MEAN_SQUARE && seedMeanSquare >= relativeGate
         ? seedEntriesInRing
         : 0;
       const windows = Math.min(seedClaimedWindows, seedInGate) + (gated.count - seedInGate);
       return {
-        lufs: meanSquareToLufs(gated.sum / gated.count),
+        lufs,
         windows: Math.min(MAX_SEED_WINDOWS, windows)
       };
     }
@@ -384,7 +389,7 @@ const channelVolumeLoudness = (() => {
       seedClaimedWindows = 0;
       seedMeanSquare = null;
       seedEntriesInRing = 0;
-      if (!Number.isFinite(initialIntegratedLufs)) return;
+      if (!Number.isFinite(initialIntegratedLufs) || initialIntegratedLufs <= LEVEL_FLOOR_LUFS) return;
       const initialMeanSquare = Math.pow(10, (initialIntegratedLufs + 0.691) / 10);
       if (!Number.isFinite(initialMeanSquare)) return;
       seedClaimedWindows = savedWindowCount(initialIntegratedWindows);
@@ -428,6 +433,7 @@ const channelVolumeLoudness = (() => {
     MAX_INTEGRATED_BLOCKS,
     MIN_SEED_WINDOWS,
     MAX_SEED_WINDOWS,
+    LEVEL_FLOOR_LUFS,
     BOUNDARY_SKIP_BLOCKS,
     WORKLET_PROCESSOR,
     buildChain,
