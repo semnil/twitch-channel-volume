@@ -58,6 +58,7 @@ function resolveAutoApplySetting(entry, kind, defaultValue) {
 // player volume behind that measurement is unknown, so it is not applied.
 function referencedAutoGainForKind(entry, kind) {
   if (entry?.autoGainRef?.[kind] !== LUFS_REFERENCE_VOLUME_1) return null;
+  if (gainTookNoLevel(entry.lastLufs?.[kind])) return null;
   return extractAutoGainForKind(entry, kind);
 }
 
@@ -177,7 +178,7 @@ if (typeof module !== 'undefined' && module.exports) {
     gainToPercent, percentToGain, gainToDb, dbToGain,
     formatGain, formatAutoGain, calcGain, suggestedGain,
     gainFieldForKind, extractGainForKind,
-    autoGainFieldForKind, extractAutoGainForKind, extractAutoDisplayGain,
+    autoGainFieldForKind, extractAutoGainForKind, extractAutoDisplayGain, referencedAutoGainForKind,
     autoApplyFieldForKind, autoApplyDefaultFieldForKind,
     resolveAutoApplySetting, resolvePreferredGain,
     TWITCH_RESERVED_PATHS, classifyTwitchUrl, ownerMatchesTwitchContent, provisionalChannelIdForContent,

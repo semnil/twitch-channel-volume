@@ -151,12 +151,12 @@ does not terminate.** A suite carrying it never reports green — the sweep stop
 it at its own timeout rather than passing it — so it is named here to be
 accounted for, not because the code cannot tell the difference.
 
-- `channel-store.js:544` && becomes || ×1 — &&
+- `channel-store.js:549` && becomes || ×1 — &&
 
 The alias rebuild after a write. `clearChannels` leaves no rows, so the rebuild
 its check guards finds no targets.
 
-- `channel-store.js:638` a guard is always taken ×1 — if (resolvedMutation.operation !== 'clearChannels') {
+- `channel-store.js:643` a guard is always taken ×1 — if (resolvedMutation.operation !== 'clearChannels') {
 
 ## popup.js
 
@@ -180,7 +180,7 @@ the promise, so nothing observes when they settle.
 guarded one: `calcGain` reaches `if (!Number.isFinite(gain)) return 1.0` in
 `gainForLevel` (`core/common.js`), and guarded and unguarded agree.
 
-- `utils.js:74` a guard is dropped ×1 — if (!Number.isFinite(measuredLufs)) return 1.0;
+- `utils.js:75` a guard is dropped ×1 — if (!Number.isFinite(measuredLufs)) return 1.0;
 
 ## options.js
 

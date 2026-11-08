@@ -265,6 +265,13 @@ function levelAboveFloor(level) {
   return Number.isFinite(level) && level > LEVEL_FLOOR_LKFS ? level : null;
 }
 
+// Whether a gain stored beside a measurement is held to be no level: the
+// measurement is at or below the floor. It is held so until a measurement above
+// the floor is stored.
+function gainTookNoLevel(measuredLufs) {
+  return Number.isFinite(measuredLufs) && measuredLufs <= LEVEL_FLOOR_LKFS;
+}
+
 // Whether gain is one a channel write may store: a finite number within the
 // gain range.
 function isStorableGain(gain) {

@@ -1843,11 +1843,11 @@ function meanSquareToLufs(meanSquare) {
   return -0.691 + 10 * Math.log10(meanSquare);
 }
 
-// Gated loudness of a set of gating windows: above -45.6 LUFS, then at or
-// above the relative gate 10 LU under the mean of what passed it.
+// BS.1770 gated loudness of a set of gating windows: the absolute gate at -70
+// LUFS, then the relative gate 10 LU under the mean of what passed it.
 function gatedIntegratedLufs(windows) {
   const toMeanSquare = (lufs) => Math.pow(10, (lufs + 0.691) / 10);
-  const passAbs = windows.filter((ms) => Number.isFinite(ms) && ms > toMeanSquare(-45.6));
+  const passAbs = windows.filter((ms) => Number.isFinite(ms) && ms >= toMeanSquare(-70));
   if (passAbs.length === 0) return -Infinity;
   const meanAbs = passAbs.reduce((sum, ms) => sum + ms, 0) / passAbs.length;
   const relGate = toMeanSquare(meanSquareToLufs(meanAbs) - 10);
@@ -5291,6 +5291,44 @@ test('channel store keeps the time of a clear and drops a measurement begun befo
     operation: 'mergeChannelIds', fromId: 'vod-owner:9', toId: '777', kind: 'vod', channel: { name: 'Test' }
   });
   assert.deepEqual(stored.channelVolumes['777'].lastLufsClearedAt, { live: 250, vod: 450 });
+});
+
+test('an Auto gain beside a measurement at or below the floor is no level, on a read and at a reset', async () => {
+  const ref = u.LUFS_REFERENCE_VOLUME_1;
+  const row = (autoGainVersion) => ({
+    gainLive: 0.5, autoGainLive: 2.5, autoGainRef: { live: ref }, lastLufs: { live: -60 },
+    lastLufsRef: { live: ref }, __fieldVersions: { 'lastLufs.live': 5, autoGainLive: autoGainVersion }
+  });
+  // Whatever version the gain has, beside such a measurement it is held to be no level.
+  for (const version of [4, 5, 6, undefined]) {
+    assert.equal(u.referencedAutoGainForKind(row(version), 'live'), null, String(version));
+    assert.equal(u.resolvePreferredGain(row(version), 'live', false, -Infinity, -18).gain, 0.5, String(version));
+  }
+  // Beside a measurement above the floor, or none, it is read.
+  const above = row(5);
+  above.lastLufs.live = -45.5;
+  assert.equal(u.referencedAutoGainForKind(above, 'live'), 2.5);
+  const none = row(5);
+  delete none.lastLufs;
+  assert.equal(u.referencedAutoGainForKind(none, 'live'), 2.5);
+
+  let stored = { channelVolumes: {} };
+  const storage = {
+    async get(keys) { return readStoredKeys(stored, keys); },
+    async set(update) { stored = { ...stored, ...structuredClone(update) }; }
+  };
+  const write = channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 100);
+  for (const [version, lufs] of [[5, -60], [6, -60], [5, -30]]) {
+    const entry = { name: 'Test', ...row(version) };
+    entry.lastLufs.live = lufs;
+    stored = { channelVolumes: { 777: entry } };
+    await write({ operation: 'clearMeasurement', channelId: '777', kind: 'live' });
+    const after = stored.channelVolumes['777'];
+    const kept = lufs > -45.6;
+    assert.equal(after.lastLufs, undefined);
+    assert.equal(after.autoGainLive, kept ? 2.5 : undefined, `version ${version} at ${lufs}`);
+    assert.deepEqual(after.autoGainRef, kept ? { live: ref } : undefined, `version ${version} at ${lufs}`);
+  }
 });
 
 test('content empties its measurement for a clear made after it began, whatever the row then holds', async () => {
@@ -14974,28 +15012,27 @@ test('page bridge rolls back once per ad, not once per detection', async () => {
   assert.equal(rollbacks.length, 1);
 });
 
-test('page bridge leaves a window at the absolute gate out of Integrated', async () => {
+test('page bridge removes a window sitting exactly on the absolute gate', async () => {
   const harness = createPageBridgeHarness();
   await harness.startMeasurement();
-  const atGate = Math.pow(10, (-45.6 + 0.691) / 10);
-  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(atGate);
-  assert.equal(harness.messages.at(-1).integrated, -Infinity);
-  assert.equal(harness.messages.at(-1).integratedWindows, 0);
-});
-
-test('page bridge removes a window just above the absolute gate', async () => {
-  const harness = createPageBridgeHarness();
-  await harness.startMeasurement();
-  const aboveGate = Math.pow(10, (-45.6 + 0.691) / 10) * (1 + 1e-9);
-  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(aboveGate);
-  assertLufsClose(harness.messages.at(-1).integrated, meanSquareToLufs(aboveGate));
-  assert.equal(harness.messages.at(-1).integratedWindows, 1);
+  const meanSquareOf = (lufs) => Math.pow(10, (lufs + 0.691) / 10);
+  const atGate = meanSquareOf(-70);
+  // Windows at the gate are no programme level, but the mean the relative gate
+  // is taken from counts them.
+  const blocks = [
+    ...Array(13).fill(meanSquareOf(-25)),
+    ...Array(8).fill(meanSquareOf(-35)),
+    ...Array(8).fill(atGate)
+  ];
+  for (const block of blocks) harness.emitMeasurementBlock(block);
+  assertLufsClose(harness.messages.at(-1).integrated, expectedIntegrated(blocks));
 
   await harness.dispatchCommand('setAdActive', { active: true });
-  harness.emitMeasurementBlock(aboveGate);
+  harness.emitMeasurementBlock(atGate);
   // Removed from the index as well as the ring, or it haunts the gate forever.
-  assert.equal(harness.messages.at(-1).integrated, -Infinity);
-  assert.equal(harness.messages.at(-1).integratedWindows, 0);
+  const kept = gatingWindows(blocks).slice(0, -AD_START_ROLLBACK);
+  assertLufsClose(harness.messages.at(-1).integrated, gatedIntegratedLufs(kept));
+  assert.ok(Math.abs(gatedIntegratedLufs(kept) - expectedIntegrated(blocks)) > 0.1, 'the removal moves the level');
 });
 
 test('page bridge keeps a zero player volume out of the measurement', async () => {

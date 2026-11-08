@@ -480,6 +480,11 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
       assertKind(mutation.kind);
       const entry = cloneEntry(all[mutation.channelId], mutation.channelId);
       const lastLufs = { ...(entry.lastLufs || {}) };
+      // An Auto gain that a measurement at or below the floor gave goes with it.
+      if (gainTookNoLevel(lastLufs[mutation.kind])) {
+        delete entry[storeAutoGainFieldForKind(mutation.kind)];
+        setMeasurementCompanion(entry, 'autoGainRef', mutation.kind, undefined);
+      }
       delete lastLufs[mutation.kind];
       // What described the measurement goes with it; the Auto gain keeps its
       // own reference.
