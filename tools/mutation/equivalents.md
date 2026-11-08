@@ -151,12 +151,12 @@ does not terminate.** A suite carrying it never reports green — the sweep stop
 it at its own timeout rather than passing it — so it is named here to be
 accounted for, not because the code cannot tell the difference.
 
-- `channel-store.js:549` && becomes || ×1 — &&
+- `channel-store.js:558` && becomes || ×1 — &&
 
 The alias rebuild after a write. `clearChannels` leaves no rows, so the rebuild
 its check guards finds no targets.
 
-- `channel-store.js:643` a guard is always taken ×1 — if (resolvedMutation.operation !== 'clearChannels') {
+- `channel-store.js:652` a guard is always taken ×1 — if (resolvedMutation.operation !== 'clearChannels') {
 
 ## popup.js
 

@@ -5331,6 +5331,31 @@ test('an Auto gain beside a measurement at or below the floor is no level, on a 
   }
 });
 
+test('an Auto gain beside a measurement at or below the floor does not come back through an id merge', async () => {
+  const ref = u.LUFS_REFERENCE_VOLUME_1;
+  const row = (name) => ({
+    name, gainVod: 0.5, autoGainVod: 6, autoGainRef: { vod: ref }, lastLufs: { vod: -60 },
+    lastLufsRef: { vod: ref }, __fieldVersions: { 'lastLufs.vod': 1, autoGainVod: 1 }
+  });
+  for (const cleared of ['vod-owner:9', '777']) {
+    let stored = { channelVolumes: { 'vod-owner:9': row('Provisional'), 777: row('Confirmed') } };
+    const storage = {
+      async get(keys) { return readStoredKeys(stored, keys); },
+      async set(update) { stored = { ...stored, ...structuredClone(update) }; }
+    };
+    const write = channelStore.createChannelVolumesWriter(storage, 'channelVolumes', () => 100);
+    await write({ operation: 'clearMeasurement', channelId: cleared, kind: 'vod' });
+    await write({
+      operation: 'mergeChannelIds', fromId: 'vod-owner:9', toId: '777', kind: 'vod', channel: { name: 'Confirmed' }
+    });
+    const merged = stored.channelVolumes['777'];
+    assert.equal(merged.lastLufs, undefined, cleared);
+    assert.equal(merged.autoGainVod, undefined, cleared);
+    assert.equal(merged.autoGainRef, undefined, cleared);
+    assert.equal(merged.gainVod, 0.5, `the manual gain stays (${cleared})`);
+  }
+});
+
 test('content empties its measurement for a clear made after it began, whatever the row then holds', async () => {
   // A tab can miss the moment the stored value goes: its read overtaken by a
   // newer measurement from another tab, a second reset while nothing is

@@ -308,6 +308,14 @@ function applyMeasurementWindows(entry, mutation) {
   setMeasurementCompanion(entry, 'lastLufsWindows', mutation.kind, mutation.windows);
 }
 
+// The kind's Auto gain and its reference go where the kind's measurement is at
+// or below the floor.
+function dropAutoGainOfNoLevel(entry, kind) {
+  if (!gainTookNoLevel(entry.lastLufs?.[kind])) return;
+  delete entry[storeAutoGainFieldForKind(kind)];
+  setMeasurementCompanion(entry, 'autoGainRef', kind, undefined);
+}
+
 function mergeProvisionalEntry(all, mutation) {
   const { fromId, toId, kind, channel } = mutation;
   assertWritableChannelId(fromId, 'fromId');
@@ -317,6 +325,10 @@ function mergeProvisionalEntry(all, mutation) {
 
   const source = cloneEntry(all[fromId], fromId);
   const target = cloneEntry(all[toId], fallbackRowName(channel, toId));
+  for (const mergeKind of CHANNEL_MUTATION_KINDS) {
+    dropAutoGainOfNoLevel(source, mergeKind);
+    dropAutoGainOfNoLevel(target, mergeKind);
+  }
   const merged = { ...source, ...target };
   const mergedVersions = {
     ...(source[FIELD_VERSIONS_FIELD] || {}),
@@ -481,10 +493,7 @@ function applyChannelVolumesMutation(currentValue, mutation, now = Date.now()) {
       const entry = cloneEntry(all[mutation.channelId], mutation.channelId);
       const lastLufs = { ...(entry.lastLufs || {}) };
       // An Auto gain that a measurement at or below the floor gave goes with it.
-      if (gainTookNoLevel(lastLufs[mutation.kind])) {
-        delete entry[storeAutoGainFieldForKind(mutation.kind)];
-        setMeasurementCompanion(entry, 'autoGainRef', mutation.kind, undefined);
-      }
+      dropAutoGainOfNoLevel(entry, mutation.kind);
       delete lastLufs[mutation.kind];
       // What described the measurement goes with it; the Auto gain keeps its
       // own reference.
