@@ -92,7 +92,10 @@ const channelVolumeLoudness = (() => {
   // A gating window that spans a boundary in the signal carries audio from
   // both sides of it. Windows stay out of Integrated until they are clear of it.
   const BOUNDARY_SKIP_BLOCKS = GATE_BLOCKS;
-  const ABSOLUTE_GATE_MEAN_SQUARE = Math.pow(10, (-70 + 0.691) / 10);
+  // A window at or below this level is no programme level and stays out of Integrated.
+  const ABSOLUTE_GATE_LUFS = -45.6;
+  const ABSOLUTE_GATE_MEAN_SQUARE = Math.pow(10, (ABSOLUTE_GATE_LUFS + 0.691) / 10);
+  const aboveAbsoluteGate = (ms) => ms > ABSOLUTE_GATE_MEAN_SQUARE;
   const RELATIVE_GATE_FACTOR = Math.pow(10, -10 / 10);
 
   // The processor audio-worklet.js registers.
@@ -281,10 +284,10 @@ const channelVolumeLoudness = (() => {
         integratedBlockWindows[integratedBlockStart] = gatingWindow;
         integratedBlockStart = (integratedBlockStart + 1) % MAX_INTEGRATED_BLOCKS;
       }
-      if (removed >= ABSOLUTE_GATE_MEAN_SQUARE) {
+      if (aboveAbsoluteGate(removed)) {
         absoluteGatedRoot = removeTreeValue(absoluteGatedRoot, removed);
       }
-      if (ms >= ABSOLUTE_GATE_MEAN_SQUARE) {
+      if (aboveAbsoluteGate(ms)) {
         absoluteGatedRoot = insertTreeValue(absoluteGatedRoot, ms);
       }
     }
@@ -300,7 +303,7 @@ const channelVolumeLoudness = (() => {
       const gated = treeValuesAtOrAbove(absoluteGatedRoot, relativeGate);
       if (gated.count === 0) return { lufs: -Infinity, windows: 0 };
       const seedInGate = seedMeanSquare !== null &&
-        seedMeanSquare >= ABSOLUTE_GATE_MEAN_SQUARE && seedMeanSquare >= relativeGate
+        aboveAbsoluteGate(seedMeanSquare) && seedMeanSquare >= relativeGate
         ? seedEntriesInRing
         : 0;
       const windows = Math.min(seedClaimedWindows, seedInGate) + (gated.count - seedInGate);
@@ -357,7 +360,7 @@ const channelVolumeLoudness = (() => {
       while (removed.length < count && windowsSinceReset > 0 && integratedBlockLength > 0) {
         const index = (integratedBlockStart + integratedBlockLength - 1) % MAX_INTEGRATED_BLOCKS;
         const ms = integratedBlocks[index];
-        if (ms >= ABSOLUTE_GATE_MEAN_SQUARE) {
+        if (aboveAbsoluteGate(ms)) {
           absoluteGatedRoot = removeTreeValue(absoluteGatedRoot, ms);
         }
         integratedBlockLength--;
@@ -371,7 +374,7 @@ const channelVolumeLoudness = (() => {
     // given, as the number of windows the saved value stands on or the floor
     // where that is less. The seed's entries carry a window stamp below every
     // observed window, so a removal of recent windows does not reach them. A
-    // seed below the absolute gate reaches the ring but not the index, so it
+    // seed at or below the absolute gate reaches the ring but not the index, so it
     // never contributes to Integrated. A boundary skip in progress is not
     // part of the measurement and runs on.
     function reset(initialIntegratedLufs, initialIntegratedWindows) {
@@ -428,6 +431,7 @@ const channelVolumeLoudness = (() => {
     MAX_INTEGRATED_BLOCKS,
     MIN_SEED_WINDOWS,
     MAX_SEED_WINDOWS,
+    ABSOLUTE_GATE_LUFS,
     BOUNDARY_SKIP_BLOCKS,
     WORKLET_PROCESSOR,
     buildChain,

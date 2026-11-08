@@ -255,6 +255,16 @@ function gainForLevel(levelLufs, targetLufs) {
 // plays. Each time, the gain is the one gainForLevel gives for the level.
 const AUTO_FOLLOW_INTERVAL_MS = 1000;
 
+// A level at or below this is no level: the largest gain, +15.56 dB, does not
+// take it to the lowest Target LUFS, -30. Mirrored by core/loudness.js's
+// ABSOLUTE_GATE_LUFS, which the tests hold equal.
+const LEVEL_FLOOR_LKFS = -45.6;
+
+// level where it is a finite number above LEVEL_FLOOR_LKFS, and null otherwise.
+function levelAboveFloor(level) {
+  return Number.isFinite(level) && level > LEVEL_FLOOR_LKFS ? level : null;
+}
+
 // Whether gain is one a channel write may store: a finite number within the
 // gain range.
 function isStorableGain(gain) {

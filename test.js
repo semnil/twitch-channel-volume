@@ -1843,11 +1843,11 @@ function meanSquareToLufs(meanSquare) {
   return -0.691 + 10 * Math.log10(meanSquare);
 }
 
-// BS.1770 gated loudness of a set of gating windows: the absolute gate at -70
-// LUFS, then the relative gate 10 LU under the mean of what passed it.
+// Gated loudness of a set of gating windows: above -45.6 LUFS, then at or
+// above the relative gate 10 LU under the mean of what passed it.
 function gatedIntegratedLufs(windows) {
   const toMeanSquare = (lufs) => Math.pow(10, (lufs + 0.691) / 10);
-  const passAbs = windows.filter((ms) => Number.isFinite(ms) && ms >= toMeanSquare(-70));
+  const passAbs = windows.filter((ms) => Number.isFinite(ms) && ms > toMeanSquare(-45.6));
   if (passAbs.length === 0) return -Infinity;
   const meanAbs = passAbs.reduce((sum, ms) => sum + ms, 0) / passAbs.length;
   const relGate = toMeanSquare(meanSquareToLufs(meanAbs) - 10);
@@ -14974,17 +14974,28 @@ test('page bridge rolls back once per ad, not once per detection', async () => {
   assert.equal(rollbacks.length, 1);
 });
 
-test('page bridge removes a window sitting exactly on the absolute gate', async () => {
+test('page bridge leaves a window at the absolute gate out of Integrated', async () => {
   const harness = createPageBridgeHarness();
   await harness.startMeasurement();
-  const atGate = Math.pow(10, (-70 + 0.691) / 10);
+  const atGate = Math.pow(10, (-45.6 + 0.691) / 10);
   for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(atGate);
-  assert.ok(Math.abs(harness.messages.at(-1).integrated - (-70)) < 1e-12);
+  assert.equal(harness.messages.at(-1).integrated, -Infinity);
+  assert.equal(harness.messages.at(-1).integratedWindows, 0);
+});
+
+test('page bridge removes a window just above the absolute gate', async () => {
+  const harness = createPageBridgeHarness();
+  await harness.startMeasurement();
+  const aboveGate = Math.pow(10, (-45.6 + 0.691) / 10) * (1 + 1e-9);
+  for (let i = 0; i < 4; i++) harness.emitMeasurementBlock(aboveGate);
+  assertLufsClose(harness.messages.at(-1).integrated, meanSquareToLufs(aboveGate));
+  assert.equal(harness.messages.at(-1).integratedWindows, 1);
 
   await harness.dispatchCommand('setAdActive', { active: true });
-  harness.emitMeasurementBlock(atGate);
+  harness.emitMeasurementBlock(aboveGate);
   // Removed from the index as well as the ring, or it haunts the gate forever.
   assert.equal(harness.messages.at(-1).integrated, -Infinity);
+  assert.equal(harness.messages.at(-1).integratedWindows, 0);
 });
 
 test('page bridge keeps a zero player volume out of the measurement', async () => {
