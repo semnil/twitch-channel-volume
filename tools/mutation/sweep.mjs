@@ -13,8 +13,9 @@
 // Ctrl-C reaches the suite the sweep is running, and a run a signal took is not
 // a verdict: the source goes back and the exit is 130. The marker goes with it
 // where the source came back and stays where it did not. A signal sent to this
-// process alone waits for the run in flight, because the loop is synchronous
-// and the handler cannot be reached until it yields.
+// process alone ends the sweep the same way once the run in flight has ended:
+// the sweep lets the event loop run before its first run and after every child
+// it runs, and the handler runs there.
 //
 // --verify writes nothing and runs no suite: it regenerates the mutants and
 // asks whether every entry in equivalents.md still names one. An entry that
@@ -87,6 +88,18 @@ marker = join(tree, '.mutation-sweep-running');
 // that finishes first takes the marker away from the one still running —
 // leaving a tree that holds a mutant looking like a tree that does not.
 // 'wx' is the claim: refused rather than overwritten where someone holds it.
+// The marker stands for the whole run, not for one mutant: it is what says the
+// source on disk may not be the source, and it stays up from the first mutant
+// until a restore has been read back and matched. The handlers are in place
+// before the claim, so a signal that arrives while the marker is being made
+// ends the run as one that arrives later does.
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.on(signal, () => {
+    console.error(`the sweep was stopped by ${signal}`);
+    putBack();
+    finish(130);
+  });
+}
 let claim;
 try {
   claim = openSync(marker, 'wx');
@@ -97,7 +110,7 @@ try {
   try { process.kill(owner, 0); alive = true; } catch (_) {}
   console.error(alive
     ? `${tree} is already being swept by pid ${owner}; one sweep at a time per tree`
-    : `${tree} carries a marker from pid ${owner || 'a process'} that is gone; ` +
+    : `${tree} carries a marker from ${owner ? `pid ${owner}` : 'a process'} that is gone; ` +
       `the tree may hold a mutant it left behind. Check it, then remove ${marker}`);
   process.exit(2);
 }
@@ -126,10 +139,6 @@ try {
   console.error(`${relative} could not be read (${err.code || err.message})`);
   finish(2);
 }
-// The marker stands for the whole run, not for one mutant: it is what says the
-// source on disk may not be the source, and it stays up from the first mutant
-// until a restore has been read back and matched.
-for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { putBack(); finish(130); });
 }
 
 // Whether the marker is still there when this returns. Only the run that made
@@ -368,29 +377,41 @@ const confirm = process.env.MUTATE_CONFIRM;
 // check, each mutant, and the same four on the confirming side. A signal is the
 // operator asking for the run to end, and the run ends: the source goes back,
 // the exit says it was interrupted, and the marker goes only where the source
-// came back.
-function ranAtAll(run, what) {
-  if (run.error && run.error.code === 'ETIMEDOUT') return run;
-  if (run.signal) {
+// came back. Each child is followed by settle(), where a signal sent to this
+// process alone reaches its handler before the next child starts.
+async function ranAtAll(run, what) {
+  const timedOut = run.error && run.error.code === 'ETIMEDOUT';
+  if (!timedOut && run.signal) {
     console.error(`${what} was stopped by ${run.signal}`);
     putBack();
     finish(130);
   }
-  if (run.error) {
+  if (!timedOut && run.error) {
     console.error(`${what} could not be run (${run.error.code || run.error.message})`);
     putBack();
     finish(3);
   }
+  await settle();
   return run;
+}
+// Two turns of the event loop, not one. Code that runs from an I/O callback, as
+// the sweep's own top level can, has its first setImmediate run later in that
+// same turn, after the turn has read its signals; a signal that came before the
+// call reaches its handler in the second.
+function settle() {
+  return new Promise((resolve) => setImmediate(() => setImmediate(resolve)));
 }
 
 // A sweep of a file the suite never loads reports every mutant as standing,
 // which reads exactly like a file with no guards on it. The control is a
 // version that cannot run at all: if the suite passes that, this run has no
 // power to say anything and stops instead of printing a list.
+// A signal that came while the tree was being marked ends the sweep here,
+// before anything has run.
+await settle();
 const control = `throw new Error('mutation control');\n` + original;
 putMutant(control);
-const controlRun = ranAtAll(
+const controlRun = await ranAtAll(
   spawnSync(command[0], command.slice(1), { cwd: tree, encoding: 'utf8', timeout: TIMEOUT_MS }),
   'the control run'
 );
@@ -399,7 +420,7 @@ if (controlRun.status === 0) {
   console.error(`the suite passes with ${relative} replaced by a throw — it does not read this file`);
   finish(3);
 }
-const baseline = ranAtAll(
+const baseline = await ranAtAll(
   spawnSync(command[0], command.slice(1), { cwd: tree, encoding: 'utf8', timeout: TIMEOUT_MS }),
   'the baseline run'
 );
@@ -413,14 +434,15 @@ const survivors = [];
 const unparsed = [];
 for (const mutant of mutants) {
   putMutant(mutant.text);
-  const parses = spawnSync('node', ['--check', path], { encoding: 'utf8' });
-  ranAtAll(parses, 'the syntax check');
+  const parses = await ranAtAll(spawnSync('node', ['--check', path], { encoding: 'utf8' }), 'the syntax check');
   if (parses.status !== 0) { unparsed.push(mutant); continue; }
   ran += 1;
   const started = Date.now();
-  const run = spawnSync(command[0], command.slice(1), { cwd: tree, encoding: 'utf8', timeout: TIMEOUT_MS });
+  const run = await ranAtAll(
+    spawnSync(command[0], command.slice(1), { cwd: tree, encoding: 'utf8', timeout: TIMEOUT_MS }),
+    'the suite'
+  );
   const seconds = (Date.now() - started) / 1000;
-  ranAtAll(run, 'the suite');
   if (run.error && run.error.code === 'ETIMEDOUT') {
     hung += 1;
     survivors.push({ ...mutant, verdict: 'HUNG', seconds });
@@ -438,7 +460,7 @@ if (confirm && survivors.length) {
   process.stderr.write(`confirming ${survivors.length} survivors against: ${confirm}\n`);
   const control = `throw new Error('mutation control');\n` + original;
   putMutant(control);
-  const powered = ranAtAll(
+  const powered = await ranAtAll(
     spawnSync('sh', ['-c', confirm], { cwd: tree, encoding: 'utf8', timeout: TIMEOUT_MS }),
     "the confirming command's control run"
   );
@@ -450,7 +472,7 @@ if (confirm && survivors.length) {
   if (powerless) {
     console.error(`the confirming command does not execute ${relative}; the survivors stand as the sweep found them`);
   } else {
-    const green = ranAtAll(
+    const green = await ranAtAll(
       spawnSync('sh', ['-c', confirm], { cwd: tree, encoding: 'utf8', timeout: TIMEOUT_MS }),
       "the confirming command's baseline run"
     );
@@ -465,8 +487,10 @@ if (confirm && survivors.length) {
   putBack();
   for (let i = powerless ? -1 : survivors.length - 1; i >= 0; i--) {
     putMutant(survivors[i].text);
-    const run = spawnSync('sh', ['-c', confirm], { cwd: tree, encoding: 'utf8', timeout: TIMEOUT_MS });
-    ranAtAll(run, 'the confirming command');
+    const run = await ranAtAll(
+      spawnSync('sh', ['-c', confirm], { cwd: tree, encoding: 'utf8', timeout: TIMEOUT_MS }),
+      'the confirming command'
+    );
     const timedOut = run.error && run.error.code === 'ETIMEDOUT';
     if (!timedOut && run.status !== 0) {
       if (survivors[i].verdict === 'HUNG') hung -= 1;
