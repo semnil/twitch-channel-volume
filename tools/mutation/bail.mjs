@@ -47,7 +47,6 @@ try {
   process.exit(2);
 }
 
-const child = spawn(command[0], command.slice(1), { stdio: ['ignore', 'pipe', 'pipe'], detached: true });
 let bailed = false;
 let stopping = null;
 let ended = false;
@@ -76,6 +75,9 @@ for (const signal of SIGNALS) {
     console.error(`bail.mjs: ${signal} passed on to the suite`);
   });
 }
+// Started once the handlers above are in place: a signal that arrives as the
+// suite starts is passed on to it like any other.
+const child = spawn(command[0], command.slice(1), { stdio: ['ignore', 'pipe', 'pipe'], detached: true });
 child.on('exit', () => {
   ended = true;
   clearTimeout(grace);
