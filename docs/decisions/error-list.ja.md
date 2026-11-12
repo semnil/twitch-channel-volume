@@ -1,10 +1,10 @@
-# エラー一覧の決定
+# Error-list decisions
 
 > For the English version, see [error-list.md](error-list.md).
 
 Chrome が拡張機能ごとに持つエラーの一覧に、何が載るかについて閉じた判断。今有効な規則は `CLAUDE.md` にある。「Key design decisions」の「A page fetch nothing handles」と、「Development notes」の「Diagnosing a failed action」。
 
-## Worker の包みには抑止を入れない
+## The Worker wrapper carries no suppression
 
 - **決定** (2026-09-13): `page-bridge.js` の `Worker` の包みには、失敗した `new Worker` を拡張機能のエラー一覧から外す処理を入れない。包みを通って例外を投げたコンストラクタは、包みが無いときと同じようにページへ例外を投げる。
 - **理由**: 包みを通って投げられたエラーは `page-bridge.js` の行を持つので、自分のエラーの既定の動作を止めないページでは、Chrome がそれを拡張機能のエラーとして記録する。この決定は、twitch.tv がその既定の動作を自分で止めることに頼っていて、そこでは一覧に載らない。判断の材料にした失敗は、読み込めないスクリプトの URL をコンストラクタに渡してわざと起こしたもので、普段の視聴で起きることを示すものは無い。fetch の包みの隣の `unhandledrejection` リスナーは、サイトが既定の動作を止めなくなったときの保険として入れた。Worker の包みには、その保険を掛けない。
