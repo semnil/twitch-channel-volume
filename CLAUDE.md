@@ -347,6 +347,7 @@ python3 pack.py --list
 
 - **Override of the global CLAUDE.md's 「ドキュメント」 language rule**: documentation is maintained in English and Japanese, English first: `README.md` / `README.ja.md` at the root, `docs/<name>.md` / `docs/<name>.ja.md` under `docs`
 - `PRIVACY_POLICY.md` keeps its name because the Chrome Web Store listing links to it by path. `PRIVACY_POLICY_JA.md` keeps its name because the README pair and the English policy point at it
+- A change that adds a stored field brings `PRIVACY_POLICY.md` and `PRIVACY_POLICY_JA.md` up to date in the same change. `node test.js` holds the permission rows of the two policies to the manifest, and nothing holds their list of what is stored
 - `CLAUDE.md` is English only and has no Japanese counterpart
 - Commit messages follow Conventional Commits
 
