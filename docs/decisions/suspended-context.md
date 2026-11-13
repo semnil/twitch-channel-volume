@@ -2,7 +2,7 @@
 
 > 日本語版は [suspended-context.ja.md](suspended-context.ja.md) を参照してください.
 
-Closed decisions about what the extension does while its `AudioContext` is suspended. The rules in force are in `AGENTS.md`, "When the AudioContext is suspended". Both decisions below are limits that were seen and left; their reasons are in [#41](https://github.com/semnil/twitch-channel-volume/pull/41), "Not covered here".
+Closed decisions about what the extension does while its `AudioContext` is suspended. The rules in force are in `docs/design.md`, "When the AudioContext is suspended". Both decisions below are limits that were seen and left; their reasons are in [#41](https://github.com/semnil/twitch-channel-volume/pull/41), "Not covered here".
 
 ## The element is taken while the context is suspended
 

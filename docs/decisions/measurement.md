@@ -2,7 +2,7 @@
 
 > 日本語版は [measurement.ja.md](measurement.ja.md) を参照してください.
 
-Closed decisions about the loudness measurement that are this extension's own. How the measurement works is in `AGENTS.md`, "Key design decisions". The weight the seed is given — the floor and the cap — is decided for the shared meter and recorded in channel-volume-core, [docs/decisions/measurement.md](https://github.com/semnil/channel-volume-core/blob/main/docs/decisions/measurement.md).
+Closed decisions about the loudness measurement that are this extension's own. How the measurement works is in `docs/design.md`. The weight the seed is given — the floor and the cap — is decided for the shared meter and recorded in channel-volume-core, [docs/decisions/measurement.md](https://github.com/semnil/channel-volume-core/blob/main/docs/decisions/measurement.md).
 
 ## The popup does not tell a seeded value from a measured one
 
