@@ -2,7 +2,7 @@
 
 > 日本語版は [packaging.ja.md](packaging.ja.md) を参照してください.
 
-Closed decisions about the scratch directories and about what goes into the store package. The rules in force are in `CLAUDE.md`, "Reserved names" and "Packaging selects by reference graph".
+Closed decisions about the scratch directories and about what goes into the store package. The rules in force are in `AGENTS.md`, "Reserved names" and "Packaging selects by reference graph".
 
 ## `work/` and `.claude/` are ignored at the root only
 

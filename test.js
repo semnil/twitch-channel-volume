@@ -14300,7 +14300,7 @@ test('an argument that is wrong is answered before the faces are needed', () => 
 test('no argument redraws the tracked directory', { skip: generatorSkip }, () => {
   const sandbox = screenshotSandbox();
   try {
-    // The command CLAUDE.md documents and the one --check names when it
+    // The command AGENTS.md documents and the one --check names when it
     // fails. Nothing else here runs the default destination.
     const target = path.join(sandbox, 'docs/screenshots/popup_ja.png');
     const marked = spawnSync('python3', ['-B', '-c',

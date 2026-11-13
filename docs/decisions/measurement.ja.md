@@ -2,7 +2,7 @@
 
 > For the English version, see [measurement.md](measurement.md).
 
-ラウドネスの計測について閉じた判断のうち、この拡張機能だけに当たるもの。計測の仕組みは `CLAUDE.md` の「Key design decisions」にある。種 (計測の初めに入れておく保存値) に与える重み、つまり下限と上限は、共有のメーターについての決定で、channel-volume-core の [docs/decisions/measurement.ja.md](https://github.com/semnil/channel-volume-core/blob/main/docs/decisions/measurement.ja.md) に記録する。
+ラウドネスの計測について閉じた判断のうち、この拡張機能だけに当たるもの。計測の仕組みは `AGENTS.md` の「Key design decisions」にある。種 (計測の初めに入れておく保存値) に与える重み、つまり下限と上限は、共有のメーターについての決定で、channel-volume-core の [docs/decisions/measurement.ja.md](https://github.com/semnil/channel-volume-core/blob/main/docs/decisions/measurement.ja.md) に記録する。
 
 ## The popup does not tell a seeded value from a measured one
 
