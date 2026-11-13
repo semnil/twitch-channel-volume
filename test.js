@@ -2866,8 +2866,8 @@ test('the documentation pairs keep their names, their shape and their links', ()
   for (const file of ['PRIVACY_POLICY.md', 'PRIVACY_POLICY_JA.md']) {
     assert.ok(fs.existsSync(path.join(__dirname, file)), `${file} keeps its name`);
   }
-  assert.ok(!fs.existsSync(path.join(__dirname, 'CLAUDE.ja.md')),
-    'CLAUDE.md has no Japanese counterpart');
+  assert.ok(!fs.existsSync(path.join(__dirname, 'AGENTS.ja.md')),
+    'AGENTS.md has no Japanese counterpart');
 
   const read = (file) => fs.readFileSync(path.join(__dirname, file), 'utf8');
   const headings = (text) => {
