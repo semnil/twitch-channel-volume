@@ -2,7 +2,7 @@
 
 > For the English version, see [error-list.md](error-list.md).
 
-Chrome が拡張機能ごとに持つエラーの一覧に、何が載るかについて閉じた判断。今有効な規則は `AGENTS.md` にある。「Key design decisions」の「A page fetch nothing handles」と、「Development notes」の「Diagnosing a failed action」。
+Chrome が拡張機能ごとに持つエラーの一覧に、何が載るかについて閉じた判断。今有効な規則は、`docs/design.ja.md` の「だれも処理しないページの fetch」と、`docs/development.ja.md` の「失敗した操作を調べる」にある。
 
 ## The Worker wrapper carries no suppression
 
