@@ -2,7 +2,7 @@
 
 > For the English version, see [suspended-context.md](suspended-context.md).
 
-拡張機能の `AudioContext` が止まっている (suspended) 間の動きについて閉じた判断。今有効な規則は `AGENTS.md` の「When the AudioContext is suspended」にある。下の 2 つは、分かった上で残した制限で、理由は [#41](https://github.com/semnil/twitch-channel-volume/pull/41) の「Not covered here」にある。
+拡張機能の `AudioContext` が止まっている (suspended) 間の動きについて閉じた判断。今有効な規則は `docs/design.ja.md` の「AudioContext が止まっているとき」にある。下の 2 つは、分かった上で残した制限で、理由は [#41](https://github.com/semnil/twitch-channel-volume/pull/41) の「Not covered here」にある。
 
 ## The element is taken while the context is suspended
 
