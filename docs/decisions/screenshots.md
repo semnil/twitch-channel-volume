@@ -2,7 +2,7 @@
 
 > 日本語版は [screenshots.ja.md](screenshots.ja.md) を参照してください.
 
-Closed decisions about the images under `docs/screenshots/` and the generator that draws them. What the generator does is in `CLAUDE.md`, "File overview" (`gen_screenshots.py`, `docs/screenshots/`, `tools/fonts/`).
+Closed decisions about the images under `docs/screenshots/` and the generator that draws them. What the generator does is in `AGENTS.md`, "File overview" (`gen_screenshots.py`, `docs/screenshots/`, `tools/fonts/`).
 
 ## The screenshots are tracked
 

@@ -2,7 +2,7 @@
 
 > For the English version, see [packaging.md](packaging.md).
 
-作業用のディレクトリと、ストア用のパッケージに入れるものについて閉じた判断。今有効な規則は `CLAUDE.md` の「Reserved names」と「Packaging selects by reference graph」にある。
+作業用のディレクトリと、ストア用のパッケージに入れるものについて閉じた判断。今有効な規則は `AGENTS.md` の「Reserved names」と「Packaging selects by reference graph」にある。
 
 ## `work/` and `.claude/` are ignored at the root only
 

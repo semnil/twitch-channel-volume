@@ -2,7 +2,7 @@
 
 > For the English version, see [screenshots.md](screenshots.md).
 
-`docs/screenshots/` の画像と、それを描く生成器について閉じた判断。生成器のすることは `CLAUDE.md` の「File overview」(`gen_screenshots.py`・`docs/screenshots/`・`tools/fonts/`) にある。
+`docs/screenshots/` の画像と、それを描く生成器について閉じた判断。生成器のすることは `AGENTS.md` の「File overview」(`gen_screenshots.py`・`docs/screenshots/`・`tools/fonts/`) にある。
 
 ## The screenshots are tracked
 

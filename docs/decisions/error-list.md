@@ -2,7 +2,7 @@
 
 > 日本語版は [error-list.ja.md](error-list.ja.md) を参照してください.
 
-Closed decisions about what reaches the list of errors Chrome keeps for the extension. The rules in force are in `CLAUDE.md`: "A page fetch nothing handles" under "Key design decisions", and "Diagnosing a failed action" under "Development notes".
+Closed decisions about what reaches the list of errors Chrome keeps for the extension. The rules in force are in `AGENTS.md`: "A page fetch nothing handles" under "Key design decisions", and "Diagnosing a failed action" under "Development notes".
 
 ## The Worker wrapper carries no suppression
 

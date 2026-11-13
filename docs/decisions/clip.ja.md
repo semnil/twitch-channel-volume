@@ -2,14 +2,14 @@
 
 > For the English version, see [clip.md](clip.md).
 
-Twitch のクリップについて閉じた判断。今有効な規則は `CLAUDE.md` にある。「Key design decisions」の「Media another origin serves」と「A clip is not volume-adjusted」、「Development notes」のクリップの項目。
+Twitch のクリップについて閉じた判断。今有効な規則は `AGENTS.md` にある。「Key design decisions」の「Media another origin serves」と「A clip is not volume-adjusted」、「Development notes」のクリップの項目。
 
 ## A clip is left to the player
 
 - **決定** (2026-08-30): クリップは、プレイヤー自身の音声の経路で鳴らす。拡張機能はクリップの要素を取らず、クリップにはゲイン・Auto の設定・計測値を持たず、チャンネルも解決しない ([#42](https://github.com/semnil/twitch-channel-volume/pull/42))。
-- **理由**: `CLAUDE.md` の「Media another origin serves」と「A clip is not volume-adjusted」。
+- **理由**: `AGENTS.md` の「Media another origin serves」と「A clip is not volume-adjusted」。
 - **却下した案**:
-  - 要素に `crossorigin` を付けて、クリップを CORS モードで取りに行く。こうするとクリップが読み込まれない (`CLAUDE.md` の「Media another origin serves」)。
+  - 要素に `crossorigin` を付けて、クリップを CORS モードで取りに行く。こうするとクリップが読み込まれない (`AGENTS.md` の「Media another origin serves」)。
   - クリップを同じオリジンのものにする。ページからクリップを取り直し (`fetch(url, { cache: 'reload' })`)、応答を `Blob` にして要素の `src` に入れる。ページが作った blob はページ自身のオリジンに属するので、Web Audio がクリップの音を扱える。採らなかった理由は、クリップを 2 回ダウンロードすることと、Twitch のプレイヤーが管理している `src` を拡張機能が差し替えることになること。長いクリップ、画質の切り替え、シークでどう動くかは分かっていない。
 - **覆す条件**: クリップのゲインや Auto がもう一度求められたとき。作業は、上の blob の案で分かっていない 3 点から始める。クリップの種の重みは、[#41](https://github.com/semnil/twitch-channel-volume/pull/41) の「A clip's stored level outlasted the clip carrying it」から始める。重みは下限と保存した窓の数の大きい方なので、下限を短くしても効かず、クリップに要るのは上限。クリップで種を外す案は、クリップの冒頭の数秒で起きることを理由に採らなかった。#42 が外した Clip の列・Clip の既定値・保存したクリップの項目も、一緒に戻すことになる。
 - **それでもクリップが無音のとき**: `createMediaElementSource` は 1 つの要素につき 1 回しか呼べず、取られた要素の音はプレイヤーへ戻らない。そのため、この版がクリップを取らないことは、ページのほかのスクリプトについて何も保証しない。この版を読み込んでいてクリップが無音なら、最初に、同じページで拡張機能の写しがもう 1 つ動いていないかを見る。ストアから入れた古い版が、手元から読み込んだ版と並んでいる場合と、拡張機能だけを読み込み直してページを読み込み直していない場合がある (`page-bridge.js` は MAIN world で `document_start` に動くので、古いスクリプトがページに残る)。ページのコンソールに `[TCV] worklet module loaded` が 2 回出ていれば写しが 2 つ動いていて、クリップのページに `[TCV] attached to video` が出ていれば、どちらかが要素を取っている。この版は、クリップの要素についてこの行を出さない。
@@ -17,7 +17,7 @@ Twitch のクリップについて閉じた判断。今有効な規則は `CLAUD
 
 ## What an earlier version stored for a clip is deleted with the fields
 
-- **決定** (2026-08-31): `channel-store.js` は次に書くときにクリップの項目を落とし、ほかに何も持たない行と `clip-owner:<slug>` の別名も一緒に消す。保存済みの行を消すのは破壊的な操作で、破壊的な操作として明示の承認を得た ([#42](https://github.com/semnil/twitch-channel-volume/pull/42))。値を持たない行の決め方は `CLAUDE.md` の「Development notes」にある。
+- **決定** (2026-08-31): `channel-store.js` は次に書くときにクリップの項目を落とし、ほかに何も持たない行と `clip-owner:<slug>` の別名も一緒に消す。保存済みの行を消すのは破壊的な操作で、破壊的な操作として明示の承認を得た ([#42](https://github.com/semnil/twitch-channel-volume/pull/42))。値を持たない行の決め方は `AGENTS.md` の「Development notes」にある。
 
 ## The cross-origin refusal is logged at info, by its cause
 
