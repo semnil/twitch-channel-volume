@@ -6,7 +6,7 @@ Twitch のクリップについて閉じた判断。今有効な規則は、`doc
 
 ## A clip is left to the player
 
-- **決定** (2026-08-30): クリップは、プレイヤー自身の音声の経路で鳴らす。拡張機能はクリップの要素を取らず、クリップにはゲイン・Auto の設定・計測値を持たず、チャンネルも解決しない ([#42](https://github.com/semnil/twitch-channel-volume/pull/42))。
+- **決定** (2026-08-30): クリップは、プレイヤー自身の音声の経路で鳴らす。拡張機能はクリップの要素を取らず、クリップにはゲイン・Auto の設定・保存した LUFS を持たず、チャンネルも解決しない ([#42](https://github.com/semnil/twitch-channel-volume/pull/42))。
 - **理由**: `docs/design.ja.md` の「別のオリジンが配るメディア」と「クリップは音量を調整しない」。
 - **却下した案**:
   - 要素に `crossorigin` を付けて、クリップを CORS モードで取りに行く。こうするとクリップが読み込まれない (`docs/design.ja.md` の「別のオリジンが配るメディア」)。
