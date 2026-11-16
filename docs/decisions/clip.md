@@ -6,7 +6,7 @@ Closed decisions about Twitch clips. The rules in force are in `docs/design.md`,
 
 ## A clip is left to the player
 
-- **Decision** (2026-08-30): a clip plays through the player's own audio path. The extension takes no clip element, keeps no gain, Auto setting or measurement for a clip, and resolves no channel for it ([#42](https://github.com/semnil/twitch-channel-volume/pull/42)).
+- **Decision** (2026-08-30): a clip plays through the player's own audio path. The extension takes no clip element, keeps no gain, Auto setting or stored LUFS for a clip, and resolves no channel for it ([#42](https://github.com/semnil/twitch-channel-volume/pull/42)).
 - **Reason**: `docs/design.md`, "Media another origin serves" and "A clip is not volume-adjusted".
 - **Rejected**:
   - Asking for the clip in CORS mode by setting `crossorigin` on the element. The clip then does not load (`docs/design.md`, "Media another origin serves").
