@@ -26,3 +26,5 @@
 /.github/FUNDING.yml text eol=lf
 /.github/ISSUE_TEMPLATE/bug_report.md text eol=lf
 /.github/ISSUE_TEMPLATE/feature_request.md text eol=lf
+/.github/tests/issue-auto-assign.test.cjs text eol=lf
+/.github/workflows/issue-auto-assign.yml text eol=lf
